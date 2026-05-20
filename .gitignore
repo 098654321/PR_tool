@@ -23,3 +23,6 @@ schedule*
 /test/EDA_case
 
 .VSCodeCounter/*
+
+local/
+third/

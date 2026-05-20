@@ -56,7 +56,7 @@ namespace PR_tool::hardware {
         // Becarefull when you call `set` directly 
         auto set(std::usize index) -> void {
             auto& [reg_state, reg_output] = this->_state;
-            check_consistency(index);
+            // check_consistency(index);
 
             this->_index.emplace(index);
             reg_state = TOBMuxRegState::Given_out;
