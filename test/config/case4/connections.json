@@ -437,14 +437,6 @@
         [
             "muyan_1.s_tx_flit_vld",
             "muyan_0.m_rx_flit_vld"
-        ],
-        [
-            "muyan_1.rd4",
-            "muyan_0.rd12"
-        ],
-        [
-            "muyan_1.rd5",
-            "muyan_0.rd13"
         ]
     ],
     "3": [
@@ -527,18 +519,6 @@
         [
             "muyan_0.m_tx_flit_vld",
             "muyan_1.s_rx_vld"
-        ],
-        [
-            "muyan_0.rd0",
-            "muyan_1.rd9"
-        ],
-        [
-            "muyan_0.rd1",
-            "muyan_1.rd10"
-        ],
-        [
-            "muyan_0.rd2",
-            "muyan_1.rd11"
         ]
     ],
     "4": [
@@ -589,14 +569,6 @@
         [
             "muyan_2.s_tx_flit_vld",
             "muyan_1.m_rx_flit_vld"
-        ],
-        [
-            "muyan_2.rd4",
-            "muyan_1.rd12"
-        ],
-        [
-            "muyan_2.rd5",
-            "muyan_1.rd13"
         ]
     ],
     "5": [

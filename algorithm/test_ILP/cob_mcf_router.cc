@@ -80,6 +80,7 @@ struct PreparedCommodity {
     std::String origin_name;
     std::size_t record_index{0};
     std::size_t record_id{0};
+    std::Vector<std::size_t> record_indices {};
     std::size_t cob_unit{0};
     std::size_t start_track{0};
     std::size_t end_track{0};
@@ -147,7 +148,12 @@ auto node_text(const GlobalGraph& g, const int node) -> std::String {
     }
     const auto& meta = g.nodes[static_cast<std::size_t>(node)];
     if (meta.is_virtual) {
-        return meta.virtual_kind == 1 ? std::String("V_P") : std::String("V_N");
+        if (meta.virtual_kind == 1) {
+            return std::String("V_P");
+        }
+        if (meta.virtual_kind == 2) {
+            return std::String("V_N");
+        }
     }
     const auto dir_str = meta.track_dir == 0 ? "H" : "V";
     return std::format("U{} {}({},{}) T{}", meta.unit, dir_str, meta.track_row, meta.track_col, meta.track);
@@ -358,10 +364,10 @@ auto prepare_commodities(
         throw std::runtime_error("MCF prepare: record_track_endpoints size mismatch");
     }
 
-    // 统计除了PNnet以外每一条net被拆分成了多少条2-pin net
+    // 统计除了PNnet、TrackToBumps 子 Tnet 以外每一条 net 被拆分成了多少条 2-pin net
     auto split_count = std::map<std::String, int> {};
     for (const auto& record : records) {
-        if (record.type == Net_type::PNnet) {
+        if (record.type == Net_type::PNnet || record.from_track_to_bumps_split) {
             continue;
         }
         const auto origin = record.origin_key.empty() ? record.net_name : record.origin_key;
@@ -371,6 +377,9 @@ auto prepare_commodities(
     // 遍历每一条net，构造PreparedCommodity 
     for (std::size_t i = 0; i < records.size(); ++i) {
         const auto& record = records[i];
+        if (record.from_track_to_bumps_split) {
+            continue;
+        }
         const auto& endpoint = ilp_result.record_track_endpoints[i];
         PreparedCommodity c {};
         c.label = std::format("{}#{}", record.net_name, record.record_id);
@@ -510,19 +519,19 @@ auto prepare_commodities(
 }
 
 auto arc_usable_for_class(
+    const GlobalGraph& graph,
     const Arc& arc,
     const McfClass cls,
     const std::size_t unit,
-    const int vp,
-    const int vn
+    const int commodity_snk
 ) -> bool {
     if (arc.unit != unit) {
         return false;
     }
-    if (arc.u == vp || arc.v == vp) {
+    if (arc.u == graph.vp_node || arc.v == graph.vp_node) {
         return cls == McfClass::P;
     }
-    if (arc.u == vn || arc.v == vn) {
+    if (arc.u == graph.vn_node || arc.v == graph.vn_node) {
         return cls == McfClass::N;
     }
     return true;
@@ -600,7 +609,7 @@ auto route_one_mcf_warm_path(
         }
         for (const auto arc_id : outgoing_arcs[static_cast<std::size_t>(node)]) {
             const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
-            if (!arc_usable_for_class(arc, commodity.cls, commodity.cob_unit, graph.vp_node, graph.vn_node)) {
+            if (!arc_usable_for_class(graph, arc, commodity.cls, commodity.cob_unit, commodity.snk)) {
                 continue;
             }
             if (!arc.is_virtual) {
@@ -729,11 +738,11 @@ auto solve_stage(
     for (int k = 0; k < K; ++k) {
         for (int a = 0; a < A; ++a) {
             if (!arc_usable_for_class(
+                    graph,
                     graph.arcs[static_cast<std::size_t>(a)],
                     local_com[static_cast<std::size_t>(k)].cls,
                     local_com[static_cast<std::size_t>(k)].cob_unit,
-                    graph.vp_node,
-                    graph.vn_node)) {
+                    local_com[static_cast<std::size_t>(k)].snk)) {
                 continue;
             }
             const auto var_id = static_cast<int>(x_vars.size());
@@ -1165,10 +1174,19 @@ auto solve_stage(
         info.cob_unit = c.cob_unit;
         info.start_track = c.start_track;
         info.end_track = c.end_track;
-        info.record_indices.push_back(c.record_id);
+        if (!c.record_indices.empty()) {
+            info.record_indices = c.record_indices;
+        }
+        else {
+            info.record_indices.push_back(c.record_id);
+        }
 
-        auto path = extract_path(c.src, c.snk, edge_count_by_k[static_cast<std::size_t>(k)], N);
-        if (!path.empty()) {
+        auto& flow_edges = edge_count_by_k[static_cast<std::size_t>(k)];
+        for (int pi = 0; pi < c.demand; ++pi) {
+            auto path = extract_path(c.src, c.snk, flow_edges, N);
+            if (path.empty()) {
+                break;
+            }
             info.unit_paths.push_back(path);
             auto track_path = std::Vector<std::size_t> {};
             for (const auto n : path) {

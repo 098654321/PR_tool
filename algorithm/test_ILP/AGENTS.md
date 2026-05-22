@@ -49,14 +49,14 @@ xmake build test_ILP
 入口：`algorithm/test_ILP/main.cc` 的 `run_main()`
 
 1) `parse::read_config` + `algo::build_nets`  
-2) `build_records()`：将 `circuit::Net` 展平为 2-pin 级 `Net_cost_record`，并分配 `record_id` 和 `bit_id`；**多扇出**类型 `BumpToBumpsNet` / `BumpToTracksNet` / `TrackToBumpsNet` 不进入 ILP，记入 `BuildRecordsResult::deferred_multi_fanout`  
+2) `build_records()`：将 `circuit::Net` 展平为 2-pin 级 `Net_cost_record`，并分配 `record_id` 和 `bit_id`；`TrackToBumpsNet` 按 bump 拆成多条 `Tnet`（`from_track_to_bumps_split`）参与 ILP，原 net 记入 `BuildRecordsResult::track_to_bumps_nets`；`BumpToBumpsNet` / `BumpToTracksNet` 为非法类型，直接报错退出  
 3) `precompute_reach_for_records()`：为每条 record 预计算可达 end_track / start_track 边集及 Wilton 转弯步序列（`IlpReachStep`），返回 `IlpReachPrecomputeStats` 统计信息  
 4) 可选 `write_mps_file()`：导出 MPS 文件  
 5) 若启用 `--enable-pre-routing`：`build_ilp_warm_start_from_maze()` 在 shadow 硬件对象上跑主工程 maze，并生成 `TobIlpWarmStart`  
 6) `solve_tob_ilp_with_highs()`：ILP 求解，输出每条 2-pin net 的 `COBUnit` 分配、W/S/QS/QW 决策变量值、`record_track_endpoints`（每条 record 对应的 start_track / end_track）；若传入 warm start，则先交给 HiGHS 作为 MIP start  
 7) 若启用 `--enable-mcf-routing`：  
-   `run_mcf_global_routing_cob_units()`，在 track 级全局图上做两阶段 MCF 求解；若同时启用 `--enable-pre-routing`，会在求解前对 BusMCF/SimpleMCF commodity 生成 graph-maze 初始路径并传入 HiGHS；若 **MCF 全部成功** 且存在 deferred 列表，则先在 `Interposer` 上对 MCF 路径经过的 `COBConnector` 调用 `suspend()`（与主工程迷宫一致，见仓库根目录 [`source/AGENTS.md`](source/AGENTS.md) 的 PathPackage / MazeRouteStrategy 说明），再对 deferred 多扇出网逐条调用 `algo::MazeRouteStrategy` 迷宫布线（失败仅打日志，不中止进程）  
-8) 若未启用 `--enable-mcf-routing` 但配置里含上述多扇出网：会打一条说明日志，**不**跑 deferred 迷宫  
+   `run_mcf_global_routing_cob_units()`，在 track 级全局图上做两阶段 MCF 求解（**不含** `from_track_to_bumps_split` 子 Tnet）；若同时启用 `--enable-pre-routing`，会在求解前对 BusMCF/SimpleMCF commodity 生成 graph-maze 初始路径并传入 HiGHS；MCF 返回前在 `Interposer` 上对 MCF 路径经过的 `COBConnector` 调用 `suspend()`（与主工程迷宫一致，见 [`source/AGENTS.md`](source/AGENTS.md)）。若 **MCF 全部成功** 且 `track_to_bumps_nets` 非空：先 `apply_tob_ilp_result_to_interposer()` 将 ILP 的 S/W 写入 TOB mux，再 `manage_cobunit_resources()`，最后对每条 `TrackToBumpsNet` 调用 `MazeRouteStrategy::route_track_to_bumps_net()`（失败仅打日志，不中止进程）  
+8) 若未启用 `--enable-mcf-routing` 但配置里含 `TrackToBumpsNet`：会打一条说明日志，**不**跑 TTB 迷宫  
 
 建议把该链路理解为：
 
@@ -84,7 +84,8 @@ xmake build test_ILP
 
 - `algorithm/test_ILP/main.cc`
   - CLI 参数解析（含 verbose `-v` 计数）
-  - 2-pin 记录构建（`build_records` / `BuildRecordsResult`）与类型拆分（`classify_net`）；多扇出网 defer 列表与 `run_deferred_multi_fanout_maze()`
+  - 2-pin 记录构建（`build_records` / `BuildRecordsResult`）与类型拆分（`classify_net`）；`TrackToBumpsNet` ILP 拆分 + MCF 成功后 post-MCF 迷宫
+  - `algorithm/test_ILP/ilp_apply_interposer.hh/.cc`：`apply_tob_ilp_result_to_interposer`（S 配置 `hori_to_vert`、W 写 `allocated_track`/`intersect_access_unit`）；`route_track_to_bumps_nets_post_mcf`（按 ILP 分配的 end track 做 COB 迷宫，再 `give_out` TOB 链）
   - 可达性预计算调度（`precompute_reach_for_records`）
   - 可选 pre-routing warm start 调度（`--enable-pre-routing`）
   - ILP 求解调用
@@ -216,19 +217,16 @@ ILP 约束组：
 
 `TracksToBumpsNet` 按 end_bump 拆成多条 `PNnet`：每条 PNnet 共享所有 begin_tracks 作为 `pn_end_tracks`，`power_kind` 由 net 名称推断（`"Pose nets"` → `Pose`，其余 → `Nege`）。
 
-### 4.4 多扇出网（deferred + 条件迷宫）
+### 4.4 TrackToBumpsNet 与非法多扇出
 
-以下类型由 `build_nets()` 得到后，在 `build_records()` **开头**即放入 `deferred_multi_fanout`，**不参与** ILP / MCF / reach 预计算：
+| 类型 | `build_records` 行为 | ILP | MCF | COB 段 |
+|------|----------------------|-----|-----|--------|
+| `TrackToBumpsNet` | 每个 `end_bump` + 共享 `begin_track` 拆成一条 `Tnet`（`from_track_to_bumps_split=true`）；原 net 存入 `track_to_bumps_nets` | 与普通 `Tnet` 相同 | **跳过**（不建 commodity） | MCF 成功后：`apply_tob_ilp_result_to_interposer` + `MazeRouteStrategy::route_track_to_bumps_net` |
+| `BumpToBumpsNet` / `BumpToTracksNet` | `runtime_error` | — | — | — |
 
-- `BumpToBumpsNet`
-- `BumpToTracksNet`
-- `TrackToBumpsNet`
+`BuildRecordsResult::deferred_multi_fanout` 正常应为空（遗留字段）。
 
-**迷宫阶段触发条件**：仅当命令行启用 `--enable-mcf-routing` **且** BusMCF + SimpleMCF 均成功（`summary.all_ok`）**且** deferred 列表非空时，`main.cc` 调用 `MazeRouteStrategy::route_bump_to_bumps_net` / `route_bump_to_tracks_net` / `route_track_to_bumps_net`。若未启用 MCF，仅打印说明，不跑迷宫。
-
-**资源占用**：MCF 成功后、`cob_mcf_router.cc` 将每条 `unit_paths` 中相邻物理节点映射到 `hardware::Track*`，沿 `Interposer::adjacent_tracks()` 找到对应 `COBConnector` 并 `suspend()`（与 [`source/AGENTS.md`](source/AGENTS.md) §7.2 中迷宫扩展使用的占用语义一致；当前 deferred 迷宫仍传空的 `occupied_tracks`，主要依赖上述 `suspend()` 剪枝 `adjacent_idle_tracks`）。
-
-`classify_net()` 不应再收到上述三类；若收到则抛 `std::logic_error`（内部错误）。
+`classify_net()` 不应再收到多扇出类型；若收到则抛 `std::logic_error`（内部错误）。
 
 ### 4.5 record_id 与 bit_id
 
@@ -254,7 +252,7 @@ ILP 约束组：
 图节点（`NodeMeta`）：
 
 - **物理节点**：每个节点对应 `(unit, track_dir, track_row, track_col, track)` 五元组，表示 COB 网格边界上的一个 track 位置。`track_dir=0` 为 Horizontal（位于 COB 左/右侧边界），`track_dir=1` 为 Vertical（位于 COB 上/下侧边界）。每个 `(unit, inner)` 组合产生 `(rows+1)×cols` 个 Vertical 节点和 `rows×(cols+1)` 个 Horizontal 节点。总物理节点数 = `16 × 8 × ((rows+1)×cols + rows×(cols+1))`
-- **虚拟节点**：`V_P`（`virtual_kind=1`）和 `V_N`（`virtual_kind=2`），用于 pose/nege commodity 的汇聚
+- **虚拟节点**：`V_P`（`virtual_kind=1`）、`V_N`（`virtual_kind=2`）用于 pose/nege
 - **节点显示**：`node_text()` 格式为 `"U{unit} H/V({row},{col}) T{track}"` 或 `"V_P"` / `"V_N"`
 
 图边（`Arc`）：

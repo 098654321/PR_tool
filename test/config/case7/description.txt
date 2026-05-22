@@ -1,14 +1,29 @@
 CPU AI MEM test by xl
 Bump - Bump 
-CPU-AI: 4 groups of bus-nets, 8 net per bus
-CPU-MEM: 4 groups of nets, 4-net-bus + 4-unsync-net per group
+CPU-AI:  12 groups of nets, 4-net-bus + 4 groups of simple-nets, 8 net per group
+CPU-MEM: 4 groups of bus-nets, 8 net per bus
 MEM-MEM: 4 groups of bus-nets, 4 net per bus
 Track - Bump
 I/O->cpu, 64 nets
 0/1->cpu, 32 nets
 0/1->AI, 64 nets
 
+TOB = 4 * 4
 !!! COB array = 9 * 13
 
+五类互连统计：
+1. chiplet -> 0/1 port: 96 根（96个bump，48+48）
+2. chiplet与I/O port之间的bus：0 根
+3. chiplet之间的bus：
+    - 8bit位宽：4根
+    - 4bit位宽：12根
+4. chiplet与I/O port之间的普通互连：16根(每根都是1个IO对4个bump)
+5. chiplet之间的普通互连：32根
+
+I/O端口数量：16个
+0/1端口数量：
+    - 0端口：12个
+    - 1端口：12个
+    
 目前结果：约1437
 
