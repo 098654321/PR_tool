@@ -58,9 +58,10 @@ struct CobMcfFullResult {
     std::array<std::Vector<McfPathInfo>, 16> paths_by_unit {};
 };
 
-/// Per-cobunit MCF: getNetinCOBUnit → merge → build_commodities → build LP + HiGHS.
-/// When \p enable_mcf_parallel is true, each unit is solved concurrently (separate HiGHS instances).
-/// When \p enable_direction_constraints is true, MCF adds equality rows forcing each ILP \p reach_steps Wilton turn to appear on the route (optional; see 问题定义.md).
+/// Per-cobunit MCF: getNetinCOBUnit → merge → build_commodities → BusMCF (global) + SimpleMCF (per unit).
+/// When \p enable_mcf_parallel is true, SimpleMCF runs concurrently (one HiGHS instance per COBUnit).
+/// SimpleMCF uses v3 origin-level x/o variables for all Origin groups (multi-fanout and single 2-pin).
+/// When \p enable_mcf_obj is true, SimpleMCF adds min Σ x objective; otherwise feasibility-only (zero costs).
 auto run_mcf_global_routing_cob_units(
     const std::Vector<Net_cost_record>& records,
     const TobIlpResult& ilp_result,
@@ -68,8 +69,8 @@ auto run_mcf_global_routing_cob_units(
     const circuit::BaseDie& basedie,
     CobMcfGridDims cob_grid,
     bool enable_mcf_parallel = false,
-    bool enable_direction_constraints = false,
-    bool enable_pre_routing = false
+    bool enable_pre_routing = false,
+    bool enable_mcf_obj = false
 ) -> CobMcfFullResult;
 
 } // namespace PR_tool

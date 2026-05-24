@@ -2,7 +2,6 @@
 
 #include "cob_mcf_router.hh"
 #include "highs.hh"
-#include "ilp_apply_interposer.hh"
 #include "ilp_types.hh"
 #include "ilp_reach_precompute.hh"
 #include "pre_routing_warm_start.hh"
@@ -65,8 +64,8 @@ auto run_main(int argc, char** argv) -> int {
         debug::error("No config path given");
         debug::info(
             "Usage: xmake run test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] "
-            "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--enable-mcf-parallel] [--enable-direction-contraints] "
-            "[--enable-pre-routing]");
+            "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--enable-mcf-parallel] "
+            "[--enable-mcf-obj] [--enable-pre-routing]");
         log_total_runtime();
         return 1;
     }
@@ -76,7 +75,7 @@ auto run_main(int argc, char** argv) -> int {
     bool enable_ilp_parallel = false;
     bool enable_mcf = false;
     bool enable_mcf_parallel = false;
-    bool enable_direction_constraints = false;
+    bool enable_mcf_obj = false;
     bool enable_pre_routing = false;
     int verbose_v_count = 0;
     bool cob_rows_set = false;
@@ -110,8 +109,8 @@ auto run_main(int argc, char** argv) -> int {
             enable_mcf_parallel = true;
             continue;
         }
-        if (arg == "--enable-direction-contraints") {
-            enable_direction_constraints = true;
+        if (arg == "--enable-mcf-obj") {
+            enable_mcf_obj = true;
             continue;
         }
         if (arg == "--enable-pre-routing") {
@@ -147,8 +146,8 @@ auto run_main(int argc, char** argv) -> int {
         debug::error_fmt("Unexpected argument '{}'", arg);
         debug::info(
             "Usage: xmake run test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] "
-            "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--enable-mcf-parallel] [--enable-direction-contraints] "
-            "[--enable-pre-routing]");
+            "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--enable-mcf-parallel] "
+            "[--enable-mcf-obj] [--enable-pre-routing]");
         log_total_runtime();
         return 1;
     }
@@ -200,7 +199,7 @@ auto run_main(int argc, char** argv) -> int {
     }
     if (!track_to_bumps_nets.empty()) {
         debug::info_fmt(
-            "TrackToBumpsNet: {} net(s) split for ILP; COB segment routed by maze after successful MCF",
+            "TrackToBumpsNet: {} net(s) split for ILP; COB segment routed in SimpleMCF (v3 origin aggregation)",
             track_to_bumps_nets.size());
     }
 
@@ -306,15 +305,6 @@ auto run_main(int argc, char** argv) -> int {
     debug::info_fmt("objective value: {}", result.objective);
     debug::info_fmt("nets solved: {}", records.size());
 
-    if (enable_direction_constraints && !enable_mcf) {
-        debug::warning("--enable-direction-contraints applies only with --enable-mcf-routing; ignored");
-    }
-
-    if (!enable_mcf && (!deferred_multi_fanout.empty() || !track_to_bumps_nets.empty())) {
-        debug::info(
-            "TrackToBumpsNet / deferred multi-fanout: skipping post-MCF maze because --enable-mcf-routing was not set (maze runs only after a successful MCF pass).");
-    }
-
     long long mcf_warm_start_ms = 0;
     long long mcf_solve_ms = 0;
     if (enable_mcf) {
@@ -328,8 +318,8 @@ auto run_main(int argc, char** argv) -> int {
             *basedie.get(),
             cob_grid,
             enable_mcf_parallel,
-            enable_direction_constraints,
-            enable_pre_routing);
+            enable_pre_routing,
+            enable_mcf_obj);
         mcf_warm_start_ms = mcf_full.summary.mcf_warm_start_ms;
         mcf_solve_ms = mcf_full.summary.mcf_solve_ms;
         if (!mcf_full.summary.all_ok) {
@@ -342,16 +332,6 @@ auto run_main(int argc, char** argv) -> int {
                 mcf_solve_ms);
             log_total_runtime();
             return 1;
-        }
-        if (!deferred_multi_fanout.empty()) {
-            debug::warning_fmt(
-                "Deferred multi-fanout maze: {} net(s) (unexpected); only TrackToBumpsNet maze is supported",
-                deferred_multi_fanout.size());
-        }
-        if (!track_to_bumps_nets.empty()) {
-            apply_tob_ilp_result_to_interposer(interposer.get(), result);
-            interposer->manage_cobunit_resources();
-            route_track_to_bumps_nets_post_mcf(interposer.get(), nets, track_to_bumps_nets);
         }
     }
     debug::info_fmt(

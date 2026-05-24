@@ -64,7 +64,7 @@ struct Net_cost_record {
     std::size_t bit_id{0};
     /// Stable global id in `build_records` output order.
     std::size_t record_id{0};
-    /// True when this Tnet was split from a TrackToBumpsNet (MCF uses a merged commodity).
+    /// True when this Tnet was split from TrackToBumpsNet (SimpleMCF origin aggregation).
     bool from_track_to_bumps_split{false};
     IlpPowerKind power_kind{IlpPowerKind::None};
     IlpEndpointKind mcf_start_kind{IlpEndpointKind::Bump};

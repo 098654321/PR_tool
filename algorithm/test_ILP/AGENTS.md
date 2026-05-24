@@ -26,7 +26,7 @@
 
 ```bash
 xmake build test_ILP
-./output/test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] [--cob-rows N --cob-cols M] [--enable-mcf-routing] [--enable-mcf-parallel] [--enable-direction-contraints] [--enable-pre-routing]
+./output/test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] [--cob-rows N --cob-cols M] [--enable-mcf-routing] [--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing]
 ```
 
 参数语义（以 `main.cc` 为准）：
@@ -37,9 +37,9 @@ xmake build test_ILP
 - `--enable-ilp-parallel`：HiGHS 并行求解 ILP
 - `--cob-rows N` / `--cob-cols M`：可选，**必须成对出现或均省略**。省略时 MCF 构图使用 `hardware::Interposer::COB_ARRAY_HEIGHT` 与 `COB_ARRAY_WIDTH`。若显式传入，数值必须与上述常量完全一致，否则程序报错退出（保证 `track_to_cob`、Bump/TOB 坐标与 MCF 物理假设一致）
 - `--enable-mcf-routing`：在 ILP 分配成功后继续执行 MCF 阶段
-- `--enable-mcf-parallel`：CLI 仍接受此开关，但当前实现中 `run_mcf_global_routing_cob_units()` 内部 `(void)enable_mcf_parallel;`，即**并行未生效**
-- `--enable-direction-contraints`：与 `--enable-mcf-routing` 联用时，在 BusMCF / SimpleMCF 的 `solve_stage()` 中加入 **ILP `reach_steps` 对应的 Wilton 转弯等式约束**（问题定义第二版中的可选约束）；**省略时默认不加**（与旧版「始终加约束」行为不同，需与文档对照）
-- `--enable-pre-routing`：启用两处 maze warm start。ILP 前在 shadow `Interposer/BaseDie` 上调用主工程 `MazeRouteStrategy`，把已得到的 TOB 连接选择转为 HiGHS MIP start；MCF 前在 `cob_mcf_router.cc` 的 `GlobalGraph` 上按 BusMCF/SimpleMCF 顺序跑 BFS maze，把路径转为 MCF 的 `x/o` 变量初值。失败的预布线只记录日志，不作为硬约束；若 HiGHS 使用 warm start 后未返回 optimal，会自动无 warm start 重试以保护旧流程。
+- `--enable-mcf-parallel`：SimpleMCF 按 COBUnit 并行求解（`std::async`，每个 unit 独立 HiGHS 实例）
+- `--enable-mcf-obj`：与 `--enable-mcf-routing` 联用时，SimpleMCF 加入 `min Σ x` 目标函数；**省略时 SimpleMCF 为纯可行性求解**（所有变量成本为 0）。BusMCF 始终带 `min Σ f` 目标
+- `--enable-pre-routing`：启用两处 maze warm start。ILP 前在 shadow `Interposer/BaseDie` 上调用主工程 `MazeRouteStrategy`，把已得到的 TOB 连接选择转为 HiGHS MIP start；MCF 前在 `cob_mcf_router.cc` 的 `GlobalGraph` 上按 BusMCF/SimpleMCF 顺序跑 BFS maze，把路径转为 MCF 变量初值。失败的预布线只记录日志，不作为硬约束；若 HiGHS 使用 warm start 后未返回 optimal，会自动无 warm start 重试
 - MCF 成功后，`cob_mcf_router.cc` 会按 **`origin_key`（与 `build_nets()` 得到的逻辑 net 名一致）** 分组打印 track 级路径；仍保留按 COBUnit 的 commodity 摘要行便于对照容量
 
 ---
@@ -55,8 +55,7 @@ xmake build test_ILP
 5) 若启用 `--enable-pre-routing`：`build_ilp_warm_start_from_maze()` 在 shadow 硬件对象上跑主工程 maze，并生成 `TobIlpWarmStart`  
 6) `solve_tob_ilp_with_highs()`：ILP 求解，输出每条 2-pin net 的 `COBUnit` 分配、W/S/QS/QW 决策变量值、`record_track_endpoints`（每条 record 对应的 start_track / end_track）；若传入 warm start，则先交给 HiGHS 作为 MIP start  
 7) 若启用 `--enable-mcf-routing`：  
-   `run_mcf_global_routing_cob_units()`，在 track 级全局图上做两阶段 MCF 求解（**不含** `from_track_to_bumps_split` 子 Tnet）；若同时启用 `--enable-pre-routing`，会在求解前对 BusMCF/SimpleMCF commodity 生成 graph-maze 初始路径并传入 HiGHS；MCF 返回前在 `Interposer` 上对 MCF 路径经过的 `COBConnector` 调用 `suspend()`（与主工程迷宫一致，见 [`source/AGENTS.md`](source/AGENTS.md)）。若 **MCF 全部成功** 且 `track_to_bumps_nets` 非空：先 `apply_tob_ilp_result_to_interposer()` 将 ILP 的 S/W 写入 TOB mux，再 `manage_cobunit_resources()`，最后对每条 `TrackToBumpsNet` 调用 `MazeRouteStrategy::route_track_to_bumps_net()`（失败仅打日志，不中止进程）  
-8) 若未启用 `--enable-mcf-routing` 但配置里含 `TrackToBumpsNet`：会打一条说明日志，**不**跑 TTB 迷宫  
+   `run_mcf_global_routing_cob_units()`，在 track 级全局图上做 BusMCF（全局）+ SimpleMCF（按 COBUnit）；TTB 子 Tnet 在 SimpleMCF 中以 Origin 级 `x/o` 建模。若同时启用 `--enable-pre-routing`，会在求解前对 BusMCF/SimpleMCF commodity 生成 graph-maze 初始路径并传入 HiGHS；MCF 返回前在 `Interposer` 上对 MCF 路径经过的 `COBConnector` 调用 `suspend()`（见 [`source/AGENTS.md`](source/AGENTS.md)）
 
 建议把该链路理解为：
 
@@ -72,7 +71,7 @@ xmake build test_ILP
 | `timing phase=ilp_warm_start` | `build_ilp_warm_start_from_maze()`；未使用 `--enable-pre-routing` 时为 **0** |
 | `timing phase=ilp_solve` | `solve_tob_ilp_with_highs()` 整体（含 HiGHS 在 warm start 不佳时自动无初值重试） |
 | `timing phase=mcf_warm_start` | MCF 前在 `GlobalGraph` 上的 warm path 构造；未使用 `--enable-pre-routing` 时约为 **0** |
-| `timing phase=mcf_solve` | BusMCF 与 SimpleMCF 两次 `solve_stage()` 中 HiGHS 求解之和 |
+| `timing phase=mcf_solve` | BusMCF + 各 COBUnit SimpleMCF 的 HiGHS 求解之和 |
 
 `run_main` 在成功或 ILP/MCF 失败退出前会再打一行汇总：`timing breakdown (ms): ilp_warm_start=..., ilp_solve=..., mcf_warm_start=..., mcf_solve=...`（未执行 MCF 时后两项为 **0**）。另：`run_main total elapsed` 表示整个 `run_main` 墙钟；`MCF detailed(track-level) summary` 中的 `total_elapsed` 表示 `run_mcf_global_routing_cob_units()` 整段墙钟（含 `prepare_commodities`、路径打印等），一般会大于 `mcf_warm_start + mcf_solve`。`CobMcfRunSummary::mcf_warm_start_ms` / `mcf_solve_ms` 与上述 MCF 两段一致，便于程序内读取。
 
@@ -85,7 +84,7 @@ xmake build test_ILP
 - `algorithm/test_ILP/main.cc`
   - CLI 参数解析（含 verbose `-v` 计数）
   - 2-pin 记录构建（`build_records` / `BuildRecordsResult`）与类型拆分（`classify_net`）；`TrackToBumpsNet` ILP 拆分 + MCF 成功后 post-MCF 迷宫
-  - `algorithm/test_ILP/ilp_apply_interposer.hh/.cc`：`apply_tob_ilp_result_to_interposer`（S 配置 `hori_to_vert`、W 写 `allocated_track`/`intersect_access_unit`）；`route_track_to_bumps_nets_post_mcf`（按 ILP 分配的 end track 做 COB 迷宫，再 `give_out` TOB 链）
+  - `algorithm/test_ILP/ilp_apply_interposer.hh/.cc`：`apply_tob_ilp_result_to_interposer`（S 配置 `hori_to_vert`、W 写 `allocated_track`/`intersect_access_unit`）
   - 可达性预计算调度（`precompute_reach_for_records`）
   - 可选 pre-routing warm start 调度（`--enable-pre-routing`）
   - ILP 求解调用
@@ -156,7 +155,7 @@ ILP 约束组：
 - `algorithm/test_ILP/cob_mcf_router.hh/.cc`
   - 负责 track 级全局 MCF 的完整流水线
   - 入口函数 `run_mcf_global_routing_cob_units(..., hardware::Interposer* interposer, ...)`：`interposer` 可为空指针；当 MCF `all_ok` 且指针非空时，在返回前根据 MCF 路径对相应 `COBConnector::suspend()`，避免后续 deferred 迷宫与 MCF 已用开关冲突
-  - 内部关键步骤：`build_track_graph()` → `prepare_commodities()` → `solve_stage()` × 2（Bus + Simple）
+  - 内部关键步骤：`build_track_graph()` → `prepare_commodities()` → `solve_bus_mcf()`（全局）→ `solve_simple_mcf_unit()` × 16（按 COBUnit）
   - `GlobalGraph`：track 级全局路由图（节点 = `(unit, dir, row, col, track)` 五元组 + VP/VN 虚拟节点）
   - `NodeMeta`：节点元数据，包含 `track_dir`（0=Horizontal, 1=Vertical）、`track_row`、`track_col`、`unit`、`track`
   - `Arc`：有向弧，包含 `u`/`v` 端点、`is_virtual`/`is_turn` 标记、`unit`、`cob`（所属 COB 线性编号）、`track_in`/`track_out`（输入/输出 track）、`from_dir`/`to_dir`（COBDirection，Wilton 转弯方向）
@@ -181,7 +180,7 @@ ILP 约束组：
 - `algorithm/test_ILP/ilp_reach_precompute.hh/.cc`
   - `precompute_reach_for_records()`：在 ILP 求解前为每条 record 预计算可达 end_track / start_track 边集，并通过 Wilton 转弯映射（`hardware::COBUnit::index_map`）生成 `IlpReachStep` 序列
   - 分三种空间关系处理：vertical（同列直通）、horizontal（水平两步转弯）、diagonal（对角多步转弯）
-  - 预计算结果写入 `record.starttrack_by_endtrack` 和 `record.reach_by_end_start`，供 **ILP** 约束使用；`reach_by_end_start` 中的 `IlpReachStep` 序列仅在 MCF 传入 `--enable-direction-contraints` 时作为 **可选 Wilton 转弯等式约束** 注入 `solve_stage()`
+  - 预计算结果写入 `record.starttrack_by_endtrack` 和 `record.reach_by_end_start`，供 **ILP** 约束使用
   - 返回 `IlpReachPrecomputeStats` 统计信息
   - 内部 `std::logic_error`（如 diagonal 上 `delta == 0`、或 `starts` 为空）会在消息中带 **`net_name` / `origin_key` / `record_id` / `end_track`** 及几何标志，便于定位是哪条 2-pin record 触发异常
 
@@ -221,7 +220,7 @@ ILP 约束组：
 
 | 类型 | `build_records` 行为 | ILP | MCF | COB 段 |
 |------|----------------------|-----|-----|--------|
-| `TrackToBumpsNet` | 每个 `end_bump` + 共享 `begin_track` 拆成一条 `Tnet`（`from_track_to_bumps_split=true`）；原 net 存入 `track_to_bumps_nets` | 与普通 `Tnet` 相同 | **跳过**（不建 commodity） | MCF 成功后：`apply_tob_ilp_result_to_interposer` + `MazeRouteStrategy::route_track_to_bumps_net` |
+| `TrackToBumpsNet` | 每个 `end_bump` + 共享 `begin_track` 拆成一条 `Tnet`（`from_track_to_bumps_split=true`） | 与普通 `Tnet` 相同 | SimpleMCF（Origin 级 `x/o` 共享） | MCF 路径直接输出 |
 | `BumpToBumpsNet` / `BumpToTracksNet` | `runtime_error` | — | — | — |
 
 `BuildRecordsResult::deferred_multi_fanout` 正常应为空（遗留字段）。
@@ -279,25 +278,45 @@ ILP 约束组：
 - **snk 节点**：PNnet 连到 `V_P`/`V_N`（通过遍历 `starttrack_by_endtrack` 找到与 `start_track` 可达的 `end_track`，为其添加虚拟边）；Tnet 通过 `node_from_track_coord()` 从 `mcf_end_track` 定位；Bnet 通过 `end_bumps.front().TOB` 定位
 - **类别（McfClass）**：PNnet Pose → `P`，PNnet Nege → `N`，其余 → `Plain`
 - **bus 标识**：同一 `origin_key` 下有多条非 PNnet 记录的 commodity 标记为 `is_bus=true`，共享 `bus_key`
-- **reach_steps**：从 `record.reach_by_end_start` 提取该 commodity 对应的 Wilton 转弯步序列；仅当运行 `test_ILP` 时传入 `--enable-direction-contraints` 才会在 `solve_stage()` 中变成硬等式约束
+- **reach_steps**：从 `record.reach_by_end_start` 提取，当前仅用于 ILP 可达性约束与日志；MCF 不注入 Wilton 转弯等式约束
 - **bbox_cobs**：src 和 snk 的 COB 坐标构成的矩形范围内的 COB 列表
 
-### 5.3 两阶段求解（`solve_stage()`）
+### 5.3 两阶段求解（第三版：`solve_bus_mcf` + `solve_simple_mcf_unit`）
 
-`run_mcf_global_routing_cob_units()` 在同一个 `GlobalGraph` 上先后调用两次 `solve_stage()`：
+`run_mcf_global_routing_cob_units()` 流程：
 
-1. **BusMCF 阶段**：求解所有 `is_bus=true` 的 commodity，`enforce_bus_equal_length=true`（同一 bus_key 内的 commodity 物理边数相等）。边/节点容量均为默认值 1
-2. **SimpleMCF 阶段**：求解所有 `is_bus=false` 的 commodity。边/节点容量取 BusMCF 的残余（`max(0, 1 - used)`）
+1. **BusMCF**（`solve_bus_mcf()`，全局一次）：变量 `f^{c,n}`、`o^{c,n}`；目标 `min Σ f`；约束含流守恒、边/节点容量、同步线长
+2. **SimpleMCF**（`solve_simple_mcf_unit(c)`，每个 COBUnit 独立 HiGHS）：变量 `f^{c,n}`、`x^{c,H}`、`o^{c,H}`（所有 Origin）；目标 `min Σ x` **仅当** `--enable-mcf-obj`，否则纯可行性；约束含 `f≤x`、Bus 残余边/节点容量
 
-`solve_stage()` 内部构建 ILP 模型：
+#### BusMCF 约束组与日志
 
-- **决策变量**：`x[k][a]`（commodity k 在 arc a 上的整数流量，0/1）和 `o[k][n]`（commodity k 占用物理节点 n 的指示变量）
-- **arc 过滤**：`arc_usable_for_class()` 确保每个 commodity 只能使用属于其 `cob_unit` 的 arc，且只有 P-class 可使用 VP 关联弧、N-class 可使用 VN 关联弧
-- **流守恒约束**：每个 `(k, node)` 对一个等式行，src 行 = demand，snk 行 = -demand，中间节点 = 0
-- **边容量约束**：每对 `(u, v)`（取 min/max 归一化）的所有 commodity 流量之和 ≤ 容量（默认 1）
-- **节点容量约束**：每个物理节点被占用次数 ≤ 容量（默认 1）；通过 `o` 变量和 link 行实现
-- **reach 步约束**（可选）：当 CLI 传入 `--enable-direction-contraints` 且 commodity 有 `reach_steps` 时，要求每个 `IlpReachStep` 匹配的 Wilton 转弯弧上流量之和 = 1；未传该开关时不添加此类行
-- **bus 等长约束**（仅 BusMCF）：同一 bus_key 内所有 commodity 的非虚拟 arc 使用数相等
+建模型时输出：
+
+- `BusMCF model graph: nodes=… arcs=… commodities=…`
+- 每种约束的 HiGHS 行数：`flow_conservation`、`edge_capacity`、`f_le_o_link`、`node_capacity`、`bus_equal_length`
+- 变量规模：`f=… o=… cols=… rows=…`
+
+#### SimpleMCF 约束组与日志
+
+每个 unit 建模型时输出：
+
+- `SimpleMCF_unit{c} model graph: nodes=… arcs=… commodities=…`
+- 约束行数：`flow_conservation`、`edge_capacity`、`f_le_x`、`x_le_o_link`、`node_capacity`
+- 变量规模：`f=… x=… o=… origin_groups=… cols=… rows=…`
+- `objective min_sum_x: enabled/disabled`
+
+#### 变量与约束概要
+
+**BusMCF**：
+
+- 决策变量：`f[k][a]`（commodity 流）、`o[k][n]`（节点占用）
+- 流守恒、边容量 `Σ_n f ≤ 1`、节点 `f≤o` 且 `Σ_n o≤1`、bus 等长
+
+**SimpleMCF**：
+
+- 决策变量：`f[k][a]`、`x[h][a]`（Origin 级边占用）、`o[h][n]`（Origin 级节点占用）
+- `f ≤ x`；边容量 `Σ_H x ≤ capacity - used^{Bus,c}`；节点 `x≤o^H` 且 `Σ_H o^H ≤ 1 - used^{Bus,c}`
+- P/N 路径组成通过 `arc_usable_for_class()` 隐式保证（不连 virtual 节点的 commodity 无对应弧变量）
 
 求解后通过 `extract_path()` 从整数流解中 BFS 提取每个 commodity 的节点路径。
 
@@ -314,6 +333,7 @@ ILP 约束组：
 
 ### 5.5 日志输出（便于诊断）
 
+- **MCF 建模型**：每个 BusMCF / SimpleMCF_unit 求解前打印图规模（nodes/arcs/commodities）、每种约束的 HiGHS 行数、变量/col/row 总数；SimpleMCF 另打印 objective 是否启用
 - **ILP 路由细节**：`main.cc` 中通过 `result.route_details` 输出每条 net 的完整分配信息（bump 坐标、j/k 线、s、orient、track、COBUnit），格式示例：`net "...": bump(T0,B0,G1,I1) -> j=1 (horizontal line), k=4 (vertical line), s=12, orient=straight(QS), track=12, COBUnit=4`
 - **ILP W 变量明细**：输出所有 active W 及其对应 bump、j、k、orient、track
 - **ILP S 变量明细**：输出所有 active S 及其对应 TOB、v、j、k
@@ -348,7 +368,7 @@ ILP 约束组：
 
 优先修改：
 
-- `cob_mcf_router.cc`（`build_track_graph()` 图拓扑 / `prepare_commodities()` commodity 构建 / `arc_usable_for_class()` 类别过滤 / `solve_stage()` 模型约束）
+- `cob_mcf_router.cc`（`build_track_graph()` / `prepare_commodities()` / `solve_bus_mcf()` / `solve_simple_mcf_unit()` / `arc_usable_for_class()`）
 - `mcf_hw_map.hh`（track / COB / TOB 映射规则）
 
 ### 7.3 想改 net 回并策略
@@ -404,6 +424,10 @@ ILP 约束组：
 ./output/test_ILP <config_path> --enable-mcf-routing --enable-pre-routing
 ```
 
+```bash
+./output/test_ILP <config_path> --enable-mcf-routing --enable-mcf-obj
+```
+
 可选：显式传入与 Interposer 一致的 COB 行列（行为应与省略该参数相同）：
 
 ```bash
@@ -412,7 +436,7 @@ ILP 约束组：
 
 （将 `<H>`/`<W>` 替换为当前 `Interposer::COB_ARRAY_HEIGHT` / `COB_ARRAY_WIDTH` 的数值。）
 
-注意：`--enable-mcf-parallel` 可传入但并行未实际生效。`--enable-direction-contraints` 仅在同时启用 `--enable-mcf-routing` 时生效；否则 `main.cc` 会给出 warning 并忽略。`--enable-pre-routing` 传入的是 warm start，不改变 ILP/MCF 的硬约束。
+注意：`--enable-mcf-parallel` 对 SimpleMCF per-unit 求解生效。`--enable-mcf-obj` 仅影响 SimpleMCF 目标函数。`--enable-pre-routing` 传入的是 warm start，不改变 ILP/MCF 的硬约束。
 
 5) 若改了模型结构，建议附带：
 
@@ -435,7 +459,7 @@ ILP 约束组：
 - **直通边**：同一 COB tile 内相对方向对（Left↔Right / Up↔Down）的边，`is_turn=false`
 - **Wilton 转弯边**：同一 COB tile 内非相对方向对的边，`is_turn=true`，inner index 通过 Wilton 映射改变
 - **BusMCF**：第一阶段求解，处理 bus commodity（同 origin_key 下多条非 PNnet 记录），带等长约束
-- **SimpleMCF**：第二阶段求解，处理非 bus commodity，使用 BusMCF 的残余容量
+- **SimpleMCF**：第二阶段，按 COBUnit 独立求解非 bus commodity；默认纯可行性，可选 `--enable-mcf-obj` 启用 `min Σ x`
 - **reach_steps**：Wilton 转弯步序列（`IlpReachStep`），描述 end_track 到 start_track 的转弯路径
 
 术语尽量统一，不要在同一文档或代码注释里混用"子网/边/commodity/net"而不加限定。
