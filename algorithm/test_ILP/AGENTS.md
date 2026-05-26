@@ -277,7 +277,11 @@ ILP 约束组：
 - **src 节点**：通过 `node_from_bump_track()` 从 `start_bumps.front().TOB` 位置定位（所有 Tnet 均统一为 bump=start 方向）
 - **snk 节点**：PNnet 连到 `V_P`/`V_N`（通过遍历 `starttrack_by_endtrack` 找到与 `start_track` 可达的 `end_track`，为其添加虚拟边）；Tnet 通过 `node_from_track_coord()` 从 `mcf_end_track` 定位；Bnet 通过 `end_bumps.front().TOB` 定位
 - **类别（McfClass）**：PNnet Pose → `P`，PNnet Nege → `N`，其余 → `Plain`
-- **bus 标识**：同一 `origin_key` 下有多条非 PNnet 记录的 commodity 标记为 `is_bus=true`，共享 `bus_key`
+- **bus 标识（BusMCF）**：仅 `origin_key` 匹配 `SyncNet in group {正整数}`（`group > 0`）的 commodity 标记为 `is_bus=true`，`bus_key = origin_name`；`BumpToBumpNet_*_in_group_-1` 等 **不** 进 BusMCF
+- **SimpleMCF Origin 分组**（`build_origin_groups()`）：
+  - `from_track_to_bumps_split`（TrackToBumpsNet 子 Tnet）：按 `(cob_unit, origin_key)` 聚合，共享 `x/o`
+  - `BumpToBumpNet` 且 `origin_key` 含 `in_group_-1`：按 `(cob_unit, commodity.label)` 独立 Origin（每条 2-pin 不共享 `x/o`）
+  - 其余：按 `(cob_unit, origin_key)`
 - **reach_steps**：从 `record.reach_by_end_start` 提取，当前仅用于 ILP 可达性约束与日志；MCF 不注入 Wilton 转弯等式约束
 - **bbox_cobs**：src 和 snk 的 COB 坐标构成的矩形范围内的 COB 列表
 
@@ -310,7 +314,9 @@ ILP 约束组：
 **BusMCF**：
 
 - 决策变量：`f[k][a]`（commodity 流）、`o[k][n]`（节点占用）
-- 流守恒、边容量 `Σ_n f ≤ 1`、节点 `f≤o` 且 `Σ_n o≤1`、bus 等长
+- 流守恒、边容量 `Σ_n f ≤ 1`、节点 `f≤o` 且 `Σ_n o≤1`、bus 等长（仅 SyncNet bus）：
+  - `total_flow_n = Σ_{(i,j)∈E^c} f^{c,n}_{ij}`，`c` = commodity `n` 所在 COBUnit（弧已由 `arc_usable_for_class` 限定）
+  - 同 `bus_key` 内：`total_flow_n = total_flow_m`
 
 **SimpleMCF**：
 
@@ -458,8 +464,10 @@ ILP 约束组：
 - **track graph**：track 级全局路由图（`GlobalGraph`），节点粒度为 `(unit, dir, row, col, track)`，节点位于 COB 网格边界上
 - **直通边**：同一 COB tile 内相对方向对（Left↔Right / Up↔Down）的边，`is_turn=false`
 - **Wilton 转弯边**：同一 COB tile 内非相对方向对的边，`is_turn=true`，inner index 通过 Wilton 映射改变
-- **BusMCF**：第一阶段求解，处理 bus commodity（同 origin_key 下多条非 PNnet 记录），带等长约束
-- **SimpleMCF**：第二阶段，按 COBUnit 独立求解非 bus commodity；默认纯可行性，可选 `--enable-mcf-obj` 启用 `min Σ x`
+- **BusMCF**：第一阶段求解，仅 `SyncNet in group {正整数}` commodity，带同步等长约束
+- **SimpleMCF**：第二阶段，按 COBUnit 独立求解其余 commodity（含 `in_group_-1` 的 BumpToBumpNet、Tnet、TTB 等）；默认纯可行性，可选 `--enable-mcf-obj` 启用 `min Σ x`
+
+**case5（`test/config/case5`）MCF 诊断预期**（`--enable-mcf-routing`）：`BusMCF commodities=80`、`bus_equal_length=64`（16 组 SyncNet：4×(8−1) + 12×(4−1)）；`BumpToBumpNet in_group_-1` 的 32 条记录在 SimpleMCF 中按 label 独立 Origin。
 - **reach_steps**：Wilton 转弯步序列（`IlpReachStep`），描述 end_track 到 start_track 的转弯路径
 
 术语尽量统一，不要在同一文档或代码注释里混用"子网/边/commodity/net"而不加限定。

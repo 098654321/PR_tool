@@ -14,6 +14,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstddef>
 #include <format>
 #include <future>
@@ -374,6 +375,43 @@ auto node_from_track_coord(
     return get_node_id(g, unit, dir, static_cast<int>(tc.row), static_cast<int>(tc.col), track);
 }
 
+constexpr std::string_view kSyncBusOriginPrefix = "SyncNet in group ";
+
+auto is_sync_bus_origin_key(const std::String& origin_key) -> bool {
+    if (!origin_key.starts_with(kSyncBusOriginPrefix)) {
+        return false;
+    }
+    const auto suffix = origin_key.substr(kSyncBusOriginPrefix.size());
+    if (suffix.empty()) {
+        return false;
+    }
+    int group_id = 0;
+    for (const char ch : suffix) {
+        if (!std::isdigit(static_cast<unsigned char>(ch))) {
+            return false;
+        }
+        group_id = group_id * 10 + (ch - '0');
+    }
+    return group_id > 0;
+}
+
+auto is_no_sync_group_origin_key(const std::String& origin_key) -> bool {
+    return origin_key.find("in_group_-1") != std::String::npos;
+}
+
+auto simple_origin_group_key(
+    const PreparedCommodity& c,
+    const Net_cost_record& record
+) -> std::String {
+    if (record.from_track_to_bumps_split) {
+        return c.origin_name;
+    }
+    if (record.type == Net_type::Bnet && is_no_sync_group_origin_key(c.origin_name)) {
+        return c.label;
+    }
+    return c.origin_name;
+}
+
 auto prepare_commodities(
     const std::Vector<Net_cost_record>& records,
     const TobIlpResult& ilp_result,
@@ -383,16 +421,6 @@ auto prepare_commodities(
     auto out = std::Vector<PreparedCommodity> {};
     if (records.size() != ilp_result.record_track_endpoints.size()) {
         throw std::runtime_error("MCF prepare: record_track_endpoints size mismatch");
-    }
-
-    // 统计除了PNnet、TrackToBumps 子 Tnet 以外每一条 net 被拆分成了多少条 2-pin net
-    auto split_count = std::map<std::String, int> {};
-    for (const auto& record : records) {
-        if (record.type == Net_type::PNnet || record.from_track_to_bumps_split) {
-            continue;
-        }
-        const auto origin = record.origin_key.empty() ? record.net_name : record.origin_key;
-        split_count[std::format("{}#{}", origin, static_cast<int>(record.type))] += 1;
     }
 
     // 遍历每一条net，构造PreparedCommodity 
@@ -409,8 +437,7 @@ auto prepare_commodities(
         c.end_track = endpoint.end_track;
         c.demand = 1;
         c.bus_key = c.origin_name;
-        c.is_bus = (record.type != Net_type::PNnet)
-                   && split_count[std::format("{}#{}", c.origin_name, static_cast<int>(record.type))] > 1;
+        c.is_bus = is_sync_bus_origin_key(c.origin_name);
 
         if (!endpoint.has_start_track) {
             debug::warning_fmt("MCF prepare: record {} has no start track", record.net_name);
@@ -729,7 +756,8 @@ auto build_origin_groups(
     auto key_to_indices = std::map<std::pair<std::size_t, std::String>, std::Vector<int>> {};
     for (int k = 0; k < static_cast<int>(local_com.size()); ++k) {
         const auto& c = local_com[static_cast<std::size_t>(k)];
-        key_to_indices[{c.cob_unit, c.origin_name}].push_back(k);
+        const auto& rec = records[c.record_index];
+        key_to_indices[{c.cob_unit, simple_origin_group_key(c, rec)}].push_back(k);
     }
 
     auto groups = std::Vector<McfOriginGroup> {};
@@ -1055,7 +1083,10 @@ auto solve_bus_mcf(
         o_entries.push_back(std::move(col));
     }
 
-    // BusMCF §6: sync equal length total_flow_n == total_flow_m
+    // BusMCF §6: sync equal length (第三版)
+    // total_flow_n = Σ_{(i,j)∈E^c} f^{c,n}_{ij},  ∀n∈Bus ∧ c = n 所在 COBUnit
+    // E^c 由 arc_usable_for_class(..., cob_unit) 限定；非虚拟弧求和即 total_flow_n
+    // total_flow_n = total_flow_m,  ∀n,m ∈ the_same_Bus (bus_key)
     int bus_equal_length_rows = 0;
     auto by_bus = std::map<std::String, std::Vector<int>> {};
     for (int k = 0; k < K; ++k) {
