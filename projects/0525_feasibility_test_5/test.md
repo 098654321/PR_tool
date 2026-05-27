@@ -15,8 +15,8 @@
     [2026-05-25 11:23:48]  INFO   > BusMCF model graph: nodes=30338 arcs=165892 (physical_arcs=165888) commodities=80
     [2026-05-25 11:23:49]  INFO   > BusMCF constraint "bus_equal_length": 64 HiGHS row(s)       // 这个数量对了
     [2026-05-25 11:23:49]  INFO   > BusMCF constraint "edge_capacity": 82944 HiGHS row(s)       // 这个数量对
-    [2026-05-25 11:23:49]  INFO   > BusMCF constraint "f_le_o_link": 151680 HiGHS row(s)
-    [2026-05-25 11:23:49]  INFO   > BusMCF constraint "flow_conservation": 151680 HiGHS row(s)  
+    [2026-05-25 11:23:49]  INFO   > BusMCF constraint "f_le_o_link": 151680 HiGHS row(s)        // 这个和下面一样。一共有30338个点，去掉virtual node就是30336，考虑到每一个commodity都在自己的cobunit下建立约束，每个unit下有30336/16=1896个点，再乘commodityies，一共这么多约束
+    [2026-05-25 11:23:49]  INFO   > BusMCF constraint "flow_conservation": 151680 HiGHS row(s)  // 也就是每一个commodity在每一个点上有约束
     [2026-05-25 11:23:49]  INFO   > BusMCF constraint "node_capacity": 30336 HiGHS row(s)       // 这个数量对（比整个的去除掉virtual_P/Nnode）
     [2026-05-25 11:23:49]  INFO   > BusMCF constraint rows total: 416704
     [2026-05-25 11:23:49]  INFO   > BusMCF variables: f=829440 o=151680 cols=981120 rows=416704

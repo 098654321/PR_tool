@@ -1,6 +1,7 @@
-#include "cob_mcf_router.hh"
+#include "mcf/cob_mcf_router.hh"
 
-#include "mcf_hw_map.hh"
+#include "mcf/mcf_graph.hh"
+#include "mcf/mcf_hw_map.hh"
 
 #include "circuit/basedie.hh"
 #include "debug/debug.hh"
@@ -19,6 +20,7 @@
 #include <format>
 #include <future>
 #include <map>
+#include <optional>
 #include <queue>
 #include <set>
 #include <stdexcept>
@@ -40,42 +42,10 @@ enum class McfClass : int {
     N = 2
 };
 
-struct NodeMeta {
-    bool is_virtual{false};
-    int virtual_kind{0}; // 0: physical, 1: VP, 2: VN
-    std::size_t unit{0};
-    int track_dir{0};     // 0: Horizontal, 1: Vertical
-    int track_row{0};
-    int track_col{0};
-    std::size_t track{0}; // global track index (0-127)
-};
-
-struct Arc {
-    int u{0};
-    int v{0};
-    bool is_virtual{false};
-    bool is_turn{false};
-    std::size_t unit{0};
-    int cob{-1};
-    std::size_t track_in{0};
-    std::size_t track_out{0};
-    hardware::COBDirection from_dir{hardware::COBDirection::Left};
-    hardware::COBDirection to_dir{hardware::COBDirection::Left};
-};
-
-using NodeKey = std::tuple<std::size_t, int, int, int, std::size_t>;
-
-struct GlobalGraph {
-    int rows{0};
-    int cols{0};
-    int num_cob{0};
-    int vp_node{-1};
-    int vn_node{-1};
-    std::Vector<NodeMeta> nodes;
-    std::Vector<Arc> arcs;
-    std::map<NodeKey, int> node_id_by_key;
-    std::set<std::pair<int, int>> directed_arc_set;
-};
+using NodeMeta = McfNodeMeta;
+using Arc = McfArc;
+using NodeKey = McfNodeKey;
+using GlobalGraph = McfGlobalGraph;
 
 struct PreparedCommodity {
     std::String label;
@@ -893,24 +863,93 @@ auto append_paths_from_f_solution(
     }
 }
 
+auto collect_undirected_physical_edge_keys(
+    const GlobalGraph& graph,
+    const std::optional<std::size_t> unit_filter
+) -> std::set<std::pair<int, int>> {
+    auto keys = std::set<std::pair<int, int>> {};
+    for (const auto& arc : graph.arcs) {
+        if (arc.is_virtual) {
+            continue;
+        }
+        if (unit_filter.has_value() && arc.unit != *unit_filter) {
+            continue;
+        }
+        auto u = arc.u;
+        auto v = arc.v;
+        if (u > v) {
+            std::swap(u, v);
+        }
+        keys.insert({u, v});
+    }
+    return keys;
+}
+
+struct McfGraphScopeStats {
+    std::size_t nodes{0};
+    std::size_t arcs{0};
+    std::size_t physical_arcs{0};
+    std::size_t undirected_physical_edges{0};
+};
+
+auto count_mcf_graph_scope_stats(
+    const GlobalGraph& graph,
+    const std::optional<std::size_t> unit_filter
+) -> McfGraphScopeStats {
+    McfGraphScopeStats stats {};
+    for (const auto& node : graph.nodes) {
+        if (node.is_virtual) {
+            continue;
+        }
+        if (unit_filter.has_value() && node.unit != *unit_filter) {
+            continue;
+        }
+        ++stats.nodes;
+    }
+    for (const auto& arc : graph.arcs) {
+        if (unit_filter.has_value() && arc.unit != *unit_filter) {
+            continue;
+        }
+        ++stats.arcs;
+        if (!arc.is_virtual) {
+            ++stats.physical_arcs;
+        }
+    }
+    stats.undirected_physical_edges = collect_undirected_physical_edge_keys(graph, unit_filter).size();
+    return stats;
+}
+
 auto log_mcf_model_graph(
     const std::String& stage_name,
     const GlobalGraph& graph,
-    const int num_commodities
+    const int num_commodities,
+    const std::optional<std::size_t> unit_filter = std::nullopt
 ) -> void {
-    std::size_t physical_arcs = 0;
-    for (const auto& arc : graph.arcs) {
-        if (!arc.is_virtual) {
-            ++physical_arcs;
-        }
+    const auto stats = count_mcf_graph_scope_stats(graph, unit_filter);
+    if (unit_filter.has_value()) {
+        debug::info_fmt(
+            "{} model graph: scope=COBUnit{} nodes={} arcs={} (physical_arcs={} undirected_edges={}) "
+            "commodities={} [global: nodes={} arcs={}]",
+            stage_name,
+            *unit_filter,
+            stats.nodes,
+            stats.arcs,
+            stats.physical_arcs,
+            stats.undirected_physical_edges,
+            num_commodities,
+            graph.nodes.size(),
+            graph.arcs.size());
     }
-    debug::info_fmt(
-        "{} model graph: nodes={} arcs={} (physical_arcs={}) commodities={}",
-        stage_name,
-        graph.nodes.size(),
-        graph.arcs.size(),
-        physical_arcs,
-        num_commodities);
+    else {
+        debug::info_fmt(
+            "{} model graph: scope=global nodes={} arcs={} (physical_arcs={} undirected_edges={}) commodities={}",
+            stage_name,
+            stats.nodes,
+            stats.arcs,
+            stats.physical_arcs,
+            stats.undirected_physical_edges,
+            num_commodities);
+    }
 }
 
 auto log_mcf_constraint_rows(
@@ -1000,19 +1039,8 @@ auto solve_bus_mcf(
 
     // BusMCF §2: edge capacity Σ_n (f_ij + f_ji) <= capacity
     auto edge_row = std::map<std::pair<int, int>, int> {};
-    for (const auto& arc : graph.arcs) {
-        if (arc.is_virtual) {
-            continue;
-        }
-        auto u = arc.u;
-        auto v = arc.v;
-        if (u > v) {
-            std::swap(u, v);
-        }
-        if (edge_row.contains({u, v})) {
-            continue;
-        }
-        edge_row[{u, v}] = add_le(1.0);
+    for (const auto& key : collect_undirected_physical_edge_keys(graph, std::nullopt)) {
+        edge_row[key] = add_le(1.0);
     }
 
     auto f_entries = std::Vector<std::Vector<std::pair<int, double>>>(f_vars.size());
@@ -1395,7 +1423,7 @@ auto solve_simple_mcf_unit(
         return out;
     }
 
-    log_mcf_model_graph(stage_name, graph, K);
+    log_mcf_model_graph(stage_name, graph, K, unit_c);
 
     auto row_lo = std::vector<double> {};
     auto row_up = std::vector<double> {};
@@ -1424,25 +1452,14 @@ auto solve_simple_mcf_unit(
         return row;
     };
 
-    // SimpleMCF §5: Σ_H (x_ij + x_ji) <= capacity - used^{Bus,c}
+    // SimpleMCF §5: Σ_H (x_ij + x_ji) <= capacity - used^{Bus,c} on E^c only
     auto edge_row = std::map<std::pair<int, int>, int> {};
-    for (const auto& arc : graph.arcs) {
-        if (arc.is_virtual) {
-            continue;
-        }
-        auto u = arc.u;
-        auto v = arc.v;
-        if (u > v) {
-            std::swap(u, v);
-        }
-        if (edge_row.contains({u, v})) {
-            continue;
-        }
+    for (const auto& key : collect_undirected_physical_edge_keys(graph, unit_c)) {
         auto cap = 1;
-        if (edge_capacity_override.contains({u, v})) {
-            cap = edge_capacity_override.at({u, v});
+        if (edge_capacity_override.contains(key)) {
+            cap = edge_capacity_override.at(key);
         }
-        edge_row[{u, v}] = add_le(static_cast<double>(cap));
+        edge_row[key] = add_le(static_cast<double>(cap));
     }
 
     auto f_entries = std::Vector<std::Vector<std::pair<int, double>>>(f_vars.size());
@@ -1815,77 +1832,6 @@ auto path_to_text(const GlobalGraph& graph, const std::Vector<int>& path) -> std
     return s;
 }
 
-auto track_from_node_meta(hardware::Interposer* interposer, const NodeMeta& m) -> hardware::Track* {
-    if (interposer == nullptr || m.is_virtual) {
-        return nullptr;
-    }
-    const auto dir = m.track_dir == 0 ? hardware::TrackDirection::Horizontal : hardware::TrackDirection::Vertical;
-    const auto tc = hardware::TrackCoord {
-        static_cast<std::i64>(m.track_row),
-        static_cast<std::i64>(m.track_col),
-        dir,
-        static_cast<std::usize>(m.track)};
-    const auto opt = interposer->get_track(tc);
-    return opt.has_value() ? opt.value() : nullptr;
-}
-
-auto suspend_mcf_paths_on_interposer(
-    hardware::Interposer* interposer,
-    const GlobalGraph& graph,
-    const std::array<std::Vector<McfPathInfo>, 16>& paths_by_unit
-) -> void {
-    if (interposer == nullptr) {
-        return;
-    }
-    int suspended = 0;
-    int skipped_no_adj = 0;
-    for (std::size_t u = 0; u < 16; ++u) {
-        for (const auto& info : paths_by_unit[u]) {
-            for (const auto& path : info.unit_paths) {
-                for (std::size_t i = 1; i < path.size(); ++i) {
-                    const int na = path[i - 1];
-                    const int nb = path[i];
-                    if (na < 0 || nb < 0 || static_cast<std::size_t>(na) >= graph.nodes.size()
-                        || static_cast<std::size_t>(nb) >= graph.nodes.size()) {
-                        continue;
-                    }
-                    const auto& ma = graph.nodes[static_cast<std::size_t>(na)];
-                    const auto& mb = graph.nodes[static_cast<std::size_t>(nb)];
-                    if (ma.is_virtual || mb.is_virtual) {
-                        continue;
-                    }
-                    auto* ta = track_from_node_meta(interposer, ma);
-                    auto* tb = track_from_node_meta(interposer, mb);
-                    if (ta == nullptr || tb == nullptr) {
-                        continue;
-                    }
-                    bool found = false;
-                    for (auto [tn, conn] : interposer->adjacent_tracks(ta)) {
-                        if (tn != tb) {
-                            continue;
-                        }
-                        found = true;
-                        if (!conn.is_occupied()) {
-                            conn.suspend();
-                            suspended += 1;
-                        }
-                        break;
-                    }
-                    if (!found) {
-                        skipped_no_adj += 1;
-                    }
-                }
-            }
-        }
-    }
-    if (skipped_no_adj > 0) {
-        debug::warning_fmt(
-            "MCF→Interposer: {} hop(s) had no matching adjacent_tracks() edge (graph vs hardware mismatch?)",
-            skipped_no_adj);
-    }
-    debug::info_fmt("MCF→Interposer: suspended {} COBConnector(s) along MCF paths", suspended);
-}
-
 auto log_mcf_paths_by_origin_net(
     const GlobalGraph& graph,
     const std::array<std::Vector<McfPathInfo>, 16>& paths_by_unit,
@@ -1960,7 +1906,8 @@ auto run_mcf_global_routing_cob_units(
     const CobMcfGridDims cob_grid,
     const bool enable_mcf_parallel,
     const bool enable_pre_routing,
-    const bool enable_mcf_obj
+    const bool enable_mcf_obj,
+    const bool defer_interposer_suspend
 ) -> CobMcfFullResult {
     (void)basedie;
 
@@ -2143,9 +2090,12 @@ auto run_mcf_global_routing_cob_units(
     bool all_simple_ok = true;
     double simple_objective = 0.0;
     for (std::size_t u = 0; u < 16; ++u) {
+        out.has_simple_commodities[u] = has_simple_unit[u];
         if (!has_simple_unit[u]) {
+            out.simple_mcf_ok[u] = true;
             continue;
         }
+        out.simple_mcf_ok[u] = simple_results[u].ok;
         if (!simple_results[u].ok) {
             all_simple_ok = false;
             debug::error_fmt("SimpleMCF unit {} failed: {}", u, simple_results[u].message);
@@ -2205,10 +2155,93 @@ auto run_mcf_global_routing_cob_units(
         out.summary.mcf_solve_ms,
         peak_after,
         stage_peak_delta);
-    if (out.summary.all_ok && interposer != nullptr) {
+    if (interposer != nullptr && !defer_interposer_suspend) {
         suspend_mcf_paths_on_interposer(interposer, graph, out.paths_by_unit);
     }
     return out;
+}
+
+auto build_mcf_track_graph(const CobMcfGridDims grid) -> McfGlobalGraph {
+    return build_track_graph(grid);
+}
+
+auto is_sync_bus_mcf_origin_key(const std::String& origin_key) -> bool {
+    return is_sync_bus_origin_key(origin_key);
+}
+
+namespace {
+
+auto track_from_node_meta_impl(hardware::Interposer* interposer, const McfNodeMeta& m) -> hardware::Track* {
+    if (interposer == nullptr || m.is_virtual) {
+        return nullptr;
+    }
+    const auto dir = m.track_dir == 0 ? hardware::TrackDirection::Horizontal : hardware::TrackDirection::Vertical;
+    const auto tc = hardware::TrackCoord {
+        static_cast<std::i64>(m.track_row),
+        static_cast<std::i64>(m.track_col),
+        dir,
+        static_cast<std::usize>(m.track)};
+    const auto opt = interposer->get_track(tc);
+    return opt.has_value() ? opt.value() : nullptr;
+}
+
+} // namespace
+
+auto suspend_mcf_paths_on_interposer(
+    hardware::Interposer* interposer,
+    const McfGlobalGraph& graph,
+    const std::array<std::Vector<McfPathInfo>, 16>& paths_by_unit
+) -> void {
+    if (interposer == nullptr) {
+        return;
+    }
+    int suspended = 0;
+    int skipped_no_adj = 0;
+    for (std::size_t u = 0; u < 16; ++u) {
+        for (const auto& info : paths_by_unit[u]) {
+            for (const auto& path : info.unit_paths) {
+                for (std::size_t i = 1; i < path.size(); ++i) {
+                    const int na = path[i - 1];
+                    const int nb = path[i];
+                    if (na < 0 || nb < 0 || static_cast<std::size_t>(na) >= graph.nodes.size()
+                        || static_cast<std::size_t>(nb) >= graph.nodes.size()) {
+                        continue;
+                    }
+                    const auto& ma = graph.nodes[static_cast<std::size_t>(na)];
+                    const auto& mb = graph.nodes[static_cast<std::size_t>(nb)];
+                    if (ma.is_virtual || mb.is_virtual) {
+                        continue;
+                    }
+                    auto* ta = track_from_node_meta_impl(interposer, ma);
+                    auto* tb = track_from_node_meta_impl(interposer, mb);
+                    if (ta == nullptr || tb == nullptr) {
+                        continue;
+                    }
+                    bool found = false;
+                    for (auto [tn, conn] : interposer->adjacent_tracks(ta)) {
+                        if (tn != tb) {
+                            continue;
+                        }
+                        found = true;
+                        if (!conn.is_occupied()) {
+                            conn.suspend();
+                            suspended += 1;
+                        }
+                        break;
+                    }
+                    if (!found) {
+                        skipped_no_adj += 1;
+                    }
+                }
+            }
+        }
+    }
+    if (skipped_no_adj > 0) {
+        debug::warning_fmt(
+            "MCF→Interposer: {} hop(s) had no matching adjacent_tracks() edge (graph vs hardware mismatch?)",
+            skipped_no_adj);
+    }
+    debug::info_fmt("MCF→Interposer: suspended {} COBConnector(s) along MCF paths", suspended);
 }
 
 } // namespace PR_tool

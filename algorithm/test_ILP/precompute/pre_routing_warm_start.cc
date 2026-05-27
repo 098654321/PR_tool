@@ -1,6 +1,6 @@
-#include "pre_routing_warm_start.hh"
+#include "precompute/pre_routing_warm_start.hh"
 
-#include "tob_ilp_model.hh"
+#include "ilp_allocation/tob_ilp_model.hh"
 
 #include <algo/netbuilder/netbuilder.hh>
 #include <algo/router/common/maze/mazeroutestrategy.hh>

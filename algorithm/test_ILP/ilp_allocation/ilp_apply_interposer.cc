@@ -1,6 +1,6 @@
-#include "ilp_apply_interposer.hh"
+#include "ilp_allocation/ilp_apply_interposer.hh"
 
-#include "ilp_types.hh"
+#include "common/ilp_types.hh"
 
 #include <debug/debug.hh>
 #include <hardware/interposer.hh>
@@ -69,7 +69,10 @@ auto apply_tob_ilp_result_to_interposer(
         const auto key = std::pair<std::size_t, std::size_t> {s.tob, s.v};
         const auto it = hori_mux_by_tob_v.find(key);
         if (it == hori_mux_by_tob_v.end()) {
-            debug::warning_fmt("apply ILP: no W assignment for S on TOB {} v={}", s.tob, s.v);
+            debug::info_fmt(
+                "apply ILP: active S on TOB {} v={} has no matching W (unexpected after W-derived active_s)",
+                s.tob,
+                s.v);
             continue;
         }
         const auto hori_index = it->second * hardware::TOB::HORI_TO_VERI_MUX_SIZE + s.j;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ilp_types.hh"
+#include "common/ilp_types.hh"
 #include "highs/lp_data/HighsLp.h"
 #include "highs/util/HighsInt.h"
 

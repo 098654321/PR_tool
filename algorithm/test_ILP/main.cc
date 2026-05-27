@@ -1,11 +1,12 @@
 // Build ILP model from config, solve with HiGHS, optional MPS export.
 
-#include "cob_mcf_router.hh"
-#include "highs.hh"
-#include "ilp_types.hh"
-#include "ilp_reach_precompute.hh"
-#include "pre_routing_warm_start.hh"
-#include "tob_ilp_model.hh"
+#include "mcf/cob_mcf_router.hh"
+#include "maze_check/maze_check.hh"
+#include "ilp_allocation/highs.hh"
+#include "common/ilp_types.hh"
+#include "precompute/ilp_reach_precompute.hh"
+#include "precompute/pre_routing_warm_start.hh"
+#include "ilp_allocation/tob_ilp_model.hh"
 
 #include <algo/netbuilder/netbuilder.hh>
 #include <algo/router/routeerror.hh>
@@ -65,7 +66,7 @@ auto run_main(int argc, char** argv) -> int {
         debug::info(
             "Usage: xmake run test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] "
             "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--enable-mcf-parallel] "
-            "[--enable-mcf-obj] [--enable-pre-routing]");
+            "[--enable-mcf-obj] [--enable-pre-routing] [--maze-check-ilp-mcf | --maze-check-mcf]");
         log_total_runtime();
         return 1;
     }
@@ -77,6 +78,8 @@ auto run_main(int argc, char** argv) -> int {
     bool enable_mcf_parallel = false;
     bool enable_mcf_obj = false;
     bool enable_pre_routing = false;
+    bool maze_check_ilp_mcf = false;
+    bool maze_check_mcf = false;
     int verbose_v_count = 0;
     bool cob_rows_set = false;
     bool cob_cols_set = false;
@@ -117,6 +120,14 @@ auto run_main(int argc, char** argv) -> int {
             enable_pre_routing = true;
             continue;
         }
+        if (arg == "--maze-check-ilp-mcf") {
+            maze_check_ilp_mcf = true;
+            continue;
+        }
+        if (arg == "--maze-check-mcf") {
+            maze_check_mcf = true;
+            continue;
+        }
         if (arg == "--cob-rows") {
             if (argi + 1 >= argc) {
                 debug::error("--cob-rows requires an integer argument");
@@ -147,7 +158,7 @@ auto run_main(int argc, char** argv) -> int {
         debug::info(
             "Usage: xmake run test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] "
             "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--enable-mcf-parallel] "
-            "[--enable-mcf-obj] [--enable-pre-routing]");
+            "[--enable-mcf-obj] [--enable-pre-routing] [--maze-check-ilp-mcf | --maze-check-mcf]");
         log_total_runtime();
         return 1;
     }
@@ -176,6 +187,18 @@ auto run_main(int argc, char** argv) -> int {
         cob_cols = cob_cols_cli;
     }
     const CobMcfGridDims cob_grid {cob_rows, cob_cols};
+
+    if ((maze_check_ilp_mcf || maze_check_mcf) && !enable_mcf) {
+        debug::error("maze-check flags require --enable-mcf-routing");
+        log_total_runtime();
+        return 1;
+    }
+    if (maze_check_ilp_mcf && maze_check_mcf) {
+        debug::error("--maze-check-ilp-mcf and --maze-check-mcf are mutually exclusive");
+        log_total_runtime();
+        return 1;
+    }
+    const bool defer_maze_check_suspend = maze_check_ilp_mcf || maze_check_mcf;
 
     // read file and build nets
     debug::initial_log("./debug.log");
@@ -319,9 +342,28 @@ auto run_main(int argc, char** argv) -> int {
             cob_grid,
             enable_mcf_parallel,
             enable_pre_routing,
-            enable_mcf_obj);
+            enable_mcf_obj,
+            defer_maze_check_suspend);
         mcf_warm_start_ms = mcf_full.summary.mcf_warm_start_ms;
         mcf_solve_ms = mcf_full.summary.mcf_solve_ms;
+        if (maze_check_ilp_mcf) {
+            (void)run_maze_check_ilp_mcf_after_mcf(
+                interposer.get(),
+                basedie.get(),
+                records,
+                result,
+                mcf_full,
+                cob_grid);
+        }
+        if (maze_check_mcf) {
+            (void)run_maze_check_mcf_after_mcf(
+                interposer.get(),
+                basedie.get(),
+                records,
+                result,
+                mcf_full,
+                cob_grid);
+        }
         if (!mcf_full.summary.all_ok) {
             debug::error("MCF global routing: one or more COB unit solves failed; see MCF log lines");
             debug::info_fmt(

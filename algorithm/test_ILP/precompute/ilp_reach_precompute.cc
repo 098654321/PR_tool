@@ -1,7 +1,7 @@
-#include "ilp_reach_precompute.hh"
+#include "precompute/ilp_reach_precompute.hh"
 
-#include "ilp_speedup.hh"
-#include "mcf_hw_map.hh"
+#include "ilp_allocation/ilp_speedup.hh"
+#include "mcf/mcf_hw_map.hh"
 
 #include <hardware/cob/cobunit.hh>
 #include <hardware/interposer.hh>

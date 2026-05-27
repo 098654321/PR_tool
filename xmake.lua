@@ -170,13 +170,14 @@ target("test_ILP")
     add_includedirs("source", "source/global", "algorithm/test_ILP")
     add_files(
         "algorithm/test_ILP/main.cc",
-        "algorithm/test_ILP/tob_ilp_model.cc",
-        "algorithm/test_ILP/highs.cc",
-        "algorithm/test_ILP/ilp_speedup.cc",
-        "algorithm/test_ILP/ilp_reach_precompute.cc",
-        "algorithm/test_ILP/pre_routing_warm_start.cc",
-        "algorithm/test_ILP/cob_mcf_router.cc",
-        "algorithm/test_ILP/ilp_apply_interposer.cc"
+        "algorithm/test_ILP/ilp_allocation/tob_ilp_model.cc",
+        "algorithm/test_ILP/ilp_allocation/highs.cc",
+        "algorithm/test_ILP/ilp_allocation/ilp_speedup.cc",
+        "algorithm/test_ILP/ilp_allocation/ilp_apply_interposer.cc",
+        "algorithm/test_ILP/precompute/ilp_reach_precompute.cc",
+        "algorithm/test_ILP/precompute/pre_routing_warm_start.cc",
+        "algorithm/test_ILP/mcf/cob_mcf_router.cc",
+        "algorithm/test_ILP/maze_check/maze_check.cc"
     )
     add_files(
         "source/algo/**.cc",

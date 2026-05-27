@@ -1,6 +1,6 @@
-#include "highs.hh"
+#include "ilp_allocation/highs.hh"
 #include "lp_data/HConst.h"
-#include "tob_ilp_model.hh"
+#include "ilp_allocation/tob_ilp_model.hh"
 
 #include "highs/Highs.h"
 
@@ -243,20 +243,6 @@ auto solve_tob_ilp_with_highs(
         all_related_bumps.insert(relation_bumps.begin(), relation_bumps.end());
     }
 
-    auto active_s_by_tv = std::set<std::pair<std::size_t, std::size_t>> {};
-    out.active_s.reserve(all_related_bumps.size() * 8);
-    for (const auto& bump : all_related_bumps) {
-        for (std::size_t v = 0; v < 64; ++v) {
-            if (!is_active(s_var(bump.TOB, v))) {
-                continue;
-            }
-            if (!active_s_by_tv.insert({bump.TOB, v}).second) {
-                continue;
-            }
-            out.active_s.push_back(TobIlpSAssignment {bump.TOB, v, v / 8, v % 8});
-        }
-    }
-
     auto chosen_track_by_bump = std::map<Bump_coord, std::size_t> {};
     for (const auto& bump : all_related_bumps) {
         for (std::size_t j = 0; j < 8; ++j) {
@@ -310,6 +296,35 @@ auto solve_tob_ilp_with_highs(
                 bump.Index);
             return out;
         }
+    }
+
+    auto s_by_tv_from_w = std::set<std::pair<std::size_t, std::size_t>> {};
+    out.active_s.clear();
+    out.active_s.reserve(out.active_w.size());
+    for (const auto& w : out.active_w) {
+        const auto v = w.j * 8 + w.k;
+        const auto key = std::pair<std::size_t, std::size_t> {w.bump.TOB, v};
+        if (!s_by_tv_from_w.insert(key).second) {
+            continue;
+        }
+        out.active_s.push_back(TobIlpSAssignment {w.bump.TOB, v, w.j, w.k});
+    }
+
+    auto orphan_s_by_tv = std::set<std::pair<std::size_t, std::size_t>> {};
+    for (const auto& bump : all_related_bumps) {
+        for (std::size_t v = 0; v < 64; ++v) {
+            if (!is_active(s_var(bump.TOB, v))) {
+                continue;
+            }
+            const auto key = std::pair<std::size_t, std::size_t> {bump.TOB, v};
+            if (s_by_tv_from_w.contains(key)) {
+                continue;
+            }
+            orphan_s_by_tv.insert(key);
+        }
+    }
+    if (!orphan_s_by_tv.empty()) {
+        debug::info_fmt("ILP parse: orphan S variables ignored={}", orphan_s_by_tv.size());
     }
 
     out.assignments.reserve(records.size());
@@ -391,6 +406,9 @@ auto solve_tob_ilp_with_highs(
         for (const auto& bump : relation_bumps) {
             for (std::size_t j = 0; j < 8; ++j) {
                 for (std::size_t k = 0; k < 8; ++k) {
+                    if (!is_active(w_var(bump, j, k))) {
+                        continue;
+                    }
                     const bool qs_active = is_active(qs_var(bump, j, k));
                     const bool qw_active = is_active(qw_var(bump, j, k));
                     if (qs_active == qw_active) {

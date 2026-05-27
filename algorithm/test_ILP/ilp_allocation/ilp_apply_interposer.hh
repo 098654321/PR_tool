@@ -1,6 +1,6 @@
 #pragma once
 
-#include "highs.hh"
+#include "ilp_allocation/highs.hh"
 
 namespace PR_tool::hardware {
 class Interposer;

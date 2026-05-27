@@ -1,7 +1,7 @@
 #pragma once
 
-#include "highs.hh"
-#include "ilp_types.hh"
+#include "ilp_allocation/highs.hh"
+#include "common/ilp_types.hh"
 
 #include <hardware/interposer.hh>
 #include <std/collection.hh>
@@ -56,6 +56,10 @@ struct McfPathInfo {
 struct CobMcfFullResult {
     CobMcfRunSummary summary;
     std::array<std::Vector<McfPathInfo>, 16> paths_by_unit {};
+    /// Per-unit SimpleMCF HiGHS solve succeeded (undefined if unit has no simple commodities).
+    std::array<bool, 16> simple_mcf_ok {};
+    /// Unit has at least one non-Bus SimpleMCF commodity.
+    std::array<bool, 16> has_simple_commodities {};
 };
 
 /// Per-cobunit MCF: getNetinCOBUnit → merge → build_commodities → BusMCF (global) + SimpleMCF (per unit).
@@ -70,7 +74,8 @@ auto run_mcf_global_routing_cob_units(
     CobMcfGridDims cob_grid,
     bool enable_mcf_parallel = false,
     bool enable_pre_routing = false,
-    bool enable_mcf_obj = false
+    bool enable_mcf_obj = false,
+    bool defer_interposer_suspend = false
 ) -> CobMcfFullResult;
 
 } // namespace PR_tool
