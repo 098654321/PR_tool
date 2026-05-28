@@ -50,6 +50,7 @@ using GlobalGraph = McfGlobalGraph;
 struct PreparedCommodity {
     std::String label;
     std::String origin_name;
+    std::String origin_uid;
     std::size_t record_index{0};
     std::size_t record_id{0};
     std::Vector<std::size_t> record_indices {};
@@ -374,12 +375,12 @@ auto simple_origin_group_key(
     const Net_cost_record& record
 ) -> std::String {
     if (record.from_track_to_bumps_split) {
-        return c.origin_name;
+        return c.origin_uid;
     }
     if (record.type == Net_type::Bnet && is_no_sync_group_origin_key(c.origin_name)) {
         return c.label;
     }
-    return c.origin_name;
+    return c.origin_uid;
 }
 
 auto prepare_commodities(
@@ -400,13 +401,14 @@ auto prepare_commodities(
         PreparedCommodity c {};
         c.label = std::format("{}#{}", record.net_name, record.record_id);
         c.origin_name = record.origin_key.empty() ? record.net_name : record.origin_key;
+        c.origin_uid = record.origin_uid.empty() ? c.origin_name : record.origin_uid;
         c.record_index = i;
         c.record_id = record.record_id;
         c.cob_unit = endpoint.cob_unit;
         c.start_track = endpoint.start_track;
         c.end_track = endpoint.end_track;
         c.demand = 1;
-        c.bus_key = c.origin_name;
+        c.bus_key = c.origin_uid;
         c.is_bus = is_sync_bus_origin_key(c.origin_name);
 
         if (!endpoint.has_start_track) {

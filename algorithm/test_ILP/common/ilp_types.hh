@@ -60,6 +60,8 @@ struct Net_cost_record {
 
     /// Key to merge 2-pin fragments back to a logical net.
     std::String origin_key {};
+    /// Stable uid for matching records to logical nets.
+    std::String origin_uid {};
     /// Bit index in one logical/origin net.
     std::size_t bit_id{0};
     /// Stable global id in `build_records` output order.

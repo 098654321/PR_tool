@@ -491,6 +491,7 @@ auto classify_net(const std::Rc<circuit::Net>& net) -> Net_cost_record {
         throw std::runtime_error(std::format("net '{}' has empty candidate cobunits", net->name()));
     }
     record.origin_key = net->name();
+    record.origin_uid = net->uid();
     return record;
 }
 
@@ -531,6 +532,7 @@ auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecor
                 record.mcf_end_kind = IlpEndpointKind::Track;
                 record.from_track_to_bumps_split = true;
                 record.origin_key = net->name();
+                record.origin_uid = net->uid();
                 records.emplace_back(std::move(record));
                 bump_idx += 1;
             }
@@ -565,6 +567,7 @@ auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecor
                 record.pn_end_tracks = pn_end_tracks;           // 所有的0/1端口
                 record.pn_end_track_coord_by_index = pn_end_track_coord_by_index;
                 record.origin_key = net->name();
+                record.origin_uid = net->uid();
                 record.power_kind = (net->name() == std::String("Pose nets")) ? IlpPowerKind::Pose : IlpPowerKind::Nege;
                 record.mcf_start_kind = IlpEndpointKind::Bump;
                 record.mcf_end_kind = IlpEndpointKind::Track;
@@ -590,6 +593,7 @@ auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecor
                     record.candidate_cobunits.emplace_back(c);
                 }
                 record.origin_key = net->name();
+                record.origin_uid = net->uid();
                 record.mcf_start_kind = IlpEndpointKind::Bump;
                 record.mcf_end_kind = IlpEndpointKind::Bump;
                 records.emplace_back(std::move(record));
@@ -612,6 +616,7 @@ auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecor
                 record.mcf_start_kind = IlpEndpointKind::Bump;
                 record.mcf_end_kind = IlpEndpointKind::Track;
                 record.origin_key = net->name();
+                record.origin_uid = net->uid();
                 records.emplace_back(std::move(record));
             }
             for (const auto& ttb : sync_net->ttbnets()) {
@@ -632,6 +637,7 @@ auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecor
                 record.mcf_start_kind = IlpEndpointKind::Bump;
                 record.mcf_end_kind = IlpEndpointKind::Track;
                 record.origin_key = net->name();
+                record.origin_uid = net->uid();
                 records.emplace_back(std::move(record));
             }
             continue;

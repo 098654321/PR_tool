@@ -22,7 +22,7 @@ case13，case5
 
 - case13第一步ILP求解失败
 
-这个例子本身是可解的，需要检查失败的net，然后看针对这个net的建模本身是否有问题，或者是track变换关系不合理
+这个例子本身是可解的，需要检查失败的net，然后看针对这个net的建模本身是否有问题，或者是track变换关系不合理（把一开始求解的范围打印出来看一下）
 
 - test/module_test/test_function/test_tracktobumpsnet/case1_feasible 的mcf求解过程停不下来
 
@@ -30,9 +30,13 @@ case13，case5
 
 
 ## 测试结果
-
+ 
 - 第一次测试：case5 TrackToBumpsNet 路径求解失败
 
 debug-ilp-mcf在ILP+MCF之后调用了完整的mazerouting功能，发现可以跑通。但是debug-mcf根据ILP分配好的track在COB阵列上用maze跑的时候发现还是会失败。说明不是MCF建模本身的问题，而是一开始ILP分配的track不合理，或者是先跑了bus导致剩下的net无法连通
 但是bus确实应该先布线，所以优先考虑调整一开始的track分配策略
+
+- 第二次测试：case8, --enable-mcf-routing, --maze-check-mcf
+
+
 

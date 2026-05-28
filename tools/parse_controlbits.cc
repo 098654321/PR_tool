@@ -399,7 +399,8 @@ auto find_path(
             package._length = calc_path_length(package);
 
             auto net_name = std::String{std::format("Controlbits_BumpToBumpNet_{}", state.net_index)};
-            auto net = std::make_shared<circuit::BumpToBumpNet>(begin_bump, end_bump, mode_set, net_name);
+            auto net_uid = std::String{std::format("controlbits:m{}:btb:{}", mode, state.net_index)};
+            auto net = std::make_shared<circuit::BumpToBumpNet>(begin_bump, end_bump, mode_set, net_name, net_uid);
             net->set_pathpackage(package);
             basedie->add_net(net, mode);
 
@@ -416,7 +417,8 @@ auto find_path(
             package._length = calc_path_length(package);
 
             auto net_name = std::String{std::format("Controlbits_BumpToTrackNet_{}", state.net_index)};
-            auto net = std::make_shared<circuit::BumpToTrackNet>(begin_bump, matched_io_track, mode_set, net_name);
+            auto net_uid = std::String{std::format("controlbits:m{}:btt:{}", mode, state.net_index)};
+            auto net = std::make_shared<circuit::BumpToTrackNet>(begin_bump, matched_io_track, mode_set, net_name, net_uid);
             net->set_pathpackage(package);
             basedie->add_net(net, mode);
 
@@ -486,7 +488,8 @@ auto check_track_to_bump_net(
 
             auto mode_set = std::HashSet<int>{mode};
             auto net_name = std::String{std::format("Controlbits_TrackToBumpNet_{}", state.net_index)};
-            auto net = std::make_shared<circuit::TrackToBumpNet>(source_io_track, end_bump, mode_set, net_name);
+            auto net_uid = std::String{std::format("controlbits:m{}:ttb:{}", mode, state.net_index)};
+            auto net = std::make_shared<circuit::TrackToBumpNet>(source_io_track, end_bump, mode_set, net_name, net_uid);
             net->set_pathpackage(package);
             basedie->add_net(net, mode);
 

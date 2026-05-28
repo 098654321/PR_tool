@@ -15,7 +15,7 @@ namespace PR_tool::circuit {
 
     class TracksToBumpsNet : public Net {
     public:
-        TracksToBumpsNet(std::Vector<hardware::Track*> begin_tracks, std::Vector<hardware::Bump*> end_bumps, const std::HashSet<int>& modes, std::String& name);
+        TracksToBumpsNet(std::Vector<hardware::Track*> begin_tracks, std::Vector<hardware::Bump*> end_bumps, const std::HashSet<int>& modes, std::String& name, std::String& uid);
 
     public:
         virtual auto update_tob_postion(hardware::TOB* prev_tob, hardware::TOB* next_tob) -> void override;

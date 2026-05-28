@@ -51,6 +51,7 @@ struct FailedRecordRef {
     std::size_t record_id{0};
     std::String net_name;
     std::String origin_key;
+    std::String origin_uid;
     std::size_t cob_unit{0};
 };
 
@@ -73,6 +74,13 @@ struct MazeCheckContext {
 
 auto record_origin_key(const Net_cost_record& record) -> std::String {
     return record.origin_key.empty() ? record.net_name : record.origin_key;
+}
+
+auto record_origin_uid(const Net_cost_record& record) -> std::String {
+    if (!record.origin_uid.empty()) {
+        return record.origin_uid;
+    }
+    return record_origin_key(record);
 }
 
 auto is_simple_mcf_record(const Net_cost_record& record) -> bool {
@@ -139,17 +147,18 @@ auto collect_failed_simple_records(
             record.record_id,
             record.net_name,
             record_origin_key(record),
+            record_origin_uid(record),
             cob_unit});
     }
     return out;
 }
 
-auto find_net_by_name(circuit::BaseDie* basedie, const std::String& name) -> circuit::Net* {
+auto find_net_by_uid(circuit::BaseDie* basedie, const std::String& uid) -> circuit::Net* {
     if (basedie == nullptr) {
         return nullptr;
     }
     for (const auto& net : basedie->nets_to_vector()) {
-        if (net->name() == name) {
+        if (net->uid() == uid) {
             return net.get();
         }
     }
@@ -850,7 +859,7 @@ auto prepare_maze_check_context(
     ctx.summary.failed_units = static_cast<int>(failed_units.size());
 
     for (const auto& ref : ctx.failed_records) {
-        auto& state = ctx.origin_states[ref.origin_key];
+        auto& state = ctx.origin_states[ref.origin_uid];
         if (state.record_indices.empty()) {
             state.representative_cob_unit = ref.cob_unit;
         }
@@ -872,7 +881,7 @@ auto log_maze_check_summary(const MazeCheckContext& ctx) -> void {
 
 auto log_record_shared_results(const MazeCheckContext& ctx) -> void {
     for (const auto& ref : ctx.failed_records) {
-        const auto it = ctx.origin_states.find(ref.origin_key);
+        const auto it = ctx.origin_states.find(ref.origin_uid);
         if (it == ctx.origin_states.end()) {
             continue;
         }
@@ -881,7 +890,7 @@ auto log_record_shared_results(const MazeCheckContext& ctx) -> void {
             ctx.log_prefix,
             ref.record_id,
             ref.net_name,
-            ref.origin_key,
+                ref.origin_key,
             ref.cob_unit,
             outcome_label(it->second.outcome));
     }
@@ -938,8 +947,8 @@ auto run_maze_check_loop(
 
     auto routed_nets = std::Vector<circuit::Net*> {};
 
-    for (auto& [origin, state] : ctx.origin_states) {
-        auto* net = find_net_by_name(basedie, origin);
+    for (auto& [origin_uid, state] : ctx.origin_states) {
+        auto* net = find_net_by_uid(basedie, origin_uid);
         if (net == nullptr) {
             state.outcome = MazeOriginOutcome::Skipped;
             state.message = "net not found in basedie";
@@ -947,7 +956,7 @@ auto run_maze_check_loop(
             debug::info_fmt(
                 "{} origin=\"{}\" COBUnit={} records={} result=SKIP reason={}",
                 ctx.log_prefix,
-                origin,
+                origin_uid,
                 state.representative_cob_unit,
                 state.record_indices.size(),
                 state.message);
@@ -970,7 +979,7 @@ auto run_maze_check_loop(
             debug::info_fmt(
                 "{} origin=\"{}\" COBUnit={} records={} result=OK path_len={} path=\"{}\"",
                 ctx.log_prefix,
-                origin,
+                net->name(),
                 state.representative_cob_unit,
                 state.record_indices.size(),
                 state.path_hops,
@@ -984,7 +993,7 @@ auto run_maze_check_loop(
             debug::info_fmt(
                 "{} origin=\"{}\" COBUnit={} records={} result=FAILED reason=\"{}\"",
                 ctx.log_prefix,
-                origin,
+                net->name(),
                 state.representative_cob_unit,
                 state.record_indices.size(),
                 state.message);
@@ -997,7 +1006,7 @@ auto run_maze_check_loop(
             debug::info_fmt(
                 "{} origin=\"{}\" COBUnit={} records={} result=FAILED reason=\"{}\"",
                 ctx.log_prefix,
-                origin,
+                net->name(),
                 state.representative_cob_unit,
                 state.record_indices.size(),
                 state.message);

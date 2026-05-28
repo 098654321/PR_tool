@@ -90,6 +90,7 @@ namespace PR_tool::circuit {
         virtual auto reuse_type() const -> std::Option<bool> {return this->_reuse_type;}
         virtual auto history_pathpackage() -> std::optional<HistoryPathPackage>& {return this->_history_path_package;}
         virtual auto name() const -> const std::String& {return this->_name;}
+        virtual auto uid() const -> const std::String& {return this->_uid;}
 
         // check if node is the same with nodes belongs to this 
         virtual auto check_relativity(const hardware::Bump* node) const -> const Net* {return nullptr;}
@@ -129,13 +130,14 @@ namespace PR_tool::circuit {
         }
     
     public:
-        Net(Priority priority, const std::HashSet<int>& modes, std::String& name):
-            _priority{priority}, _path_package{}, _history_path_package{std::nullopt}, _reuse_type{std::nullopt}, _related_nets_track{}, _related_nets_bump{}, _modes{modes}, _name{name} {}
+        Net(Priority priority, const std::HashSet<int>& modes, std::String& name, std::String& uid):
+            _priority{priority}, _name{name}, _uid{uid}, _path_package{}, _history_path_package{std::nullopt}, _modes{modes}, _reuse_type{std::nullopt}, _related_nets_track{}, _related_nets_bump{} {}
         virtual ~Net() noexcept {}
     
     protected:
         Priority _priority;
         std::String _name;
+        std::String _uid;
         PathPackage _path_package;
         std::optional<HistoryPathPackage> _history_path_package;
         std::HashSet<int> _modes;

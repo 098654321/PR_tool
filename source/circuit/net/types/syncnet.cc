@@ -15,12 +15,13 @@ namespace PR_tool::circuit
         std::Vector<std::Rc<BumpToTrackNet>> bttnets,
         std::Vector<std::Rc<TrackToBumpNet>> ttbnets,
         const std::HashSet<int>& modes,
-        std::String& name
+        std::String& name,
+        std::String& uid
     ) :
         _btbnets{btbnets},
         _bttnets{bttnets},
         _ttbnets{ttbnets},
-        Net{Priority{0}, modes, name}
+        Net{Priority{0}, modes, name, uid}
     {
     }
 
