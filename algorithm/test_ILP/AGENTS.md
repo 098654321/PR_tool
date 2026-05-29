@@ -71,7 +71,7 @@ xmake build test_ILP
 - `--enable-pre-routing`：启用两处 maze warm start。ILP 前在 shadow `Interposer/BaseDie` 上调用主工程 `MazeRouteStrategy`，把已得到的 TOB 连接选择转为 HiGHS MIP start；MCF 前在 `mcf/cob_mcf_router.cc` 的 `GlobalGraph` 上按 BusMCF/SimpleMCF 顺序跑 BFS maze，把路径转为 MCF 变量初值。失败的预布线只记录日志，不作为硬约束；若 HiGHS 使用 warm start 后未返回 optimal，会自动无 warm start 重试
 - `--maze-check-ilp-mcf` / `--maze-check-mcf`：须与 `--enable-mcf-routing` 联用，**二者互斥**。MCF 结束后（即使 SimpleMCF 失败）在真实 `Interposer` 上先 `apply_tob_ilp_result_to_interposer`，再 `suspend` 已有 BusMCF + 成功 SimpleMCF 路径，对 **SimpleMCF 失败 unit** 中的 net 按 `origin_key` 去重做 maze 诊断：
   - `--maze-check-ilp-mcf`：调用主工程 `Net::route(MazeRouteStrategy)`（完整 maze，TOB track 可重选）
-  - `--maze-check-mcf`：复用 ILP 对 bump 的 track 分配，仅对 origin_net 做 COB 段 BFS maze（验证 ILP 固定端点是否仍可路由）
+  - `--maze-check-mcf`：复用 ILP 已 apply 的 TOB 分配，对 origin_net 做 COB 段 BFS maze（`maze_check/maze_check.cc` 中 `ilp_fixed_route_path`）。一般 2-pin net 验证 ILP 固定起终点是否可达；**`TracksToBumpsNet`（Pose/Nege nets）** 仅诊断 SimpleMCF 失败子集内的 PNnet bump，语义对齐主工程 `MazeRouteStrategy::route_tracks_to_bumps_net`：多起点（ILP bump track + 全部 0/1 端口 + 同 origin 已成功 MCF 路径 track + 本次已累积路径）→ 终点为任意 0/1 端口 track，TOB 接到 BFS 到达的端口
   - 日志末尾输出每个 origin/record 的 maze 成功路径或失败原因（用于区分 MCF 建模问题与真实不可达）
 - MCF 完成后（未启用 maze-check 时），`mcf/cob_mcf_router.cc` 会将已有路径 `suspend` 到 `Interposer`；成功时按 **`origin_key`（与 `build_nets()` 得到的逻辑 net 名一致）** 分组打印 track 级路径；仍保留按 COBUnit 的 commodity 摘要行便于对照容量
 
