@@ -1,8 +1,8 @@
-// Build ILP model from config, solve with HiGHS, optional MPS export.
+// Build ILP model from config, solve with Gurobi, optional MPS export.
 
 #include "mcf/cob_mcf_router.hh"
 #include "maze_check/maze_check.hh"
-#include "ilp_allocation/highs.hh"
+#include "ilp_allocation/gurobi.hh"
 #include "common/ilp_types.hh"
 #include "precompute/ilp_reach_precompute.hh"
 #include "precompute/pre_routing_warm_start.hh"
@@ -268,7 +268,7 @@ auto run_main(int argc, char** argv) -> int {
 
     // solve ILP
     const auto solve_begin = std::chrono::steady_clock::now();
-    const auto result = solve_tob_ilp_with_highs(records, enable_ilp_parallel, ilp_warm_start_ptr);
+    const auto result = solve_tob_ilp_with_gurobi(records, enable_ilp_parallel, ilp_warm_start_ptr);
     const auto solve_end = std::chrono::steady_clock::now();
     const auto ilp_solve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(solve_end - solve_begin).count();
     const auto peak_rss_mb = get_peak_rss_mb();
@@ -276,7 +276,7 @@ auto run_main(int argc, char** argv) -> int {
     debug::info_fmt("Process peak RSS: {:.2f} MB", peak_rss_mb);
 
     if (!result.ok) {
-        debug::error_fmt("HiGHS: {}", result.message);
+        debug::error_fmt("Gurobi: {}", result.message);
         debug::info_fmt(
             "timing breakdown (ms): ilp_warm_start={}, ilp_solve={}, mcf_warm_start={}, mcf_solve={}",
             ilp_warm_start_ms,

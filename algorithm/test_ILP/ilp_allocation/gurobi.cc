@@ -1,8 +1,7 @@
-#include "ilp_allocation/highs.hh"
-#include "lp_data/HConst.h"
+#include "ilp_allocation/gurobi.hh"
 #include "ilp_allocation/tob_ilp_model.hh"
 
-#include "highs/Highs.h"
+#include "gurobi_c++.h"
 
 #include <algorithm>
 #include <format>
@@ -17,7 +16,7 @@
 
 namespace PR_tool {
 
-auto solve_tob_ilp_with_highs(
+auto solve_tob_ilp_with_gurobi(
     const std::Vector<Net_cost_record>& records,
     const bool enable_parallel,
     const TobIlpWarmStart* warm_start
@@ -28,129 +27,128 @@ auto solve_tob_ilp_with_highs(
     TobIlpResult out {};
     TobIlpModel model {};
     build_tob_ilp_model(model, records);
+    const auto data = model.linear_data();
 
-    // convert to HiGHS LP
-    HighsLp lp {};
-    std::map<std::String, HighsInt> col_index {};
-    model.to_highs_lp(lp, &col_index);
-
-    // set HiGHS options
-    Highs highs {};
-    highs.setOptionValue("output_flag", false);
     const unsigned int hw_threads = std::thread::hardware_concurrency();
-    const HighsInt threads = enable_parallel
-                                 ? static_cast<HighsInt>(hw_threads > 1U ? hw_threads : 1U)
-                                 : static_cast<HighsInt>(1);
-    const HighsStatus parallel_st = enable_parallel ? highs.setOptionValue("parallel", "on")
-                                                    : highs.setOptionValue("parallel", "off");
-    if (parallel_st != HighsStatus::kOk && enable_parallel) {
-        (void)highs.setOptionValue("parallel", "choose");
-    }
-    const HighsStatus thread_st = highs.setOptionValue("threads", threads);
-    if (thread_st != HighsStatus::kOk) {
-        (void)highs.setOptionValue("threads", static_cast<HighsInt>(1));
-    }
-    const HighsStatus pass_st = highs.passModel(std::move(lp));     // 装填模型
-    if (pass_st != HighsStatus::kOk) {
-        out.ok = false;
-        out.message = std::format("HiGHS passModel failed (status={})", static_cast<int>(pass_st));
-        return out;
-    }
-    // set warm start
-    if (warm_start != nullptr && !warm_start->values.empty()) {
-        auto warm_cols = std::vector<HighsInt> {};
-        auto warm_values = std::vector<double> {};
-        warm_cols.reserve(warm_start->values.size());
-        warm_values.reserve(warm_start->values.size());
-        for (const auto& [name, value] : warm_start->values) {
-            const auto it = col_index.find(name);
-            if (it == col_index.end()) {
-                continue;
-            }
-            warm_cols.push_back(it->second);
-            warm_values.push_back(value);
+    const int threads = enable_parallel ? static_cast<int>(hw_threads > 1U ? hw_threads : 1U) : 1;
+    auto sol = std::vector<double> {};
+    const auto col_index = data.column_index;
+
+    try {
+        GRBEnv env {true};
+        env.set(GRB_IntParam_OutputFlag, 0);
+        env.start();
+
+        GRBModel grb_model {env};
+        grb_model.set(GRB_StringAttr_ModelName, "TOB_ALLOC");
+        grb_model.set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
+        grb_model.set(GRB_IntParam_OutputFlag, 0);
+        grb_model.set(GRB_IntParam_Threads, threads);
+
+        auto vars = std::vector<GRBVar> {};
+        vars.reserve(data.columns.size());
+        for (const auto& col : data.columns) {
+            vars.push_back(grb_model.addVar(0.0, 1.0, col.objective, GRB_BINARY, col.name));
         }
-        if (!warm_cols.empty()) {
-            (void)highs.setOptionValue("mip_max_start_nodes", static_cast<HighsInt>(0));
-            const auto start_st = highs.setSolution(
-                static_cast<HighsInt>(warm_cols.size()),
-                warm_cols.data(),
-                warm_values.data()
-            );
-            // HiGHS是否接受这个初始解(例如解是否满足当前模型的约束)
-            if (start_st != HighsStatus::kOk) {
-                debug::warning_fmt(
-                    "HiGHS ILP warm start rejected (status={}, requested_values={}, matched_values={})",
-                    static_cast<int>(start_st),
-                    warm_start->values.size(),
-                    warm_cols.size());
+        grb_model.update();
+
+        auto row_expr = std::vector<GRBLinExpr>(data.rows.size());
+        for (std::size_t c = 0; c < data.columns.size(); ++c) {
+            for (const auto& [row, coeff] : data.columns[c].entries) {
+                row_expr[row] += coeff * vars[c];
+            }
+        }
+        for (std::size_t r = 0; r < data.rows.size(); ++r) {
+            char sense = GRB_EQUAL;
+            if (data.rows[r].type == 'L') {
+                sense = GRB_LESS_EQUAL;
+            }
+            else if (data.rows[r].type == 'G') {
+                sense = GRB_GREATER_EQUAL;
+            }
+            grb_model.addConstr(row_expr[r], sense, data.rows[r].rhs, data.rows[r].name);
+        }
+
+        if (warm_start != nullptr && !warm_start->values.empty()) {
+            std::size_t matched_values = 0;
+            for (const auto& [name, value] : warm_start->values) {
+                const auto it = col_index.find(name);
+                if (it == col_index.end()) {
+                    continue;
+                }
+                vars[it->second].set(GRB_DoubleAttr_Start, value);
+                ++matched_values;
+            }
+            if (matched_values == 0) {
+                debug::warning_fmt("Gurobi ILP warm start had no matching variables (requested_values={})", warm_start->values.size());
             }
             else {
                 debug::info_fmt(
-                    "HiGHS ILP warm start accepted: requested_values={}, matched_values={}, routed_nets={}, failed_nets={}",
+                    "Gurobi ILP warm start loaded: requested_values={}, matched_values={}, routed_nets={}, failed_nets={}",
                     warm_start->values.size(),
-                    warm_cols.size(),
+                    matched_values,
                     warm_start->routed_nets,
                     warm_start->failed_nets);
             }
         }
-        else {
-            debug::warning_fmt("HiGHS ILP warm start had no matching variables (requested_values={})", warm_start->values.size());
+
+        debug::info_fmt(
+            "Gurobi parallel setup: hw_threads={}, requested_threads={}, configured_threads={}",
+            hw_threads,
+            threads,
+            grb_model.get(GRB_IntParam_Threads));
+
+        grb_model.optimize();
+        out.model_status = grb_model.get(GRB_IntAttr_Status);
+        if (out.model_status != GRB_OPTIMAL) {
+            if (warm_start != nullptr) {
+                debug::warning_fmt(
+                    "Gurobi ILP warm start led to non-optimal status ({}); retrying without warm start",
+                    out.model_status);
+                return solve_tob_ilp_with_gurobi(records, enable_parallel, nullptr);
+            }
+            out.ok = false;
+            out.message = std::format("Gurobi model not optimal (status={})", out.model_status);
+            return out;
+        }
+
+        out.objective = grb_model.get(GRB_DoubleAttr_ObjVal);
+        sol.resize(vars.size(), 0.0);
+        for (std::size_t i = 0; i < vars.size(); ++i) {
+            sol[i] = vars[i].get(GRB_DoubleAttr_X);
         }
     }
-    // show actual parallel setting accepted by HiGHS
-    HighsInt configured_threads = 1;
-    const HighsStatus get_threads_st = highs.getOptionValue("threads", configured_threads);
-    if (get_threads_st != HighsStatus::kOk || configured_threads < 1) {
-        configured_threads = 1;
-    }
-    std::string parallel_mode = "unknown";
-    const HighsStatus get_parallel_st = highs.getOptionValue("parallel", parallel_mode);
-    if (get_parallel_st != HighsStatus::kOk) {
-        parallel_mode = "unknown";
-    }
-    debug::info_fmt(
-        "HiGHS parallel setup: hw_threads={}, requested_threads={}, configured_threads={}, parallel={}",
-        hw_threads,
-        threads,
-        configured_threads,
-        parallel_mode
-    );
-
-    const HighsStatus run_st = highs.run();    // 运行HiGHS
-    if (run_st != HighsStatus::kOk) {
+    catch (const GRBException& e) {
         out.ok = false;
-        out.message = std::format("HiGHS run failed (status={})", static_cast<int>(run_st));
-        out.model_status = highs.getModelStatus();
+        out.message = std::format("Gurobi exception {}: {}", e.getErrorCode(), e.getMessage());
+        return out;
+    }
+    catch (const std::exception& e) {
+        out.ok = false;
+        out.message = std::format("Gurobi solve failed: {}", e.what());
         return out;
     }
 
-    out.model_status = highs.getModelStatus();    
-    out.objective = highs.getObjectiveValue();    
-    const auto& sol = highs.getSolution();
-    if (sol.col_value.empty()) {
+    if (sol.empty()) {
         out.ok = false;
-        out.message = "HiGHS returned empty solution";
+        out.message = "Gurobi returned empty solution";
         return out;
-    }
-    if(out.model_status != HighsModelStatus::kOptimal) {
-        debug::info_fmt("HiGHS model status is not optimal (status={})", static_cast<int>(out.model_status));
     }
 
     // parse solution
     constexpr double z_tol = 0.5;
     const auto is_active = [&](const std::String& var_name) -> bool {
         const auto it = col_index.find(var_name);
-        if (it == col_index.end() || it->second < 0) {
+        if (it == col_index.end()) {
             return false;
         }
         const auto idx = static_cast<std::size_t>(it->second);
-        if (idx >= sol.col_value.size()) {
+        if (idx >= sol.size()) {
             out.ok = false;
             out.message = std::format("column index out of range for variable '{}'", var_name);
             return false;
         }
-        return sol.col_value[idx] > z_tol;
+        return sol[idx] > z_tol;
     };
     const auto track_from_jk = [](const std::size_t bank, const std::size_t j, const std::size_t k, const bool straight) -> std::size_t {
         const auto v = j * 8 + k;

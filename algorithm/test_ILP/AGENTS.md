@@ -5,7 +5,7 @@
 该目录是一个独立的算法验证入口，不直接替代 `source/algo/router/` 的正式路由流程。它强调：
 
 - 快速构建可复现的数学模型（ILP / MCF）
-- 用 HiGHS 求解并导出可解释结果
+- 用 Gurobi 求解并导出可解释结果
 - 在 `test_ILP` 范围内隔离实验逻辑，避免污染主流程
 
 ### 目录结构（C++ 源码）
@@ -19,7 +19,7 @@ algorithm/test_ILP/
 │   └── ilp_types.hh        # Net_cost_record、ILP/MCF 共用类型
 ├── ilp_allocation/         # 阶段 A：TOB mux ILP 建模与求解
 │   ├── tob_ilp_model.{hh,cc}
-│   ├── highs.{hh,cc}
+│   ├── gurobi.{hh,cc}
 │   ├── ilp_speedup.{hh,cc}
 │   └── ilp_apply_interposer.{hh,cc}
 ├── precompute/             # ILP/MCF 前预处理与 warm start
@@ -43,7 +43,7 @@ algorithm/test_ILP/
 
 - `algorithm/test_ILP/main.cc`
 - `algorithm/test_ILP/ilp_allocation/tob_ilp_model.cc`
-- `algorithm/test_ILP/ilp_allocation/highs.cc`
+- `algorithm/test_ILP/ilp_allocation/gurobi.cc`
 - `algorithm/test_ILP/ilp_allocation/ilp_speedup.cc`
 - `algorithm/test_ILP/ilp_allocation/ilp_apply_interposer.cc`
 - `algorithm/test_ILP/precompute/ilp_reach_precompute.cc`
@@ -63,13 +63,13 @@ xmake build test_ILP
 - `config_path`：配置目录（例如 `algorithm/test_ILP/case1`）
 - `output_mps_path`：可选，导出 ILP MPS 文件
 - `-v` / `-vv` / …：设置 verbose 模式（`-v` 计数越多越详细），启用后将 debug level 设为 `Debug`
-- `--enable-ilp-parallel`：HiGHS 并行求解 ILP
+- `--enable-ilp-parallel`：Gurobi 并行求解 ILP
 - `--cob-rows N` / `--cob-cols M`：可选，**必须成对出现或均省略**。省略时 MCF 构图使用 `hardware::Interposer::COB_ARRAY_HEIGHT` 与 `COB_ARRAY_WIDTH`。若显式传入，数值必须与上述常量完全一致，否则程序报错退出（保证 `track_to_cob`、Bump/TOB 坐标与 MCF 物理假设一致）
 - `--enable-mcf-routing`：在 ILP 分配成功后继续执行 MCF 阶段
 - `--disable-bus-mcf`：须与 `--enable-mcf-routing` 联用；跳过 BusMCF（不占用 Bus 边/节点残余），仅求解 SimpleMCF；SyncNet bus commodity 不会得到 MCF 路径
-- `--enable-mcf-parallel`：SimpleMCF 按 COBUnit 并行求解（`std::async`，每个 unit 独立 HiGHS 实例）
+- `--enable-mcf-parallel`：SimpleMCF 按 COBUnit 并行求解（`std::async`，每个 unit 独立 Gurobi 模型）
 - `--enable-mcf-obj`：与 `--enable-mcf-routing` 联用时，SimpleMCF 加入 `min Σ x` 目标函数；**省略时 SimpleMCF 为纯可行性求解**（所有变量成本为 0）。BusMCF 始终带 `min Σ f` 目标
-- `--enable-pre-routing`：启用两处 maze warm start。ILP 前在 shadow `Interposer/BaseDie` 上调用主工程 `MazeRouteStrategy`，把已得到的 TOB 连接选择转为 HiGHS MIP start；MCF 前在 `mcf/cob_mcf_router.cc` 的 `GlobalGraph` 上按 BusMCF/SimpleMCF 顺序跑 BFS maze，把路径转为 MCF 变量初值。失败的预布线只记录日志，不作为硬约束；若 HiGHS 使用 warm start 后未返回 optimal，会自动无 warm start 重试
+- `--enable-pre-routing`：启用两处 maze warm start。ILP 前在 shadow `Interposer/BaseDie` 上调用主工程 `MazeRouteStrategy`，把已得到的 TOB 连接选择转为 Gurobi MIP start；MCF 前在 `mcf/cob_mcf_router.cc` 的 `GlobalGraph` 上按 BusMCF/SimpleMCF 顺序跑 BFS maze，把路径转为 MCF 变量初值。失败的预布线只记录日志，不作为硬约束；若 Gurobi 使用 warm start 后未返回 optimal，会自动无 warm start 重试
 - `--maze-check-ilp-mcf` / `--maze-check-mcf`：须与 `--enable-mcf-routing` 联用，**二者互斥**。MCF 结束后（即使 SimpleMCF 失败）在真实 `Interposer` 上先 `apply_tob_ilp_result_to_interposer`，再 `suspend` 已有 BusMCF + 成功 SimpleMCF 路径，对 **SimpleMCF 失败 unit** 中的 net 按 `origin_key` 去重做 maze 诊断：
   - `--maze-check-ilp-mcf`：调用主工程 `Net::route(MazeRouteStrategy)`（完整 maze，TOB track 可重选）
   - `--maze-check-mcf`：复用 ILP 已 apply 的 TOB 分配，对 origin_net 做 COB 段 BFS maze（`maze_check/maze_check.cc` 中 `ilp_fixed_route_path`）。一般 2-pin net 验证 ILP 固定起终点是否可达；**`TracksToBumpsNet`（Pose/Nege nets）** 仅诊断 SimpleMCF 失败子集内的 PNnet bump，语义对齐主工程 `MazeRouteStrategy::route_tracks_to_bumps_net`：多起点（ILP bump track + 全部 0/1 端口 + 同 origin 已成功 MCF 路径 track + 本次已累积路径）→ 终点为任意 0/1 端口 track，TOB 接到 BFS 到达的端口
@@ -87,9 +87,9 @@ xmake build test_ILP
 3) `precompute_reach_for_records()`：为每条 record 预计算可达 end_track / start_track 边集及 Wilton 转弯步序列（`IlpReachStep`），返回 `IlpReachPrecomputeStats` 统计信息  
 4) 可选 `write_mps_file()`：导出 MPS 文件  
 5) 若启用 `--enable-pre-routing`：`build_ilp_warm_start_from_maze()` 在 shadow 硬件对象上跑主工程 maze，并生成 `TobIlpWarmStart`  
-6) `solve_tob_ilp_with_highs()`：ILP 求解，输出每条 2-pin net 的 `COBUnit` 分配、W/S/QS/QW 决策变量值、`record_track_endpoints`（每条 record 对应的 start_track / end_track）；若传入 warm start，则先交给 HiGHS 作为 MIP start  
+6) `solve_tob_ilp_with_gurobi()`：ILP 求解，输出每条 2-pin net 的 `COBUnit` 分配、W/S/QS/QW 决策变量值、`record_track_endpoints`（每条 record 对应的 start_track / end_track）；若传入 warm start，则先交给 Gurobi 作为 MIP start
 7) 若启用 `--enable-mcf-routing`：  
-   `run_mcf_global_routing_cob_units()`，在 track 级全局图上做 BusMCF（全局）+ SimpleMCF（按 COBUnit）；TTB 子 Tnet 在 SimpleMCF 中以 Origin 级 `x/o` 建模。若同时启用 `--enable-pre-routing`，会在求解前对 BusMCF/SimpleMCF commodity 生成 graph-maze 初始路径并传入 HiGHS；MCF 返回前在 `Interposer` 上对 MCF 路径经过的 `COBConnector` 调用 `suspend()`（见 [`source/AGENTS.md`](source/AGENTS.md)）
+   `run_mcf_global_routing_cob_units()`，在 track 级全局图上做 BusMCF（全局）+ SimpleMCF（按 COBUnit）；TTB 子 Tnet 在 SimpleMCF 中以 Origin 级 `x/o` 建模。若同时启用 `--enable-pre-routing`，会在求解前对 BusMCF/SimpleMCF commodity 生成 graph-maze 初始路径并传入 Gurobi；MCF 返回前在 `Interposer` 上对 MCF 路径经过的 `COBConnector` 调用 `suspend()`（见 [`source/AGENTS.md`](source/AGENTS.md)）
 
 建议把该链路理解为：
 
@@ -103,9 +103,9 @@ xmake build test_ILP
 | 日志前缀 | 含义 |
 | --- | --- |
 | `timing phase=ilp_warm_start` | `build_ilp_warm_start_from_maze()`；未使用 `--enable-pre-routing` 时为 **0** |
-| `timing phase=ilp_solve` | `solve_tob_ilp_with_highs()` 整体（含 HiGHS 在 warm start 不佳时自动无初值重试） |
+| `timing phase=ilp_solve` | `solve_tob_ilp_with_gurobi()` 整体（含 Gurobi 在 warm start 不佳时自动无初值重试） |
 | `timing phase=mcf_warm_start` | MCF 前在 `GlobalGraph` 上的 warm path 构造；未使用 `--enable-pre-routing` 时约为 **0** |
-| `timing phase=mcf_solve` | BusMCF + 各 COBUnit SimpleMCF 的 HiGHS 求解之和 |
+| `timing phase=mcf_solve` | BusMCF + 各 COBUnit SimpleMCF 的 Gurobi 求解之和 |
 
 `run_main` 在成功或 ILP/MCF 失败退出前会再打一行汇总：`timing breakdown (ms): ilp_warm_start=..., ilp_solve=..., mcf_warm_start=..., mcf_solve=...`（未执行 MCF 时后两项为 **0**）。另：`run_main total elapsed` 表示整个 `run_main` 墙钟；`MCF detailed(track-level) summary` 中的 `total_elapsed` 表示 `run_mcf_global_routing_cob_units()` 整段墙钟（含 `prepare_commodities`、路径打印等），一般会大于 `mcf_warm_start + mcf_solve`。`CobMcfRunSummary::mcf_warm_start_ms` / `mcf_solve_ms` 与上述 MCF 两段一致，便于程序内读取。
 
@@ -161,7 +161,7 @@ xmake build test_ILP
 - `algorithm/test_ILP/ilp_allocation/tob_ilp_model.hh/.cc`
   - `TobIlpModel`：行列式模型拼装
   - `build_tob_ilp_model()`：约束与目标构建
-  - `to_highs_lp()`：转换为 HiGHS LP 对象
+  - `linear_data()`：导出求解器无关的线性模型数据
 
 ILP 变量体系：
 - `W(bump, j, k)`：bump 到 (j, k) 的分配决策
@@ -181,10 +181,10 @@ ILP 约束组：
 
 ### 3.4 ILP 求解
 
-- `algorithm/test_ILP/ilp_allocation/highs.hh/.cc`
+- `algorithm/test_ILP/ilp_allocation/gurobi.hh/.cc`
   - `TobIlpResult`：包含 `assignments`、`active_w`、`active_s`、`route_details`、`record_track_endpoints`
   - `TobIlpRecordTrackEndpoint`：每条 record 的 `(record_id, cob_unit, has_start_track, start_track, has_end_track, end_track)` 结构
-  - `solve_tob_ilp_with_highs()`：设置 HiGHS 选项、运行求解、解析 W/QS/QW 决策变量、推导 track 和 cobunit、构建 `record_track_endpoints`；**`active_s` 由 `active_w` 推导**（每个 `W=1` 的 `(tob, v=j×8+k)` 去重），不直接扫描 `S=1`；若解中存在无对应 W 的 orphan S，仅打 `ILP parse: orphan S variables ignored=N` 诊断行
+  - `solve_tob_ilp_with_gurobi()`：设置 Gurobi 选项、运行求解、解析 W/QS/QW 决策变量、推导 track 和 cobunit、构建 `record_track_endpoints`；**`active_s` 由 `active_w` 推导**（每个 `W=1` 的 `(tob, v=j×8+k)` 去重），不直接扫描 `S=1`；若解中存在无对应 W 的 orphan S，仅打 `ILP parse: orphan S variables ignored=N` 诊断行
   - 支持并行配置与线程信息输出
 
 ### 3.5 MCF 路由
@@ -326,14 +326,14 @@ ILP 约束组：
 `run_mcf_global_routing_cob_units()` 流程：
 
 1. **BusMCF**（`solve_bus_mcf()`，全局一次）：变量 `f^{c,n}`、`o^{c,n}`；目标 `min Σ f`；约束含流守恒、**无向物理边**容量 `Σ_n(f_{ij}+f_{ji})≤1`、节点占用、同步线长
-2. **SimpleMCF**（`solve_simple_mcf_unit(c)`，每个 COBUnit 独立 HiGHS）：变量 `f^{c,n}`（有向弧）、`x^{c,H}_e`（**无向物理边** `e` per Origin）、`o^{c,H}_i`；目标 `min Σ x_e` **仅当** `--enable-mcf-obj`，否则纯可行性；约束含双向 `f↔x`、Bus 残余边/节点容量、`δ(i)` 节点关联
+2. **SimpleMCF**（`solve_simple_mcf_unit(c)`，每个 COBUnit 独立 Gurobi 模型）：变量 `f^{c,n}`（有向弧）、`x^{c,H}_e`（**无向物理边** `e` per Origin）、`o^{c,H}_i`；目标 `min Σ x_e` **仅当** `--enable-mcf-obj`，否则纯可行性；约束含双向 `f↔x`、Bus 残余边/节点容量、`δ(i)` 节点关联
 
 #### BusMCF 约束组与日志
 
 建模型时输出：
 
 - `BusMCF model graph: nodes=… arcs=… commodities=…`
-- 每种约束的 HiGHS 行数：`flow_conservation`、`edge_capacity`、`f_le_o_link`、`node_capacity`、`bus_equal_length`
+- 每种约束的行数：`flow_conservation`、`edge_capacity`、`f_le_o_link`、`node_capacity`、`bus_equal_length`
 - 变量规模：`f=… o=… cols=… rows=…`
 
 #### SimpleMCF 约束组与日志
@@ -376,7 +376,7 @@ ILP 约束组：
 
 ### 5.5 日志输出（便于诊断）
 
-- **MCF 建模型**：每个 BusMCF / SimpleMCF_unit 求解前打印图规模（nodes/arcs/commodities）、每种约束的 HiGHS 行数、变量/col/row 总数；SimpleMCF 另打印 objective 是否启用
+- **MCF 建模型**：每个 BusMCF / SimpleMCF_unit 求解前打印图规模（nodes/arcs/commodities）、每种约束的行数、变量/col/row 总数；SimpleMCF 另打印 objective 是否启用
 - **ILP 路由细节**：`main.cc` 中通过 `result.route_details` 输出每条 net 的完整分配信息（bump 坐标、j/k 线、s、orient、track、COBUnit），格式示例：`net "...": bump(T0,B0,G1,I1) -> j=1 (horizontal line), k=4 (vertical line), s=12, orient=straight(QS), track=12, COBUnit=4`
 - **ILP W 变量明细**：输出所有 active W 及其对应 bump、j、k、orient、track
 - **ILP S 变量明细**：输出所有 active S 及其对应 TOB、v、j、k

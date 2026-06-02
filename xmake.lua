@@ -171,7 +171,7 @@ target("test_ILP")
     add_files(
         "algorithm/test_ILP/main.cc",
         "algorithm/test_ILP/ilp_allocation/tob_ilp_model.cc",
-        "algorithm/test_ILP/ilp_allocation/highs.cc",
+        "algorithm/test_ILP/ilp_allocation/gurobi.cc",
         "algorithm/test_ILP/ilp_allocation/ilp_speedup.cc",
         "algorithm/test_ILP/ilp_allocation/ilp_apply_interposer.cc",
         "algorithm/test_ILP/precompute/ilp_reach_precompute.cc",
@@ -187,16 +187,21 @@ target("test_ILP")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
-    add_includedirs("local/include", "local/include/highs")
-    if is_plat("linux") then
-      add_linkdirs("local/lib64")
-      add_ldflags("-Wl,-rpath,$ORIGIN/../local/lib64")
-      add_links("pthread")
-    else
-      add_linkdirs("local/lib")
-      add_rpathdirs("local/lib")
+    local gurobi_home = os.getenv("GUROBI_HOME")
+    if not gurobi_home or gurobi_home == "" then
+      if is_plat("linux") then
+        gurobi_home = "/opt/gurobi1302/linux64"
+      else
+        gurobi_home = "/Library/gurobi1302/macos_universal2"
+      end
     end
-    add_links("highs")
+    add_includedirs(gurobi_home .. "/include")
+    add_linkdirs(gurobi_home .. "/lib")
+    add_rpathdirs(gurobi_home .. "/lib")
+    if is_plat("linux") then
+      add_links("pthread", "dl", "m")
+    end
+    add_links("gurobi_c++", "gurobi130")
 
 
 

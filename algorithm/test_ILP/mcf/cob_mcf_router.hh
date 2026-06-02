@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ilp_allocation/highs.hh"
+#include "ilp_allocation/gurobi.hh"
 #include "common/ilp_types.hh"
 
 #include <hardware/interposer.hh>
@@ -34,7 +34,7 @@ struct CobMcfRunSummary {
     bool all_ok{true};
     /// Wall time for MCF graph warm-start routing (`--enable-pre-routing`); 0 if disabled.
     int mcf_warm_start_ms{0};
-    /// Wall time for BusMCF + SimpleMCF HiGHS solves only.
+    /// Wall time for BusMCF + SimpleMCF Gurobi solves only.
     int mcf_solve_ms{0};
 };
 
@@ -56,14 +56,14 @@ struct McfPathInfo {
 struct CobMcfFullResult {
     CobMcfRunSummary summary;
     std::array<std::Vector<McfPathInfo>, 16> paths_by_unit {};
-    /// Per-unit SimpleMCF HiGHS solve succeeded (undefined if unit has no simple commodities).
+    /// Per-unit SimpleMCF Gurobi solve succeeded (undefined if unit has no simple commodities).
     std::array<bool, 16> simple_mcf_ok {};
     /// Unit has at least one non-Bus SimpleMCF commodity.
     std::array<bool, 16> has_simple_commodities {};
 };
 
 /// Per-cobunit MCF: getNetinCOBUnit → merge → build_commodities → BusMCF (global) + SimpleMCF (per unit).
-/// When \p enable_mcf_parallel is true, SimpleMCF runs concurrently (one HiGHS instance per COBUnit).
+/// When \p enable_mcf_parallel is true, SimpleMCF runs concurrently (one Gurobi model per COBUnit).
 /// SimpleMCF uses v5 undirected physical-edge x^H_e and origin-level o^H_i (multi-fanout and single 2-pin).
 /// When \p enable_mcf_obj is true, SimpleMCF adds min Σ x objective; otherwise feasibility-only (zero costs).
 auto run_mcf_global_routing_cob_units(

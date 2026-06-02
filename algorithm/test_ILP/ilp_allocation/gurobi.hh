@@ -1,7 +1,6 @@
 #pragma once
 
 #include "common/ilp_types.hh"
-#include "highs/lp_data/HConst.h"
 
 #include <std/collection.hh>
 #include <std/string.hh>
@@ -53,7 +52,7 @@ struct TobIlpResult {
     bool ok{false};
     std::String message;
     double objective{0.0};
-    HighsModelStatus model_status{HighsModelStatus::kNotset};
+    int model_status{0};
     std::Vector<TobIlpNetAssignment> assignments;
     std::Vector<TobIlpWAssignment> active_w;
     std::Vector<TobIlpSAssignment> active_s;
@@ -61,7 +60,7 @@ struct TobIlpResult {
     std::Vector<TobIlpRecordTrackEndpoint> record_track_endpoints;
 };
 
-auto solve_tob_ilp_with_highs(
+auto solve_tob_ilp_with_gurobi(
     const std::Vector<Net_cost_record>& records,
     bool enable_parallel = false,
     const TobIlpWarmStart* warm_start = nullptr

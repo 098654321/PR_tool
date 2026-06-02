@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ilp_allocation/highs.hh"
+#include "ilp_allocation/gurobi.hh"
 #include "mcf/cob_mcf_router.hh"
 
 #include <hardware/interposer.hh>

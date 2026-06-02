@@ -1,8 +1,6 @@
 #pragma once
 
 #include "common/ilp_types.hh"
-#include "highs/lp_data/HighsLp.h"
-#include "highs/util/HighsInt.h"
 
 #include <cstddef>
 #include <map>
@@ -13,6 +11,25 @@
 
 namespace PR_tool {
 
+struct TobIlpLinearRow {
+    std::String name;
+    char type{'N'};
+    double rhs{0.0};
+};
+
+struct TobIlpLinearColumn {
+    std::String name;
+    double objective{0.0};
+    bool binary{false};
+    std::Vector<std::Pair<std::size_t, double>> entries;
+};
+
+struct TobIlpLinearData {
+    std::Vector<TobIlpLinearRow> rows;
+    std::Vector<TobIlpLinearColumn> columns;
+    std::map<std::String, std::size_t> column_index;
+};
+
 class TobIlpModel {
 public:
     auto add_row(std::String name, char type, double rhs = 0.0) -> void;
@@ -21,11 +38,7 @@ public:
     auto add_coefficient(std::String var_name, std::String row_name, double coeff) -> void;
 
     auto write_mps(const std::String& path) const -> void;
-
-    auto to_highs_lp(
-        HighsLp& lp,
-        std::map<std::String, HighsInt>* col_index = nullptr
-    ) const -> void;
+    auto linear_data() const -> TobIlpLinearData;
 
     auto set_net_count(std::size_t n) -> void {
         this->_net_count = n;

@@ -7,9 +7,8 @@
 #include "debug/debug.hh"
 #include "hardware/cob/cobunit.hh"
 #include "hardware/track/trackcoord.hh"
-#include "highs/Highs.h"
-#include "highs/lp_data/HConst.h"
-#include "highs/lp_data/HighsLp.h"
+
+#include "gurobi_c++.h"
 
 #include <algorithm>
 #include <array>
@@ -47,6 +46,8 @@ using Arc = McfArc;
 using NodeKey = McfNodeKey;
 using GlobalGraph = McfGlobalGraph;
 
+constexpr double kGurobiInf = GRB_INFINITY;
+
 struct PreparedCommodity {
     std::String label;
     std::String origin_name;
@@ -71,7 +72,7 @@ struct StageSolveResult {
     bool ok{false};
     std::String message;
     double objective{0.0};
-    int model_status{static_cast<int>(HighsModelStatus::kNotset)};
+    int model_status{0};
     std::map<std::pair<int, int>, int> used_edges;
     std::map<int, int> used_nodes;
     std::array<std::map<std::pair<int, int>, int>, 16> unit_used_edges {};
@@ -111,6 +112,97 @@ struct McfOriginGroup {
     int origin_group_id{0};
     bool is_multi_fanout{false};
 };
+
+struct GurobiMcfSolveResult {
+    bool ok{false};
+    std::String message;
+    int model_status{0};
+    double objective{0.0};
+    std::vector<double> col_value;
+};
+
+auto solve_binary_columns_with_gurobi(
+    const std::String& stage_name,
+    const std::vector<double>& col_cost,
+    const std::vector<double>& col_lo,
+    const std::vector<double>& col_up,
+    const std::vector<double>& row_lo,
+    const std::vector<double>& row_up,
+    const std::Vector<std::Vector<std::pair<int, double>>>& col_entries,
+    const std::map<int, double>& warm_values_by_col
+) -> GurobiMcfSolveResult {
+    auto out = GurobiMcfSolveResult {};
+    try {
+        GRBEnv env {true};
+        env.set(GRB_IntParam_OutputFlag, 0);
+        env.start();
+
+        GRBModel model {env};
+        model.set(GRB_StringAttr_ModelName, stage_name);
+        model.set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
+        model.set(GRB_IntParam_OutputFlag, 0);
+        model.set(GRB_IntParam_Presolve, 1);
+
+        auto vars = std::vector<GRBVar> {};
+        vars.reserve(col_cost.size());
+        for (std::size_t c = 0; c < col_cost.size(); ++c) {
+            vars.push_back(model.addVar(col_lo[c], col_up[c], col_cost[c], GRB_BINARY, std::format("x_{}", c)));
+        }
+        model.update();
+
+        auto row_expr = std::vector<GRBLinExpr>(row_lo.size());
+        for (std::size_t c = 0; c < col_entries.size(); ++c) {
+            for (const auto& [row, value] : col_entries[c]) {
+                row_expr[static_cast<std::size_t>(row)] += value * vars[c];
+            }
+        }
+        for (std::size_t r = 0; r < row_lo.size(); ++r) {
+            const auto lo = row_lo[r];
+            const auto up = row_up[r];
+            if (std::fabs(lo - up) < 1e-9) {
+                model.addConstr(row_expr[r], GRB_EQUAL, lo, std::format("r_{}", r));
+            }
+            else {
+                if (lo > -kGurobiInf / 2.0) {
+                    model.addConstr(row_expr[r], GRB_GREATER_EQUAL, lo, std::format("r_{}_lo", r));
+                }
+                if (up < kGurobiInf / 2.0) {
+                    model.addConstr(row_expr[r], GRB_LESS_EQUAL, up, std::format("r_{}_up", r));
+                }
+            }
+        }
+
+        for (const auto& [col, value] : warm_values_by_col) {
+            if (col < 0 || static_cast<std::size_t>(col) >= vars.size()) {
+                continue;
+            }
+            vars[static_cast<std::size_t>(col)].set(GRB_DoubleAttr_Start, value);
+        }
+
+        model.optimize();
+        out.model_status = model.get(GRB_IntAttr_Status);
+        if (out.model_status == GRB_OPTIMAL) {
+            out.objective = model.get(GRB_DoubleAttr_ObjVal);
+            out.col_value.resize(vars.size(), 0.0);
+            for (std::size_t c = 0; c < vars.size(); ++c) {
+                out.col_value[c] = vars[c].get(GRB_DoubleAttr_X);
+            }
+        }
+        out.ok = true;
+        out.message = "ok";
+        return out;
+    }
+    catch (const GRBException& e) {
+        out.ok = false;
+        out.message = std::format("{}: Gurobi exception {}: {}", stage_name, e.getErrorCode(), e.getMessage());
+        return out;
+    }
+    catch (const std::exception& e) {
+        out.ok = false;
+        out.message = std::format("{}: Gurobi solve failed: {}", stage_name, e.what());
+        return out;
+    }
+}
 
 auto get_peak_rss_mb() -> double {
     rusage usage {};
@@ -935,7 +1027,7 @@ auto log_mcf_constraint_rows(
 ) -> void {
     int total = 0;
     for (const auto& [name, count] : rows_by_constraint) {
-        debug::info_fmt("{} constraint \"{}\": {} HiGHS row(s)", stage_name, name, count);
+        debug::info_fmt("{} constraint \"{}\": {} row(s)", stage_name, name, count);
         total += count;
     }
     debug::info_fmt("{} constraint rows total: {}", stage_name, total);
@@ -952,7 +1044,7 @@ auto solve_bus_mcf(
     if (bus_ids.empty()) {
         out.ok = true;
         out.message = "empty stage";
-        out.model_status = static_cast<int>(HighsModelStatus::kOptimal);
+        out.model_status = GRB_OPTIMAL;
         return out;
     }
 
@@ -997,7 +1089,7 @@ auto solve_bus_mcf(
     };
     auto add_le = [&](const double rhs) -> int {
         const auto id = static_cast<int>(row_lo.size());
-        row_lo.push_back(-kHighsInf);
+        row_lo.push_back(-kGurobiInf);
         row_up.push_back(rhs);
         return id;
     };
@@ -1153,62 +1245,20 @@ auto solve_bus_mcf(
     auto col_cost = std::vector<double>(static_cast<std::size_t>(num_col), 0.0);
     auto col_lo = std::vector<double>(static_cast<std::size_t>(num_col), 0.0);
     auto col_up = std::vector<double>(static_cast<std::size_t>(num_col), 1.0);
-    auto a_start = std::vector<HighsInt>(static_cast<std::size_t>(num_col) + 1, 0);
-    auto a_index = std::vector<HighsInt> {};
-    auto a_value = std::vector<double> {};
-    a_index.reserve(static_cast<std::size_t>(num_col * 8));
-    a_value.reserve(static_cast<std::size_t>(num_col * 8));
+    auto col_entries = std::Vector<std::Vector<std::pair<int, double>>>(static_cast<std::size_t>(num_col));
 
     for (int j = 0; j < num_f; ++j) {
-        a_start[static_cast<std::size_t>(j)] = static_cast<HighsInt>(a_index.size());
         const auto& arc = graph.arcs[static_cast<std::size_t>(f_vars[static_cast<std::size_t>(j)].a)];
         col_cost[static_cast<std::size_t>(j)] = arc.is_virtual ? 0.0 : 1.0;
-        for (const auto& [r, v] : f_entries[static_cast<std::size_t>(j)]) {
-            a_index.push_back(static_cast<HighsInt>(r));
-            a_value.push_back(v);
-        }
+        col_entries[static_cast<std::size_t>(j)] = f_entries[static_cast<std::size_t>(j)];
     }
     for (int j = 0; j < num_o; ++j) {
         const auto col = num_f + j;
-        a_start[static_cast<std::size_t>(col)] = static_cast<HighsInt>(a_index.size());
-        for (const auto& [r, v] : o_entries[static_cast<std::size_t>(j)]) {
-            a_index.push_back(static_cast<HighsInt>(r));
-            a_value.push_back(v);
-        }
-    }
-    a_start[static_cast<std::size_t>(num_col)] = static_cast<HighsInt>(a_index.size());
-
-    HighsLp lp {};
-    lp.num_col_ = static_cast<HighsInt>(num_col);
-    lp.num_row_ = static_cast<HighsInt>(num_row);
-    lp.sense_ = ObjSense::kMinimize;
-    lp.offset_ = 0.0;
-    lp.col_cost_ = std::move(col_cost);
-    lp.col_lower_ = std::move(col_lo);
-    lp.col_upper_ = std::move(col_up);
-    lp.row_lower_ = std::move(row_lo);
-    lp.row_upper_ = std::move(row_up);
-    lp.integrality_.assign(static_cast<std::size_t>(num_col), HighsVarType::kInteger);
-    lp.model_name_ = stage_name;
-    lp.a_matrix_.format_ = MatrixFormat::kColwise;
-    lp.a_matrix_.num_col_ = lp.num_col_;
-    lp.a_matrix_.num_row_ = lp.num_row_;
-    lp.a_matrix_.start_ = std::move(a_start);
-    lp.a_matrix_.index_ = std::move(a_index);
-    lp.a_matrix_.value_ = std::move(a_value);
-    lp.setMatrixDimensions();
-
-    Highs highs {};
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("presolve", "on");
-    if (highs.passModel(std::move(lp)) != HighsStatus::kOk) {
-        out.ok = false;
-        out.message = std::format("{}: passModel failed", stage_name);
-        return out;
+        col_entries[static_cast<std::size_t>(col)] = o_entries[static_cast<std::size_t>(j)];
     }
 
+    auto warm_values_by_col = std::map<int, double> {};
     if (warm_start != nullptr && !warm_start->nodes_by_record_id.empty()) {
-        auto warm_values_by_col = std::map<HighsInt, double> {};
         auto o_col_by_k_node = std::map<std::pair<int, int>, int> {};
         for (std::size_t oi = 0; oi < o_vars.size(); ++oi) {
             const auto& ov = o_vars[oi];
@@ -1234,7 +1284,7 @@ auto solve_bus_mcf(
                     const auto arc_id = f_vars[static_cast<std::size_t>(f_col)].a;
                     const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
                     if (arc.u == u && arc.v == v) {
-                        warm_values_by_col[static_cast<HighsInt>(f_col)] = 1.0;
+                        warm_values_by_col[f_col] = 1.0;
                         break;
                     }
                 }
@@ -1245,72 +1295,55 @@ auto solve_bus_mcf(
                 }
                 const auto it = o_col_by_k_node.find({k, node});
                 if (it != o_col_by_k_node.end()) {
-                    warm_values_by_col[static_cast<HighsInt>(it->second)] = 1.0;
+                    warm_values_by_col[it->second] = 1.0;
                 }
             }
         }
 
         if (!warm_values_by_col.empty()) {
-            auto warm_cols = std::vector<HighsInt> {};
-            auto warm_values = std::vector<double> {};
-            warm_cols.reserve(warm_values_by_col.size());
-            warm_values.reserve(warm_values_by_col.size());
-            for (const auto& [col, value] : warm_values_by_col) {
-                warm_cols.push_back(col);
-                warm_values.push_back(value);
-            }
-            (void)highs.setOptionValue("mip_max_start_nodes", static_cast<HighsInt>(0));
-            const auto start_st = highs.setSolution(
-                static_cast<HighsInt>(warm_cols.size()),
-                warm_cols.data(),
-                warm_values.data());
-            if (start_st != HighsStatus::kOk) {
-                debug::warning_fmt(
-                    "{} warm start rejected by HiGHS (status={}, matched_paths={}, values={})",
-                    stage_name,
-                    static_cast<int>(start_st),
-                    matched_paths,
-                    warm_cols.size());
-            }
-            else {
-                debug::info_fmt(
-                    "{} warm start accepted by HiGHS: matched_paths={}, values={}",
-                    stage_name,
-                    matched_paths,
-                    warm_cols.size());
-            }
+            debug::info_fmt(
+                "{} warm start loaded for Gurobi: matched_paths={}, values={}",
+                stage_name,
+                matched_paths,
+                warm_values_by_col.size());
         }
     }
 
-    if (highs.run() != HighsStatus::kOk) {
+    const auto solve_res = solve_binary_columns_with_gurobi(
+        stage_name,
+        col_cost,
+        col_lo,
+        col_up,
+        row_lo,
+        row_up,
+        col_entries,
+        warm_values_by_col);
+    out.model_status = solve_res.model_status;
+    if (!solve_res.ok) {
         out.ok = false;
-        out.message = std::format("{}: solver run failed", stage_name);
-        out.model_status = static_cast<int>(highs.getModelStatus());
+        out.message = solve_res.message;
         return out;
     }
-    const auto status = highs.getModelStatus();
-    out.model_status = static_cast<int>(status);
-    if (status != HighsModelStatus::kOptimal) {
+    if (solve_res.model_status != GRB_OPTIMAL) {
         if (warm_start != nullptr) {
             debug::warning_fmt(
                 "{} warm start led to non-optimal status ({}); retrying without warm start",
                 stage_name,
-                static_cast<int>(status));
+                solve_res.model_status);
             return solve_bus_mcf(graph, commodities, bus_ids, nullptr);
         }
         out.ok = false;
-        out.message = std::format("{}: model not optimal ({})", stage_name, static_cast<int>(status));
+        out.message = std::format("{}: model not optimal ({})", stage_name, solve_res.model_status);
         return out;
     }
 
     out.ok = true;
     out.message = "ok";
-    out.objective = highs.getObjectiveValue();
+    out.objective = solve_res.objective;
 
-    const auto sol = highs.getSolution();
     auto f_values = std::Vector<int>(f_vars.size(), 0);
     for (std::size_t j = 0; j < f_vars.size(); ++j) {
-        f_values[j] = static_cast<int>(std::lround(sol.col_value[j]));
+        f_values[j] = static_cast<int>(std::lround(solve_res.col_value[j]));
         if (f_values[j] <= 0) {
             continue;
         }
@@ -1329,7 +1362,7 @@ auto solve_bus_mcf(
     }
     for (std::size_t j = 0; j < o_vars.size(); ++j) {
         const auto col = static_cast<std::size_t>(num_f + static_cast<int>(j));
-        const auto val = static_cast<int>(std::lround(sol.col_value[col]));
+        const auto val = static_cast<int>(std::lround(solve_res.col_value[col]));
         if (val > 0) {
             const auto k = o_vars[j].k;
             const auto unit = local_com[static_cast<std::size_t>(k)].cob_unit;
@@ -1358,7 +1391,7 @@ auto solve_simple_mcf_unit(
     if (simple_ids_for_unit.empty()) {
         out.ok = true;
         out.message = "empty stage";
-        out.model_status = static_cast<int>(HighsModelStatus::kOptimal);
+        out.model_status = GRB_OPTIMAL;
         return out;
     }
 
@@ -1412,7 +1445,7 @@ auto solve_simple_mcf_unit(
     };
     auto add_le = [&](const double rhs) -> int {
         const auto id = static_cast<int>(row_lo.size());
-        row_lo.push_back(-kHighsInf);
+        row_lo.push_back(-kGurobiInf);
         row_up.push_back(rhs);
         return id;
     };
@@ -1638,69 +1671,23 @@ auto solve_simple_mcf_unit(
     auto col_cost = std::vector<double>(static_cast<std::size_t>(num_col), 0.0);
     auto col_lo = std::vector<double>(static_cast<std::size_t>(num_col), 0.0);
     auto col_up = std::vector<double>(static_cast<std::size_t>(num_col), 1.0);
-    auto a_start = std::vector<HighsInt>(static_cast<std::size_t>(num_col) + 1, 0);
-    auto a_index = std::vector<HighsInt> {};
-    auto a_value = std::vector<double> {};
-    a_index.reserve(static_cast<std::size_t>(num_col * 8));
-    a_value.reserve(static_cast<std::size_t>(num_col * 8));
+    auto col_entries = std::Vector<std::Vector<std::pair<int, double>>>(static_cast<std::size_t>(num_col));
 
     for (int j = 0; j < num_f; ++j) {
-        a_start[static_cast<std::size_t>(j)] = static_cast<HighsInt>(a_index.size());
-        for (const auto& [r, v] : f_entries[static_cast<std::size_t>(j)]) {
-            a_index.push_back(static_cast<HighsInt>(r));
-            a_value.push_back(v);
-        }
+        col_entries[static_cast<std::size_t>(j)] = f_entries[static_cast<std::size_t>(j)];
     }
     for (int j = 0; j < num_origin_x; ++j) {
         const auto col = num_f + j;
-        a_start[static_cast<std::size_t>(col)] = static_cast<HighsInt>(a_index.size());
         col_cost[static_cast<std::size_t>(col)] = enable_mcf_obj ? 1.0 : 0.0;
-        for (const auto& [r, v] : origin_x_entries[static_cast<std::size_t>(j)]) {
-            a_index.push_back(static_cast<HighsInt>(r));
-            a_value.push_back(v);
-        }
+        col_entries[static_cast<std::size_t>(col)] = origin_x_entries[static_cast<std::size_t>(j)];
     }
     for (int j = 0; j < num_origin_o; ++j) {
         const auto col = num_f + num_origin_x + j;
-        a_start[static_cast<std::size_t>(col)] = static_cast<HighsInt>(a_index.size());
-        for (const auto& [r, v] : origin_o_entries[static_cast<std::size_t>(j)]) {
-            a_index.push_back(static_cast<HighsInt>(r));
-            a_value.push_back(v);
-        }
-    }
-    a_start[static_cast<std::size_t>(num_col)] = static_cast<HighsInt>(a_index.size());
-
-    HighsLp lp {};
-    lp.num_col_ = static_cast<HighsInt>(num_col);
-    lp.num_row_ = static_cast<HighsInt>(num_row);
-    lp.sense_ = ObjSense::kMinimize;
-    lp.offset_ = 0.0;
-    lp.col_cost_ = std::move(col_cost);
-    lp.col_lower_ = std::move(col_lo);
-    lp.col_upper_ = std::move(col_up);
-    lp.row_lower_ = std::move(row_lo);
-    lp.row_upper_ = std::move(row_up);
-    lp.integrality_.assign(static_cast<std::size_t>(num_col), HighsVarType::kInteger);
-    lp.model_name_ = std::string(stage_name);
-    lp.a_matrix_.format_ = MatrixFormat::kColwise;
-    lp.a_matrix_.num_col_ = lp.num_col_;
-    lp.a_matrix_.num_row_ = lp.num_row_;
-    lp.a_matrix_.start_ = std::move(a_start);
-    lp.a_matrix_.index_ = std::move(a_index);
-    lp.a_matrix_.value_ = std::move(a_value);
-    lp.setMatrixDimensions();
-
-    Highs highs {};
-    highs.setOptionValue("output_flag", false);
-    highs.setOptionValue("presolve", "on");
-    if (highs.passModel(std::move(lp)) != HighsStatus::kOk) {
-        out.ok = false;
-        out.message = std::format("{}: passModel failed", stage_name);
-        return out;
+        col_entries[static_cast<std::size_t>(col)] = origin_o_entries[static_cast<std::size_t>(j)];
     }
 
+    auto warm_values_by_col = std::map<int, double> {};
     if (warm_start != nullptr && !warm_start->nodes_by_record_id.empty()) {
-        auto warm_values_by_col = std::map<HighsInt, double> {};
         auto origin_o_col_by_h_node = std::map<std::pair<int, int>, int> {};
         for (std::size_t oi = 0; oi < origin_o_vars.size(); ++oi) {
             const auto& ov = origin_o_vars[oi];
@@ -1727,12 +1714,12 @@ auto solve_simple_mcf_unit(
                     const auto arc_id = f_vars[static_cast<std::size_t>(f_col)].a;
                     const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
                     if (arc.u == u && arc.v == v) {
-                        warm_values_by_col[static_cast<HighsInt>(f_col)] = 1.0;
+                        warm_values_by_col[f_col] = 1.0;
                         if (!arc.is_virtual) {
                             const auto e = normalized_edge_key(arc.u, arc.v);
                             const auto ox_it = origin_x_by_he.find({h, e});
                             if (ox_it != origin_x_by_he.end()) {
-                                warm_values_by_col[static_cast<HighsInt>(num_f + ox_it->second)] = 1.0;
+                                warm_values_by_col[num_f + ox_it->second] = 1.0;
                             }
                         }
                         break;
@@ -1745,57 +1732,41 @@ auto solve_simple_mcf_unit(
                 }
                 const auto it = origin_o_col_by_h_node.find({h, node});
                 if (it != origin_o_col_by_h_node.end()) {
-                    warm_values_by_col[static_cast<HighsInt>(it->second)] = 1.0;
+                    warm_values_by_col[it->second] = 1.0;
                 }
             }
         }
 
         if (!warm_values_by_col.empty()) {
-            auto warm_cols = std::vector<HighsInt> {};
-            auto warm_values = std::vector<double> {};
-            warm_cols.reserve(warm_values_by_col.size());
-            warm_values.reserve(warm_values_by_col.size());
-            for (const auto& [col, value] : warm_values_by_col) {
-                warm_cols.push_back(col);
-                warm_values.push_back(value);
-            }
-            (void)highs.setOptionValue("mip_max_start_nodes", static_cast<HighsInt>(0));
-            const auto start_st = highs.setSolution(
-                static_cast<HighsInt>(warm_cols.size()),
-                warm_cols.data(),
-                warm_values.data());
-            if (start_st != HighsStatus::kOk) {
-                debug::warning_fmt(
-                    "{} warm start rejected by HiGHS (status={}, matched_paths={}, values={})",
-                    stage_name,
-                    static_cast<int>(start_st),
-                    matched_paths,
-                    warm_cols.size());
-            }
-            else {
-                debug::info_fmt(
-                    "{} warm start accepted by HiGHS: matched_paths={}, values={}",
-                    stage_name,
-                    matched_paths,
-                    warm_cols.size());
-            }
+            debug::info_fmt(
+                "{} warm start loaded for Gurobi: matched_paths={}, values={}",
+                stage_name,
+                matched_paths,
+                warm_values_by_col.size());
         }
     }
 
-    if (highs.run() != HighsStatus::kOk) {
+    const auto solve_res = solve_binary_columns_with_gurobi(
+        stage_name,
+        col_cost,
+        col_lo,
+        col_up,
+        row_lo,
+        row_up,
+        col_entries,
+        warm_values_by_col);
+    out.model_status = solve_res.model_status;
+    if (!solve_res.ok) {
         out.ok = false;
-        out.message = std::format("{}: solver run failed", stage_name);
-        out.model_status = static_cast<int>(highs.getModelStatus());
+        out.message = solve_res.message;
         return out;
     }
-    const auto status = highs.getModelStatus();
-    out.model_status = static_cast<int>(status);
-    if (status != HighsModelStatus::kOptimal) {
+    if (solve_res.model_status != GRB_OPTIMAL) {
         if (warm_start != nullptr) {
             debug::warning_fmt(
                 "{} warm start led to non-optimal status ({}); retrying without warm start",
                 stage_name,
-                static_cast<int>(status));
+                solve_res.model_status);
             return solve_simple_mcf_unit(
                 graph,
                 commodities,
@@ -1808,22 +1779,21 @@ auto solve_simple_mcf_unit(
                 nullptr);
         }
         out.ok = false;
-        out.message = std::format("{}: model not optimal ({})", stage_name, static_cast<int>(status));
+        out.message = std::format("{}: model not optimal ({})", stage_name, solve_res.model_status);
         return out;
     }
 
     out.ok = true;
     out.message = "ok";
-    out.objective = highs.getObjectiveValue();
+    out.objective = solve_res.objective;
 
-    const auto sol = highs.getSolution();
     auto f_values = std::Vector<int>(f_vars.size(), 0);
     for (std::size_t j = 0; j < f_vars.size(); ++j) {
-        f_values[j] = static_cast<int>(std::lround(sol.col_value[j]));
+        f_values[j] = static_cast<int>(std::lround(solve_res.col_value[j]));
     }
     for (std::size_t j = 0; j < origin_x_vars.size(); ++j) {
         const auto col = static_cast<std::size_t>(num_f + static_cast<int>(j));
-        const auto val = static_cast<int>(std::lround(sol.col_value[col]));
+        const auto val = static_cast<int>(std::lround(solve_res.col_value[col]));
         if (val <= 0) {
             continue;
         }
@@ -1831,7 +1801,7 @@ auto solve_simple_mcf_unit(
     }
     for (std::size_t j = 0; j < origin_o_vars.size(); ++j) {
         const auto col = static_cast<std::size_t>(num_f + num_origin_x + static_cast<int>(j));
-        const auto val = static_cast<int>(std::lround(sol.col_value[col]));
+        const auto val = static_cast<int>(std::lround(solve_res.col_value[col]));
         if (val > 0) {
             out.used_nodes[origin_o_vars[j].node] = 1;
         }
@@ -2112,7 +2082,7 @@ auto run_mcf_global_routing_cob_units(
     if (disable_bus_mcf) {
         bus_res.ok = true;
         bus_res.message = "skipped (--disable-bus-mcf)";
-        bus_res.model_status = static_cast<int>(HighsModelStatus::kOptimal);
+        bus_res.model_status = GRB_OPTIMAL;
         if (!bus_ids.empty()) {
             debug::info_fmt(
                 "MCF: BusMCF skipped; {} bus commodities are not routed",

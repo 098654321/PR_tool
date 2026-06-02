@@ -1,7 +1,5 @@
 #include "ilp_allocation/tob_ilp_model.hh"
 
-#include "highs/lp_data/HConst.h"
-
 #include <algorithm>
 #include <cmath>
 #include <format>
@@ -105,109 +103,40 @@ auto TobIlpModel::write_mps(const std::String& path) const -> void {
     out << "ENDATA\n";
 }
 
-auto TobIlpModel::to_highs_lp(
-    HighsLp& lp,
-    std::map<std::String, HighsInt>* col_index
-) const -> void {
-    lp.clear();
-
-    std::map<std::String, HighsInt> row_to_idx;
-    HighsInt row_idx = 0;
+auto TobIlpModel::linear_data() const -> TobIlpLinearData {
+    auto data = TobIlpLinearData {};
+    auto row_to_idx = std::map<std::String, std::size_t> {};
     for (const auto& row_name : this->_row_order) {
         const auto it_ty = this->_row_types.find(row_name);
         if (it_ty == this->_row_types.end() || it_ty->second == 'N') {
             continue;
         }
-        row_to_idx.emplace(row_name, row_idx++);
+        const auto row_idx = data.rows.size();
+        row_to_idx.emplace(row_name, row_idx);
+        const double rhs = this->_rhs.contains(row_name) ? this->_rhs.at(row_name) : 0.0;
+        data.rows.push_back(TobIlpLinearRow {row_name, it_ty->second, rhs});
     }
-    const HighsInt num_row = row_idx;
 
-    std::map<std::String, HighsInt> col_to_idx;
-    std::Vector<std::String> col_order;
-    col_order.reserve(this->_columns.size());
-    {
-        HighsInt col_idx = 0;
-        for (const auto& [var_name, entries] : this->_columns) {
-            (void)entries;
-            col_to_idx.emplace(var_name, col_idx++);
-            col_order.push_back(var_name);
+    data.columns.reserve(this->_columns.size());
+    for (const auto& [var_name, entries] : this->_columns) {
+        auto col = TobIlpLinearColumn {};
+        col.name = var_name;
+        if (const auto o = this->_objective.find(var_name); o != this->_objective.end()) {
+            col.objective = o->second;
         }
-    }
-    if (col_index != nullptr) {
-        *col_index = col_to_idx;
-    }
-    const HighsInt num_col = static_cast<HighsInt>(col_order.size());
-
-    std::vector<HighsInt> a_start(static_cast<std::size_t>(num_col) + 1, 0);
-    std::vector<HighsInt> a_index;
-    std::vector<double> a_value;
-    a_index.reserve((this->_columns.size() * 8u) + 1u);
-    a_value.reserve((this->_columns.size() * 8u) + 1u);
-
-    std::vector<double> col_cost(static_cast<std::size_t>(num_col), 0.0);
-    for (HighsInt j = 0; j < num_col; ++j) {
-        a_start[static_cast<std::size_t>(j)] = static_cast<HighsInt>(a_index.size());
-        const std::String& vname = col_order[static_cast<std::size_t>(j)];
-        if (const auto o = this->_objective.find(vname); o != this->_objective.end()) {
-            col_cost[static_cast<std::size_t>(j)] = o->second;
-        }
-        for (const auto& [rname, coeff] : this->_columns.at(vname)) {
+        col.binary = this->_binary_vars.contains(var_name);
+        col.entries.reserve(entries.size());
+        for (const auto& [rname, coeff] : entries) {
             const auto rit = row_to_idx.find(rname);
             if (rit == row_to_idx.end()) {
                 throw std::runtime_error(std::format("tob ilp: row '{}' missing from index map (OBJ-only row?)", rname));
             }
-            a_index.push_back(rit->second);
-            a_value.push_back(coeff);
+            col.entries.push_back({rit->second, coeff});
         }
+        data.column_index.emplace(var_name, data.columns.size());
+        data.columns.push_back(std::move(col));
     }
-    a_start[static_cast<std::size_t>(num_col)] = static_cast<HighsInt>(a_index.size());
-
-    std::vector<double> row_lower(static_cast<std::size_t>(num_row), -kHighsInf);
-    std::vector<double> row_upper(static_cast<std::size_t>(num_row), kHighsInf);
-    for (const auto& row_name : this->_row_order) {
-        const auto tit = this->_row_types.find(row_name);
-        if (tit == this->_row_types.end() || tit->second == 'N') {
-            continue;
-        }
-        const auto rit = row_to_idx.find(row_name);
-        if (rit == row_to_idx.end()) {
-            continue;
-        }
-        const HighsInt r = rit->second;
-        const char ty = tit->second;
-        const double rhs = this->_rhs.contains(row_name) ? this->_rhs.at(row_name) : 0.0;
-        if (ty == 'E') {
-            row_lower[static_cast<std::size_t>(r)] = rhs;
-            row_upper[static_cast<std::size_t>(r)] = rhs;
-        }
-        else if (ty == 'L') {
-            row_lower[static_cast<std::size_t>(r)] = -kHighsInf;
-            row_upper[static_cast<std::size_t>(r)] = rhs;
-        }
-        else if (ty == 'G') {
-            row_lower[static_cast<std::size_t>(r)] = rhs;
-            row_upper[static_cast<std::size_t>(r)] = kHighsInf;
-        }
-    }
-
-    lp.num_col_ = num_col;
-    lp.num_row_ = num_row;
-    lp.sense_ = ObjSense::kMinimize;
-    lp.offset_ = 0.0;
-    lp.col_cost_ = std::move(col_cost);
-    lp.col_lower_.assign(static_cast<std::size_t>(num_col), 0.0);
-    lp.col_upper_.assign(static_cast<std::size_t>(num_col), 1.0);
-    lp.row_lower_ = std::move(row_lower);
-    lp.row_upper_ = std::move(row_upper);
-    lp.integrality_.assign(static_cast<std::size_t>(num_col), HighsVarType::kInteger);
-    lp.model_name_ = "TOB_ALLOC";
-    lp.a_matrix_.format_ = MatrixFormat::kColwise;
-    lp.a_matrix_.num_col_ = num_col;
-    lp.a_matrix_.num_row_ = num_row;
-    lp.a_matrix_.start_ = std::move(a_start);
-    lp.a_matrix_.index_ = std::move(a_index);
-    lp.a_matrix_.value_ = std::move(a_value);
-    lp.setMatrixDimensions();
+    return data;
 }
 
 // MARK: build_tob_ilp_model
