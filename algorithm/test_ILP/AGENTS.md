@@ -224,6 +224,8 @@ ILP 约束组：
 ### 3.8 MCF 结果展示
 
 - `run_mcf_global_routing_cob_units()` 末尾：先按 COBUnit 打印每条 commodity 的摘要（`path_count` 等），再按 **MCF 求解分组** 输出完整 track 路径：**BusMCF** 按 SyncNet `origin_key`；**SimpleMCF** 按 `(COBUnit, origin_uid)`（`record_origin_group_uid()`，与 `build_origin_groups()` 一致；TTB/PN 多扇出共一组，独立 B2B 各一组），`display` 为可读 `origin_key`
+- **MCF 资源用量**（路径输出之后）：`MCF resource usage (post-solve, all_ok=...)` 起，对路由 Unit **U0–U15** 各打印完整 9×12 COB 网格的 `switches COB(r,c)=used/48`，以及全部水平/垂直邻接 `channel H/V COB(...)-COB(...)=used/total` 与 `unit_summary`
+- **MCF 失败约束诊断**（`all_ok=false` 时）：`MCF infeasibility diagnosis: stage=...` 按 BusMCF / SimpleMCF_unitN 输出 Gurobi IIS 映射到第五版约束 kind（`edge_capacity`、`node_capacity`、`flow_conservation`、`bus_equal_length`、`f_le_x_*`、`x_le_o` 等）及可读 detail；warm start 重试路径不产生 IIS 日志
 
 第一版文档中的「MCF 走廊内 mazeRoute」实验代码（`ilp_maze_search` / `ilp_maze_finalize`）已从本目标中移除；track 级结果以 MCF 直接输出的路径为准。
 
@@ -382,6 +384,8 @@ ILP 约束组：
 - **ILP S 变量明细**：输出所有 active S 及其对应 TOB、v、j、k
 - **MCF 按 unit 汇总**：每个 unit 的 bus/simple commodity 数量及求解状态
 - **每个 commodity 的路径明细**：按 `commodity -> path#i` 打印完整节点链（`U{unit} H/V({row},{col}) T{track}` / `V_P` / `V_N`）
+- **MCF 资源用量**：见 §3.8；前缀 `MCF resource usage`、`switches COB`、`channel H/V`、`unit_summary`
+- **MCF 不可行诊断**：见 §3.8；前缀 `MCF infeasibility diagnosis`、`IIS constraint kinds`
 
 ---
 

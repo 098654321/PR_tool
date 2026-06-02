@@ -68,9 +68,15 @@ struct PreparedCommodity {
     std::Vector<int> bbox_cobs;
 };
 
+struct McfConstraintMeta {
+    std::String kind;
+    std::String detail;
+};
+
 struct StageSolveResult {
     bool ok{false};
     std::String message;
+    std::String stage_name;
     double objective{0.0};
     int model_status{0};
     std::map<std::pair<int, int>, int> used_edges;
@@ -78,6 +84,7 @@ struct StageSolveResult {
     std::array<std::map<std::pair<int, int>, int>, 16> unit_used_edges {};
     std::array<std::map<int, int>, 16> unit_used_nodes {};
     std::Vector<McfPathInfo> paths;
+    std::Vector<McfConstraintMeta> infeasibility_hints;
 };
 
 struct StageWarmStart {
@@ -119,7 +126,438 @@ struct GurobiMcfSolveResult {
     int model_status{0};
     double objective{0.0};
     std::vector<double> col_value;
+    std::Vector<McfConstraintMeta> iis_rows;
 };
+
+constexpr int kHardwareSwitchesPerCobUnit = 48;
+constexpr int kChannelsPerCobLink = 8;
+constexpr int kMaxIisLogPerKind = 20;
+
+auto normalized_edge_key(int u, int v) -> std::pair<int, int>;
+auto node_text(const GlobalGraph& g, const int node) -> std::String;
+auto fmt_join_parts(const std::Vector<std::String>& parts) -> std::String;
+
+struct HChannelKey {
+    int r{0};
+    int c{0};
+
+    auto operator<=>(const HChannelKey&) const = default;
+};
+
+struct VChannelKey {
+    int r{0};
+    int c{0};
+
+    auto operator<=>(const VChannelKey&) const = default;
+};
+
+struct McfResourceCatalog {
+    int rows{0};
+    int cols{0};
+    std::array<std::array<std::array<int, 32>, 32>, 16> switch_modeled {};
+    std::array<std::map<HChannelKey, int>, 16> h_channel_total {};
+    std::array<std::map<VChannelKey, int>, 16> v_channel_total {};
+};
+
+struct McfResourceUsage {
+    int rows{0};
+    int cols{0};
+    std::array<std::array<std::array<int, 32>, 32>, 16> switches_used {};
+    std::array<std::map<HChannelKey, int>, 16> h_channels_used {};
+    std::array<std::map<VChannelKey, int>, 16> v_channels_used {};
+};
+
+auto gurobi_status_name(const int status) -> std::String {
+    switch (status) {
+        case GRB_LOADED:       return "LOADED";
+        case GRB_OPTIMAL:      return "OPTIMAL";
+        case GRB_INFEASIBLE:   return "INFEASIBLE";
+        case GRB_INF_OR_UNBD:  return "INF_OR_UNBD";
+        case GRB_UNBOUNDED:    return "UNBOUNDED";
+        case GRB_CUTOFF:       return "CUTOFF";
+        case GRB_ITERATION_LIMIT: return "ITERATION_LIMIT";
+        case GRB_NODE_LIMIT:   return "NODE_LIMIT";
+        case GRB_TIME_LIMIT:   return "TIME_LIMIT";
+        case GRB_SOLUTION_LIMIT: return "SOLUTION_LIMIT";
+        case GRB_INTERRUPTED:  return "INTERRUPTED";
+        case GRB_NUMERIC:      return "NUMERIC";
+        case GRB_SUBOPTIMAL:   return "SUBOPTIMAL";
+        default:               return std::format("STATUS_{}", status);
+    }
+}
+
+auto cob_dir_char(const hardware::COBDirection dir) -> char {
+    switch (dir) {
+        case hardware::COBDirection::Right: return 'R';
+        case hardware::COBDirection::Up:    return 'U';
+        case hardware::COBDirection::Down:  return 'D';
+        default:                            return 'L';
+    }
+}
+
+auto build_undirected_arc_index(const GlobalGraph& graph) -> std::map<std::pair<int, int>, std::size_t> {
+    auto out = std::map<std::pair<int, int>, std::size_t> {};
+    for (std::size_t a = 0; a < graph.arcs.size(); ++a) {
+        const auto& arc = graph.arcs[a];
+        if (arc.is_virtual) {
+            continue;
+        }
+        const auto key = normalized_edge_key(arc.u, arc.v);
+        if (!out.contains(key)) {
+            out[key] = a;
+        }
+    }
+    return out;
+}
+
+auto arc_cob_row_col(const Arc& arc, const int cols) -> std::pair<int, int> {
+    return {arc.cob / cols, arc.cob % cols};
+}
+
+auto h_channel_key_from_arc(const Arc& arc, const int cols) -> std::optional<HChannelKey> {
+    if (arc.is_turn || arc.is_virtual) {
+        return std::nullopt;
+    }
+    const auto [cob_r, cob_c] = arc_cob_row_col(arc, cols);
+    const bool lr = (arc.from_dir == hardware::COBDirection::Left && arc.to_dir == hardware::COBDirection::Right)
+        || (arc.from_dir == hardware::COBDirection::Right && arc.to_dir == hardware::COBDirection::Left);
+    if (!lr) {
+        return std::nullopt;
+    }
+    return HChannelKey {cob_r, cob_c};
+}
+
+auto v_channel_key_from_arc(const Arc& arc, const int cols) -> std::optional<VChannelKey> {
+    if (arc.is_turn || arc.is_virtual) {
+        return std::nullopt;
+    }
+    const auto [cob_r, cob_c] = arc_cob_row_col(arc, cols);
+    const bool ud = (arc.from_dir == hardware::COBDirection::Up && arc.to_dir == hardware::COBDirection::Down)
+        || (arc.from_dir == hardware::COBDirection::Down && arc.to_dir == hardware::COBDirection::Up);
+    if (!ud) {
+        return std::nullopt;
+    }
+    return VChannelKey {cob_r, cob_c};
+}
+
+auto describe_arc_resource(
+    const GlobalGraph& graph,
+    const Arc& arc,
+    const int cols
+) -> std::String {
+    const auto [cob_r, cob_c] = arc_cob_row_col(arc, cols);
+    if (arc.is_turn) {
+        return std::format(
+            "undir U{} switch COB({},{}) {}->{} track_in={}",
+            arc.unit,
+            cob_r,
+            cob_c,
+            cob_dir_char(arc.from_dir),
+            cob_dir_char(arc.to_dir),
+            arc.track_in);
+    }
+    if (const auto h = h_channel_key_from_arc(arc, cols)) {
+        return std::format(
+            "undir U{} channel H COB({},{})-COB({},{}) track={}",
+            arc.unit,
+            h->r,
+            h->c,
+            h->r,
+            h->c + 1,
+            arc.track_in);
+    }
+    if (const auto v = v_channel_key_from_arc(arc, cols)) {
+        return std::format(
+            "undir U{} channel V COB({},{})-COB({},{}) track={}",
+            arc.unit,
+            v->r,
+            v->c,
+            v->r + 1,
+            v->c,
+            arc.track_in);
+    }
+    return std::format(
+        "undir U{} COB({},{}) {}-{}",
+        arc.unit,
+        cob_r,
+        cob_c,
+        node_text(graph, arc.u),
+        node_text(graph, arc.v));
+}
+
+auto describe_undirected_edge(
+    const GlobalGraph& graph,
+    const std::map<std::pair<int, int>, std::size_t>& arc_index,
+    const int u,
+    const int v,
+    const int cols
+) -> std::String {
+    const auto key = normalized_edge_key(u, v);
+    const auto it = arc_index.find(key);
+    if (it == arc_index.end()) {
+        return std::format("{}-{}", node_text(graph, u), node_text(graph, v));
+    }
+    return describe_arc_resource(graph, graph.arcs[it->second], cols);
+}
+
+auto build_mcf_resource_catalog(const GlobalGraph& graph) -> McfResourceCatalog {
+    McfResourceCatalog catalog {};
+    catalog.rows = graph.rows;
+    catalog.cols = graph.cols;
+    const auto cols = graph.cols;
+    auto switch_seen = std::array<std::array<std::array<std::set<std::pair<int, int>>, 32>, 32>, 16> {};
+    auto h_seen = std::array<std::map<HChannelKey, std::set<std::pair<int, int>>>, 16> {};
+    auto v_seen = std::array<std::map<VChannelKey, std::set<std::pair<int, int>>>, 16> {};
+
+    for (const auto& arc : graph.arcs) {
+        if (arc.is_virtual) {
+            continue;
+        }
+        const auto u = static_cast<std::size_t>(arc.unit);
+        if (u >= 16) {
+            continue;
+        }
+        const auto [cob_r, cob_c] = arc_cob_row_col(arc, graph.cols);
+        if (cob_r < 0 || cob_c < 0 || cob_r >= catalog.rows || cob_c >= catalog.cols) {
+            continue;
+        }
+        const auto edge_key = normalized_edge_key(arc.u, arc.v);
+        if (arc.is_turn) {
+            if (!switch_seen[u][static_cast<std::size_t>(cob_r)][static_cast<std::size_t>(cob_c)].contains(edge_key)) {
+                switch_seen[u][static_cast<std::size_t>(cob_r)][static_cast<std::size_t>(cob_c)].insert(edge_key);
+                ++catalog.switch_modeled[u][static_cast<std::size_t>(cob_r)][static_cast<std::size_t>(cob_c)];
+            }
+        }
+        else if (const auto h = h_channel_key_from_arc(arc, graph.cols)) {
+            if (!h_seen[u][*h].contains(edge_key)) {
+                h_seen[u][*h].insert(edge_key);
+                ++catalog.h_channel_total[u][*h];
+            }
+        }
+        else if (const auto v = v_channel_key_from_arc(arc, graph.cols)) {
+            if (!v_seen[u][*v].contains(edge_key)) {
+                v_seen[u][*v].insert(edge_key);
+                ++catalog.v_channel_total[u][*v];
+            }
+        }
+    }
+    return catalog;
+}
+
+auto aggregate_mcf_resource_usage(
+    const GlobalGraph& graph,
+    const std::map<std::pair<int, int>, std::size_t>& arc_index,
+    const StageSolveResult& bus_res,
+    const std::array<StageSolveResult, 16>& simple_results
+) -> McfResourceUsage {
+    McfResourceUsage usage {};
+    usage.rows = graph.rows;
+    usage.cols = graph.cols;
+
+    auto absorb_edge = [&](const std::size_t unit, const std::pair<int, int>& edge) {
+        if (unit >= 16) {
+            return;
+        }
+        const auto it = arc_index.find(edge);
+        if (it == arc_index.end()) {
+            return;
+        }
+        const auto& arc = graph.arcs[it->second];
+        if (arc.unit != unit) {
+            return;
+        }
+        const auto [cob_r, cob_c] = arc_cob_row_col(arc, graph.cols);
+        if (cob_r < 0 || cob_c < 0 || cob_r >= usage.rows || cob_c >= usage.cols) {
+            return;
+        }
+        if (arc.is_turn) {
+            ++usage.switches_used[unit][static_cast<std::size_t>(cob_r)][static_cast<std::size_t>(cob_c)];
+        }
+        else if (const auto h = h_channel_key_from_arc(arc, graph.cols)) {
+            ++usage.h_channels_used[unit][*h];
+        }
+        else if (const auto v = v_channel_key_from_arc(arc, graph.cols)) {
+            ++usage.v_channels_used[unit][*v];
+        }
+    };
+
+    for (std::size_t u = 0; u < 16; ++u) {
+        for (const auto& [edge, used] : bus_res.unit_used_edges[u]) {
+            if (used > 0) {
+                absorb_edge(u, edge);
+            }
+        }
+        for (const auto& [edge, used] : simple_results[u].used_edges) {
+            if (used > 0) {
+                absorb_edge(u, edge);
+            }
+        }
+    }
+    return usage;
+}
+
+auto log_mcf_resource_usage(
+    const McfResourceCatalog& catalog,
+    const McfResourceUsage& usage,
+    const bool all_ok
+) -> void {
+    debug::info_fmt("MCF resource usage (post-solve, all_ok={})", all_ok);
+    for (std::size_t u = 0; u < 16; ++u) {
+        debug::info_fmt("Unit {}:", u);
+        int switch_used_sum = 0;
+        int switch_total_sum = 0;
+        int channel_used_sum = 0;
+        int channel_total_sum = 0;
+        int switch_modeled_sum = 0;
+
+        for (int r = 0; r < catalog.rows; ++r) {
+            for (int c = 0; c < catalog.cols; ++c) {
+                const auto used = usage.switches_used[u][static_cast<std::size_t>(r)][static_cast<std::size_t>(c)];
+                const auto modeled = catalog.switch_modeled[u][static_cast<std::size_t>(r)][static_cast<std::size_t>(c)];
+                debug::info_fmt("  switches COB({},{})={}/{}", r, c, used, kHardwareSwitchesPerCobUnit);
+                switch_used_sum += used;
+                switch_total_sum += kHardwareSwitchesPerCobUnit;
+                switch_modeled_sum += modeled;
+            }
+        }
+        for (int r = 0; r < catalog.rows; ++r) {
+            for (int c = 0; c + 1 < catalog.cols; ++c) {
+                const HChannelKey key {r, c};
+                const auto used = usage.h_channels_used[u].contains(key) ? usage.h_channels_used[u].at(key) : 0;
+                const auto total = catalog.h_channel_total[u].contains(key)
+                    ? catalog.h_channel_total[u].at(key)
+                    : kChannelsPerCobLink;
+                debug::info_fmt(
+                    "  channel H COB({},{})-COB({},{})={}/{}",
+                    r,
+                    c,
+                    r,
+                    c + 1,
+                    used,
+                    total);
+                channel_used_sum += used;
+                channel_total_sum += total;
+            }
+        }
+        for (int r = 0; r + 1 < catalog.rows; ++r) {
+            for (int c = 0; c < catalog.cols; ++c) {
+                const VChannelKey key {r, c};
+                const auto used = usage.v_channels_used[u].contains(key) ? usage.v_channels_used[u].at(key) : 0;
+                const auto total = catalog.v_channel_total[u].contains(key)
+                    ? catalog.v_channel_total[u].at(key)
+                    : kChannelsPerCobLink;
+                debug::info_fmt(
+                    "  channel V COB({},{})-COB({},{})={}/{}",
+                    r,
+                    c,
+                    r + 1,
+                    c,
+                    used,
+                    total);
+                channel_used_sum += used;
+                channel_total_sum += total;
+            }
+        }
+        debug::info_fmt(
+            "  unit_summary switches={}/{} modeled={} channels={}/{}",
+            switch_used_sum,
+            switch_total_sum,
+            switch_modeled_sum,
+            channel_used_sum,
+            channel_total_sum);
+    }
+}
+
+auto log_mcf_infeasibility_hints(
+    const std::String& stage_name,
+    const int model_status,
+    const std::Vector<McfConstraintMeta>& hints
+) -> void {
+    debug::error_fmt(
+        "MCF infeasibility diagnosis: stage={} status={}({})",
+        stage_name,
+        gurobi_status_name(model_status),
+        model_status);
+    if (model_status != GRB_INFEASIBLE) {
+        debug::error_fmt("  (IIS not computed: status is not INFEASIBLE)");
+        return;
+    }
+    if (hints.empty()) {
+        debug::error_fmt("  (IIS empty or computeIIS failed)");
+        return;
+    }
+
+    auto kind_counts = std::map<std::String, int> {};
+    auto by_kind = std::map<std::String, std::Vector<std::String>> {};
+    for (const auto& hint : hints) {
+        ++kind_counts[hint.kind];
+        by_kind[hint.kind].push_back(hint.detail);
+    }
+    {
+        auto parts = std::Vector<std::String> {};
+        for (const auto& [kind, count] : kind_counts) {
+            parts.push_back(std::format("{}={}", kind, count));
+        }
+        debug::error_fmt("  IIS constraint kinds: {}", fmt_join_parts(parts));
+    }
+    for (const auto& [kind, details] : by_kind) {
+        debug::error_fmt("  {}:", kind);
+        const auto show = std::min(details.size(), static_cast<std::size_t>(kMaxIisLogPerKind));
+        for (std::size_t i = 0; i < show; ++i) {
+            debug::error_fmt("    - {}", details[i]);
+        }
+        if (details.size() > show) {
+            debug::error_fmt("    ... and {} more", details.size() - show);
+        }
+    }
+}
+
+auto fmt_join_parts(const std::Vector<std::String>& parts) -> std::String {
+    if (parts.empty()) {
+        return std::String {};
+    }
+    auto out = parts.front();
+    for (std::size_t i = 1; i < parts.size(); ++i) {
+        out += std::format(", {}", parts[i]);
+    }
+    return out;
+}
+
+auto log_mcf_infeasibility_summary(
+    const StageSolveResult& bus_res,
+    const std::array<StageSolveResult, 16>& simple_results
+) -> void {
+    if (!bus_res.ok && !bus_res.infeasibility_hints.empty()) {
+        log_mcf_infeasibility_hints(bus_res.stage_name, bus_res.model_status, bus_res.infeasibility_hints);
+    }
+    else if (!bus_res.ok) {
+        debug::error_fmt(
+            "MCF failure diagnosis: stage={} status={}({}) message={}",
+            bus_res.stage_name.empty() ? std::String("BusMCF") : bus_res.stage_name,
+            gurobi_status_name(bus_res.model_status),
+            bus_res.model_status,
+            bus_res.message);
+    }
+    for (std::size_t u = 0; u < 16; ++u) {
+        if (simple_results[u].ok) {
+            continue;
+        }
+        if (!simple_results[u].infeasibility_hints.empty()) {
+            log_mcf_infeasibility_hints(
+                simple_results[u].stage_name,
+                simple_results[u].model_status,
+                simple_results[u].infeasibility_hints);
+        }
+        else {
+            debug::error_fmt(
+                "MCF failure diagnosis: stage={} status={}({}) message={}",
+                simple_results[u].stage_name.empty() ? std::format("SimpleMCF_unit{}", u) : simple_results[u].stage_name,
+                gurobi_status_name(simple_results[u].model_status),
+                simple_results[u].model_status,
+                simple_results[u].message);
+        }
+    }
+}
 
 auto solve_binary_columns_with_gurobi(
     const std::String& stage_name,
@@ -129,7 +567,8 @@ auto solve_binary_columns_with_gurobi(
     const std::vector<double>& row_lo,
     const std::vector<double>& row_up,
     const std::Vector<std::Vector<std::pair<int, double>>>& col_entries,
-    const std::map<int, double>& warm_values_by_col
+    const std::map<int, double>& warm_values_by_col,
+    const std::Vector<McfConstraintMeta>* row_meta
 ) -> GurobiMcfSolveResult {
     auto out = GurobiMcfSolveResult {};
     try {
@@ -160,17 +599,18 @@ auto solve_binary_columns_with_gurobi(
             const auto lo = row_lo[r];
             const auto up = row_up[r];
             if (std::fabs(lo - up) < 1e-9) {
-                model.addConstr(row_expr[r], GRB_EQUAL, lo, std::format("r_{}", r));
+                model.addConstr(row_expr[r], GRB_EQUAL, lo, std::format("mcf_r_{}", r));
             }
             else {
                 if (lo > -kGurobiInf / 2.0) {
-                    model.addConstr(row_expr[r], GRB_GREATER_EQUAL, lo, std::format("r_{}_lo", r));
+                    model.addConstr(row_expr[r], GRB_GREATER_EQUAL, lo, std::format("mcf_r_{}_lo", r));
                 }
                 if (up < kGurobiInf / 2.0) {
-                    model.addConstr(row_expr[r], GRB_LESS_EQUAL, up, std::format("r_{}_up", r));
+                    model.addConstr(row_expr[r], GRB_LESS_EQUAL, up, std::format("mcf_r_{}", r));
                 }
             }
         }
+        model.update();
 
         for (const auto& [col, value] : warm_values_by_col) {
             if (col < 0 || static_cast<std::size_t>(col) >= vars.size()) {
@@ -186,6 +626,30 @@ auto solve_binary_columns_with_gurobi(
             out.col_value.resize(vars.size(), 0.0);
             for (std::size_t c = 0; c < vars.size(); ++c) {
                 out.col_value[c] = vars[c].get(GRB_DoubleAttr_X);
+            }
+        }
+        else if (out.model_status == GRB_INFEASIBLE && row_meta != nullptr && row_meta->size() == row_lo.size()) {
+            model.computeIIS();
+            const auto num_constrs = model.get(GRB_IntAttr_NumConstrs);
+            const auto constrs = model.getConstrs();
+            auto seen_rows = std::set<std::size_t> {};
+            for (int ci = 0; ci < num_constrs; ++ci) {
+                const auto& constr = constrs[ci];
+                if (constr.get(GRB_IntAttr_IISConstr) == 0) {
+                    continue;
+                }
+                const auto name = constr.get(GRB_StringAttr_ConstrName);
+                std::size_t row = 0;
+                if (name.starts_with("mcf_r_")) {
+                    const auto suffix = name.substr(6);
+                    const auto under = suffix.find('_');
+                    const auto num_str = under == std::String::npos ? suffix : suffix.substr(0, under);
+                    row = static_cast<std::size_t>(std::stoul(num_str));
+                }
+                if (row < row_meta->size() && !seen_rows.contains(row)) {
+                    seen_rows.insert(row);
+                    out.iis_rows.push_back(row_meta->at(row));
+                }
             }
         }
         out.ok = true;
@@ -1041,6 +1505,7 @@ auto solve_bus_mcf(
 ) -> StageSolveResult {
     constexpr auto stage_name = "BusMCF";
     StageSolveResult out {};
+    out.stage_name = stage_name;
     if (bus_ids.empty()) {
         out.ok = true;
         out.message = "empty stage";
@@ -1079,18 +1544,22 @@ auto solve_bus_mcf(
 
     log_mcf_model_graph(stage_name, graph, K);
 
+    const auto arc_index = build_undirected_arc_index(graph);
     auto row_lo = std::vector<double> {};
     auto row_up = std::vector<double> {};
-    auto add_eq = [&](const double rhs) -> int {
+    auto row_meta = std::Vector<McfConstraintMeta> {};
+    auto add_eq = [&](const double rhs, McfConstraintMeta meta) -> int {
         const auto id = static_cast<int>(row_lo.size());
         row_lo.push_back(rhs);
         row_up.push_back(rhs);
+        row_meta.push_back(std::move(meta));
         return id;
     };
-    auto add_le = [&](const double rhs) -> int {
+    auto add_le = [&](const double rhs, McfConstraintMeta meta) -> int {
         const auto id = static_cast<int>(row_lo.size());
         row_lo.push_back(-kGurobiInf);
         row_up.push_back(rhs);
+        row_meta.push_back(std::move(meta));
         return id;
     };
 
@@ -1101,7 +1570,14 @@ auto solve_bus_mcf(
         if (flow_row.contains(key)) {
             return flow_row.at(key);
         }
-        const auto row = add_eq(0.0);
+        const auto row = add_eq(
+            0.0,
+            McfConstraintMeta {
+                "flow_conservation",
+                std::format(
+                    "commodity={} node={} (unset)",
+                    local_com[static_cast<std::size_t>(k)].label,
+                    node_text(graph, n))});
         flow_row[key] = row;
         return row;
     };
@@ -1109,7 +1585,13 @@ auto solve_bus_mcf(
     // BusMCF §2: edge capacity Σ_n (f_ij + f_ji) <= capacity
     auto edge_row = std::map<std::pair<int, int>, int> {};
     for (const auto& key : collect_undirected_physical_edge_keys(graph, std::nullopt)) {
-        edge_row[key] = add_le(1.0);
+        edge_row[key] = add_le(
+            1.0,
+            McfConstraintMeta {
+                "edge_capacity",
+                std::format(
+                    "rhs=1 {}",
+                    describe_undirected_edge(graph, arc_index, key.first, key.second, graph.cols))});
     }
 
     auto f_entries = std::Vector<std::Vector<std::pair<int, double>>>(f_vars.size());
@@ -1146,6 +1628,20 @@ auto solve_bus_mcf(
         row_up[static_cast<std::size_t>(rs)] = static_cast<double>(d);
         row_lo[static_cast<std::size_t>(rt)] = static_cast<double>(-d);
         row_up[static_cast<std::size_t>(rt)] = static_cast<double>(-d);
+        row_meta[static_cast<std::size_t>(rs)] = McfConstraintMeta {
+            "flow_conservation",
+            std::format(
+                "commodity={} node={} rhs=+{} (source)",
+                local_com[static_cast<std::size_t>(k)].label,
+                node_text(graph, s),
+                d)};
+        row_meta[static_cast<std::size_t>(rt)] = McfConstraintMeta {
+            "flow_conservation",
+            std::format(
+                "commodity={} node={} rhs=-{} (sink)",
+                local_com[static_cast<std::size_t>(k)].label,
+                node_text(graph, t),
+                d)};
     }
 
     // BusMCF §5: f <= o, Σ_n o_i <= 1
@@ -1161,7 +1657,11 @@ auto solve_bus_mcf(
         if (graph.nodes[static_cast<std::size_t>(n)].is_virtual) {
             continue;
         }
-        node_row[n] = add_le(1.0);
+        node_row[n] = add_le(
+            1.0,
+            McfConstraintMeta {
+                "node_capacity",
+                std::format("node={} rhs=1", node_text(graph, n))});
     }
     for (const auto& [kn, vars] : incident_f) {
         const auto k = kn.first;
@@ -1169,7 +1669,14 @@ auto solve_bus_mcf(
         if (vars.empty()) {
             continue;
         }
-        const auto row_link = add_le(0.0);
+        const auto row_link = add_le(
+            0.0,
+            McfConstraintMeta {
+                "f_le_o_link",
+                std::format(
+                    "commodity={} node={}",
+                    local_com[static_cast<std::size_t>(k)].label,
+                    node_text(graph, n))});
         for (const auto j : vars) {
             f_entries[static_cast<std::size_t>(j)].push_back({row_link, 1.0});
         }
@@ -1199,7 +1706,15 @@ auto solve_bus_mcf(
         }
         const auto ref = group.front();
         for (std::size_t gi = 1; gi < group.size(); ++gi) {
-            const auto row = add_eq(0.0);
+            const auto row = add_eq(
+                0.0,
+                McfConstraintMeta {
+                    "bus_equal_length",
+                    std::format(
+                        "bus_key={} ref={} cur={}",
+                        key,
+                        local_com[static_cast<std::size_t>(group.front())].label,
+                        local_com[static_cast<std::size_t>(group[gi])].label)});
             ++bus_equal_length_rows;
             const auto cur = group[gi];
             for (const auto j : f_by_k[static_cast<std::size_t>(cur)]) {
@@ -1317,7 +1832,8 @@ auto solve_bus_mcf(
         row_lo,
         row_up,
         col_entries,
-        warm_values_by_col);
+        warm_values_by_col,
+        &row_meta);
     out.model_status = solve_res.model_status;
     if (!solve_res.ok) {
         out.ok = false;
@@ -1334,6 +1850,7 @@ auto solve_bus_mcf(
         }
         out.ok = false;
         out.message = std::format("{}: model not optimal ({})", stage_name, solve_res.model_status);
+        out.infeasibility_hints = solve_res.iis_rows;
         return out;
     }
 
@@ -1358,16 +1875,10 @@ auto solve_bus_mcf(
             }
             out.used_edges[{u, v}] = 1;
             out.unit_used_edges[unit][{u, v}] = 1;
-        }
-    }
-    for (std::size_t j = 0; j < o_vars.size(); ++j) {
-        const auto col = static_cast<std::size_t>(num_f + static_cast<int>(j));
-        const auto val = static_cast<int>(std::lround(solve_res.col_value[col]));
-        if (val > 0) {
-            const auto k = o_vars[j].k;
-            const auto unit = local_com[static_cast<std::size_t>(k)].cob_unit;
-            out.used_nodes[o_vars[j].node] = 1;
-            out.unit_used_nodes[unit][o_vars[j].node] = 1;
+            out.used_nodes[arc.u] = 1;
+            out.used_nodes[arc.v] = 1;
+            out.unit_used_nodes[unit][arc.u] = 1;
+            out.unit_used_nodes[unit][arc.v] = 1;
         }
     }
 
@@ -1388,6 +1899,7 @@ auto solve_simple_mcf_unit(
 ) -> StageSolveResult {
     const auto stage_name = std::format("SimpleMCF_unit{}", unit_c);
     StageSolveResult out {};
+    out.stage_name = stage_name;
     if (simple_ids_for_unit.empty()) {
         out.ok = true;
         out.message = "empty stage";
@@ -1435,18 +1947,31 @@ auto solve_simple_mcf_unit(
 
     log_mcf_model_graph(stage_name, graph, K, unit_c);
 
+    const auto arc_index = build_undirected_arc_index(graph);
+    auto origin_label_by_h = std::map<int, std::String> {};
+    for (const auto& group : origin_groups) {
+        origin_label_by_h[group.origin_group_id] = group.origin_key;
+    }
+    const auto origin_label = [&](const int h) -> std::String {
+        const auto it = origin_label_by_h.find(h);
+        return it != origin_label_by_h.end() ? it->second : std::format("origin_h{}", h);
+    };
+
     auto row_lo = std::vector<double> {};
     auto row_up = std::vector<double> {};
-    auto add_eq = [&](const double rhs) -> int {
+    auto row_meta = std::Vector<McfConstraintMeta> {};
+    auto add_eq = [&](const double rhs, McfConstraintMeta meta) -> int {
         const auto id = static_cast<int>(row_lo.size());
         row_lo.push_back(rhs);
         row_up.push_back(rhs);
+        row_meta.push_back(std::move(meta));
         return id;
     };
-    auto add_le = [&](const double rhs) -> int {
+    auto add_le = [&](const double rhs, McfConstraintMeta meta) -> int {
         const auto id = static_cast<int>(row_lo.size());
         row_lo.push_back(-kGurobiInf);
         row_up.push_back(rhs);
+        row_meta.push_back(std::move(meta));
         return id;
     };
 
@@ -1457,7 +1982,14 @@ auto solve_simple_mcf_unit(
         if (flow_row.contains(key)) {
             return flow_row.at(key);
         }
-        const auto row = add_eq(0.0);
+        const auto row = add_eq(
+            0.0,
+            McfConstraintMeta {
+                "flow_conservation",
+                std::format(
+                    "commodity={} node={} (unset)",
+                    local_com[static_cast<std::size_t>(k)].label,
+                    node_text(graph, n))});
         flow_row[key] = row;
         return row;
     };
@@ -1469,7 +2001,15 @@ auto solve_simple_mcf_unit(
         if (edge_capacity_override.contains(key)) {
             cap = edge_capacity_override.at(key);
         }
-        edge_row[key] = add_le(static_cast<double>(cap));
+        edge_row[key] = add_le(
+            static_cast<double>(cap),
+            McfConstraintMeta {
+                "edge_capacity",
+                std::format(
+                    "rhs={} bus_residual={} {}",
+                    cap,
+                    cap,
+                    describe_undirected_edge(graph, arc_index, key.first, key.second, graph.cols))});
     }
 
     auto f_entries = std::Vector<std::Vector<std::pair<int, double>>>(f_vars.size());
@@ -1491,6 +2031,20 @@ auto solve_simple_mcf_unit(
         row_up[static_cast<std::size_t>(rs)] = static_cast<double>(d);
         row_lo[static_cast<std::size_t>(rt)] = static_cast<double>(-d);
         row_up[static_cast<std::size_t>(rt)] = static_cast<double>(-d);
+        row_meta[static_cast<std::size_t>(rs)] = McfConstraintMeta {
+            "flow_conservation",
+            std::format(
+                "commodity={} node={} rhs=+{} (source)",
+                local_com[static_cast<std::size_t>(k)].label,
+                node_text(graph, s),
+                d)};
+        row_meta[static_cast<std::size_t>(rt)] = McfConstraintMeta {
+            "flow_conservation",
+            std::format(
+                "commodity={} node={} rhs=-{} (sink)",
+                local_com[static_cast<std::size_t>(k)].label,
+                node_text(graph, t),
+                d)};
     }
 
     // SimpleMCF v5 §1-2: x^{c,H}_e on undirected physical edges e
@@ -1542,7 +2096,15 @@ auto solve_simple_mcf_unit(
         if (it == origin_x_by_he.end()) {
             continue;
         }
-        const auto row = add_le(0.0);
+        const auto row = add_le(
+            0.0,
+            McfConstraintMeta {
+                "f_le_x_lower",
+                std::format(
+                    "origin={} commodity={} {}",
+                    origin_label(h),
+                    local_com[static_cast<std::size_t>(k)].label,
+                    describe_undirected_edge(graph, arc_index, e.first, e.second, graph.cols))});
         ++f_le_x_lower_rows;
         f_entries[j].push_back({row, 1.0});
         origin_x_entries[static_cast<std::size_t>(it->second)].push_back({row, -1.0});
@@ -1556,7 +2118,19 @@ auto solve_simple_mcf_unit(
         if (f_list.empty()) {
             continue;
         }
-        const auto row = add_le(0.0);
+        const auto row = add_le(
+            0.0,
+            McfConstraintMeta {
+                "f_le_x_upper",
+                std::format(
+                    "origin={} {}",
+                    origin_label(he_key.first),
+                    describe_undirected_edge(
+                        graph,
+                        arc_index,
+                        he_key.second.first,
+                        he_key.second.second,
+                        graph.cols))});
         ++f_le_x_upper_rows;
         origin_x_entries[static_cast<std::size_t>(x_var)].push_back({row, 1.0});
         for (const auto f_j : f_list) {
@@ -1582,7 +2156,15 @@ auto solve_simple_mcf_unit(
         if (node_capacity_override.contains(n)) {
             cap = node_capacity_override.at(n);
         }
-        node_row[n] = add_le(static_cast<double>(cap));
+        node_row[n] = add_le(
+            static_cast<double>(cap),
+            McfConstraintMeta {
+                "node_capacity",
+                std::format(
+                    "node={} rhs={} bus_used={}",
+                    node_text(graph, n),
+                    cap,
+                    1 - cap)});
     }
 
     int x_le_o_rows = 0;
@@ -1605,7 +2187,16 @@ auto solve_simple_mcf_unit(
                 origin_o_entries[static_cast<std::size_t>(o_var)].push_back({node_row.at(n), 1.0});
             }
             const auto o_var = origin_o_by_hn.at(hn);
-            const auto row_x_le_o = add_le(0.0);
+            const auto row_x_le_o = add_le(
+                0.0,
+                McfConstraintMeta {
+                    "x_le_o",
+                    std::format(
+                        "origin={} node={} edge={}-{}",
+                        origin_label(h),
+                        node_text(graph, n),
+                        node_text(graph, e.first),
+                        node_text(graph, e.second))});
             ++x_le_o_rows;
             origin_x_entries[static_cast<std::size_t>(x_var)].push_back({row_x_le_o, 1.0});
             origin_o_entries[static_cast<std::size_t>(o_var)].push_back({row_x_le_o, -1.0});
@@ -1628,7 +2219,11 @@ auto solve_simple_mcf_unit(
         if (x_on_delta.empty()) {
             continue;
         }
-        const auto row_o_le_sum = add_le(0.0);
+        const auto row_o_le_sum = add_le(
+            0.0,
+            McfConstraintMeta {
+                "o_le_sum_x",
+                std::format("origin={} node={}", origin_label(h), node_text(graph, n))});
         ++o_le_sum_x_rows;
         origin_o_entries[static_cast<std::size_t>(o_var)].push_back({row_o_le_sum, 1.0});
         for (const auto x_idx : x_on_delta) {
@@ -1754,7 +2349,8 @@ auto solve_simple_mcf_unit(
         row_lo,
         row_up,
         col_entries,
-        warm_values_by_col);
+        warm_values_by_col,
+        &row_meta);
     out.model_status = solve_res.model_status;
     if (!solve_res.ok) {
         out.ok = false;
@@ -1780,6 +2376,7 @@ auto solve_simple_mcf_unit(
         }
         out.ok = false;
         out.message = std::format("{}: model not optimal ({})", stage_name, solve_res.model_status);
+        out.infeasibility_hints = solve_res.iis_rows;
         return out;
     }
 
@@ -2081,6 +2678,7 @@ auto run_mcf_global_routing_cob_units(
     auto bus_res = StageSolveResult {};
     if (disable_bus_mcf) {
         bus_res.ok = true;
+        bus_res.stage_name = "BusMCF";
         bus_res.message = "skipped (--disable-bus-mcf)";
         bus_res.model_status = GRB_OPTIMAL;
         if (!bus_ids.empty()) {
@@ -2239,6 +2837,14 @@ auto run_mcf_global_routing_cob_units(
         }
     }
     log_mcf_paths_by_origin_net(graph, out.paths_by_unit, records);
+
+    const auto resource_catalog = build_mcf_resource_catalog(graph);
+    const auto arc_index = build_undirected_arc_index(graph);
+    const auto resource_usage = aggregate_mcf_resource_usage(graph, arc_index, bus_res, simple_results);
+    log_mcf_resource_usage(resource_catalog, resource_usage, out.summary.all_ok);
+    if (!out.summary.all_ok) {
+        log_mcf_infeasibility_summary(bus_res, simple_results);
+    }
 
     const auto mcf_end = std::chrono::steady_clock::now();
     const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(mcf_end - mcf_start).count();
