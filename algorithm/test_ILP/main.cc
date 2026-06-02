@@ -65,8 +65,9 @@ auto run_main(int argc, char** argv) -> int {
         debug::error("No config path given");
         debug::info(
             "Usage: xmake run test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] "
-            "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--enable-mcf-parallel] "
-            "[--enable-mcf-obj] [--enable-pre-routing] [--maze-check-ilp-mcf | --maze-check-mcf]");
+            "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--disable-bus-mcf] "
+            "[--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
+            "[--maze-check-ilp-mcf | --maze-check-mcf]");
         log_total_runtime();
         return 1;
     }
@@ -75,6 +76,7 @@ auto run_main(int argc, char** argv) -> int {
     auto output_mps = std::String {};
     bool enable_ilp_parallel = false;
     bool enable_mcf = false;
+    bool disable_bus_mcf = false;
     bool enable_mcf_parallel = false;
     bool enable_mcf_obj = false;
     bool enable_pre_routing = false;
@@ -106,6 +108,10 @@ auto run_main(int argc, char** argv) -> int {
         }
         if (arg == "--enable-mcf-routing") {
             enable_mcf = true;
+            continue;
+        }
+        if (arg == "--disable-bus-mcf") {
+            disable_bus_mcf = true;
             continue;
         }
         if (arg == "--enable-mcf-parallel") {
@@ -157,8 +163,9 @@ auto run_main(int argc, char** argv) -> int {
         debug::error_fmt("Unexpected argument '{}'", arg);
         debug::info(
             "Usage: xmake run test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] "
-            "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--enable-mcf-parallel] "
-            "[--enable-mcf-obj] [--enable-pre-routing] [--maze-check-ilp-mcf | --maze-check-mcf]");
+            "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--disable-bus-mcf] "
+            "[--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
+            "[--maze-check-ilp-mcf | --maze-check-mcf]");
         log_total_runtime();
         return 1;
     }
@@ -193,6 +200,11 @@ auto run_main(int argc, char** argv) -> int {
         log_total_runtime();
         return 1;
     }
+    if (disable_bus_mcf && !enable_mcf) {
+        debug::error("--disable-bus-mcf requires --enable-mcf-routing");
+        log_total_runtime();
+        return 1;
+    }
     if (maze_check_ilp_mcf && maze_check_mcf) {
         debug::error("--maze-check-ilp-mcf and --maze-check-mcf are mutually exclusive");
         log_total_runtime();
@@ -222,7 +234,7 @@ auto run_main(int argc, char** argv) -> int {
     }
     if (!track_to_bumps_nets.empty()) {
         debug::info_fmt(
-            "TrackToBumpsNet: {} net(s) split for ILP; COB segment routed in SimpleMCF (v3 origin aggregation)",
+            "TrackToBumpsNet: {} net(s) split for ILP; COB segment routed in SimpleMCF",
             track_to_bumps_nets.size());
     }
 
@@ -343,7 +355,8 @@ auto run_main(int argc, char** argv) -> int {
             enable_mcf_parallel,
             enable_pre_routing,
             enable_mcf_obj,
-            defer_maze_check_suspend);
+            defer_maze_check_suspend,
+            disable_bus_mcf);
         mcf_warm_start_ms = mcf_full.summary.mcf_warm_start_ms;
         mcf_solve_ms = mcf_full.summary.mcf_solve_ms;
         if (maze_check_ilp_mcf) {
@@ -671,7 +684,7 @@ auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecor
     auto origin_bit_counter = std::map<std::String, std::size_t> {};
     for (std::size_t i = 0; i < records.size(); ++i) {
         records[i].record_id = i;
-        const auto& origin = records[i].origin_key.empty() ? records[i].net_name : records[i].origin_key;
+        const auto origin = record_origin_group_uid(records[i]);
         records[i].bit_id = origin_bit_counter[origin];
         origin_bit_counter[origin] += 1;
     }

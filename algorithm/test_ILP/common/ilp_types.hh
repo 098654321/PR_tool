@@ -96,4 +96,15 @@ inline auto map_track(std::size_t track) -> std::size_t {
     return track < 64 ? track % 8 : track % 8 + 8;
 }
 
+/// Stable key for MCF Origin grouping, maze-check aggregation, and bit_id assignment.
+inline auto record_origin_group_uid(const Net_cost_record& record) -> std::String {
+    if (!record.origin_uid.empty()) {
+        return record.origin_uid;
+    }
+    if (!record.origin_key.empty()) {
+        return record.origin_key;
+    }
+    return record.net_name;
+}
+
 } // namespace PR_tool

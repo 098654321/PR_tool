@@ -93,9 +93,10 @@ struct OVar {
     int node{0};
 };
 
-struct OriginArcVar {
+struct OriginEdgeVar {
     int h{0};
-    int a{0};
+    int u{0};
+    int v{0};
 };
 
 struct OriginOVar {
@@ -366,21 +367,8 @@ auto is_sync_bus_origin_key(const std::String& origin_key) -> bool {
     return group_id > 0;
 }
 
-auto is_no_sync_group_origin_key(const std::String& origin_key) -> bool {
-    return origin_key.find("in_group_-1") != std::String::npos;
-}
-
-auto simple_origin_group_key(
-    const PreparedCommodity& c,
-    const Net_cost_record& record
-) -> std::String {
-    if (record.from_track_to_bumps_split) {
-        return c.origin_uid;
-    }
-    if (record.type == Net_type::Bnet && is_no_sync_group_origin_key(c.origin_name)) {
-        return c.label;
-    }
-    return c.origin_uid;
+auto simple_origin_group_key(const Net_cost_record& record) -> std::String {
+    return record_origin_group_uid(record);
 }
 
 auto prepare_commodities(
@@ -606,6 +594,17 @@ auto normalized_edge_key(int u, int v) -> std::pair<int, int> {
     return {u, v};
 }
 
+auto build_undirected_incidence(
+    const std::map<std::pair<int, int>, int>& edge_keys
+) -> std::map<int, std::Vector<std::pair<int, int>>> {
+    auto delta = std::map<int, std::Vector<std::pair<int, int>>> {};
+    for (const auto& [key, _] : edge_keys) {
+        delta[key.first].push_back(key);
+        delta[key.second].push_back(key);
+    }
+    return delta;
+}
+
 auto route_one_mcf_warm_path(
     const GlobalGraph& graph,
     const PreparedCommodity& commodity,
@@ -729,7 +728,7 @@ auto build_origin_groups(
     for (int k = 0; k < static_cast<int>(local_com.size()); ++k) {
         const auto& c = local_com[static_cast<std::size_t>(k)];
         const auto& rec = records[c.record_index];
-        key_to_indices[{c.cob_unit, simple_origin_group_key(c, rec)}].push_back(k);
+        key_to_indices[{c.cob_unit, simple_origin_group_key(rec)}].push_back(k);
     }
 
     auto groups = std::Vector<McfOriginGroup> {};
@@ -769,23 +768,6 @@ auto log_origin_groups(const std::String& stage_name, const std::Vector<McfOrigi
         stage_name,
         groups.size(),
         multi_count);
-    for (const auto& g : groups) {
-        if (!g.is_multi_fanout) {
-            continue;
-        }
-        auto child_ids = std::String {};
-        for (std::size_t i = 0; i < g.commodity_local_indices.size(); ++i) {
-            if (i != 0) {
-                child_ids += ",";
-            }
-            child_ids += std::format("{}", g.commodity_local_indices[i]);
-        }
-        debug::info_fmt(
-            "  origin \"{}\" unit={} children=[{}]",
-            g.origin_key,
-            g.cob_unit,
-            child_ids);
-    }
 }
 
 auto build_local_commodities(
@@ -930,26 +912,19 @@ auto log_mcf_model_graph(
     const auto stats = count_mcf_graph_scope_stats(graph, unit_filter);
     if (unit_filter.has_value()) {
         debug::info_fmt(
-            "{} model graph: scope=COBUnit{} nodes={} arcs={} (physical_arcs={} undirected_edges={}) "
-            "commodities={} [global: nodes={} arcs={}]",
+            "{} model graph: scope=COBUnit{} nodes={} arcs={} commodities={}",
             stage_name,
             *unit_filter,
             stats.nodes,
             stats.arcs,
-            stats.physical_arcs,
-            stats.undirected_physical_edges,
-            num_commodities,
-            graph.nodes.size(),
-            graph.arcs.size());
+            num_commodities);
     }
     else {
         debug::info_fmt(
-            "{} model graph: scope=global nodes={} arcs={} (physical_arcs={} undirected_edges={}) commodities={}",
+            "{} model graph: scope=global nodes={} arcs={} commodities={}",
             stage_name,
             stats.nodes,
             stats.arcs,
-            stats.physical_arcs,
-            stats.undirected_physical_edges,
             num_commodities);
     }
 }
@@ -1113,7 +1088,7 @@ auto solve_bus_mcf(
         o_entries.push_back(std::move(col));
     }
 
-    // BusMCF §6: sync equal length (第三版)
+    // BusMCF §6 (第五版): sync equal length
     // total_flow_n = Σ_{(i,j)∈E^c} f^{c,n}_{ij},  ∀n∈Bus ∧ c = n 所在 COBUnit
     // E^c 由 arc_usable_for_class(..., cob_unit) 限定；非虚拟弧求和即 total_flow_n
     // total_flow_n = total_flow_m,  ∀n,m ∈ the_same_Bus (bus_key)
@@ -1454,7 +1429,7 @@ auto solve_simple_mcf_unit(
         return row;
     };
 
-    // SimpleMCF §5: Σ_H (x_ij + x_ji) <= capacity - used^{Bus,c} on E^c only
+    // SimpleMCF v5 §5: Σ_H x^H_e <= capacity^c_e - used^{Bus,c}_e on undirected physical edge e ∈ E^c
     auto edge_row = std::map<std::pair<int, int>, int> {};
     for (const auto& key : collect_undirected_physical_edge_keys(graph, unit_c)) {
         auto cap = 1;
@@ -1485,71 +1460,86 @@ auto solve_simple_mcf_unit(
         row_up[static_cast<std::size_t>(rt)] = static_cast<double>(-d);
     }
 
-    // SimpleMCF §1-2: x^{c,H}_{ij} for every Origin H; f <= x
-    auto origin_x_vars = std::Vector<OriginArcVar> {};
+    // SimpleMCF v5 §1-2: x^{c,H}_e on undirected physical edges e
+    using UndirectedEdgeKey = std::pair<int, int>;
+    using OriginEdgeKey = std::pair<int, UndirectedEdgeKey>;
+    auto origin_x_vars = std::Vector<OriginEdgeVar> {};
     auto origin_x_entries = std::Vector<std::Vector<std::pair<int, double>>> {};
-    auto origin_x_by_ha = std::map<std::pair<int, int>, int> {};
-    auto incident_origin_x = std::map<std::pair<int, int>, std::Vector<int>> {};
+    auto origin_x_by_he = std::map<OriginEdgeKey, int> {};
+    auto f_indices_by_he = std::map<OriginEdgeKey, std::Vector<int>> {};
     for (const auto& group : origin_groups) {
         const int h = group.origin_group_id;
-        auto arc_ids = std::set<int> {};
+        auto edge_keys = std::set<UndirectedEdgeKey> {};
         for (const auto k : group.commodity_local_indices) {
             for (const auto f_var : f_by_k[static_cast<std::size_t>(k)]) {
-                arc_ids.insert(f_vars[static_cast<std::size_t>(f_var)].a);
+                const auto& arc = graph.arcs[static_cast<std::size_t>(f_vars[static_cast<std::size_t>(f_var)].a)];
+                if (arc.is_virtual) {
+                    continue;
+                }
+                edge_keys.insert(normalized_edge_key(arc.u, arc.v));
             }
         }
-        for (const auto a : arc_ids) {
-            const auto key = std::make_pair(h, a);
-            if (origin_x_by_ha.contains(key)) {
+        for (const auto& e : edge_keys) {
+            const auto he_key = OriginEdgeKey {h, e};
+            if (origin_x_by_he.contains(he_key)) {
+                continue;
+            }
+            if (!edge_row.contains(e)) {
                 continue;
             }
             const auto var_id = static_cast<int>(origin_x_vars.size());
-            origin_x_vars.push_back(OriginArcVar {h, a});
-            origin_x_by_ha[key] = var_id;
+            origin_x_vars.push_back(OriginEdgeVar {h, e.first, e.second});
+            origin_x_by_he[he_key] = var_id;
             origin_x_entries.emplace_back();
-
-            const auto& arc = graph.arcs[static_cast<std::size_t>(a)];
-            if (!arc.is_virtual) {
-                auto u = arc.u;
-                auto v = arc.v;
-                if (u > v) {
-                    std::swap(u, v);
-                }
-                origin_x_entries[static_cast<std::size_t>(var_id)].push_back({edge_row.at({u, v}), 1.0});
-            }
-            if (!graph.nodes[static_cast<std::size_t>(arc.u)].is_virtual) {
-                incident_origin_x[{h, arc.u}].push_back(var_id);
-            }
-            if (!graph.nodes[static_cast<std::size_t>(arc.v)].is_virtual) {
-                incident_origin_x[{h, arc.v}].push_back(var_id);
-            }
+            origin_x_entries[static_cast<std::size_t>(var_id)].push_back({edge_row.at(e), 1.0});
         }
     }
 
-    int f_le_x_rows = 0;
+    // v5 §2 lower: f^{n}_{ij}, f^{n}_{ji} <= x^H_e
+    int f_le_x_lower_rows = 0;
     for (std::size_t j = 0; j < f_vars.size(); ++j) {
         const auto k = f_vars[j].k;
         const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
-        const auto a = f_vars[j].a;
-        const auto it = origin_x_by_ha.find({h, a});
-        if (it == origin_x_by_ha.end()) {
+        const auto& arc = graph.arcs[static_cast<std::size_t>(f_vars[j].a)];
+        if (arc.is_virtual) {
+            continue;
+        }
+        const auto e = normalized_edge_key(arc.u, arc.v);
+        const auto it = origin_x_by_he.find({h, e});
+        if (it == origin_x_by_he.end()) {
             continue;
         }
         const auto row = add_le(0.0);
-        ++f_le_x_rows;
+        ++f_le_x_lower_rows;
         f_entries[j].push_back({row, 1.0});
         origin_x_entries[static_cast<std::size_t>(it->second)].push_back({row, -1.0});
+        f_indices_by_he[{h, e}].push_back(static_cast<int>(j));
     }
 
-    // SimpleMCF §5: x <= o^H, Σ_H o^H_i <= 1 - used^{Bus,c}_i
+    // v5 §2 upper: x^H_e <= Σ_{n∈H.child} (f^n_ij + f^n_ji)
+    int f_le_x_upper_rows = 0;
+    for (const auto& [he_key, x_var] : origin_x_by_he) {
+        const auto f_list = f_indices_by_he[he_key];
+        if (f_list.empty()) {
+            continue;
+        }
+        const auto row = add_le(0.0);
+        ++f_le_x_upper_rows;
+        origin_x_entries[static_cast<std::size_t>(x_var)].push_back({row, 1.0});
+        for (const auto f_j : f_list) {
+            f_entries[static_cast<std::size_t>(f_j)].push_back({row, -1.0});
+        }
+    }
+
+    // v5 §5: x_e <= o_i, o_i <= Σ_{e∈δ(i)} x_e, Σ_H o^H_i <= 1 - used^{Bus,c}_i
+    const auto undirected_incidence = build_undirected_incidence(edge_row);
     auto origin_o_entries = std::Vector<std::Vector<std::pair<int, double>>> {};
     auto origin_o_vars = std::Vector<OriginOVar> {};
     auto node_row = std::map<int, int> {};
     auto physical_nodes_in_use = std::set<int> {};
-    for (const auto& [hn, vars] : incident_origin_x) {
-        (void)vars;
-        (void)hn;
-        physical_nodes_in_use.insert(hn.second);
+    for (const auto& xv : origin_x_vars) {
+        physical_nodes_in_use.insert(xv.u);
+        physical_nodes_in_use.insert(xv.v);
     }
     for (const auto n : physical_nodes_in_use) {
         if (graph.nodes[static_cast<std::size_t>(n)].is_virtual) {
@@ -1561,21 +1551,56 @@ auto solve_simple_mcf_unit(
         }
         node_row[n] = add_le(static_cast<double>(cap));
     }
-    for (const auto& [hn, vars] : incident_origin_x) {
+
+    int x_le_o_rows = 0;
+    int o_le_sum_x_rows = 0;
+    auto origin_o_by_hn = std::map<std::pair<int, int>, int> {};
+    for (const auto& xv : origin_x_vars) {
+        const auto h = xv.h;
+        const auto e = UndirectedEdgeKey {xv.u, xv.v};
+        const auto x_var = origin_x_by_he.at({h, e});
+        for (const auto n : {xv.u, xv.v}) {
+            if (graph.nodes[static_cast<std::size_t>(n)].is_virtual) {
+                continue;
+            }
+            const auto hn = std::make_pair(h, n);
+            if (!origin_o_by_hn.contains(hn)) {
+                const auto o_var = static_cast<int>(origin_o_vars.size());
+                origin_o_by_hn[hn] = o_var;
+                origin_o_vars.push_back(OriginOVar {h, n});
+                origin_o_entries.emplace_back();
+                origin_o_entries[static_cast<std::size_t>(o_var)].push_back({node_row.at(n), 1.0});
+            }
+            const auto o_var = origin_o_by_hn.at(hn);
+            const auto row_x_le_o = add_le(0.0);
+            ++x_le_o_rows;
+            origin_x_entries[static_cast<std::size_t>(x_var)].push_back({row_x_le_o, 1.0});
+            origin_o_entries[static_cast<std::size_t>(o_var)].push_back({row_x_le_o, -1.0});
+        }
+    }
+    for (const auto& [hn, o_var] : origin_o_by_hn) {
         const auto h = hn.first;
         const auto n = hn.second;
-        if (vars.empty()) {
+        const auto delta_it = undirected_incidence.find(n);
+        if (delta_it == undirected_incidence.end()) {
             continue;
         }
-        const auto row_link = add_le(0.0);
-        for (const auto j : vars) {
-            origin_x_entries[static_cast<std::size_t>(j)].push_back({row_link, 1.0});
+        auto x_on_delta = std::Vector<int> {};
+        for (const auto& e : delta_it->second) {
+            const auto he_it = origin_x_by_he.find({h, e});
+            if (he_it != origin_x_by_he.end()) {
+                x_on_delta.push_back(he_it->second);
+            }
         }
-        origin_o_vars.push_back(OriginOVar {h, n});
-        auto col = std::Vector<std::pair<int, double>> {};
-        col.push_back({row_link, -2.0});
-        col.push_back({node_row.at(n), 1.0});
-        origin_o_entries.push_back(std::move(col));
+        if (x_on_delta.empty()) {
+            continue;
+        }
+        const auto row_o_le_sum = add_le(0.0);
+        ++o_le_sum_x_rows;
+        origin_o_entries[static_cast<std::size_t>(o_var)].push_back({row_o_le_sum, 1.0});
+        for (const auto x_idx : x_on_delta) {
+            origin_x_entries[static_cast<std::size_t>(x_idx)].push_back({row_o_le_sum, -1.0});
+        }
     }
 
     const auto num_f = static_cast<int>(f_vars.size());
@@ -1589,8 +1614,10 @@ auto solve_simple_mcf_unit(
         {
             {"flow_conservation", static_cast<int>(flow_row.size())},
             {"edge_capacity", static_cast<int>(edge_row.size())},
-            {"f_le_x", f_le_x_rows},
-            {"x_le_o_link", static_cast<int>(origin_o_vars.size())},
+            {"f_le_x_lower", f_le_x_lower_rows},
+            {"f_le_x_upper", f_le_x_upper_rows},
+            {"x_le_o", x_le_o_rows},
+            {"o_le_sum_x", o_le_sum_x_rows},
             {"node_capacity", static_cast<int>(node_row.size())},
         });
     debug::info_fmt(
@@ -1627,8 +1654,7 @@ auto solve_simple_mcf_unit(
     for (int j = 0; j < num_origin_x; ++j) {
         const auto col = num_f + j;
         a_start[static_cast<std::size_t>(col)] = static_cast<HighsInt>(a_index.size());
-        const auto& arc = graph.arcs[static_cast<std::size_t>(origin_x_vars[static_cast<std::size_t>(j)].a)];
-        col_cost[static_cast<std::size_t>(col)] = (enable_mcf_obj && !arc.is_virtual) ? 1.0 : 0.0;
+        col_cost[static_cast<std::size_t>(col)] = enable_mcf_obj ? 1.0 : 0.0;
         for (const auto& [r, v] : origin_x_entries[static_cast<std::size_t>(j)]) {
             a_index.push_back(static_cast<HighsInt>(r));
             a_value.push_back(v);
@@ -1702,9 +1728,12 @@ auto solve_simple_mcf_unit(
                     const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
                     if (arc.u == u && arc.v == v) {
                         warm_values_by_col[static_cast<HighsInt>(f_col)] = 1.0;
-                        const auto ox_it = origin_x_by_ha.find({h, arc_id});
-                        if (ox_it != origin_x_by_ha.end()) {
-                            warm_values_by_col[static_cast<HighsInt>(num_f + ox_it->second)] = 1.0;
+                        if (!arc.is_virtual) {
+                            const auto e = normalized_edge_key(arc.u, arc.v);
+                            const auto ox_it = origin_x_by_he.find({h, e});
+                            if (ox_it != origin_x_by_he.end()) {
+                                warm_values_by_col[static_cast<HighsInt>(num_f + ox_it->second)] = 1.0;
+                            }
                         }
                         break;
                     }
@@ -1798,15 +1827,7 @@ auto solve_simple_mcf_unit(
         if (val <= 0) {
             continue;
         }
-        const auto& arc = graph.arcs[static_cast<std::size_t>(origin_x_vars[j].a)];
-        if (!arc.is_virtual) {
-            auto u = arc.u;
-            auto v = arc.v;
-            if (u > v) {
-                std::swap(u, v);
-            }
-            out.used_edges[{u, v}] = 1;
-        }
+        out.used_edges[{origin_x_vars[j].u, origin_x_vars[j].v}] = 1;
     }
     for (std::size_t j = 0; j < origin_o_vars.size(); ++j) {
         const auto col = static_cast<std::size_t>(num_f + num_origin_x + static_cast<int>(j));
@@ -1843,6 +1864,15 @@ auto log_mcf_paths_by_origin_net(
         const McfPathInfo* info;
         std::size_t cob_unit;
     };
+    struct LogOriginGroup {
+        bool is_bus{false};
+        std::size_t cob_unit{0};
+        std::String group_key {};
+        std::String display_name {};
+        bool is_multi_fanout{false};
+        std::Vector<PathRef> paths {};
+    };
+
     auto refs = std::Vector<PathRef> {};
     for (std::size_t u = 0; u < 16; ++u) {
         for (const auto& info : paths_by_unit[u]) {
@@ -1850,50 +1880,122 @@ auto log_mcf_paths_by_origin_net(
         }
     }
     if (refs.empty()) {
-        debug::info("MCF paths grouped by origin net (build_nets): (no paths)");
+        debug::info("MCF paths grouped by MCF origin: (no paths)");
         return;
     }
-    std::sort(refs.begin(), refs.end(), [&](const PathRef& a, const PathRef& b) {
-        if (a.info->origin_name != b.info->origin_name) {
-            return a.info->origin_name < b.info->origin_name;
-        }
-        const auto bit_a = (a.info->record_id < records.size()) ? records[a.info->record_id].bit_id : 0U;
-        const auto bit_b = (b.info->record_id < records.size()) ? records[b.info->record_id].bit_id : 0U;
-        if (bit_a != bit_b) {
-            return bit_a < bit_b;
-        }
-        if (a.cob_unit != b.cob_unit) {
-            return a.cob_unit < b.cob_unit;
-        }
-        return a.info->label < b.info->label;
-    });
 
-    debug::info("MCF paths grouped by origin net (logical net from build_nets / origin_key):");
-    std::String current_origin {};
+    auto group_map = std::map<std::String, LogOriginGroup> {};
     for (const auto& pr : refs) {
         const auto& info = *pr.info;
-        if (info.origin_name != current_origin) {
-            current_origin = info.origin_name;
-            debug::info_fmt("  origin net \"{}\"", current_origin);
+        if (info.record_id >= records.size()) {
+            continue;
         }
-        std::size_t bit_id = 0;
-        auto rec_name = std::String("(record_id out of range)");
-        if (info.record_id < records.size()) {
-            bit_id = records[info.record_id].bit_id;
-            rec_name = records[info.record_id].net_name;
+        const auto& rec = records[info.record_id];
+        std::String map_key {};
+        LogOriginGroup group {};
+        if (is_sync_bus_origin_key(rec.origin_key.empty() ? rec.net_name : rec.origin_key)) {
+            map_key = std::format("bus:{}", info.origin_name);
+            group.is_bus = true;
+            group.cob_unit = pr.cob_unit;
+            group.group_key = info.origin_name;
+            group.display_name = info.origin_name;
         }
-        debug::info_fmt(
-            "    bit={} 2pin_record=\"{}\" record_id={} COBUnit={} commodity={} start_track={} end_track={} path_count={}",
-            bit_id,
-            rec_name,
-            info.record_id,
-            pr.cob_unit,
-            info.label,
-            info.start_track,
-            info.end_track,
-            info.unit_paths.size());
-        for (std::size_t pi = 0; pi < info.unit_paths.size(); ++pi) {
-            debug::info_fmt("      path#{} {}", pi, path_to_text(graph, info.unit_paths[pi]));
+        else {
+            const auto gkey = record_origin_group_uid(rec);
+            map_key = std::format("simple:{}:{}", pr.cob_unit, gkey);
+            group.is_bus = false;
+            group.cob_unit = pr.cob_unit;
+            group.group_key = gkey;
+            group.display_name = rec.origin_key.empty() ? rec.net_name : rec.origin_key;
+        }
+        auto it = group_map.find(map_key);
+        if (it == group_map.end()) {
+            group.paths.push_back(pr);
+            group_map.emplace(std::move(map_key), std::move(group));
+        }
+        else {
+            it->second.paths.push_back(pr);
+        }
+    }
+
+    auto ordered_keys = std::Vector<std::String> {};
+    ordered_keys.reserve(group_map.size());
+    for (const auto& [key, _] : group_map) {
+        ordered_keys.push_back(key);
+    }
+    std::sort(ordered_keys.begin(), ordered_keys.end());
+
+    for (auto& key : ordered_keys) {
+        auto& group = group_map.at(key);
+        if (group.paths.size() > 1) {
+            for (const auto& pr : group.paths) {
+                if (pr.info->record_id >= records.size()) {
+                    continue;
+                }
+                const auto& rec = records[pr.info->record_id];
+                if (rec.from_track_to_bumps_split || rec.type == Net_type::PNnet) {
+                    group.is_multi_fanout = true;
+                    break;
+                }
+            }
+        }
+        if (group.is_multi_fanout) {
+            const auto& first_rec = records[group.paths.front().info->record_id];
+            group.display_name = first_rec.origin_key.empty() ? first_rec.net_name : first_rec.origin_key;
+        }
+        else if (group.paths.size() == 1 && group.paths.front().info->record_id < records.size()) {
+            group.display_name = records[group.paths.front().info->record_id].net_name;
+        }
+
+        std::sort(group.paths.begin(), group.paths.end(), [&](const PathRef& a, const PathRef& b) {
+            const auto bit_a = (a.info->record_id < records.size()) ? records[a.info->record_id].bit_id : 0U;
+            const auto bit_b = (b.info->record_id < records.size()) ? records[b.info->record_id].bit_id : 0U;
+            if (bit_a != bit_b) {
+                return bit_a < bit_b;
+            }
+            return a.info->label < b.info->label;
+        });
+    }
+
+    debug::info(
+        "MCF paths grouped by MCF origin (BusMCF: SyncNet origin_key; SimpleMCF: COBUnit + origin_uid):");
+    for (const auto& key : ordered_keys) {
+        const auto& group = group_map.at(key);
+        if (group.is_bus) {
+            debug::info_fmt(
+                "  [BusMCF] origin=\"{}\" commodities={}",
+                group.display_name,
+                group.paths.size());
+        }
+        else {
+            debug::info_fmt(
+                "  [SimpleMCF] COBUnit={} group_key=\"{}\" display=\"{}\" multi_fanout={} commodities={}",
+                group.cob_unit,
+                group.group_key,
+                group.display_name,
+                group.is_multi_fanout,
+                group.paths.size());
+        }
+        for (const auto& pr : group.paths) {
+            const auto& info = *pr.info;
+            std::size_t bit_id = 0;
+            auto rec_name = std::String("(record_id out of range)");
+            if (info.record_id < records.size()) {
+                bit_id = records[info.record_id].bit_id;
+                rec_name = records[info.record_id].net_name;
+            }
+            debug::info_fmt(
+                "    commodity={} record=\"{}\" record_id={} bit={} start_track={} end_track={} path_count={}",
+                info.label,
+                rec_name,
+                info.record_id,
+                bit_id,
+                info.start_track,
+                info.end_track,
+                info.unit_paths.size());
+            for (std::size_t pi = 0; pi < info.unit_paths.size(); ++pi) {
+                debug::info_fmt("      path#{} {}", pi, path_to_text(graph, info.unit_paths[pi]));
+            }
         }
     }
 }
@@ -1909,15 +2011,23 @@ auto run_mcf_global_routing_cob_units(
     const bool enable_mcf_parallel,
     const bool enable_pre_routing,
     const bool enable_mcf_obj,
-    const bool defer_interposer_suspend
+    const bool defer_interposer_suspend,
+    const bool disable_bus_mcf
 ) -> CobMcfFullResult {
     (void)basedie;
 
     const auto mcf_start = std::chrono::steady_clock::now();
     const auto peak_before = get_peak_rss_mb();
-    debug::info_fmt(
-        "MCF: BusMCF (global) + SimpleMCF (per COBUnit); SimpleMCF objective={}",
-        enable_mcf_obj ? "min_sum_x (--enable-mcf-obj)" : "feasibility only");
+    if (disable_bus_mcf) {
+        debug::info_fmt(
+            "MCF: SimpleMCF only (--disable-bus-mcf); SimpleMCF objective={}",
+            enable_mcf_obj ? "min_sum_x (--enable-mcf-obj)" : "feasibility only");
+    }
+    else {
+        debug::info_fmt(
+            "MCF: BusMCF (global) + SimpleMCF (per COBUnit); SimpleMCF objective={}",
+            enable_mcf_obj ? "min_sum_x (--enable-mcf-obj)" : "feasibility only");
+    }
 
     CobMcfFullResult out {};
     out.summary.per_cob.resize(16);
@@ -1971,14 +2081,17 @@ auto run_mcf_global_routing_cob_units(
         }
         auto warm_used_edges = std::map<std::pair<int, int>, int> {};
         auto warm_used_nodes = std::map<int, int> {};
-        bus_warm_start = route_mcf_stage_warm_start(
-            "BusMCF",
-            graph,
-            commodities,
-            bus_ids,
-            outgoing_arcs,
-            warm_used_edges,
-            warm_used_nodes);
+        if (!disable_bus_mcf) {
+            bus_warm_start = route_mcf_stage_warm_start(
+                "BusMCF",
+                graph,
+                commodities,
+                bus_ids,
+                outgoing_arcs,
+                warm_used_edges,
+                warm_used_nodes);
+            bus_warm_start_ptr = &bus_warm_start;
+        }
         simple_warm_start = route_mcf_stage_warm_start(
             "SimpleMCF",
             graph,
@@ -1987,7 +2100,6 @@ auto run_mcf_global_routing_cob_units(
             outgoing_arcs,
             warm_used_edges,
             warm_used_nodes);
-        bus_warm_start_ptr = &bus_warm_start;
         simple_warm_start_ptr = &simple_warm_start;
     }
     const auto mcf_warm_t1 = std::chrono::steady_clock::now();
@@ -1996,8 +2108,21 @@ auto run_mcf_global_routing_cob_units(
     debug::info_fmt("timing phase=mcf_warm_start ms={}", out.summary.mcf_warm_start_ms);
 
     const auto solve_t0 = std::chrono::steady_clock::now();
-    auto bus_res = solve_bus_mcf(graph, commodities, bus_ids, bus_warm_start_ptr);
-    
+    auto bus_res = StageSolveResult {};
+    if (disable_bus_mcf) {
+        bus_res.ok = true;
+        bus_res.message = "skipped (--disable-bus-mcf)";
+        bus_res.model_status = static_cast<int>(HighsModelStatus::kOptimal);
+        if (!bus_ids.empty()) {
+            debug::info_fmt(
+                "MCF: BusMCF skipped; {} bus commodities are not routed",
+                bus_ids.size());
+        }
+    }
+    else {
+        bus_res = solve_bus_mcf(graph, commodities, bus_ids, bus_warm_start_ptr);
+    }
+
     // 得到剩余容量
     auto build_edge_residual = [&](const std::size_t unit_c) {
         auto edge_cap = std::map<std::pair<int, int>, int> {};

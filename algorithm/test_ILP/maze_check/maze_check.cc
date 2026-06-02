@@ -82,13 +82,6 @@ auto record_origin_key(const Net_cost_record& record) -> std::String {
     return record.origin_key.empty() ? record.net_name : record.origin_key;
 }
 
-auto record_origin_uid(const Net_cost_record& record) -> std::String {
-    if (!record.origin_uid.empty()) {
-        return record.origin_uid;
-    }
-    return record_origin_key(record);
-}
-
 auto is_simple_mcf_record(const Net_cost_record& record) -> bool {
     return !is_sync_bus_mcf_origin_key(record_origin_key(record));
 }
@@ -153,7 +146,7 @@ auto collect_failed_simple_records(
             record.record_id,
             record.net_name,
             record_origin_key(record),
-            record_origin_uid(record),
+            record_origin_group_uid(record),
             cob_unit});
     }
     return out;
@@ -568,7 +561,7 @@ auto collect_origin_mcf_seed_tracks(
             continue;
         }
         const auto& record = records[i];
-        if (record.type != Net_type::PNnet || record_origin_uid(record) != origin_uid) {
+        if (record.type != Net_type::PNnet || record_origin_group_uid(record) != origin_uid) {
             continue;
         }
         const auto cob_unit = ilp_result.record_track_endpoints[i].cob_unit;
@@ -808,7 +801,7 @@ auto route_tracks_to_bumps_net_ilp_fixed(
     auto sorted_indices = record_indices;
     std::sort(sorted_indices.begin(), sorted_indices.end());
 
-    const auto origin_uid = record_origin_uid(records[sorted_indices.front()]);
+    const auto origin_uid = record_origin_group_uid(records[sorted_indices.front()]);
     const auto failed_set = std::set<std::size_t>(record_indices.begin(), record_indices.end());
 
     auto begin_tracks_vec = std::Vector<hardware::Track*> {};

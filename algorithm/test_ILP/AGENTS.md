@@ -55,7 +55,7 @@ algorithm/test_ILP/
 
 ```bash
 xmake build test_ILP
-./output/test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] [--cob-rows N --cob-cols M] [--enable-mcf-routing] [--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] [--maze-check-ilp-mcf | --maze-check-mcf]
+./output/test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] [--cob-rows N --cob-cols M] [--enable-mcf-routing] [--disable-bus-mcf] [--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] [--maze-check-ilp-mcf | --maze-check-mcf]
 ```
 
 参数语义（以 `main.cc` 为准）：
@@ -66,6 +66,7 @@ xmake build test_ILP
 - `--enable-ilp-parallel`：HiGHS 并行求解 ILP
 - `--cob-rows N` / `--cob-cols M`：可选，**必须成对出现或均省略**。省略时 MCF 构图使用 `hardware::Interposer::COB_ARRAY_HEIGHT` 与 `COB_ARRAY_WIDTH`。若显式传入，数值必须与上述常量完全一致，否则程序报错退出（保证 `track_to_cob`、Bump/TOB 坐标与 MCF 物理假设一致）
 - `--enable-mcf-routing`：在 ILP 分配成功后继续执行 MCF 阶段
+- `--disable-bus-mcf`：须与 `--enable-mcf-routing` 联用；跳过 BusMCF（不占用 Bus 边/节点残余），仅求解 SimpleMCF；SyncNet bus commodity 不会得到 MCF 路径
 - `--enable-mcf-parallel`：SimpleMCF 按 COBUnit 并行求解（`std::async`，每个 unit 独立 HiGHS 实例）
 - `--enable-mcf-obj`：与 `--enable-mcf-routing` 联用时，SimpleMCF 加入 `min Σ x` 目标函数；**省略时 SimpleMCF 为纯可行性求解**（所有变量成本为 0）。BusMCF 始终带 `min Σ f` 目标
 - `--enable-pre-routing`：启用两处 maze warm start。ILP 前在 shadow `Interposer/BaseDie` 上调用主工程 `MazeRouteStrategy`，把已得到的 TOB 连接选择转为 HiGHS MIP start；MCF 前在 `mcf/cob_mcf_router.cc` 的 `GlobalGraph` 上按 BusMCF/SimpleMCF 顺序跑 BFS maze，把路径转为 MCF 变量初值。失败的预布线只记录日志，不作为硬约束；若 HiGHS 使用 warm start 后未返回 optimal，会自动无 warm start 重试
@@ -142,9 +143,10 @@ xmake build test_ILP
 
 `Net_cost_record` 关键字段：
 
-- `origin_key`：把拆分后的 2-pin 子网回并到原始 net
+- `origin_key`：原始逻辑 net 名（`net->name()`），人类可读
+- `origin_uid`：电路 net 的稳定 uid（`net->uid()`），用于 MCF Origin 分组、maze-check 聚合、`bit_id` 计数
 - `record_id`：`build_records` 输出序中的全局唯一 id（用于 ILP/MCF 对齐）
-- `bit_id`：同一 `origin_key` 内的位序号
+- `bit_id`：同一 `origin_uid` 内的位序号（拆分出的子 record 共享父 uid 时递增）
 - `power_kind`：`Pose / Nege / None`
 - `mcf_start_kind / mcf_end_kind`
 - `mcf_start_track / mcf_end_track`
@@ -221,7 +223,7 @@ ILP 约束组：
 
 ### 3.8 MCF 结果展示
 
-- `run_mcf_global_routing_cob_units()` 末尾：先按 COBUnit 打印每条 commodity 的摘要（`path_count` 等），再按 **`origin_key` / `McfPathInfo::origin_name`** 分组输出完整 `path_to_text` track 路径，便于与 `build_nets()` 得到的原始 net 对应（SyncNet / TracksToBumpsNet 拆分出的子 record 共享同一 `origin_key`）
+- `run_mcf_global_routing_cob_units()` 末尾：先按 COBUnit 打印每条 commodity 的摘要（`path_count` 等），再按 **MCF 求解分组** 输出完整 track 路径：**BusMCF** 按 SyncNet `origin_key`；**SimpleMCF** 按 `(COBUnit, origin_uid)`（`record_origin_group_uid()`，与 `build_origin_groups()` 一致；TTB/PN 多扇出共一组，独立 B2B 各一组），`display` 为可读 `origin_key`
 
 第一版文档中的「MCF 走廊内 mazeRoute」实验代码（`ilp_maze_search` / `ilp_maze_finalize`）已从本目标中移除；track 级结果以 MCF 直接输出的路径为准。
 
@@ -266,7 +268,7 @@ ILP 约束组：
 
 `build_records()` 末尾为每条 record 赋值：
 - `record_id`：按输出顺序的全局唯一 id（0, 1, 2, …）
-- `bit_id`：同一 `origin_key` 内的位序号（0, 1, 2, …），用于按 bit 粒度对齐
+- `bit_id`：同一 `origin_uid` 内的位序号（0, 1, 2, …），用于按 bit 粒度对齐
 
 ### 4.6 bits 语义
 
@@ -313,19 +315,18 @@ ILP 约束组：
 - **snk 节点**：PNnet 连到 `V_P`/`V_N`（通过遍历 `starttrack_by_endtrack` 找到与 `start_track` 可达的 `end_track`，为其添加虚拟边）；Tnet 通过 `node_from_track_coord()` 从 `mcf_end_track` 定位；Bnet 通过 `end_bumps.front().TOB` 定位
 - **类别（McfClass）**：PNnet Pose → `P`，PNnet Nege → `N`，其余 → `Plain`
 - **bus 标识（BusMCF）**：仅 `origin_key` 匹配 `SyncNet in group {正整数}`（`group > 0`）的 commodity 标记为 `is_bus=true`，`bus_key = origin_name`；`BumpToBumpNet_*_in_group_-1` 等 **不** 进 BusMCF
-- **SimpleMCF Origin 分组**（`build_origin_groups()`）：
-  - `from_track_to_bumps_split`（TrackToBumpsNet 子 Tnet）：按 `(cob_unit, origin_key)` 聚合，共享 `x/o`
-  - `BumpToBumpNet` 且 `origin_key` 含 `in_group_-1`：按 `(cob_unit, commodity.label)` 独立 Origin（每条 2-pin 不共享 `x/o`）
-  - 其余：按 `(cob_unit, origin_key)`
+- **SimpleMCF Origin 分组**（`build_origin_groups()`）：统一按 `(cob_unit, record_origin_group_uid(record))` 聚合；`origin_uid` 来自 `net->uid()`。同一父 net 的拆分 record（TTB/PN）共享 uid → 共享 `x^H`；每条独立 B2B 有唯一 uid → 独立 Origin
 - **reach_steps**：从 `record.reach_by_end_start` 提取，当前仅用于 ILP 可达性约束与日志；MCF 不注入 Wilton 转弯等式约束
 - **bbox_cobs**：src 和 snk 的 COB 坐标构成的矩形范围内的 COB 列表
 
-### 5.3 两阶段求解（第三版：`solve_bus_mcf` + `solve_simple_mcf_unit`）
+### 5.3 两阶段求解（第五版 SimpleMCF 无向 `x`：`solve_bus_mcf` + `solve_simple_mcf_unit`）
+
+建模仍用**有向弧** `f` 做流守恒；**无向物理边**语义用于 BusMCF 边容量与 SimpleMCF 的 `x^H_e` / 残余容量（第五版；未采用第四版「全局无向 `f`」）。
 
 `run_mcf_global_routing_cob_units()` 流程：
 
-1. **BusMCF**（`solve_bus_mcf()`，全局一次）：变量 `f^{c,n}`、`o^{c,n}`；目标 `min Σ f`；约束含流守恒、边/节点容量、同步线长
-2. **SimpleMCF**（`solve_simple_mcf_unit(c)`，每个 COBUnit 独立 HiGHS）：变量 `f^{c,n}`、`x^{c,H}`、`o^{c,H}`（所有 Origin）；目标 `min Σ x` **仅当** `--enable-mcf-obj`，否则纯可行性；约束含 `f≤x`、Bus 残余边/节点容量
+1. **BusMCF**（`solve_bus_mcf()`，全局一次）：变量 `f^{c,n}`、`o^{c,n}`；目标 `min Σ f`；约束含流守恒、**无向物理边**容量 `Σ_n(f_{ij}+f_{ji})≤1`、节点占用、同步线长
+2. **SimpleMCF**（`solve_simple_mcf_unit(c)`，每个 COBUnit 独立 HiGHS）：变量 `f^{c,n}`（有向弧）、`x^{c,H}_e`（**无向物理边** `e` per Origin）、`o^{c,H}_i`；目标 `min Σ x_e` **仅当** `--enable-mcf-obj`，否则纯可行性；约束含双向 `f↔x`、Bus 残余边/节点容量、`δ(i)` 节点关联
 
 #### BusMCF 约束组与日志
 
@@ -340,7 +341,7 @@ ILP 约束组：
 每个 unit 建模型时输出：
 
 - `SimpleMCF_unit{c} model graph: nodes=… arcs=… commodities=…`
-- 约束行数：`flow_conservation`、`edge_capacity`、`f_le_x`、`x_le_o_link`、`node_capacity`
+- 约束行数：`flow_conservation`、`edge_capacity`、`f_le_x_lower`、`f_le_x_upper`、`x_le_o`、`o_le_sum_x`、`node_capacity`
 - 变量规模：`f=… x=… o=… origin_groups=… cols=… rows=…`
 - `objective min_sum_x: enabled/disabled`
 
@@ -349,14 +350,15 @@ ILP 约束组：
 **BusMCF**：
 
 - 决策变量：`f[k][a]`（commodity 流）、`o[k][n]`（节点占用）
-- 流守恒、边容量 `Σ_n f ≤ 1`、节点 `f≤o` 且 `Σ_n o≤1`、bus 等长（仅 SyncNet bus）：
+- 流守恒、无向物理边容量 `Σ_n(f_{ij}+f_{ji}) ≤ 1`、节点 `f≤o` 且 `Σ_n o≤1`、bus 等长（仅 SyncNet bus）：
   - `total_flow_n = Σ_{(i,j)∈E^c} f^{c,n}_{ij}`，`c` = commodity `n` 所在 COBUnit（弧已由 `arc_usable_for_class` 限定）
   - 同 `bus_key` 内：`total_flow_n = total_flow_m`
 
-**SimpleMCF**：
+**SimpleMCF**（第五版）：
 
-- 决策变量：`f[k][a]`、`x[h][a]`（Origin 级边占用）、`o[h][n]`（Origin 级节点占用）
-- `f ≤ x`；边容量 `Σ_H x ≤ capacity - used^{Bus,c}`；节点 `x≤o^H` 且 `Σ_H o^H ≤ 1 - used^{Bus,c}`
+- 决策变量：`f[k][a]`（有向弧流）、`x[h][e]`（Origin 级**无向物理边**占用，`e={(i,j),(j,i)}`）、`o[h][n]`
+- `f_{ij}, f_{ji} ≤ x^H_e` 且 `x^H_e ≤ Σ_{n∈H.child}(f^n_{ij}+f^n_{ji})`；边容量 `Σ_H x^H_e ≤ capacity_e - used^{Bus,c}_e`
+- 节点：`x^H_e ≤ o^H_i`（`e∈δ(i)`）、`o^H_i ≤ Σ_{e∈δ(i)} x^H_e`、`Σ_H o^H_i ≤ 1 - used^{Bus,c}_i`
 - P/N 路径组成通过 `arc_usable_for_class()` 隐式保证（不连 virtual 节点的 commodity 无对应弧变量）
 
 求解后通过 `extract_path()` 从整数流解中 BFS 提取每个 commodity 的节点路径。
@@ -502,8 +504,9 @@ ILP 约束组：
 
 - **record**：`Net_cost_record`，2-pin 粒度建模单元
 - **record_id**：record 在 `build_records` 输出中的全局唯一序号
-- **bit_id**：同一 `origin_key` 内的位序号
-- **origin_key**：原始 net 标识，用于回并
+- **bit_id**：同一 `origin_uid` 内的位序号
+- **origin_key**：原始 net 名（人类可读）
+- **origin_uid**：电路 net uid，MCF Origin / maze-check / bit_id 的分组键
 - **assignment**：ILP 输出的 record -> cobunit 结果
 - **record_track_endpoint**：ILP 输出的 record -> `(cob_unit, has_start_track, start_track, has_end_track, end_track)` 结构
 - **commodity**：MCF 中单一供需流对象（`PreparedCommodity`）
@@ -514,7 +517,7 @@ ILP 约束组：
 - **BusMCF**：第一阶段求解，仅 `SyncNet in group {正整数}` commodity，带同步等长约束
 - **SimpleMCF**：第二阶段，按 COBUnit 独立求解其余 commodity（含 `in_group_-1` 的 BumpToBumpNet、Tnet、TTB 等）；默认纯可行性，可选 `--enable-mcf-obj` 启用 `min Σ x`
 
-**case5（`test/config/case5`）MCF 诊断预期**（`--enable-mcf-routing`）：`BusMCF commodities=80`、`bus_equal_length=64`（16 组 SyncNet：4×(8−1) + 12×(4−1)）；`BumpToBumpNet in_group_-1` 的 32 条记录在 SimpleMCF 中按 label 独立 Origin。
+**case5（`test/config/case5`）MCF 诊断预期**（`--enable-mcf-routing`）：`BusMCF commodities=80`、`bus_equal_length=64`（16 组 SyncNet：4×(8−1) + 12×(4−1)）；`BumpToBumpNet in_group_-1` 的 32 条记录在 SimpleMCF 中各用独立 `origin_uid`（每条 1 Origin）。
 - **reach_steps**：Wilton 转弯步序列（`IlpReachStep`），描述 end_track 到 start_track 的转弯路径
 
 术语尽量统一，不要在同一文档或代码注释里混用"子网/边/commodity/net"而不加限定。

@@ -64,7 +64,7 @@ struct CobMcfFullResult {
 
 /// Per-cobunit MCF: getNetinCOBUnit → merge → build_commodities → BusMCF (global) + SimpleMCF (per unit).
 /// When \p enable_mcf_parallel is true, SimpleMCF runs concurrently (one HiGHS instance per COBUnit).
-/// SimpleMCF uses v3 origin-level x/o variables for all Origin groups (multi-fanout and single 2-pin).
+/// SimpleMCF uses v5 undirected physical-edge x^H_e and origin-level o^H_i (multi-fanout and single 2-pin).
 /// When \p enable_mcf_obj is true, SimpleMCF adds min Σ x objective; otherwise feasibility-only (zero costs).
 auto run_mcf_global_routing_cob_units(
     const std::Vector<Net_cost_record>& records,
@@ -75,7 +75,8 @@ auto run_mcf_global_routing_cob_units(
     bool enable_mcf_parallel = false,
     bool enable_pre_routing = false,
     bool enable_mcf_obj = false,
-    bool defer_interposer_suspend = false
+    bool defer_interposer_suspend = false,
+    bool disable_bus_mcf = false
 ) -> CobMcfFullResult;
 
 } // namespace PR_tool
