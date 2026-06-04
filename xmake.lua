@@ -172,6 +172,7 @@ target("test_ILP")
         "algorithm/test_ILP/main.cc",
         "algorithm/test_ILP/ilp_allocation/tob_ilp_model.cc",
         "algorithm/test_ILP/ilp_allocation/gurobi.cc",
+        "algorithm/test_ILP/ilp_allocation/gurobi_model_stats.cc",
         "algorithm/test_ILP/ilp_allocation/ilp_speedup.cc",
         "algorithm/test_ILP/ilp_allocation/ilp_apply_interposer.cc",
         "algorithm/test_ILP/precompute/ilp_reach_precompute.cc",
@@ -187,6 +188,46 @@ target("test_ILP")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
+    local gurobi_home = os.getenv("GUROBI_HOME")
+    if not gurobi_home or gurobi_home == "" then
+      if is_plat("linux") then
+        gurobi_home = "/opt/gurobi1302/linux64"
+      else
+        gurobi_home = "/Library/gurobi1302/macos_universal2"
+      end
+    end
+    add_includedirs(gurobi_home .. "/include")
+    add_linkdirs(gurobi_home .. "/lib")
+    add_rpathdirs(gurobi_home .. "/lib")
+    if is_plat("linux") then
+      add_links("pthread", "dl", "m")
+    end
+    add_links("gurobi_c++", "gurobi130")
+
+target("wirelength_study")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_includedirs(
+        "test/module_test/test_function/wirelengthtest",
+        "algorithm/test_ILP",
+        "source",
+        "source/global")
+    add_files(
+        "test/module_test/test_function/wirelengthtest/main.cc",
+        "test/module_test/test_function/wirelengthtest/mcf/cob_mcf_router.cc",
+        "algorithm/test_ILP/ilp_allocation/tob_ilp_model.cc",
+        "algorithm/test_ILP/ilp_allocation/gurobi.cc",
+        "algorithm/test_ILP/ilp_allocation/ilp_speedup.cc",
+        "algorithm/test_ILP/ilp_allocation/ilp_apply_interposer.cc",
+        "algorithm/test_ILP/precompute/ilp_reach_precompute.cc")
+    add_files(
+        "source/algo/**.cc",
+        "source/circuit/**.cc",
+        "source/global/**.cc",
+        "source/hardware/**.cc",
+        "source/parse/**.cc",
+        "source/serde/**.cc")
     local gurobi_home = os.getenv("GUROBI_HOME")
     if not gurobi_home or gurobi_home == "" then
       if is_plat("linux") then

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "ilp_allocation/gurobi.hh"
-#include "ilp_allocation/gurobi_model_stats.hh"
 #include "common/ilp_types.hh"
 
 #include <hardware/interposer.hh>
@@ -14,6 +13,8 @@ class BaseDie;
 } // namespace PR_tool::circuit
 
 namespace PR_tool {
+
+struct McfGlobalGraph;
 
 /// COB tile grid size for MCF graph construction (must match `hardware::Interposer::COB_ARRAY_*` when passed from CLI).
 struct CobMcfGridDims {
@@ -77,8 +78,51 @@ auto run_mcf_global_routing_cob_units(
     bool enable_pre_routing = false,
     bool enable_mcf_obj = false,
     bool defer_interposer_suspend = false,
-    bool disable_bus_mcf = false,
-    const GurobiDiagnosticsOptions& diag = {}
+    bool disable_bus_mcf = false
 ) -> CobMcfFullResult;
+
+struct WirelengthPathRank {
+    int rank{0};
+    int physical_edges{0};
+    int arc_count{0};
+    std::Vector<int> node_path;
+    std::String path_text;
+};
+
+struct WirelengthStudy2PinResult {
+    WirelengthPathRank mcf_rank1 {};
+    std::Vector<WirelengthPathRank> k_shortest {};
+    bool rank1_mcf_matches_yen{false};
+};
+
+struct WirelengthTtbSolution {
+    int rank{0};
+    double total_physical_edges{0.0};
+    std::Vector<McfPathInfo> per_commodity_paths;
+};
+
+struct WirelengthStudyTtbResult {
+    WirelengthTtbSolution mcf_rank1 {};
+    std::Vector<WirelengthTtbSolution> alternates {};
+};
+
+auto run_wirelength_study_2pin(
+    const McfGlobalGraph& graph,
+    int src,
+    int snk,
+    int mcf_class_plain,
+    std::size_t cob_unit,
+    int k,
+    const std::Vector<int>* mcf_rank1_path = nullptr
+) -> WirelengthStudy2PinResult;
+
+auto run_wirelength_study_ttb_origin(
+    McfGlobalGraph& graph,
+    const std::Vector<Net_cost_record>& records,
+    const TobIlpResult& ilp_result,
+    const CobMcfGridDims& cob_grid,
+    const std::String& origin_key,
+    int k
+) -> WirelengthStudyTtbResult;
 
 } // namespace PR_tool

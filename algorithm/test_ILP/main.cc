@@ -3,6 +3,7 @@
 #include "mcf/cob_mcf_router.hh"
 #include "maze_check/maze_check.hh"
 #include "ilp_allocation/gurobi.hh"
+#include "ilp_allocation/gurobi_model_stats.hh"
 #include "common/ilp_types.hh"
 #include "precompute/ilp_reach_precompute.hh"
 #include "precompute/pre_routing_warm_start.hh"
@@ -25,15 +26,20 @@
 #include <std/string.hh>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <format>
 #include <map>
+#include <set>
 #include <sys/resource.h>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
+#include <type_traits>
+#include <vector>
 
 namespace PR_tool {
 
@@ -53,6 +59,8 @@ auto write_mps_file(
     const std::String& output_mps
 ) -> void;
 auto get_peak_rss_mb() -> double;
+auto log_tob_ilp_infeasibility_diagnosis(const TobIlpResult& result) -> void;
+auto log_tob_ilp_bump_usage(const TobIlpResult& result) -> void;
 
 auto run_main(int argc, char** argv) -> int {
     const auto run_begin = std::chrono::steady_clock::now();
@@ -67,6 +75,7 @@ auto run_main(int argc, char** argv) -> int {
             "Usage: xmake run test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] "
             "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--disable-bus-mcf] "
             "[--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
+            "[--gurobi-log] "
             "[--maze-check-ilp-mcf | --maze-check-mcf]");
         log_total_runtime();
         return 1;
@@ -82,6 +91,7 @@ auto run_main(int argc, char** argv) -> int {
     bool enable_pre_routing = false;
     bool maze_check_ilp_mcf = false;
     bool maze_check_mcf = false;
+    bool enable_gurobi_log = false;
     int verbose_v_count = 0;
     bool cob_rows_set = false;
     bool cob_cols_set = false;
@@ -134,6 +144,10 @@ auto run_main(int argc, char** argv) -> int {
             maze_check_mcf = true;
             continue;
         }
+        if (arg == "--gurobi-log") {
+            enable_gurobi_log = true;
+            continue;
+        }
         if (arg == "--cob-rows") {
             if (argi + 1 >= argc) {
                 debug::error("--cob-rows requires an integer argument");
@@ -165,6 +179,7 @@ auto run_main(int argc, char** argv) -> int {
             "Usage: xmake run test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] "
             "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--disable-bus-mcf] "
             "[--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
+            "[--gurobi-log] "
             "[--maze-check-ilp-mcf | --maze-check-mcf]");
         log_total_runtime();
         return 1;
@@ -214,6 +229,15 @@ auto run_main(int argc, char** argv) -> int {
 
     // read file and build nets
     debug::initial_log("./debug.log");
+    GurobiDiagnosticsOptions gurobi_diag {};
+    gurobi_diag.log_dir = std::format("./{}", kGurobiLogSubdir);
+    init_gurobi_modelinfo_log(gurobi_diag.log_dir);
+    if (enable_gurobi_log) {
+        gurobi_diag.enable_gurobi_log = true;
+        log_gurobi_modelinfo(
+            gurobi_diag.log_dir,
+            std::format("Gurobi solver logs enabled: directory={}", gurobi_diag.log_dir));
+    }
     if (verbose_v_count > 0) {
         debug::set_debug_level(debug::DebugLevel::Debug);
         debug::info_fmt("verbose mode enabled: -v count={}", verbose_v_count);
@@ -268,7 +292,7 @@ auto run_main(int argc, char** argv) -> int {
 
     // solve ILP
     const auto solve_begin = std::chrono::steady_clock::now();
-    const auto result = solve_tob_ilp_with_gurobi(records, enable_ilp_parallel, ilp_warm_start_ptr);
+    const auto result = solve_tob_ilp_with_gurobi(records, enable_ilp_parallel, ilp_warm_start_ptr, gurobi_diag);
     const auto solve_end = std::chrono::steady_clock::now();
     const auto ilp_solve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(solve_end - solve_begin).count();
     const auto peak_rss_mb = get_peak_rss_mb();
@@ -277,6 +301,7 @@ auto run_main(int argc, char** argv) -> int {
 
     if (!result.ok) {
         debug::error_fmt("Gurobi: {}", result.message);
+        log_tob_ilp_infeasibility_diagnosis(result);
         debug::info_fmt(
             "timing breakdown (ms): ilp_warm_start={}, ilp_solve={}, mcf_warm_start={}, mcf_solve={}",
             ilp_warm_start_ms,
@@ -286,6 +311,7 @@ auto run_main(int argc, char** argv) -> int {
         log_total_runtime();
         return 1;
     }
+    log_tob_ilp_bump_usage(result);
     for (const auto& d : result.route_details) {
         debug::info_fmt(
             "net \"{}\": bump(T{},B{},G{},I{}) -> j={} (horizontal line), k={} (vertical line), s={}, orient={}, track={}, COBUnit={}",
@@ -356,7 +382,8 @@ auto run_main(int argc, char** argv) -> int {
             enable_pre_routing,
             enable_mcf_obj,
             defer_maze_check_suspend,
-            disable_bus_mcf);
+            disable_bus_mcf,
+            gurobi_diag);
         mcf_warm_start_ms = mcf_full.summary.mcf_warm_start_ms;
         mcf_solve_ms = mcf_full.summary.mcf_solve_ms;
         if (maze_check_ilp_mcf) {
@@ -397,6 +424,158 @@ auto run_main(int argc, char** argv) -> int {
         mcf_solve_ms);
     log_total_runtime();
     return 0;
+}
+
+auto tob_ilp_status_name(const int status) -> std::String {
+    switch (status) {
+        case GRB_OPTIMAL:
+            return "OPTIMAL";
+        case GRB_INFEASIBLE:
+            return "INFEASIBLE";
+        case GRB_INF_OR_UNBD:
+            return "INF_OR_UNBD";
+        case GRB_UNBOUNDED:
+            return "UNBOUNDED";
+        case GRB_TIME_LIMIT:
+            return "TIME_LIMIT";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+template <typename T>
+auto format_limited_values(
+    const std::Vector<T>& values,
+    const std::size_t limit,
+    const bool quote_strings = false
+) -> std::String {
+    if (values.empty()) {
+        return "(none)";
+    }
+    auto out = std::String {};
+    const auto show = std::min(values.size(), limit);
+    for (std::size_t i = 0; i < show; ++i) {
+        if (i != 0) {
+            out += ", ";
+        }
+        if constexpr (std::is_same_v<T, std::String>) {
+            if (quote_strings) {
+                out += std::format("\"{}\"", values[i]);
+            }
+            else {
+                out += values[i];
+            }
+        }
+        else {
+            out += std::format("{}", values[i]);
+        }
+    }
+    if (values.size() > show) {
+        out += std::format(", ... and {} more", values.size() - show);
+    }
+    return out;
+}
+
+auto log_tob_ilp_infeasibility_diagnosis(const TobIlpResult& result) -> void {
+    constexpr std::size_t kMaxIisLogPerKind = 20;
+    constexpr std::size_t kMaxRelatedPerLine = 12;
+    debug::error_fmt(
+        "TOB ILP infeasibility diagnosis: status={}({})",
+        tob_ilp_status_name(result.model_status),
+        result.model_status);
+    if (result.model_status != GRB_INFEASIBLE) {
+        debug::error("  (IIS not computed: status is not INFEASIBLE)");
+        return;
+    }
+    if (result.infeasibility_hints.empty()) {
+        debug::error("  (IIS empty or computeIIS failed)");
+        return;
+    }
+
+    auto kind_counts = std::map<std::String, int> {};
+    auto by_kind = std::map<std::String, std::Vector<const TobIlpConstraintMeta*>> {};
+    auto definite_origins = std::set<std::String> {};
+    auto candidate_origins = std::set<std::String> {};
+    for (const auto& hint : result.infeasibility_hints) {
+        ++kind_counts[hint.kind];
+        by_kind[hint.kind].push_back(&hint);
+        auto& target = (hint.kind == "reachability" || hint.kind == "pn_selection")
+            ? definite_origins
+            : candidate_origins;
+        for (const auto& origin : hint.related_origin_keys) {
+            target.insert(origin);
+        }
+    }
+
+    auto parts = std::Vector<std::String> {};
+    for (const auto& [kind, count] : kind_counts) {
+        parts.push_back(std::format("{}={}", kind, count));
+    }
+    debug::error_fmt("  IIS constraint kinds: {}", format_limited_values(parts, parts.size()));
+    for (const auto& [kind, hints] : by_kind) {
+        debug::error_fmt("  {}:", kind);
+        const auto show = std::min(hints.size(), kMaxIisLogPerKind);
+        for (std::size_t i = 0; i < show; ++i) {
+            const auto& hint = *hints[i];
+            debug::error_fmt(
+                "    - {} | related_records=[{}] related_origins=[{}]",
+                hint.detail,
+                format_limited_values(hint.related_record_ids, kMaxRelatedPerLine),
+                format_limited_values(hint.related_origin_keys, kMaxRelatedPerLine, true));
+        }
+        if (hints.size() > show) {
+            debug::error_fmt("    ... and {} more", hints.size() - show);
+        }
+    }
+
+    auto definite = std::Vector<std::String> {};
+    definite.insert(definite.end(), definite_origins.begin(), definite_origins.end());
+    auto candidate = std::Vector<std::String> {};
+    candidate.insert(candidate.end(), candidate_origins.begin(), candidate_origins.end());
+    debug::error("TOB ILP failed/candidate nets:");
+    debug::error_fmt("  definite_failed_origins=[{}]", format_limited_values(definite, kMaxIisLogPerKind, true));
+    debug::error_fmt("  candidate_conflict_origins=[{}]", format_limited_values(candidate, kMaxIisLogPerKind, true));
+}
+
+auto log_tob_ilp_bump_usage(const TobIlpResult& result) -> void {
+    constexpr std::size_t kBumpsPerTob = 128;
+    constexpr std::size_t kBumpsPerBank = 64;
+    constexpr std::size_t kTotalBumps = hardware::Interposer::TOB_SIZE * kBumpsPerTob;
+    std::array<std::set<Bump_coord>, hardware::Interposer::TOB_SIZE> bumps_by_tob {};
+    std::array<std::array<std::set<Bump_coord>, 2>, hardware::Interposer::TOB_SIZE> bumps_by_bank {};
+    auto all_bumps = std::set<Bump_coord> {};
+
+    for (const auto& w : result.active_w) {
+        if (w.bump.TOB >= hardware::Interposer::TOB_SIZE || w.bump.Bank >= 2) {
+            continue;
+        }
+        bumps_by_tob[w.bump.TOB].insert(w.bump);
+        bumps_by_bank[w.bump.TOB][w.bump.Bank].insert(w.bump);
+        all_bumps.insert(w.bump);
+    }
+
+    debug::info("TOB ILP bump usage (post-solve, ok=true)");
+    for (std::size_t t = 0; t < hardware::Interposer::TOB_SIZE; ++t) {
+        const auto row = t / hardware::Interposer::TOB_ARRAY_WIDTH;
+        const auto col = t % hardware::Interposer::TOB_ARRAY_WIDTH;
+        debug::info_fmt(
+            "  TOB({},{})[linear={}]={}/{} bank0={}/{} bank1={}/{}",
+            row,
+            col,
+            t,
+            bumps_by_tob[t].size(),
+            kBumpsPerTob,
+            bumps_by_bank[t][0].size(),
+            kBumpsPerBank,
+            bumps_by_bank[t][1].size(),
+            kBumpsPerBank);
+    }
+    debug::info_fmt(
+        "  summary used_bumps={}/{} active_w={} active_s={}",
+        all_bumps.size(),
+        kTotalBumps,
+        result.active_w.size(),
+        result.active_s.size());
 }
 
 auto bump_to_ilp_coord(const hardware::Bump* bump) -> Bump_coord {

@@ -55,7 +55,7 @@ algorithm/test_ILP/
 
 ```bash
 xmake build test_ILP
-./output/test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] [--cob-rows N --cob-cols M] [--enable-mcf-routing] [--disable-bus-mcf] [--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] [--maze-check-ilp-mcf | --maze-check-mcf]
+./output/test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] [--cob-rows N --cob-cols M] [--enable-mcf-routing] [--disable-bus-mcf] [--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] [--gurobi-log] [--maze-check-ilp-mcf | --maze-check-mcf]
 ```
 
 参数语义（以 `main.cc` 为准）：
@@ -70,6 +70,7 @@ xmake build test_ILP
 - `--enable-mcf-parallel`：SimpleMCF 按 COBUnit 并行求解（`std::async`，每个 unit 独立 Gurobi 模型）
 - `--enable-mcf-obj`：与 `--enable-mcf-routing` 联用时，SimpleMCF 加入 `min Σ x` 目标函数；**省略时 SimpleMCF 为纯可行性求解**（所有变量成本为 0）。BusMCF 始终带 `min Σ f` 目标
 - `--enable-pre-routing`：启用两处 maze warm start。ILP 前在 shadow `Interposer/BaseDie` 上调用主工程 `MazeRouteStrategy`，把已得到的 TOB 连接选择转为 Gurobi MIP start；MCF 前在 `mcf/cob_mcf_router.cc` 的 `GlobalGraph` 上按 BusMCF/SimpleMCF 顺序跑 BFS maze，把路径转为 MCF 变量初值。失败的预布线只记录日志，不作为硬约束；若 Gurobi 使用 warm start 后未返回 optimal，会自动无 warm start 重试
+- `--gurobi-log`：为每个 Gurobi 模型（ILP、BusMCF、各 SimpleMCF unit）在与 `debug.log` 同目录下的 `gurobi-log/` 子目录写出求解器日志文件（`./gurobi-log/gurobi_{stage}_{seq}.log`）。约束矩阵稀疏性与高耦合行诊断写入 `./gurobi-log/modelinfo.log`（见 §5.5），不进入 `debug.log`
 - `--maze-check-ilp-mcf` / `--maze-check-mcf`：须与 `--enable-mcf-routing` 联用，**二者互斥**。MCF 结束后（即使 SimpleMCF 失败）在真实 `Interposer` 上先 `apply_tob_ilp_result_to_interposer`，再 `suspend` 已有 BusMCF + 成功 SimpleMCF 路径，对 **SimpleMCF 失败 unit** 中的 net 按 `origin_key` 去重做 maze 诊断：
   - `--maze-check-ilp-mcf`：调用主工程 `Net::route(MazeRouteStrategy)`（完整 maze，TOB track 可重选）
   - `--maze-check-mcf`：复用 ILP 已 apply 的 TOB 分配，对 origin_net 做 COB 段 BFS maze（`maze_check/maze_check.cc` 中 `ilp_fixed_route_path`）。一般 2-pin net 验证 ILP 固定起终点是否可达；**`TracksToBumpsNet`（Pose/Nege nets）** 仅诊断 SimpleMCF 失败子集内的 PNnet bump，语义对齐主工程 `MazeRouteStrategy::route_tracks_to_bumps_net`：多起点（ILP bump track + 全部 0/1 端口 + 同 origin 已成功 MCF 路径 track + 本次已累积路径）→ 终点为任意 0/1 端口 track，TOB 接到 BFS 到达的端口
@@ -378,6 +379,7 @@ ILP 约束组：
 
 ### 5.5 日志输出（便于诊断）
 
+- **Gurobi 约束矩阵诊断**（每个 Gurobi 模型 `optimize()` 前，写入 `./gurobi-log/modelinfo.log`）：前缀 `{stage} constraint matrix:`，输出 `rows/cols/nnz/density/sparse/max_row_nnz/avg_row_nnz`（求解前原始模型，非 presolve 后）。前缀 `{stage} heavy coupling rows:` 列出非零系数偏多的约束行（阈值 `max(10, 5×avg_row_nnz)` 或 top-10）；MCF 行附加 `kind/detail`（与 IIS 诊断字段一致）。启用 `--gurobi-log` 时求解器日志另写 `./gurobi-log/gurobi_{stage}_{seq}.log`，路径也会记入 `modelinfo.log`
 - **MCF 建模型**：每个 BusMCF / SimpleMCF_unit 求解前打印图规模（nodes/arcs/commodities）、每种约束的行数、变量/col/row 总数；SimpleMCF 另打印 objective 是否启用
 - **ILP 路由细节**：`main.cc` 中通过 `result.route_details` 输出每条 net 的完整分配信息（bump 坐标、j/k 线、s、orient、track、COBUnit），格式示例：`net "...": bump(T0,B0,G1,I1) -> j=1 (horizontal line), k=4 (vertical line), s=12, orient=straight(QS), track=12, COBUnit=4`
 - **ILP W 变量明细**：输出所有 active W 及其对应 bump、j、k、orient、track

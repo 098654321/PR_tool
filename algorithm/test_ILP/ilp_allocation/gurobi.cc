@@ -1,4 +1,5 @@
 #include "ilp_allocation/gurobi.hh"
+#include "ilp_allocation/gurobi_model_stats.hh"
 #include "ilp_allocation/tob_ilp_model.hh"
 
 #include "gurobi_c++.h"
@@ -7,19 +8,297 @@
 #include <format>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
+#include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 #include <debug/debug.hh>
 
 
 namespace PR_tool {
 
+auto tob_ilp_record_type_name(const Net_type type) -> std::String {
+    switch (type) {
+        case Net_type::Bnet:
+            return "Bnet";
+        case Net_type::Tnet:
+            return "Tnet";
+        case Net_type::PNnet:
+            return "PNnet";
+    }
+    return "Unknown";
+}
+
+auto tob_ilp_origin_key(const Net_cost_record& record) -> std::String {
+    return record.origin_key.empty() ? record.net_name : record.origin_key;
+}
+
+auto tob_ilp_record_brief(const Net_cost_record& record) -> std::String {
+    return std::format(
+        "record_id={} bit_id={} net=\"{}\" origin=\"{}\" type={}",
+        record.record_id,
+        record.bit_id,
+        record.net_name,
+        tob_ilp_origin_key(record),
+        tob_ilp_record_type_name(record.type));
+}
+
+auto tob_ilp_bump_text(
+    const std::size_t tob,
+    const std::size_t bank,
+    const std::size_t group,
+    const std::size_t index
+) -> std::String {
+    return std::format("bump(T{},B{},G{},I{})", tob, bank, group, index);
+}
+
+auto tob_ilp_relation_bumps_for(const Net_cost_record& record) -> std::Vector<Bump_coord> {
+    auto relation_bumps = std::Vector<Bump_coord> {};
+    if (record.type == Net_type::Bnet) {
+        relation_bumps.insert(relation_bumps.end(), record.start_bumps.begin(), record.start_bumps.end());
+        relation_bumps.insert(relation_bumps.end(), record.end_bumps.begin(), record.end_bumps.end());
+    }
+    else {
+        relation_bumps.insert(relation_bumps.end(), record.start_bumps.begin(), record.start_bumps.end());
+    }
+    std::sort(relation_bumps.begin(), relation_bumps.end());
+    relation_bumps.erase(std::unique(relation_bumps.begin(), relation_bumps.end()), relation_bumps.end());
+    return relation_bumps;
+}
+
+auto split_tob_ilp_row_name(const std::String& name) -> std::Vector<std::String> {
+    auto parts = std::Vector<std::String> {};
+    std::size_t begin = 0;
+    while (begin <= name.size()) {
+        const auto end = name.find('_', begin);
+        if (end == std::String::npos) {
+            parts.push_back(name.substr(begin));
+            break;
+        }
+        parts.push_back(name.substr(begin, end - begin));
+        begin = end + 1;
+    }
+    return parts;
+}
+
+auto parse_size_part(const std::Vector<std::String>& parts, const std::size_t index) -> std::optional<std::size_t> {
+    if (index >= parts.size()) {
+        return std::nullopt;
+    }
+    try {
+        return static_cast<std::size_t>(std::stoull(parts[index]));
+    }
+    catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+auto make_tob_ilp_meta(
+    std::String kind,
+    std::String detail,
+    const std::set<std::size_t>& record_indexes,
+    const std::Vector<Net_cost_record>& records
+) -> TobIlpConstraintMeta {
+    auto meta = TobIlpConstraintMeta {};
+    meta.kind = std::move(kind);
+    meta.detail = std::move(detail);
+    auto origin_seen = std::set<std::String> {};
+    for (const auto idx : record_indexes) {
+        if (idx >= records.size()) {
+            continue;
+        }
+        meta.related_record_ids.push_back(records[idx].record_id);
+        const auto origin = tob_ilp_origin_key(records[idx]);
+        if (origin_seen.insert(origin).second) {
+            meta.related_origin_keys.push_back(origin);
+        }
+    }
+    return meta;
+}
+
+auto make_single_record_meta(
+    std::String kind,
+    std::String detail,
+    const std::size_t record_index,
+    const std::Vector<Net_cost_record>& records
+) -> TobIlpConstraintMeta {
+    auto indexes = std::set<std::size_t> {};
+    indexes.insert(record_index);
+    return make_tob_ilp_meta(std::move(kind), std::move(detail), indexes, records);
+}
+
+auto build_tob_ilp_row_meta(
+    const std::Vector<TobIlpLinearRow>& rows,
+    const std::Vector<Net_cost_record>& records
+) -> std::Vector<TobIlpConstraintMeta> {
+    auto records_by_bump = std::map<Bump_coord, std::set<std::size_t>> {};
+    auto records_by_tbg = std::map<std::tuple<std::size_t, std::size_t, std::size_t>, std::set<std::size_t>> {};
+    auto records_by_tb = std::map<std::tuple<std::size_t, std::size_t>, std::set<std::size_t>> {};
+    for (std::size_t n = 0; n < records.size(); ++n) {
+        for (const auto& bump : tob_ilp_relation_bumps_for(records[n])) {
+            records_by_bump[bump].insert(n);
+            records_by_tbg[{bump.TOB, bump.Bank, bump.Group}].insert(n);
+            records_by_tb[{bump.TOB, bump.Bank}].insert(n);
+        }
+    }
+
+    auto metas = std::Vector<TobIlpConstraintMeta> {};
+    metas.reserve(rows.size());
+    for (const auto& row : rows) {
+        const auto parts = split_tob_ilp_row_name(row.name);
+        if (parts.size() < 2 || parts[0] != "R") {
+            metas.push_back(make_tob_ilp_meta("unknown", std::format("row={}", row.name), {}, records));
+            continue;
+        }
+        const auto& tag = parts[1];
+        if (tag == "WONE") {
+            const auto t = parse_size_part(parts, 2);
+            const auto b = parse_size_part(parts, 3);
+            const auto g = parse_size_part(parts, 4);
+            const auto i = parse_size_part(parts, 5);
+            if (t && b && g && i) {
+                const auto bump = Bump_coord {*t, *b, *g, *i};
+                const auto it = records_by_bump.find(bump);
+                metas.push_back(make_tob_ilp_meta(
+                    "bump_assignment",
+                    std::format("{} must select exactly one (j,k)", tob_ilp_bump_text(*t, *b, *g, *i)),
+                    it == records_by_bump.end() ? std::set<std::size_t> {} : it->second,
+                    records));
+                continue;
+            }
+        }
+        if (tag == "HORI") {
+            const auto t = parse_size_part(parts, 2);
+            const auto b = parse_size_part(parts, 3);
+            const auto g = parse_size_part(parts, 4);
+            const auto j = parse_size_part(parts, 5);
+            if (t && b && g && j) {
+                const auto key = std::tuple<std::size_t, std::size_t, std::size_t> {*t, *b, *g};
+                const auto it = records_by_tbg.find(key);
+                metas.push_back(make_tob_ilp_meta(
+                    "tob_hori_capacity",
+                    std::format("TOB={} bank={} group={} horizontal_line_j={} capacity<=1", *t, *b, *g, *j),
+                    it == records_by_tbg.end() ? std::set<std::size_t> {} : it->second,
+                    records));
+                continue;
+            }
+        }
+        if (tag == "VERT") {
+            const auto t = parse_size_part(parts, 2);
+            const auto b = parse_size_part(parts, 3);
+            const auto j = parse_size_part(parts, 4);
+            const auto k = parse_size_part(parts, 5);
+            if (t && b && j && k) {
+                const auto key = std::tuple<std::size_t, std::size_t> {*t, *b};
+                const auto it = records_by_tb.find(key);
+                metas.push_back(make_tob_ilp_meta(
+                    "tob_vert_capacity",
+                    std::format("TOB={} bank={} vertical_slot(j={},k={}) capacity<=1", *t, *b, *j, *k),
+                    it == records_by_tb.end() ? std::set<std::size_t> {} : it->second,
+                    records));
+                continue;
+            }
+        }
+        if (tag.starts_with("QS") || tag.starts_with("QW")) {
+            const auto t = parse_size_part(parts, 2);
+            const auto b = parse_size_part(parts, 3);
+            const auto g = parse_size_part(parts, 4);
+            const auto i = parse_size_part(parts, 5);
+            const auto j = parse_size_part(parts, 6);
+            const auto k = parse_size_part(parts, 7);
+            if (t && b && g && i && j && k) {
+                const auto bump = Bump_coord {*t, *b, *g, *i};
+                const auto it = records_by_bump.find(bump);
+                metas.push_back(make_tob_ilp_meta(
+                    "mux_linearization",
+                    std::format("{} {} linearization at j={} k={}", tob_ilp_bump_text(*t, *b, *g, *i), tag, *j, *k),
+                    it == records_by_bump.end() ? std::set<std::size_t> {} : it->second,
+                    records));
+                continue;
+            }
+        }
+        if (tag == "BEND0") {
+            const auto n = parse_size_part(parts, 2);
+            const auto r = parse_size_part(parts, 3);
+            if (n && r && *n < records.size()) {
+                metas.push_back(make_single_record_meta(
+                    "reachability",
+                    std::format("{}: forbidden Bnet end_track={}", tob_ilp_record_brief(records[*n]), *r),
+                    *n,
+                    records));
+                continue;
+            }
+        }
+        if (tag == "BREACH") {
+            const auto n = parse_size_part(parts, 2);
+            const auto r_end = parse_size_part(parts, 3);
+            const auto r_start = parse_size_part(parts, 4);
+            if (n && r_end && r_start && *n < records.size()) {
+                metas.push_back(make_single_record_meta(
+                    "reachability",
+                    std::format(
+                        "{}: Bnet unreachable pair end_track={} start_track={}",
+                        tob_ilp_record_brief(records[*n]),
+                        *r_end,
+                        *r_start),
+                    *n,
+                    records));
+                continue;
+            }
+        }
+        if (tag == "TREACH0") {
+            const auto n = parse_size_part(parts, 2);
+            const auto r = parse_size_part(parts, 3);
+            if (n && r && *n < records.size()) {
+                metas.push_back(make_single_record_meta(
+                    "reachability",
+                    std::format("{}: Tnet forbidden start_track={}", tob_ilp_record_brief(records[*n]), *r),
+                    *n,
+                    records));
+                continue;
+            }
+        }
+        if (tag == "PNYSUM") {
+            const auto n = parse_size_part(parts, 2);
+            if (n && *n < records.size()) {
+                metas.push_back(make_single_record_meta(
+                    "pn_selection",
+                    std::format("{}: PNnet must select exactly one end_track", tob_ilp_record_brief(records[*n])),
+                    *n,
+                    records));
+                continue;
+            }
+        }
+        if (tag == "PNREACH") {
+            const auto n = parse_size_part(parts, 2);
+            const auto r_end = parse_size_part(parts, 3);
+            const auto r_start = parse_size_part(parts, 4);
+            if (n && r_end && r_start && *n < records.size()) {
+                metas.push_back(make_single_record_meta(
+                    "reachability",
+                    std::format(
+                        "{}: PNnet unreachable pair end_track={} start_track={}",
+                        tob_ilp_record_brief(records[*n]),
+                        *r_end,
+                        *r_start),
+                    *n,
+                    records));
+                continue;
+            }
+        }
+        metas.push_back(make_tob_ilp_meta("unknown", std::format("row={}", row.name), {}, records));
+    }
+    return metas;
+}
+
 auto solve_tob_ilp_with_gurobi(
     const std::Vector<Net_cost_record>& records,
     const bool enable_parallel,
-    const TobIlpWarmStart* warm_start
+    const TobIlpWarmStart* warm_start,
+    const GurobiDiagnosticsOptions& diag
 )
     -> TobIlpResult {
     
@@ -28,6 +307,32 @@ auto solve_tob_ilp_with_gurobi(
     TobIlpModel model {};
     build_tob_ilp_model(model, records);
     const auto data = model.linear_data();
+    const auto row_meta = build_tob_ilp_row_meta(data.rows, records);
+    auto active_bumps = std::set<Bump_coord> {};
+    for (const auto& record : records) {
+        const auto relation_bumps = tob_ilp_relation_bumps_for(record);
+        active_bumps.insert(relation_bumps.begin(), relation_bumps.end());
+    }
+    std::size_t binary_cols = 0;
+    std::size_t nnz = 0;
+    for (const auto& col : data.columns) {
+        if (col.binary) {
+            ++binary_cols;
+        }
+        nnz += col.entries.size();
+    }
+    const double density = (data.rows.empty() || data.columns.empty())
+        ? 0.0
+        : static_cast<double>(nnz) / static_cast<double>(data.rows.size() * data.columns.size());
+    debug::info_fmt(
+        "TOB ILP model summary: records={} active_bumps={} rows={} cols={} binaries={} nnz={} density={:.6e}",
+        records.size(),
+        active_bumps.size(),
+        data.rows.size(),
+        data.columns.size(),
+        binary_cols,
+        nnz,
+        density);
 
     const unsigned int hw_threads = std::thread::hardware_concurrency();
     const int threads = enable_parallel ? static_cast<int>(hw_threads > 1U ? hw_threads : 1U) : 1;
@@ -36,13 +341,15 @@ auto solve_tob_ilp_with_gurobi(
 
     try {
         GRBEnv env {true};
-        env.set(GRB_IntParam_OutputFlag, 0);
+        configure_gurobi_solver_log(env, "TOB_ILP", diag);
         env.start();
 
         GRBModel grb_model {env};
         grb_model.set(GRB_StringAttr_ModelName, "TOB_ALLOC");
         grb_model.set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
-        grb_model.set(GRB_IntParam_OutputFlag, 0);
+        if (!diag.enable_gurobi_log) {
+            grb_model.set(GRB_IntParam_OutputFlag, 0);
+        }
         grb_model.set(GRB_IntParam_Threads, threads);
 
         auto vars = std::vector<GRBVar> {};
@@ -92,11 +399,20 @@ auto solve_tob_ilp_with_gurobi(
             }
         }
 
-        debug::info_fmt(
-            "Gurobi parallel setup: hw_threads={}, requested_threads={}, configured_threads={}",
-            hw_threads,
-            threads,
-            grb_model.get(GRB_IntParam_Threads));
+        log_gurobi_modelinfo(
+            diag.log_dir,
+            std::format(
+                "Gurobi parallel setup: hw_threads={}, requested_threads={}, configured_threads={}",
+                hw_threads,
+                threads,
+                grb_model.get(GRB_IntParam_Threads)));
+
+        auto gurobi_row_meta = std::Vector<GurobiRowMeta> {};
+        gurobi_row_meta.reserve(row_meta.size());
+        for (const auto& meta : row_meta) {
+            gurobi_row_meta.push_back(GurobiRowMeta {meta.kind, meta.detail});
+        }
+        log_gurobi_matrix_diagnostics(grb_model, "TOB_ILP", diag, &gurobi_row_meta);
 
         grb_model.optimize();
         out.model_status = grb_model.get(GRB_IntAttr_Status);
@@ -105,10 +421,35 @@ auto solve_tob_ilp_with_gurobi(
                 debug::warning_fmt(
                     "Gurobi ILP warm start led to non-optimal status ({}); retrying without warm start",
                     out.model_status);
-                return solve_tob_ilp_with_gurobi(records, enable_parallel, nullptr);
+                return solve_tob_ilp_with_gurobi(records, enable_parallel, nullptr, diag);
             }
             out.ok = false;
             out.message = std::format("Gurobi model not optimal (status={})", out.model_status);
+            if (out.model_status == GRB_INFEASIBLE && row_meta.size() == data.rows.size()) {
+                auto row_index_by_name = std::map<std::String, std::size_t> {};
+                for (std::size_t r = 0; r < data.rows.size(); ++r) {
+                    row_index_by_name.emplace(data.rows[r].name, r);
+                }
+                grb_model.computeIIS();
+                const auto num_constrs = grb_model.get(GRB_IntAttr_NumConstrs);
+                const auto constrs = grb_model.getConstrs();
+                auto seen_rows = std::set<std::size_t> {};
+                for (int ci = 0; ci < num_constrs; ++ci) {
+                    const auto& constr = constrs[ci];
+                    if (constr.get(GRB_IntAttr_IISConstr) == 0) {
+                        continue;
+                    }
+                    const auto name = constr.get(GRB_StringAttr_ConstrName);
+                    const auto row_it = row_index_by_name.find(name);
+                    if (row_it == row_index_by_name.end()) {
+                        continue;
+                    }
+                    const auto row = row_it->second;
+                    if (seen_rows.insert(row).second) {
+                        out.infeasibility_hints.push_back(row_meta[row]);
+                    }
+                }
+            }
             return out;
         }
 

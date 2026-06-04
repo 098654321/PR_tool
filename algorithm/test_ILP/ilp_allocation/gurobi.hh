@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/ilp_types.hh"
+#include "ilp_allocation/gurobi_model_stats.hh"
 
 #include <std/collection.hh>
 #include <std/string.hh>
@@ -48,6 +49,13 @@ struct TobIlpRecordTrackEndpoint {
     std::size_t end_track{0};
 };
 
+struct TobIlpConstraintMeta {
+    std::String kind;
+    std::String detail;
+    std::Vector<std::size_t> related_record_ids;
+    std::Vector<std::String> related_origin_keys;
+};
+
 struct TobIlpResult {
     bool ok{false};
     std::String message;
@@ -58,12 +66,14 @@ struct TobIlpResult {
     std::Vector<TobIlpSAssignment> active_s;
     std::Vector<TobIlpNetRouteDetail> route_details;
     std::Vector<TobIlpRecordTrackEndpoint> record_track_endpoints;
+    std::Vector<TobIlpConstraintMeta> infeasibility_hints;
 };
 
 auto solve_tob_ilp_with_gurobi(
     const std::Vector<Net_cost_record>& records,
     bool enable_parallel = false,
-    const TobIlpWarmStart* warm_start = nullptr
+    const TobIlpWarmStart* warm_start = nullptr,
+    const GurobiDiagnosticsOptions& diag = {}
 )
     -> TobIlpResult;
 
