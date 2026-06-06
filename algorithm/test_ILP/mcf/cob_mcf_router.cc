@@ -2497,15 +2497,123 @@ auto path_to_text(const GlobalGraph& graph, const std::Vector<int>& path) -> std
     return s;
 }
 
+auto count_bumps_for_record(const Net_cost_record& record) -> std::size_t {
+    if (record.type == Net_type::Bnet) {
+        return record.start_bumps.size() + record.end_bumps.size();
+    }
+    return record.start_bumps.empty() ? 0U : 1U;
+}
+
+auto add_path_physical_nodes(
+    const GlobalGraph& graph,
+    const std::Vector<int>& path,
+    std::set<int>& seen_nodes,
+    std::size_t& length
+) -> void {
+    for (const auto node : path) {
+        if (node < 0 || node >= static_cast<int>(graph.nodes.size())) {
+            continue;
+        }
+        const auto& meta = graph.nodes[static_cast<std::size_t>(node)];
+        if (meta.is_virtual) {
+            continue;
+        }
+        if (seen_nodes.insert(node).second) {
+            ++length;
+        }
+    }
+}
+
+auto actual_end_track_from_path(const GlobalGraph& graph, const std::Vector<int>& path) -> std::optional<std::size_t> {
+    for (auto it = path.rbegin(); it != path.rend(); ++it) {
+        const auto node = *it;
+        if (node < 0 || node >= static_cast<int>(graph.nodes.size())) {
+            continue;
+        }
+        const auto& meta = graph.nodes[static_cast<std::size_t>(node)];
+        if (!meta.is_virtual) {
+            return meta.track;
+        }
+    }
+    return std::nullopt;
+}
+
+auto wire_length_single_commodity(
+    const GlobalGraph& graph,
+    const McfPathInfo& info,
+    const Net_cost_record& record
+) -> std::size_t {
+    auto seen_nodes = std::set<int> {};
+    std::size_t length = 0;
+    for (const auto& path : info.unit_paths) {
+        add_path_physical_nodes(graph, path, seen_nodes, length);
+    }
+    length += count_bumps_for_record(record);
+    return length;
+}
+
+struct PathRef {
+    const McfPathInfo* info;
+    std::size_t cob_unit;
+};
+
+auto wire_length_multi_fanout_group(
+    const GlobalGraph& graph,
+    const std::Vector<PathRef>& paths,
+    const std::Vector<Net_cost_record>& records
+) -> std::size_t {
+    auto seen_nodes = std::set<int> {};
+    std::size_t length = 0;
+    for (const auto& pr : paths) {
+        if (pr.info->record_id >= records.size()) {
+            continue;
+        }
+        const auto& record = records[pr.info->record_id];
+        if (pr.info->unit_paths.empty()) {
+            length += count_bumps_for_record(record);
+            continue;
+        }
+        add_path_physical_nodes(graph, pr.info->unit_paths.front(), seen_nodes, length);
+        length += count_bumps_for_record(record);
+    }
+    return length;
+}
+
+auto wire_length_for_origin_group(
+    const GlobalGraph& graph,
+    const bool is_bus,
+    const bool is_multi_fanout,
+    const std::Vector<PathRef>& paths,
+    const std::Vector<Net_cost_record>& records
+) -> std::size_t {
+    if (paths.empty()) {
+        return 0;
+    }
+    if (is_multi_fanout) {
+        return wire_length_multi_fanout_group(graph, paths, records);
+    }
+    if (is_bus && paths.size() > 1) {
+        std::size_t sum = 0;
+        for (const auto& pr : paths) {
+            if (pr.info->record_id >= records.size()) {
+                continue;
+            }
+            sum += wire_length_single_commodity(graph, *pr.info, records[pr.info->record_id]);
+        }
+        return sum;
+    }
+    const auto& pr = paths.front();
+    if (pr.info->record_id >= records.size()) {
+        return 0;
+    }
+    return wire_length_single_commodity(graph, *pr.info, records[pr.info->record_id]);
+}
+
 auto log_mcf_paths_by_origin_net(
     const GlobalGraph& graph,
     const std::array<std::Vector<McfPathInfo>, 16>& paths_by_unit,
     const std::Vector<Net_cost_record>& records
-) -> void {
-    struct PathRef {
-        const McfPathInfo* info;
-        std::size_t cob_unit;
-    };
+) -> std::size_t {
     struct LogOriginGroup {
         bool is_bus{false};
         std::size_t cob_unit{0};
@@ -2523,7 +2631,7 @@ auto log_mcf_paths_by_origin_net(
     }
     if (refs.empty()) {
         debug::info("MCF paths grouped by MCF origin: (no paths)");
-        return;
+        return 0;
     }
 
     auto group_map = std::map<std::String, LogOriginGroup> {};
@@ -2601,45 +2709,122 @@ auto log_mcf_paths_by_origin_net(
 
     debug::info(
         "MCF paths grouped by MCF origin (BusMCF: SyncNet origin_key; SimpleMCF: COBUnit + origin_uid):");
+
+    auto total_wire_length = std::size_t {0};
+    auto summary_rows = std::Vector<std::tuple<std::String, std::size_t, bool, std::size_t>> {};
+
     for (const auto& key : ordered_keys) {
         const auto& group = group_map.at(key);
+        const auto group_wire_length = wire_length_for_origin_group(
+            graph,
+            group.is_bus,
+            group.is_multi_fanout,
+            group.paths,
+            records);
+        total_wire_length += group_wire_length;
+        summary_rows.emplace_back(group.display_name, group_wire_length, group.is_multi_fanout, group.paths.size());
+
         if (group.is_bus) {
             debug::info_fmt(
-                "  [BusMCF] origin=\"{}\" commodities={}",
+                "  [BusMCF] origin=\"{}\" commodities={} wire_length={}",
                 group.display_name,
-                group.paths.size());
+                group.paths.size(),
+                group_wire_length);
         }
         else {
             debug::info_fmt(
-                "  [SimpleMCF] COBUnit={} group_key=\"{}\" display=\"{}\" multi_fanout={} commodities={}",
+                "  [SimpleMCF] COBUnit={} group_key=\"{}\" display=\"{}\" multi_fanout={} commodities={} wire_length={}",
                 group.cob_unit,
                 group.group_key,
                 group.display_name,
                 group.is_multi_fanout,
-                group.paths.size());
+                group.paths.size(),
+                group_wire_length);
         }
         for (const auto& pr : group.paths) {
             const auto& info = *pr.info;
             std::size_t bit_id = 0;
             auto rec_name = std::String("(record_id out of range)");
+            const Net_cost_record* rec_ptr = nullptr;
             if (info.record_id < records.size()) {
                 bit_id = records[info.record_id].bit_id;
                 rec_name = records[info.record_id].net_name;
+                rec_ptr = &records[info.record_id];
             }
-            debug::info_fmt(
-                "    commodity={} record=\"{}\" record_id={} bit={} start_track={} end_track={} path_count={}",
-                info.label,
-                rec_name,
-                info.record_id,
-                bit_id,
-                info.start_track,
-                info.end_track,
-                info.unit_paths.size());
+
+            const auto commodity_wire_length = (rec_ptr != nullptr && !group.is_multi_fanout)
+                ? wire_length_single_commodity(graph, info, *rec_ptr)
+                : 0U;
+
+            if (rec_ptr != nullptr && rec_ptr->type == Net_type::PNnet && !info.unit_paths.empty()) {
+                const auto actual_end = actual_end_track_from_path(graph, info.unit_paths.front());
+                const auto actual_end_text = actual_end.has_value() ? std::format("{}", *actual_end) : std::String("?");
+                debug::info_fmt(
+                    "    commodity={} record=\"{}\" record_id={} bit={} start_track={} end_track={} actual_end_track={} path_count={}{}",
+                    info.label,
+                    rec_name,
+                    info.record_id,
+                    bit_id,
+                    info.start_track,
+                    info.end_track,
+                    actual_end_text,
+                    info.unit_paths.size(),
+                    group.is_multi_fanout ? std::String("") : std::format(" wire_length={}", commodity_wire_length));
+            }
+            else if (group.is_bus) {
+                debug::info_fmt(
+                    "    commodity={} record=\"{}\" record_id={} bit={} start_track={} end_track={} path_count={} wire_length={}",
+                    info.label,
+                    rec_name,
+                    info.record_id,
+                    bit_id,
+                    info.start_track,
+                    info.end_track,
+                    info.unit_paths.size(),
+                    commodity_wire_length);
+            }
+            else if (group.is_multi_fanout) {
+                debug::info_fmt(
+                    "    commodity={} record=\"{}\" record_id={} bit={} start_track={} end_track={} path_count={}",
+                    info.label,
+                    rec_name,
+                    info.record_id,
+                    bit_id,
+                    info.start_track,
+                    info.end_track,
+                    info.unit_paths.size());
+            }
+            else {
+                debug::info_fmt(
+                    "    commodity={} record=\"{}\" record_id={} bit={} start_track={} end_track={} path_count={} wire_length={}",
+                    info.label,
+                    rec_name,
+                    info.record_id,
+                    bit_id,
+                    info.start_track,
+                    info.end_track,
+                    info.unit_paths.size(),
+                    commodity_wire_length);
+            }
             for (std::size_t pi = 0; pi < info.unit_paths.size(); ++pi) {
                 debug::info_fmt("      path#{} {}", pi, path_to_text(graph, info.unit_paths[pi]));
             }
         }
     }
+
+    debug::info_fmt(
+        "MCF wire length summary: total_wire_length={} origin_groups={}",
+        total_wire_length,
+        summary_rows.size());
+    for (const auto& [display_name, wire_length, multi_fanout, commodities] : summary_rows) {
+        debug::info_fmt(
+            "  origin=\"{}\" wire_length={} multi_fanout={} commodities={}",
+            display_name,
+            wire_length,
+            multi_fanout,
+            commodities);
+    }
+    return total_wire_length;
 }
 
 } // namespace
@@ -2914,7 +3099,7 @@ auto run_mcf_global_routing_cob_units(
                 info.unit_paths.size());
         }
     }
-    log_mcf_paths_by_origin_net(graph, out.paths_by_unit, records);
+    out.summary.total_wire_length = log_mcf_paths_by_origin_net(graph, out.paths_by_unit, records);
 
     const auto resource_catalog = build_mcf_resource_catalog(graph);
     const auto arc_index = build_undirected_arc_index(graph);

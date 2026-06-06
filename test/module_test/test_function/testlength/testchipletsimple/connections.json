@@ -1,0 +1,16 @@
+{
+    "-1": [
+        [
+            "muyan_1.s_tx_flit_b0",
+            "muyan_0.m_rx_flit_b0"
+        ],
+        [
+            "muyan_2.s_tx_flit_b1",
+            "muyan_3.m_rx_flit_b1"
+        ],
+        [
+            "muyan_5.s_tx_flit_b2",
+            "muyan_6.m_rx_flit_b2"
+        ]
+    ]
+}

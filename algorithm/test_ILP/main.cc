@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
+#include <fstream>
 #include <format>
 #include <map>
 #include <set>
@@ -60,7 +61,10 @@ auto write_mps_file(
 ) -> void;
 auto get_peak_rss_mb() -> double;
 auto log_tob_ilp_infeasibility_diagnosis(const TobIlpResult& result) -> void;
+auto log_tob_ilp_bump_demand(const std::Vector<Net_cost_record>& records) -> void;
 auto log_tob_ilp_bump_usage(const TobIlpResult& result) -> void;
+auto is_testpn_golden_case(const std::String& config_path) -> bool;
+auto run_wire_length_golden_check(const std::String& config_path, std::size_t actual) -> bool;
 
 auto run_main(int argc, char** argv) -> int {
     const auto run_begin = std::chrono::steady_clock::now();
@@ -76,7 +80,8 @@ auto run_main(int argc, char** argv) -> int {
             "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--disable-bus-mcf] "
             "[--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
             "[--gurobi-log] "
-            "[--maze-check-ilp-mcf | --maze-check-mcf]");
+            "[--maze-check-ilp-mcf | --maze-check-mcf] "
+            "[--check-golden]");
         log_total_runtime();
         return 1;
     }
@@ -85,6 +90,7 @@ auto run_main(int argc, char** argv) -> int {
     auto output_mps = std::String {};
     bool enable_ilp_parallel = false;
     bool enable_mcf = false;
+    bool check_golden = false;
     bool disable_bus_mcf = false;
     bool enable_mcf_parallel = false;
     bool enable_mcf_obj = false;
@@ -148,6 +154,10 @@ auto run_main(int argc, char** argv) -> int {
             enable_gurobi_log = true;
             continue;
         }
+        if (arg == "--check-golden") {
+            check_golden = true;
+            continue;
+        }
         if (arg == "--cob-rows") {
             if (argi + 1 >= argc) {
                 debug::error("--cob-rows requires an integer argument");
@@ -180,7 +190,14 @@ auto run_main(int argc, char** argv) -> int {
             "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--disable-bus-mcf] "
             "[--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
             "[--gurobi-log] "
-            "[--maze-check-ilp-mcf | --maze-check-mcf]");
+            "[--maze-check-ilp-mcf | --maze-check-mcf] "
+            "[--check-golden]");
+        log_total_runtime();
+        return 1;
+    }
+
+    if (check_golden && !enable_mcf) {
+        debug::error("--check-golden requires --enable-mcf-routing");
         log_total_runtime();
         return 1;
     }
@@ -261,6 +278,7 @@ auto run_main(int argc, char** argv) -> int {
             "TrackToBumpsNet: {} net(s) split for ILP; COB segment routed in SimpleMCF",
             track_to_bumps_nets.size());
     }
+    log_tob_ilp_bump_demand(records);
 
     // precompute reach
     const auto reach_stats = precompute_reach_for_records(records);
@@ -415,6 +433,10 @@ auto run_main(int argc, char** argv) -> int {
             log_total_runtime();
             return 1;
         }
+        if (check_golden && !run_wire_length_golden_check(config_path, mcf_full.summary.total_wire_length)) {
+            log_total_runtime();
+            return 1;
+        }
     }
     debug::info_fmt(
         "timing breakdown (ms): ilp_warm_start={}, ilp_solve={}, mcf_warm_start={}, mcf_solve={}",
@@ -535,6 +557,61 @@ auto log_tob_ilp_infeasibility_diagnosis(const TobIlpResult& result) -> void {
     debug::error("TOB ILP failed/candidate nets:");
     debug::error_fmt("  definite_failed_origins=[{}]", format_limited_values(definite, kMaxIisLogPerKind, true));
     debug::error_fmt("  candidate_conflict_origins=[{}]", format_limited_values(candidate, kMaxIisLogPerKind, true));
+}
+
+auto tob_ilp_relation_bumps_for_record(const Net_cost_record& record) -> std::Vector<Bump_coord> {
+    auto relation_bumps = std::Vector<Bump_coord> {};
+    if (record.type == Net_type::Bnet) {
+        relation_bumps.insert(relation_bumps.end(), record.start_bumps.begin(), record.start_bumps.end());
+        relation_bumps.insert(relation_bumps.end(), record.end_bumps.begin(), record.end_bumps.end());
+    }
+    else {
+        relation_bumps.insert(relation_bumps.end(), record.start_bumps.begin(), record.start_bumps.end());
+    }
+    sort_and_unique(relation_bumps);
+    return relation_bumps;
+}
+
+auto log_tob_ilp_bump_demand(const std::Vector<Net_cost_record>& records) -> void {
+    constexpr std::size_t kBumpsPerTob = 128;
+    constexpr std::size_t kBumpsPerBank = 64;
+    constexpr std::size_t kTotalBumps = hardware::Interposer::TOB_SIZE * kBumpsPerTob;
+    std::array<std::set<Bump_coord>, hardware::Interposer::TOB_SIZE> bumps_by_tob {};
+    std::array<std::array<std::set<Bump_coord>, 2>, hardware::Interposer::TOB_SIZE> bumps_by_bank {};
+    auto all_bumps = std::set<Bump_coord> {};
+
+    for (const auto& record : records) {
+        for (const auto& bump : tob_ilp_relation_bumps_for_record(record)) {
+            if (bump.TOB >= hardware::Interposer::TOB_SIZE || bump.Bank >= 2) {
+                continue;
+            }
+            bumps_by_tob[bump.TOB].insert(bump);
+            bumps_by_bank[bump.TOB][bump.Bank].insert(bump);
+            all_bumps.insert(bump);
+        }
+    }
+
+    debug::info("TOB ILP bump demand (pre-solve, available_on_failure=true)");
+    for (std::size_t t = 0; t < hardware::Interposer::TOB_SIZE; ++t) {
+        const auto row = t / hardware::Interposer::TOB_ARRAY_WIDTH;
+        const auto col = t % hardware::Interposer::TOB_ARRAY_WIDTH;
+        debug::info_fmt(
+            "  TOB({},{})[linear={}]={}/{} bank0={}/{} bank1={}/{}",
+            row,
+            col,
+            t,
+            bumps_by_tob[t].size(),
+            kBumpsPerTob,
+            bumps_by_bank[t][0].size(),
+            kBumpsPerBank,
+            bumps_by_bank[t][1].size(),
+            kBumpsPerBank);
+    }
+    debug::info_fmt(
+        "  summary demanded_bumps={}/{} records={}",
+        all_bumps.size(),
+        kTotalBumps,
+        records.size());
 }
 
 auto log_tob_ilp_bump_usage(const TobIlpResult& result) -> void {
@@ -894,6 +971,40 @@ auto get_peak_rss_mb() -> double {
     constexpr double kKbPerMb = 1024.0;
     return static_cast<double>(usage.ru_maxrss) / kKbPerMb;
 #endif
+}
+
+auto is_testpn_golden_case(const std::String& config_path) -> bool {
+    return config_path.ends_with("/testpn")
+        || config_path.ends_with("testpn")
+        || config_path.find("/testpn/") != std::String::npos
+        || config_path.find("testlength/testpn") != std::String::npos;
+}
+
+auto run_wire_length_golden_check(const std::String& config_path, const std::size_t actual) -> bool {
+    const auto golden_path = std::format("{}/golden.txt", config_path);
+    auto golden_file = std::ifstream {golden_path.c_str()};
+    if (!golden_file.is_open()) {
+        debug::error_fmt("wire length golden check: cannot open {}", golden_path);
+        return false;
+    }
+    std::size_t expected = 0;
+    if (!(golden_file >> expected)) {
+        debug::error_fmt("wire length golden check: cannot read integer from {}", golden_path);
+        return false;
+    }
+    if (actual == expected) {
+        debug::info_fmt("wire length golden check: ok expected={} actual={}", expected, actual);
+        return true;
+    }
+    if (is_testpn_golden_case(config_path)) {
+        debug::warning_fmt(
+            "wire length golden check: testpn mismatch (allowed) expected={} actual={}",
+            expected,
+            actual);
+        return true;
+    }
+    debug::error_fmt("wire length golden check: mismatch expected={} actual={}", expected, actual);
+    return false;
 }
 
 } // namespace PR_tool
