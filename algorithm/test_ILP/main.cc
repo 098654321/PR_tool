@@ -1,13 +1,13 @@
-// Build ILP model from config, solve with Gurobi, optional MPS export.
+// SAT TOB allocation + optional MCF routing (Gurobi for MCF only).
 
 #include "mcf/cob_mcf_router.hh"
 #include "maze_check/maze_check.hh"
-#include "ilp_allocation/gurobi.hh"
 #include "ilp_allocation/gurobi_model_stats.hh"
 #include "common/ilp_types.hh"
+#include "common/tob_allocation_types.hh"
 #include "precompute/ilp_reach_precompute.hh"
-#include "precompute/pre_routing_warm_start.hh"
 #include "ilp_allocation/tob_ilp_model.hh"
+#include "sat_allocation/solve_tob_sat.hh"
 
 #include <algo/netbuilder/netbuilder.hh>
 #include <algo/router/routeerror.hh>
@@ -66,6 +66,14 @@ auto log_tob_ilp_bump_usage(const TobIlpResult& result) -> void;
 auto is_testpn_golden_case(const std::String& config_path) -> bool;
 auto run_wire_length_golden_check(const std::String& config_path, std::size_t actual) -> bool;
 
+constexpr auto kTestIlpUsage =
+    "Usage: xmake run test_ILP <config_path> [-v|-vv|...] "
+    "[--export-ilp-mps <path>] [--enable-mcf-routing] [--disable-bus-mcf] "
+    "[--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
+    "[--sat-log] [--gurobi-log] "
+    "[--maze-check-ilp-mcf | --maze-check-mcf] "
+    "[--check-golden]";
+
 auto run_main(int argc, char** argv) -> int {
     const auto run_begin = std::chrono::steady_clock::now();
     const auto log_total_runtime = [&]() {
@@ -75,20 +83,13 @@ auto run_main(int argc, char** argv) -> int {
     };
     if (argc < 2) {
         debug::error("No config path given");
-        debug::info(
-            "Usage: xmake run test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] "
-            "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--disable-bus-mcf] "
-            "[--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
-            "[--gurobi-log] "
-            "[--maze-check-ilp-mcf | --maze-check-mcf] "
-            "[--check-golden]");
+        debug::info(kTestIlpUsage);
         log_total_runtime();
         return 1;
     }
 
     const auto config_path = std::String(argv[1]);
-    auto output_mps = std::String {};
-    bool enable_ilp_parallel = false;
+    auto export_ilp_mps = std::String {};
     bool enable_mcf = false;
     bool check_golden = false;
     bool disable_bus_mcf = false;
@@ -98,11 +99,8 @@ auto run_main(int argc, char** argv) -> int {
     bool maze_check_ilp_mcf = false;
     bool maze_check_mcf = false;
     bool enable_gurobi_log = false;
+    bool enable_sat_log = false;
     int verbose_v_count = 0;
-    bool cob_rows_set = false;
-    bool cob_cols_set = false;
-    int cob_rows_cli = 0;
-    int cob_cols_cli = 0;
     for (int argi = 2; argi < argc; ++argi) {
         const auto arg = std::String(argv[argi]);
         if (arg.size() >= 2 && arg[0] == '-' && arg[1] == 'v') {
@@ -118,8 +116,18 @@ auto run_main(int argc, char** argv) -> int {
                 continue;
             }
         }
-        if (arg == "--enable-ilp-parallel") {
-            enable_ilp_parallel = true;
+        if (arg == "--export-ilp-mps") {
+            if (argi + 1 >= argc) {
+                debug::error("--export-ilp-mps requires a path argument");
+                log_total_runtime();
+                return 1;
+            }
+            export_ilp_mps = std::String(argv[argi + 1]);
+            argi += 1;
+            continue;
+        }
+        if (arg == "--sat-log") {
+            enable_sat_log = true;
             continue;
         }
         if (arg == "--enable-mcf-routing") {
@@ -158,40 +166,8 @@ auto run_main(int argc, char** argv) -> int {
             check_golden = true;
             continue;
         }
-        if (arg == "--cob-rows") {
-            if (argi + 1 >= argc) {
-                debug::error("--cob-rows requires an integer argument");
-                log_total_runtime();
-                return 1;
-            }
-            cob_rows_cli = std::atoi(argv[argi + 1]);
-            cob_rows_set = true;
-            argi += 1;
-            continue;
-        }
-        if (arg == "--cob-cols") {
-            if (argi + 1 >= argc) {
-                debug::error("--cob-cols requires an integer argument");
-                log_total_runtime();
-                return 1;
-            }
-            cob_cols_cli = std::atoi(argv[argi + 1]);
-            cob_cols_set = true;
-            argi += 1;
-            continue;
-        }
-        if (output_mps.empty()) {
-            output_mps = arg;
-            continue;
-        }
         debug::error_fmt("Unexpected argument '{}'", arg);
-        debug::info(
-            "Usage: xmake run test_ILP <config_path> [output_mps_path] [-v|-vv|...] [--enable-ilp-parallel] "
-            "[--cob-rows N --cob-cols M] [--enable-mcf-routing] [--disable-bus-mcf] "
-            "[--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
-            "[--gurobi-log] "
-            "[--maze-check-ilp-mcf | --maze-check-mcf] "
-            "[--check-golden]");
+        debug::info(kTestIlpUsage);
         log_total_runtime();
         return 1;
     }
@@ -202,30 +178,10 @@ auto run_main(int argc, char** argv) -> int {
         return 1;
     }
 
-    const int cob_rows_hw = static_cast<int>(hardware::Interposer::COB_ARRAY_HEIGHT);
-    const int cob_cols_hw = static_cast<int>(hardware::Interposer::COB_ARRAY_WIDTH);
-    int cob_rows = cob_rows_hw;
-    int cob_cols = cob_cols_hw;
-    if (cob_rows_set != cob_cols_set) {
-        debug::error("COB grid: specify both --cob-rows and --cob-cols, or neither (defaults to Interposer dimensions)");
-        log_total_runtime();
-        return 1;
-    }
-    if (cob_rows_set) {
-        if (cob_rows_cli != cob_rows_hw || cob_cols_cli != cob_cols_hw) {
-            debug::error_fmt(
-                "COB grid from CLI ({}, {}) must match hardware::Interposer (rows={}, cols={})",
-                cob_rows_cli,
-                cob_cols_cli,
-                cob_rows_hw,
-                cob_cols_hw);
-            log_total_runtime();
-            return 1;
-        }
-        cob_rows = cob_rows_cli;
-        cob_cols = cob_cols_cli;
-    }
-    const CobMcfGridDims cob_grid {cob_rows, cob_cols};
+    const CobMcfGridDims cob_grid {
+        static_cast<int>(hardware::Interposer::COB_ARRAY_HEIGHT),
+        static_cast<int>(hardware::Interposer::COB_ARRAY_WIDTH),
+    };
 
     if ((maze_check_ilp_mcf || maze_check_mcf) && !enable_mcf) {
         debug::error("maze-check flags require --enable-mcf-routing");
@@ -241,6 +197,9 @@ auto run_main(int argc, char** argv) -> int {
         debug::error("--maze-check-ilp-mcf and --maze-check-mcf are mutually exclusive");
         log_total_runtime();
         return 1;
+    }
+    if (enable_pre_routing && !enable_mcf) {
+        debug::info("warning: --enable-pre-routing has no effect without --enable-mcf-routing (MCF graph warm start only)");
     }
     const bool defer_maze_check_suspend = maze_check_ilp_mcf || maze_check_mcf;
 
@@ -280,50 +239,39 @@ auto run_main(int argc, char** argv) -> int {
     }
     log_tob_ilp_bump_demand(records);
 
-    // precompute reach
-    const auto reach_stats = precompute_reach_for_records(records);
-    debug::info_fmt(
-        "reach precompute: records={} (B={}, T={}, PN={}), total_endtracks={}, total_starttrack_edges={}",
-        reach_stats.total_records,
-        reach_stats.bnet_records,
-        reach_stats.tnet_records,
-        reach_stats.pnnet_records,
-        reach_stats.total_endtracks,
-        reach_stats.total_starttrack_edges);
-    if (!output_mps.empty()) {
-        write_mps_file(records, output_mps);
-        debug::info_fmt("MPS written: {}", output_mps);
+    if (!export_ilp_mps.empty()) {
+        const auto reach_stats = precompute_reach_for_records(records);
+        debug::info_fmt(
+            "MPS export reach precompute: records={} total_endtracks={} total_starttrack_edges={}",
+            reach_stats.total_records,
+            reach_stats.total_endtracks,
+            reach_stats.total_starttrack_edges);
+        write_mps_file(records, export_ilp_mps);
+        debug::info_fmt("ILP MPS written: {}", export_ilp_mps);
     }
 
-    // pre-routing warm start
-    auto ilp_warm_start = TobIlpWarmStart {};
-    const TobIlpWarmStart* ilp_warm_start_ptr = nullptr;
-    long long ilp_warm_start_ms = 0;
-    if (enable_pre_routing) {
-        const auto ilp_warm_t0 = std::chrono::steady_clock::now();
-        ilp_warm_start = build_ilp_warm_start_from_maze(config_path, records);
-        const auto ilp_warm_t1 = std::chrono::steady_clock::now();
-        ilp_warm_start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(ilp_warm_t1 - ilp_warm_t0).count();
-        ilp_warm_start_ptr = &ilp_warm_start;
+    CadicalDiagnosticsOptions sat_diag {};
+    sat_diag.log_dir = "./cadical-log";
+    sat_diag.enable_sat_log = enable_sat_log;
+    sat_diag.verbose_reach_endpoints = verbose_v_count > 0;
+    if (enable_sat_log) {
+        debug::info_fmt("CaDiCal solver logs enabled: directory={}", sat_diag.log_dir);
     }
-    debug::info_fmt("timing phase=ilp_warm_start ms={}", ilp_warm_start_ms);
 
-    // solve ILP
     const auto solve_begin = std::chrono::steady_clock::now();
-    const auto result = solve_tob_ilp_with_gurobi(records, enable_ilp_parallel, ilp_warm_start_ptr, gurobi_diag);
+    const auto result = solve_tob_sat_with_cadical(records, sat_diag);
     const auto solve_end = std::chrono::steady_clock::now();
-    const auto ilp_solve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(solve_end - solve_begin).count();
+    const auto tob_sat_solve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(solve_end - solve_begin).count();
     const auto peak_rss_mb = get_peak_rss_mb();
-    debug::info_fmt("timing phase=ilp_solve ms={}", ilp_solve_ms);
+    debug::info_fmt("timing phase=tob_sat_solve ms={}", tob_sat_solve_ms);
     debug::info_fmt("Process peak RSS: {:.2f} MB", peak_rss_mb);
 
     if (!result.ok) {
-        debug::error_fmt("Gurobi: {}", result.message);
+        debug::error_fmt("SAT TOB: {}", result.message);
         log_tob_ilp_infeasibility_diagnosis(result);
         debug::info_fmt(
-            "timing breakdown (ms): ilp_warm_start={}, ilp_solve={}, mcf_warm_start={}, mcf_solve={}",
-            ilp_warm_start_ms,
-            ilp_solve_ms,
+            "timing breakdown (ms): tob_sat_solve={}, mcf_warm_start={}, mcf_solve={}",
+            tob_sat_solve_ms,
             0,
             0);
         log_total_runtime();
@@ -382,6 +330,7 @@ auto run_main(int argc, char** argv) -> int {
             s.k);
     }
     debug::info_fmt("objective value: {}", result.objective);
+    debug::info_fmt("SAT solved at range_level={}", result.range_level);
     debug::info_fmt("nets solved: {}", records.size());
 
     long long mcf_warm_start_ms = 0;
@@ -425,9 +374,8 @@ auto run_main(int argc, char** argv) -> int {
         if (!mcf_full.summary.all_ok) {
             debug::error("MCF global routing: one or more COB unit solves failed; see MCF log lines");
             debug::info_fmt(
-                "timing breakdown (ms): ilp_warm_start={}, ilp_solve={}, mcf_warm_start={}, mcf_solve={}",
-                ilp_warm_start_ms,
-                ilp_solve_ms,
+                "timing breakdown (ms): tob_sat_solve={}, mcf_warm_start={}, mcf_solve={}",
+                tob_sat_solve_ms,
                 mcf_warm_start_ms,
                 mcf_solve_ms);
             log_total_runtime();
@@ -439,124 +387,33 @@ auto run_main(int argc, char** argv) -> int {
         }
     }
     debug::info_fmt(
-        "timing breakdown (ms): ilp_warm_start={}, ilp_solve={}, mcf_warm_start={}, mcf_solve={}",
-        ilp_warm_start_ms,
-        ilp_solve_ms,
+        "timing breakdown (ms): tob_sat_solve={}, mcf_warm_start={}, mcf_solve={}",
+        tob_sat_solve_ms,
         mcf_warm_start_ms,
         mcf_solve_ms);
     log_total_runtime();
     return 0;
 }
 
-auto tob_ilp_status_name(const int status) -> std::String {
-    switch (status) {
-        case GRB_OPTIMAL:
-            return "OPTIMAL";
-        case GRB_INFEASIBLE:
-            return "INFEASIBLE";
-        case GRB_INF_OR_UNBD:
-            return "INF_OR_UNBD";
-        case GRB_UNBOUNDED:
-            return "UNBOUNDED";
-        case GRB_TIME_LIMIT:
-            return "TIME_LIMIT";
-        default:
-            return "UNKNOWN";
+auto tob_sat_status_name(const int status) -> std::String {
+    if (status == 10) {
+        return "SAT";
     }
-}
-
-template <typename T>
-auto format_limited_values(
-    const std::Vector<T>& values,
-    const std::size_t limit,
-    const bool quote_strings = false
-) -> std::String {
-    if (values.empty()) {
-        return "(none)";
+    if (status == 20) {
+        return "UNSAT";
     }
-    auto out = std::String {};
-    const auto show = std::min(values.size(), limit);
-    for (std::size_t i = 0; i < show; ++i) {
-        if (i != 0) {
-            out += ", ";
-        }
-        if constexpr (std::is_same_v<T, std::String>) {
-            if (quote_strings) {
-                out += std::format("\"{}\"", values[i]);
-            }
-            else {
-                out += values[i];
-            }
-        }
-        else {
-            out += std::format("{}", values[i]);
-        }
-    }
-    if (values.size() > show) {
-        out += std::format(", ... and {} more", values.size() - show);
-    }
-    return out;
+    return "UNKNOWN";
 }
 
 auto log_tob_ilp_infeasibility_diagnosis(const TobIlpResult& result) -> void {
-    constexpr std::size_t kMaxIisLogPerKind = 20;
-    constexpr std::size_t kMaxRelatedPerLine = 12;
     debug::error_fmt(
-        "TOB ILP infeasibility diagnosis: status={}({})",
-        tob_ilp_status_name(result.model_status),
-        result.model_status);
-    if (result.model_status != GRB_INFEASIBLE) {
-        debug::error("  (IIS not computed: status is not INFEASIBLE)");
-        return;
+        "TOB SAT infeasibility diagnosis: status={}({}) message=\"{}\"",
+        tob_sat_status_name(result.model_status),
+        result.model_status,
+        result.message);
+    if (!result.infeasibility_hints.empty()) {
+        debug::error_fmt("  hints={}", result.infeasibility_hints.size());
     }
-    if (result.infeasibility_hints.empty()) {
-        debug::error("  (IIS empty or computeIIS failed)");
-        return;
-    }
-
-    auto kind_counts = std::map<std::String, int> {};
-    auto by_kind = std::map<std::String, std::Vector<const TobIlpConstraintMeta*>> {};
-    auto definite_origins = std::set<std::String> {};
-    auto candidate_origins = std::set<std::String> {};
-    for (const auto& hint : result.infeasibility_hints) {
-        ++kind_counts[hint.kind];
-        by_kind[hint.kind].push_back(&hint);
-        auto& target = (hint.kind == "reachability" || hint.kind == "pn_selection")
-            ? definite_origins
-            : candidate_origins;
-        for (const auto& origin : hint.related_origin_keys) {
-            target.insert(origin);
-        }
-    }
-
-    auto parts = std::Vector<std::String> {};
-    for (const auto& [kind, count] : kind_counts) {
-        parts.push_back(std::format("{}={}", kind, count));
-    }
-    debug::error_fmt("  IIS constraint kinds: {}", format_limited_values(parts, parts.size()));
-    for (const auto& [kind, hints] : by_kind) {
-        debug::error_fmt("  {}:", kind);
-        const auto show = std::min(hints.size(), kMaxIisLogPerKind);
-        for (std::size_t i = 0; i < show; ++i) {
-            const auto& hint = *hints[i];
-            debug::error_fmt(
-                "    - {} | related_records=[{}] related_origins=[{}]",
-                hint.detail,
-                format_limited_values(hint.related_record_ids, kMaxRelatedPerLine),
-                format_limited_values(hint.related_origin_keys, kMaxRelatedPerLine, true));
-        }
-        if (hints.size() > show) {
-            debug::error_fmt("    ... and {} more", hints.size() - show);
-        }
-    }
-
-    auto definite = std::Vector<std::String> {};
-    definite.insert(definite.end(), definite_origins.begin(), definite_origins.end());
-    auto candidate = std::Vector<std::String> {};
-    candidate.insert(candidate.end(), candidate_origins.begin(), candidate_origins.end());
-    debug::error("TOB ILP failed/candidate nets:");
-    debug::error_fmt("  definite_failed_origins=[{}]", format_limited_values(definite, kMaxIisLogPerKind, true));
-    debug::error_fmt("  candidate_conflict_origins=[{}]", format_limited_values(candidate, kMaxIisLogPerKind, true));
 }
 
 auto tob_ilp_relation_bumps_for_record(const Net_cost_record& record) -> std::Vector<Bump_coord> {

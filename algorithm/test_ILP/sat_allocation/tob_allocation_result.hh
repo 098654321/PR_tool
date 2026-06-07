@@ -2,19 +2,16 @@
 
 #include "common/ilp_types.hh"
 #include "common/tob_allocation_types.hh"
-#include "ilp_allocation/gurobi_model_stats.hh"
 
+#include <functional>
 #include <std/collection.hh>
 #include <std/string.hh>
 
 namespace PR_tool {
 
-auto solve_tob_ilp_with_gurobi(
+auto build_tob_ilp_result_from_assignment(
     const std::Vector<Net_cost_record>& records,
-    bool enable_parallel = false,
-    const TobIlpWarmStart* warm_start = nullptr,
-    const GurobiDiagnosticsOptions& diag = {}
-)
-    -> TobIlpResult;
+    const std::function<bool(std::string_view var_name)>& is_true
+) -> TobIlpResult;
 
 } // namespace PR_tool

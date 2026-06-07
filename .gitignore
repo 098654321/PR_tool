@@ -3,6 +3,8 @@
 
 # Xmake cache
 .xmake/
+.plan
+.cursor
 build/
 
 # MacOS Cache
@@ -24,5 +26,5 @@ schedule*
 
 .VSCodeCounter/*
 .venv/
-third/HiGHS/
+third_party/cadical/
 local/*

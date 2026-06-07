@@ -178,7 +178,14 @@ target("test_ILP")
         "algorithm/test_ILP/precompute/ilp_reach_precompute.cc",
         "algorithm/test_ILP/precompute/pre_routing_warm_start.cc",
         "algorithm/test_ILP/mcf/cob_mcf_router.cc",
-        "algorithm/test_ILP/maze_check/maze_check.cc"
+        "algorithm/test_ILP/maze_check/maze_check.cc",
+        "algorithm/test_ILP/sat_allocation/tob_sat_encoder.cc",
+        "algorithm/test_ILP/sat_allocation/cadical_solver.cc",
+        "algorithm/test_ILP/sat_allocation/tob_allocation_result.cc",
+        "algorithm/test_ILP/sat_allocation/solve_tob_sat.cc",
+        "algorithm/test_ILP/precompute/ilp_bounding_box.cc",
+        "algorithm/test_ILP/precompute/tob_reach_with_range.cc",
+        "algorithm/test_ILP/precompute/tob_channel_kshortest.cc"
     )
     add_files(
         "source/algo/**.cc",
@@ -188,7 +195,7 @@ target("test_ILP")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
-    local gurobi_home = os.getenv("GUROBI_HOME")
+    local gurobi_home = os.getenv("GUROBI_HOME")    -- Gurobi home directory
     if not gurobi_home or gurobi_home == "" then
       if is_plat("linux") then
         gurobi_home = "/opt/gurobi1302/linux64"
@@ -203,6 +210,16 @@ target("test_ILP")
       add_links("pthread", "dl", "m")
     end
     add_links("gurobi_c++", "gurobi130")
+    if has_config("cadical") then   -- Use CaDiCaL SAT solver
+        add_defines("USE_CADICAL")
+        add_includedirs("third_party/cadical/src")
+        add_linkdirs("third_party/cadical/build")
+        add_links("cadical")
+        if is_plat("linux") then
+            add_syslinks("pthread")
+        end
+    end
+
 
 target("wirelength_study")
     set_kind("binary")
@@ -244,6 +261,16 @@ target("wirelength_study")
     end
     add_links("gurobi_c++", "gurobi130")
 
+
+-- tools
+
+option("cadical")
+
+    set_default(true)
+
+    set_showmenu(true)
+
+    set_description("Enable CaDiCaL SAT solver")
 
 
 -- xmake project -k compile_commands
