@@ -5,7 +5,7 @@
 该目录是一个独立的算法验证入口，不直接替代 `source/algo/router/` 的正式路由流程。它强调：
 
 - TOB 阶段用 CaDiCal SAT 求可行 track 分配（第六版 SAT1）
-- MCF 阶段仍用 Gurobi 求解 BusMCF / SimpleMCF（第五版）
+- MCF 阶段用 Gurobi 求解 BusMCF / SimpleMCF（第五版建模 + 第六版 bbox 可行图裁剪）
 - 在 `test_ILP` 范围内隔离实验逻辑，避免污染主流程
 
 ### 工作流程中一些必须要做的事情
@@ -40,8 +40,9 @@ algorithm/test_ILP/
 │   ├── tob_reach_with_range.{hh,cc}
 │   ├── tob_channel_kshortest.{hh,cc}
 │   └── pre_routing_warm_start.{hh,cc}  # 已不被 main 调用（遗留）
-├── mcf/                    # 阶段 B：track 级 BusMCF + SimpleMCF
+├── mcf/                    # 阶段 B：track 级 BusMCF + SimpleMCF（含 bbox 可行图）
 │   ├── cob_mcf_router.{hh,cc}
+│   ├── mcf_bbox.{hh,cc}    # MCF bbox 上下文、弧判定、bus/origin RectHull
 │   ├── mcf_graph.hh
 │   └── mcf_hw_map.hh
 ├── maze_check/
@@ -90,12 +91,12 @@ xmake build test_ILP
 3) 可选 `--export-ilp-mps`：`precompute_reach_for_records()` + `write_mps_file()` 导出 legacy ILP MPS  
 4) `solve_tob_sat_with_cadical()`：按 `range_level 0..4` 迭代（`precompute_reach_for_range` → CNF → CaDiCal），输出 `TobIlpResult`（`assignments`、`active_w/active_s`、`route_details`、`record_track_endpoints`、`range_level`）  
 5) 若启用 `--enable-mcf-routing`：  
-   `run_mcf_global_routing_cob_units()`，COB 网格固定为 `hardware::Interposer::COB_ARRAY_HEIGHT/WIDTH`；在 track 级全局图上做 BusMCF + SimpleMCF。若同时启用 `--enable-pre-routing`，在 MCF 求解前生成 graph-maze warm start；MCF 返回前在 `Interposer` 上对路径 `suspend()`（见 [`source/AGENTS.md`](source/AGENTS.md)）
+   `run_mcf_global_routing_cob_units()`，COB 网格固定为 `hardware::Interposer::COB_ARRAY_HEIGHT/WIDTH`；读取 `ilp_result.range_level`，经 `build_mcf_bbox_context()` 为每条 commodity 构造与 TOB 一致的 bbox，在可行图 $E_n^c$ / $E_H^c$ 上做 BusMCF + SimpleMCF。若同时启用 `--enable-pre-routing`，warm start BFS 同样受 bbox 限制；MCF 返回前在 `Interposer` 上对路径 `suspend()`（见 [`source/AGENTS.md`](source/AGENTS.md)）
 
 建议把该链路理解为：
 
 - **阶段 A（SAT TOB）**：决定每条 2-pin net 的 `COBUnit` 与 bump track 分配
-- **阶段 B（MCF）**：在 track 级全局图上按 commodity 做容量约束整数流路由（Gurobi）
+- **阶段 B（MCF）**：在 track 级全局图上按 commodity 做容量约束整数流路由（Gurobi）；Bnet/Tnet 与 bus / 多扇出 origin 受第六版 bbox 裁剪，PNnet 不裁剪
 
 ### 2.1 分阶段耗时（写入 `debug.log`）
 
@@ -191,7 +192,8 @@ ILP 约束组：
   - `GlobalGraph`：track 级全局路由图（节点 = `(unit, dir, row, col, track)` 五元组 + VP/VN 虚拟节点）
   - `NodeMeta`：节点元数据，包含 `track_dir`（0=Horizontal, 1=Vertical）、`track_row`、`track_col`、`unit`、`track`
   - `Arc`：有向弧，包含 `u`/`v` 端点、`is_virtual`/`is_turn` 标记、`unit`、`cob`（所属 COB 线性编号）、`track_in`/`track_out`（输入/输出 track）、`from_dir`/`to_dir`（COBDirection，Wilton 转弯方向）
-  - `PreparedCommodity`：每个 commodity 的 `label`、`origin_name`、源/汇节点、类别（`Plain`/`P`/`N`）、bus 标识、reach 步序列、bbox
+  - `PreparedCommodity`：每个 commodity 的 `label`、`origin_name`、源/汇节点、类别（`Plain`/`P`/`N`）、bus 标识、reach 步序列
+  - `mcf/mcf_bbox.{hh,cc}`：`build_mcf_bbox_context()`、`physical_arc_in_bbox()`、`resolve_mcf_bbox()`；与 `ilp_bounding_box` 共用 `compute_bounding_box(record, range_level)`
   - `StageSolveResult`：单阶段求解结果（已用边/节点、路径）
   - `arc_usable_for_class()`：按 `unit` 和 P/N 类别过滤 arc
   - `extract_path()`：从整数流解中通过 BFS 提取单 commodity 路径
@@ -313,17 +315,38 @@ ILP 约束组：
 - **类别（McfClass）**：PNnet Pose → `P`，PNnet Nege → `N`，其余 → `Plain`
 - **bus 标识（BusMCF）**：仅 `origin_key` 匹配 `SyncNet in group {正整数}`（`group > 0`）的 commodity 标记为 `is_bus=true`，`bus_key = origin_name`；`BumpToBumpNet_*_in_group_-1` 等 **不** 进 BusMCF
 - **SimpleMCF Origin 分组**（`build_origin_groups()`）：统一按 `(cob_unit, record_origin_group_uid(record))` 聚合；`origin_uid` 来自 `net->uid()`。同一父 net 的拆分 record（TTB/PN）共享 uid → 共享 `x^H`；每条独立 B2B 有唯一 uid → 独立 Origin
-- **reach_steps**：从 `record.reach_by_end_start` 提取，当前仅用于 ILP 可达性约束与日志；MCF 不注入 Wilton 转弯等式约束
-- **bbox_cobs**：src 和 snk 的 COB 坐标构成的矩形范围内的 COB 列表
+- **reach_steps**：从 `record.reach_by_end_start` 提取，当前仅用于 SAT/legacy ILP 可达性约束与日志；MCF 不注入 Wilton 转弯等式约束
 
-### 5.3 两阶段求解（第五版 SimpleMCF 无向 `x`：`solve_bus_mcf` + `solve_simple_mcf_unit`）
+### 5.2.1 MCF bbox 可行图（第六版 §456–717）
+
+`run_mcf_global_routing_cob_units()` 在 `prepare_commodities()` 之后调用 `build_mcf_bbox_context(records, commodities, ilp_result.range_level)`：
+
+| 对象 | MCF 范围 |
+|------|----------|
+| Bnet / Tnet | `compute_bounding_box(record, range_level)` |
+| BusMCF（SyncNet） | 同 `bus_key` 内所有成员 net bbox 的 `rect_hull_boxes` |
+| SimpleMCF 多扇出 origin | 各 child net bbox 的 RectHull（TTB 等） |
+| Pnet / Nnet | **不裁剪**（第五版全图 + virtual 边） |
+
+实现要点：
+
+- **弧过滤**：`arc_allowed_for_commodity()` = `arc_usable_for_class` ∧ `physical_arc_in_bbox`（转弯边看 `arc.cob`；通道边要求相邻两 COB 均在 bbox 内，与 `tob_channel_kshortest` 一致）
+- **变量**：范围外不建 `f` / `x`；约束求和自然限于可行边集
+- **预检**：受限 commodity 在允许弧上 BFS 不可达 → `bbox disconnected`，跳过 Gurobi
+- **日志**：`MCF using SAT range_level=L`、`MCF bbox: range_level=L commodities=... bus_groups=...`
+- **warm start**：`route_one_mcf_warm_path` 使用与求解相同的 bbox 过滤
+
+**未实现**：MCF 失败时 `range_level++` 重跑 SAT（§725+）。
+
+### 5.3 两阶段求解（第五版 SimpleMCF 无向 `x` + bbox：`solve_bus_mcf` + `solve_simple_mcf_unit`）
 
 建模仍用**有向弧** `f` 做流守恒；**无向物理边**语义用于 BusMCF 边容量与 SimpleMCF 的 `x^H_e` / 残余容量（第五版；未采用第四版「全局无向 `f`」）。
 
 `run_mcf_global_routing_cob_units()` 流程：
 
-1. **BusMCF**（`solve_bus_mcf()`，全局一次）：变量 `f^{c,n}`、`o^{c,n}`；目标 `min Σ f`；约束含流守恒、**无向物理边**容量 `Σ_n(f_{ij}+f_{ji})≤1`、节点占用、同步线长
-2. **SimpleMCF**（`solve_simple_mcf_unit(c)`，每个 COBUnit 独立 Gurobi 模型）：变量 `f^{c,n}`（有向弧）、`x^{c,H}_e`（**无向物理边** `e` per Origin）、`o^{c,H}_i`；目标 `min Σ x_e` **仅当** `--enable-mcf-obj`，否则纯可行性；约束含双向 `f↔x`、Bus 残余边/节点容量、`δ(i)` 节点关联
+1. `build_mcf_bbox_context()`（沿用 SAT 成功轮的 `range_level`）
+2. **BusMCF**（`solve_bus_mcf()`，全局一次）：仅在各 commodity 的 bus RectHull 可行图上建 `f^{c,n}`、`o^{c,n}`；目标 `min Σ f`；约束含流守恒、边容量、节点占用、同步线长
+3. **SimpleMCF**（`solve_simple_mcf_unit(c)`，每个 COBUnit 独立 Gurobi 模型）：按 commodity / origin 组 bbox 建 `f^{c,n}`、`x^{c,H}_e`、`o^{c,H}_i`；目标 `min Σ x_e` **仅当** `--enable-mcf-obj`，否则纯可行性
 
 #### BusMCF 约束组与日志
 
@@ -348,7 +371,7 @@ ILP 约束组：
 
 - 决策变量：`f[k][a]`（commodity 流）、`o[k][n]`（节点占用）
 - 流守恒、无向物理边容量 `Σ_n(f_{ij}+f_{ji}) ≤ 1`、节点 `f≤o` 且 `Σ_n o≤1`、bus 等长（仅 SyncNet bus）：
-  - `total_flow_n = Σ_{(i,j)∈E^c} f^{c,n}_{ij}`，`c` = commodity `n` 所在 COBUnit（弧已由 `arc_usable_for_class` 限定）
+  - `total_flow_n = Σ_{(i,j)∈E_n^c} f^{c,n}_{ij}`（弧集由 class + bus bbox 限定）
   - 同 `bus_key` 内：`total_flow_n = total_flow_m`
 
 **SimpleMCF**（第五版）：
@@ -457,11 +480,13 @@ ILP 约束组：
 ./output/test_ILP <config_path>
 ```
 
-3) SAT TOB + MCF：
+3) SAT TOB + MCF（推荐带 `--enable-mcf-obj`）：
 
 ```bash
-./output/test_ILP <config_path> --enable-mcf-routing
+./output/test_ILP <config_path> --enable-mcf-routing --enable-mcf-obj
 ```
+
+已验证端到端通过：`test/config/case1`、`case5`、`case6`（`range_level=0`，日志含 `MCF bbox:` / `MCF using SAT range_level=`）。
 
 4) MCF with graph warm start：
 
@@ -507,6 +532,7 @@ ILP 约束组：
 - **Wilton 转弯边**：同一 COB tile 内非相对方向对的边，`is_turn=true`，inner index 通过 Wilton 映射改变
 - **BusMCF**：第一阶段求解，仅 `SyncNet in group {正整数}` commodity，带同步等长约束
 - **SimpleMCF**：第二阶段，按 COBUnit 独立求解其余 commodity（含 `in_group_-1` 的 BumpToBumpNet、Tnet、TTB 等）；默认纯可行性，可选 `--enable-mcf-obj` 启用 `min Σ x`
+- **MCF bbox**：第六版在 MCF 阶段沿用的 COB 矩形范围；与 TOB SAT 共用 `compute_bounding_box(record, range_level)`
 
 **case5（`test/config/case5`）MCF 诊断预期**（`--enable-mcf-routing`）：`BusMCF commodities=80`、`bus_equal_length=64`（16 组 SyncNet：4×(8−1) + 12×(4−1)）；`BumpToBumpNet in_group_-1` 的 32 条记录在 SimpleMCF 中各用独立 `origin_uid`（每条 1 Origin）。
 - **reach_steps**：Wilton 转弯步序列（`IlpReachStep`），描述 end_track 到 start_track 的转弯路径

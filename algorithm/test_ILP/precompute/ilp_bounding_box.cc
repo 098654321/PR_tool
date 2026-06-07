@@ -202,4 +202,15 @@ auto compute_bounding_box(const Net_cost_record& record, const std::size_t range
     return expand_bounding_box(base, range_level, is_sync_bus_record(record));
 }
 
+auto rect_hull_boxes(const std::Vector<IlpBoundingBox>& boxes) -> IlpBoundingBox {
+    if (boxes.empty()) {
+        return clamp_bbox(IlpBoundingBox {0, 0, 0, 0});
+    }
+    auto merged = boxes.front();
+    for (std::size_t i = 1; i < boxes.size(); ++i) {
+        merged = rect_hull(merged, boxes[i]);
+    }
+    return merged;
+}
+
 } // namespace PR_tool

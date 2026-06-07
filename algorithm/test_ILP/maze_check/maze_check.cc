@@ -123,7 +123,7 @@ auto collect_failed_simple_records(
 ) -> std::Vector<FailedRecordRef> {
     auto out = std::Vector<FailedRecordRef> {};
     if (records.size() != ilp_result.record_track_endpoints.size()) {
-        debug::warning_fmt("{}: record/ilp endpoint size mismatch; skip failed-record collection", log_prefix);
+        debug::warning_fmt("{}: record/SAT endpoint size mismatch; skip failed-record collection", log_prefix);
         return out;
     }
     for (std::size_t i = 0; i < records.size(); ++i) {
@@ -599,7 +599,7 @@ auto route_bump_to_bump_net_ilp_fixed(
 ) -> circuit::PathPackage {
     const auto rec_idx = find_record_for_btb(record_indices, records, net->begin_bump(), net->end_bump());
     if (!rec_idx.has_value()) {
-        throw algo::RetryExpt("route_bump_to_bump_net_ilp_fixed: no matching ILP record");
+        throw algo::RetryExpt("route_bump_to_bump_net_ilp_fixed: no matching SAT record");
     }
     const auto& record = records[*rec_idx];
     const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
@@ -623,7 +623,7 @@ auto route_bump_to_track_net_ilp_fixed(
 ) -> circuit::PathPackage {
     const auto rec_idx = find_record_for_btt(record_indices, records, net->begin_bump(), net->end_track());
     if (!rec_idx.has_value()) {
-        throw algo::RetryExpt("route_bump_to_track_net_ilp_fixed: no matching ILP record");
+        throw algo::RetryExpt("route_bump_to_track_net_ilp_fixed: no matching SAT record");
     }
     const auto& record = records[*rec_idx];
     const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
@@ -647,7 +647,7 @@ auto route_track_to_bump_net_ilp_fixed(
 ) -> circuit::PathPackage {
     const auto rec_idx = find_record_for_ttb(record_indices, records, net->begin_track(), net->end_bump());
     if (!rec_idx.has_value()) {
-        throw algo::RetryExpt("route_track_to_bump_net_ilp_fixed: no matching ILP record");
+        throw algo::RetryExpt("route_track_to_bump_net_ilp_fixed: no matching SAT record");
     }
     const auto& record = records[*rec_idx];
     const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
@@ -677,7 +677,7 @@ auto route_bump_to_bumps_net_ilp_fixed(
     for (auto* end_bump : net->end_bumps()) {
         const auto rec_idx = find_record_for_btb(record_indices, records, net->begin_bump(), end_bump);
         if (!rec_idx.has_value()) {
-            throw algo::RetryExpt("route_bump_to_bumps_net_ilp_fixed: no matching ILP record for end bump");
+            throw algo::RetryExpt("route_bump_to_bumps_net_ilp_fixed: no matching SAT record for end bump");
         }
         const auto& record = records[*rec_idx];
         const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
@@ -721,7 +721,7 @@ auto route_bump_to_tracks_net_ilp_fixed(
     for (auto* end_track : net->end_tracks()) {
         const auto rec_idx = find_record_for_btt(record_indices, records, net->begin_bump(), end_track);
         if (!rec_idx.has_value()) {
-            throw algo::RetryExpt("route_bump_to_tracks_net_ilp_fixed: no matching ILP record for end track");
+            throw algo::RetryExpt("route_bump_to_tracks_net_ilp_fixed: no matching SAT record for end track");
         }
         const auto& record = records[*rec_idx];
         const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
@@ -762,7 +762,7 @@ auto route_track_to_bumps_net_ilp_fixed(
     for (auto* end_bump : net->end_bumps()) {
         const auto rec_idx = find_record_for_bump(record_indices, records, end_bump);
         if (!rec_idx.has_value()) {
-            throw algo::RetryExpt("route_track_to_bumps_net_ilp_fixed: no matching ILP record for end bump");
+            throw algo::RetryExpt("route_track_to_bumps_net_ilp_fixed: no matching SAT record for end bump");
         }
         const auto& record = records[*rec_idx];
         const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
@@ -893,7 +893,7 @@ auto route_sync_net_ilp_fixed(
     for (const auto& btb : sync_net->btbnets()) {
         const auto rec_idx = find_record_for_btb(record_indices, records, btb->begin_bump(), btb->end_bump());
         if (!rec_idx.has_value()) {
-            throw algo::RetryExpt("route_sync_net_ilp_fixed: no matching BTB ILP record");
+            throw algo::RetryExpt("route_sync_net_ilp_fixed: no matching BTB SAT record");
         }
         const auto& record = records[*rec_idx];
         const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
@@ -910,7 +910,7 @@ auto route_sync_net_ilp_fixed(
     for (const auto& ttb : sync_net->ttbnets()) {
         const auto rec_idx = find_record_for_ttb(record_indices, records, ttb->begin_track(), ttb->end_bump());
         if (!rec_idx.has_value()) {
-            throw algo::RetryExpt("route_sync_net_ilp_fixed: no matching TTB ILP record");
+            throw algo::RetryExpt("route_sync_net_ilp_fixed: no matching TTB SAT record");
         }
         const auto& record = records[*rec_idx];
         const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
@@ -927,7 +927,7 @@ auto route_sync_net_ilp_fixed(
     for (const auto& btt : sync_net->bttnets()) {
         const auto rec_idx = find_record_for_btt(record_indices, records, btt->begin_bump(), btt->end_track());
         if (!rec_idx.has_value()) {
-            throw algo::RetryExpt("route_sync_net_ilp_fixed: no matching BTT ILP record");
+            throw algo::RetryExpt("route_sync_net_ilp_fixed: no matching BTT SAT record");
         }
         const auto& record = records[*rec_idx];
         const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];

@@ -63,14 +63,14 @@ auto apply_tob_ilp_result_to_interposer(
     for (const auto& s : result.active_s) {
         const auto tob = interposer->get_tob(tob_from_linear(s.tob));
         if (!tob.has_value()) {
-            debug::warning_fmt("apply ILP: TOB {} not found for S(v={})", s.tob, s.v);
+            debug::warning_fmt("apply TOB SAT: TOB {} not found for S(v={})", s.tob, s.v);
             continue;
         }
         const auto key = std::pair<std::size_t, std::size_t> {s.tob, s.v};
         const auto it = hori_mux_by_tob_v.find(key);
         if (it == hori_mux_by_tob_v.end()) {
             debug::info_fmt(
-                "apply ILP: active S on TOB {} v={} has no matching W (unexpected after W-derived active_s)",
+                "apply TOB SAT: active S on TOB {} v={} has no matching W (unexpected after W-derived active_s)",
                 s.tob,
                 s.v);
             continue;
@@ -83,7 +83,7 @@ auto apply_tob_ilp_result_to_interposer(
             s_applied += 1;
         }
         catch (const std::exception& e) {
-            debug::warning_fmt("apply ILP: S on TOB {} v={} failed: {}", s.tob, s.v, e.what());
+            debug::warning_fmt("apply TOB SAT: S on TOB {} v={} failed: {}", s.tob, s.v, e.what());
         }
     }
 
@@ -95,7 +95,7 @@ auto apply_tob_ilp_result_to_interposer(
         auto* bump = find_bump(interposer, w.bump);
         if (bump == nullptr) {
             debug::warning_fmt(
-                "apply ILP: bump(T{},B{},G{},I{}) not found",
+                "apply TOB SAT: bump(T{},B{},G{},I{}) not found",
                 w.bump.TOB,
                 w.bump.Bank,
                 w.bump.Group,
@@ -104,7 +104,7 @@ auto apply_tob_ilp_result_to_interposer(
         }
         auto* tob = bump->tob();
         if (tob == nullptr) {
-            debug::warning_fmt("apply ILP: bump(T{},B{},G{},I{}) has no TOB", w.bump.TOB, w.bump.Bank, w.bump.Group, w.bump.Index);
+            debug::warning_fmt("apply TOB SAT: bump(T{},B{},G{},I{}) has no TOB", w.bump.TOB, w.bump.Bank, w.bump.Group, w.bump.Index);
             continue;
         }
         try {
@@ -117,7 +117,7 @@ auto apply_tob_ilp_result_to_interposer(
             const auto track = interposer->get_track(track_coord);
             if (!track.has_value()) {
                 debug::warning_fmt(
-                    "apply ILP: track {} not found for bump(T{},B{},G{},I{})",
+                    "apply TOB SAT: track {} not found for bump(T{},B{},G{},I{})",
                     w.track,
                     w.bump.TOB,
                     w.bump.Bank,
@@ -131,7 +131,7 @@ auto apply_tob_ilp_result_to_interposer(
         }
         catch (const std::exception& e) {
             debug::warning_fmt(
-                "apply ILP: W bump(T{},B{},G{},I{}) track={} failed: {}",
+                "apply TOB SAT: W bump(T{},B{},G{},I{}) track={} failed: {}",
                 w.bump.TOB,
                 w.bump.Bank,
                 w.bump.Group,
@@ -141,7 +141,7 @@ auto apply_tob_ilp_result_to_interposer(
         }
     }
 
-    debug::info_fmt("apply ILP to interposer: S configured={}, W bumps configured={}", s_applied, w_applied);
+    debug::info_fmt("apply TOB SAT to interposer: S configured={}, W bumps configured={}", s_applied, w_applied);
 }
 
 } // namespace PR_tool

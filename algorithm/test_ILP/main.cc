@@ -60,9 +60,9 @@ auto write_mps_file(
     const std::String& output_mps
 ) -> void;
 auto get_peak_rss_mb() -> double;
-auto log_tob_ilp_infeasibility_diagnosis(const TobIlpResult& result) -> void;
-auto log_tob_ilp_bump_demand(const std::Vector<Net_cost_record>& records) -> void;
-auto log_tob_ilp_bump_usage(const TobIlpResult& result) -> void;
+auto log_tob_sat_infeasibility_diagnosis(const TobIlpResult& result) -> void;
+auto log_tob_sat_bump_demand(const std::Vector<Net_cost_record>& records) -> void;
+auto log_tob_sat_bump_usage(const TobIlpResult& result) -> void;
 auto is_testpn_golden_case(const std::String& config_path) -> bool;
 auto run_wire_length_golden_check(const std::String& config_path, std::size_t actual) -> bool;
 
@@ -229,15 +229,15 @@ auto run_main(int argc, char** argv) -> int {
     const auto& track_to_bumps_nets = built.track_to_bumps_nets;
     if (!deferred_multi_fanout.empty()) {
         debug::info_fmt(
-            "Deferred multi-fanout nets: {} — excluded from ILP+MCF (unexpected after build_records)",
+            "Deferred multi-fanout nets: {} — excluded from SAT+MCF (unexpected after build_records)",
             deferred_multi_fanout.size());
     }
     if (!track_to_bumps_nets.empty()) {
         debug::info_fmt(
-            "TrackToBumpsNet: {} net(s) split for ILP; COB segment routed in SimpleMCF",
+            "TrackToBumpsNet: {} net(s) split for SAT TOB; COB segment routed in SimpleMCF",
             track_to_bumps_nets.size());
     }
-    log_tob_ilp_bump_demand(records);
+    log_tob_sat_bump_demand(records);
 
     if (!export_ilp_mps.empty()) {
         const auto reach_stats = precompute_reach_for_records(records);
@@ -247,7 +247,7 @@ auto run_main(int argc, char** argv) -> int {
             reach_stats.total_endtracks,
             reach_stats.total_starttrack_edges);
         write_mps_file(records, export_ilp_mps);
-        debug::info_fmt("ILP MPS written: {}", export_ilp_mps);
+        debug::info_fmt("TOB legacy ILP MPS export written: {}", export_ilp_mps);
     }
 
     CadicalDiagnosticsOptions sat_diag {};
@@ -268,7 +268,7 @@ auto run_main(int argc, char** argv) -> int {
 
     if (!result.ok) {
         debug::error_fmt("SAT TOB: {}", result.message);
-        log_tob_ilp_infeasibility_diagnosis(result);
+        log_tob_sat_infeasibility_diagnosis(result);
         debug::info_fmt(
             "timing breakdown (ms): tob_sat_solve={}, mcf_warm_start={}, mcf_solve={}",
             tob_sat_solve_ms,
@@ -277,7 +277,7 @@ auto run_main(int argc, char** argv) -> int {
         log_total_runtime();
         return 1;
     }
-    log_tob_ilp_bump_usage(result);
+    log_tob_sat_bump_usage(result);
     for (const auto& d : result.route_details) {
         debug::info_fmt(
             "net \"{}\": bump(T{},B{},G{},I{}) -> j={} (horizontal line), k={} (vertical line), s={}, orient={}, track={}, COBUnit={}",
@@ -405,7 +405,7 @@ auto tob_sat_status_name(const int status) -> std::String {
     return "UNKNOWN";
 }
 
-auto log_tob_ilp_infeasibility_diagnosis(const TobIlpResult& result) -> void {
+auto log_tob_sat_infeasibility_diagnosis(const TobIlpResult& result) -> void {
     debug::error_fmt(
         "TOB SAT infeasibility diagnosis: status={}({}) message=\"{}\"",
         tob_sat_status_name(result.model_status),
@@ -416,7 +416,7 @@ auto log_tob_ilp_infeasibility_diagnosis(const TobIlpResult& result) -> void {
     }
 }
 
-auto tob_ilp_relation_bumps_for_record(const Net_cost_record& record) -> std::Vector<Bump_coord> {
+auto tob_sat_relation_bumps_for_record(const Net_cost_record& record) -> std::Vector<Bump_coord> {
     auto relation_bumps = std::Vector<Bump_coord> {};
     if (record.type == Net_type::Bnet) {
         relation_bumps.insert(relation_bumps.end(), record.start_bumps.begin(), record.start_bumps.end());
@@ -429,7 +429,7 @@ auto tob_ilp_relation_bumps_for_record(const Net_cost_record& record) -> std::Ve
     return relation_bumps;
 }
 
-auto log_tob_ilp_bump_demand(const std::Vector<Net_cost_record>& records) -> void {
+auto log_tob_sat_bump_demand(const std::Vector<Net_cost_record>& records) -> void {
     constexpr std::size_t kBumpsPerTob = 128;
     constexpr std::size_t kBumpsPerBank = 64;
     constexpr std::size_t kTotalBumps = hardware::Interposer::TOB_SIZE * kBumpsPerTob;
@@ -438,7 +438,7 @@ auto log_tob_ilp_bump_demand(const std::Vector<Net_cost_record>& records) -> voi
     auto all_bumps = std::set<Bump_coord> {};
 
     for (const auto& record : records) {
-        for (const auto& bump : tob_ilp_relation_bumps_for_record(record)) {
+        for (const auto& bump : tob_sat_relation_bumps_for_record(record)) {
             if (bump.TOB >= hardware::Interposer::TOB_SIZE || bump.Bank >= 2) {
                 continue;
             }
@@ -448,7 +448,7 @@ auto log_tob_ilp_bump_demand(const std::Vector<Net_cost_record>& records) -> voi
         }
     }
 
-    debug::info("TOB ILP bump demand (pre-solve, available_on_failure=true)");
+    debug::info("TOB SAT bump demand (pre-solve, available_on_failure=true)");
     for (std::size_t t = 0; t < hardware::Interposer::TOB_SIZE; ++t) {
         const auto row = t / hardware::Interposer::TOB_ARRAY_WIDTH;
         const auto col = t % hardware::Interposer::TOB_ARRAY_WIDTH;
@@ -471,7 +471,7 @@ auto log_tob_ilp_bump_demand(const std::Vector<Net_cost_record>& records) -> voi
         records.size());
 }
 
-auto log_tob_ilp_bump_usage(const TobIlpResult& result) -> void {
+auto log_tob_sat_bump_usage(const TobIlpResult& result) -> void {
     constexpr std::size_t kBumpsPerTob = 128;
     constexpr std::size_t kBumpsPerBank = 64;
     constexpr std::size_t kTotalBumps = hardware::Interposer::TOB_SIZE * kBumpsPerTob;
@@ -488,7 +488,7 @@ auto log_tob_ilp_bump_usage(const TobIlpResult& result) -> void {
         all_bumps.insert(w.bump);
     }
 
-    debug::info("TOB ILP bump usage (post-solve, ok=true)");
+    debug::info("TOB SAT bump usage (post-solve, ok=true)");
     for (std::size_t t = 0; t < hardware::Interposer::TOB_SIZE; ++t) {
         const auto row = t / hardware::Interposer::TOB_ARRAY_WIDTH;
         const auto col = t % hardware::Interposer::TOB_ARRAY_WIDTH;
@@ -703,7 +703,7 @@ auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecor
         }
 
         if (auto* sync_net = dynamic_cast<circuit::SyncNet*>(net.get())) {
-            // Split SyncNet into independent 2-pin nets for ILP modeling.
+            // Split SyncNet into independent 2-pin nets for SAT TOB modeling.
             for (const auto& btb : sync_net->btbnets()) {
                 Net_cost_record record {
                     std::String(std::format("{}__btb_{}", net->name(), records.size())),
@@ -793,7 +793,7 @@ auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecor
     debug::info_fmt("number of Tnet: {}", tnet_count);
     debug::info_fmt("total number of nets: {}", records.size());
 
-    // Assign stable ids for downstream ILP/MCF alignment.
+    // Assign stable ids for downstream SAT/MCF alignment.
     auto origin_bit_counter = std::map<std::String, std::size_t> {};
     for (std::size_t i = 0; i < records.size(); ++i) {
         records[i].record_id = i;

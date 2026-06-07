@@ -30,4 +30,6 @@ auto expand_bounding_box(const IlpBoundingBox& base, std::size_t range_level, bo
 
 auto compute_bounding_box(const Net_cost_record& record, std::size_t range_level) -> IlpBoundingBox;
 
+auto rect_hull_boxes(const std::Vector<IlpBoundingBox>& boxes) -> IlpBoundingBox;
+
 } // namespace PR_tool

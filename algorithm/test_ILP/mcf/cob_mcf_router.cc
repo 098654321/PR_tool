@@ -1,5 +1,6 @@
 #include "mcf/cob_mcf_router.hh"
 
+#include "mcf/mcf_bbox.hh"
 #include "mcf/mcf_graph.hh"
 #include "mcf/mcf_hw_map.hh"
 
@@ -18,6 +19,7 @@
 #include <cctype>
 #include <cstddef>
 #include <format>
+#include <functional>
 #include <future>
 #include <map>
 #include <optional>
@@ -66,7 +68,6 @@ struct PreparedCommodity {
     bool is_bus{false};
     std::String bus_key;
     std::Vector<IlpReachStep> reach_steps;
-    std::Vector<int> bbox_cobs;
 };
 
 struct McfConstraintMeta {
@@ -906,24 +907,6 @@ auto tob_anchor_cob(const std::size_t tob_linear) -> hardware::COBCoord {
         static_cast<std::i64>(3 * tob.col)};
 }
 
-auto bbox_cob_indices(
-    const CobMcfGridDims& grid,
-    const hardware::COBCoord& a,
-    const hardware::COBCoord& b
-) -> std::Vector<int> {
-    std::Vector<int> out {};
-    const auto r0 = std::max<std::i64>(0, std::min(a.row, b.row));
-    const auto r1 = std::min<std::i64>(grid.rows - 1, std::max(a.row, b.row));
-    const auto c0 = std::max<std::i64>(0, std::min(a.col, b.col));
-    const auto c1 = std::min<std::i64>(grid.cols - 1, std::max(a.col, b.col));
-    for (std::i64 r = r0; r <= r1; ++r) {
-        for (std::i64 c = c0; c <= c1; ++c) {
-            out.push_back(static_cast<int>(r * grid.cols + c));
-        }
-    }
-    return out;
-}
-
 auto node_from_bump_track(
     const GlobalGraph& g,
     const std::size_t unit,
@@ -1011,13 +994,10 @@ auto prepare_commodities(
             continue;
         }
 
-        hardware::COBCoord bbox_start {};
-        hardware::COBCoord bbox_end {};
         if (record.start_bumps.empty()) {
             continue;
         }
         c.src = node_from_bump_track(graph, c.cob_unit, record.start_bumps.front().TOB, endpoint.start_track);
-        bbox_start = tob_anchor_cob(record.start_bumps.front().TOB);
 
         if (record.type == Net_type::PNnet) {
             if (record.power_kind == IlpPowerKind::Pose) {
@@ -1065,7 +1045,6 @@ auto prepare_commodities(
                     -1,
                     end_track,
                     end_track);
-                bbox_end = track_to_cob(tc);
                 c.end_track = end_track;
                 virtual_edges_added += 1;
             }
@@ -1076,7 +1055,6 @@ auto prepare_commodities(
                 if (n_end >= 0) {
                     add_arc(graph, n_end, c.snk, true, false, c.cob_unit, -1, endpoint.end_track, endpoint.end_track);
                     add_arc(graph, c.snk, n_end, true, false, c.cob_unit, -1, endpoint.end_track, endpoint.end_track);
-                    bbox_end = track_to_cob(tc);
                     c.end_track = endpoint.end_track;
                 }
             }
@@ -1087,7 +1065,6 @@ auto prepare_commodities(
                 continue;
             }
             c.snk = node_from_track_coord(graph, c.cob_unit, record.mcf_end_track, endpoint.end_track);
-            bbox_end = track_to_cob(record.mcf_end_track);
         }
         else {
             c.cls = McfClass::Plain;
@@ -1095,7 +1072,6 @@ auto prepare_commodities(
                 continue;
             }
             c.snk = node_from_bump_track(graph, c.cob_unit, record.end_bumps.front().TOB, endpoint.end_track);
-            bbox_end = tob_anchor_cob(record.end_bumps.front().TOB);
         }
 
         if (c.src < 0 || c.snk < 0) {
@@ -1107,7 +1083,6 @@ auto prepare_commodities(
             continue;
         }
 
-        c.bbox_cobs = bbox_cob_indices(grid, bbox_start, bbox_end);
         if (endpoint.has_end_track) {
             const auto it_end = record.reach_by_end_start.find(endpoint.end_track);
             if (it_end != record.reach_by_end_start.end()) {
@@ -1139,6 +1114,119 @@ auto arc_usable_for_class(
         return cls == McfClass::N;
     }
     return true;
+}
+
+auto to_bbox_inputs(const std::Vector<PreparedCommodity>& commodities) -> std::Vector<McfBBoxCommodityInput> {
+    auto out = std::Vector<McfBBoxCommodityInput> {};
+    out.reserve(commodities.size());
+    for (const auto& commodity : commodities) {
+        out.push_back(McfBBoxCommodityInput {
+            commodity.record_index,
+            commodity.is_bus,
+            commodity.bus_key});
+    }
+    return out;
+}
+
+auto arc_allowed_for_commodity(
+    const GlobalGraph& graph,
+    const Arc& arc,
+    const PreparedCommodity& commodity,
+    const McfBBoxContext& ctx,
+    const std::size_t global_commodity_id,
+    const McfArcBBoxMode mode,
+    const McfCommodityBBox& origin_group_bbox
+) -> bool {
+    if (!arc_usable_for_class(graph, arc, commodity.cls, commodity.cob_unit, commodity.snk)) {
+        return false;
+    }
+    const McfBBoxCommodityInput input {
+        commodity.record_index,
+        commodity.is_bus,
+        commodity.bus_key};
+    const auto effective = resolve_mcf_bbox(ctx, global_commodity_id, input, mode, origin_group_bbox);
+    return arc_allowed_in_mcf_bbox(arc, effective.restricted, effective.box, graph.cols);
+}
+
+auto commodity_bbox_connected(
+    const GlobalGraph& graph,
+    const PreparedCommodity& commodity,
+    const McfCommodityBBox& effective_bbox
+) -> bool {
+    if (!effective_bbox.restricted) {
+        return true;
+    }
+    auto prev = std::vector<int>(graph.nodes.size(), -1);
+    auto q = std::queue<int> {};
+    q.push(commodity.src);
+    prev[static_cast<std::size_t>(commodity.src)] = commodity.src;
+    while (!q.empty()) {
+        const auto node = q.front();
+        q.pop();
+        if (node == commodity.snk) {
+            return true;
+        }
+        for (const auto& arc : graph.arcs) {
+            if (arc.u != node) {
+                continue;
+            }
+            if (!arc_usable_for_class(graph, arc, commodity.cls, commodity.cob_unit, commodity.snk)) {
+                continue;
+            }
+            if (!arc_allowed_in_mcf_bbox(arc, true, effective_bbox.box, graph.cols)) {
+                continue;
+            }
+            if (prev[static_cast<std::size_t>(arc.v)] != -1) {
+                continue;
+            }
+            prev[static_cast<std::size_t>(arc.v)] = node;
+            q.push(arc.v);
+        }
+    }
+    return false;
+}
+
+auto effective_bbox_for_simple_commodity(
+    const std::size_t global_commodity_id,
+    const std::Vector<std::size_t>& simple_ids,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::Vector<Net_cost_record>& records,
+    const McfBBoxContext& ctx
+) -> McfCommodityBBox {
+    if (global_commodity_id >= ctx.per_commodity.size()) {
+        return McfCommodityBBox {};
+    }
+    const auto& commodity = commodities[global_commodity_id];
+    const auto& record = records[commodity.record_index];
+    if (record.type == Net_type::PNnet) {
+        return McfCommodityBBox {};
+    }
+    const auto group_key = std::make_pair(commodity.cob_unit, simple_origin_group_key(record));
+    auto global_ids = std::Vector<std::size_t> {};
+    auto record_indices = std::Vector<std::size_t> {};
+    for (const auto sid : simple_ids) {
+        const auto& sc = commodities[sid];
+        const auto& sr = records[sc.record_index];
+        if (std::make_pair(sc.cob_unit, simple_origin_group_key(sr)) != group_key) {
+            continue;
+        }
+        global_ids.push_back(sid);
+        record_indices.push_back(sc.record_index);
+    }
+    bool is_multi_fanout = false;
+    if (global_ids.size() > 1) {
+        for (const auto sid : global_ids) {
+            const auto& sr = records[commodities[sid].record_index];
+            if (sr.from_track_to_bumps_split || sr.type == Net_type::PNnet) {
+                is_multi_fanout = true;
+                break;
+            }
+        }
+    }
+    if (!is_multi_fanout) {
+        return ctx.per_commodity[global_commodity_id];
+    }
+    return compute_origin_group_bbox(global_ids, record_indices, records, ctx);
 }
 
 auto extract_path(
@@ -1207,6 +1295,7 @@ auto build_undirected_incidence(
 auto route_one_mcf_warm_path(
     const GlobalGraph& graph,
     const PreparedCommodity& commodity,
+    const McfCommodityBBox& effective_bbox,
     const std::Vector<std::Vector<int>>& outgoing_arcs,
     const std::map<std::pair<int, int>, int>& used_edges,
     const std::map<int, int>& used_nodes
@@ -1225,6 +1314,9 @@ auto route_one_mcf_warm_path(
         for (const auto arc_id : outgoing_arcs[static_cast<std::size_t>(node)]) {
             const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
             if (!arc_usable_for_class(graph, arc, commodity.cls, commodity.cob_unit, commodity.snk)) {
+                continue;
+            }
+            if (!arc_allowed_in_mcf_bbox(arc, effective_bbox.restricted, effective_bbox.box, graph.cols)) {
                 continue;
             }
             if (!arc.is_virtual) {
@@ -1291,6 +1383,7 @@ auto route_mcf_stage_warm_start(
     const GlobalGraph& graph,
     const std::Vector<PreparedCommodity>& commodities,
     const std::Vector<std::size_t>& commodity_ids,
+    const std::function<McfCommodityBBox(std::size_t)>& effective_bbox_for,
     const std::Vector<std::Vector<int>>& outgoing_arcs,
     std::map<std::pair<int, int>, int>& used_edges,
     std::map<int, int>& used_nodes
@@ -1300,7 +1393,13 @@ auto route_mcf_stage_warm_start(
     std::size_t failed = 0;
     for (const auto cid : commodity_ids) {
         const auto& commodity = commodities[cid];
-        auto path = route_one_mcf_warm_path(graph, commodity, outgoing_arcs, used_edges, used_nodes);
+        auto path = route_one_mcf_warm_path(
+            graph,
+            commodity,
+            effective_bbox_for(cid),
+            outgoing_arcs,
+            used_edges,
+            used_nodes);
         if (path.empty()) {
             ++failed;
             debug::warning_fmt("pre-routing {} warm start failed for commodity {}", stage_name, commodity.label);
@@ -1571,6 +1670,7 @@ auto solve_bus_mcf(
     const GlobalGraph& graph,
     const std::Vector<PreparedCommodity>& commodities,
     const std::Vector<std::size_t>& bus_ids,
+    const McfBBoxContext& bbox_ctx,
     const StageWarmStart* warm_start,
     const GurobiDiagnosticsOptions& diag
 ) -> StageSolveResult {
@@ -1588,18 +1688,46 @@ auto solve_bus_mcf(
     const auto A = static_cast<int>(graph.arcs.size());
     const auto local_com = build_local_commodities(commodities, bus_ids);
 
+    for (int k = 0; k < K; ++k) {
+        const auto global_id = bus_ids[static_cast<std::size_t>(k)];
+        const auto& commodity = local_com[static_cast<std::size_t>(k)];
+        const McfBBoxCommodityInput input {
+            commodity.record_index,
+            commodity.is_bus,
+            commodity.bus_key};
+        const auto effective = resolve_mcf_bbox(
+            bbox_ctx,
+            global_id,
+            input,
+            McfArcBBoxMode::Bus,
+            McfCommodityBBox {});
+        if (effective.restricted && !commodity_bbox_connected(graph, commodity, effective)) {
+            out.ok = false;
+            out.message = std::format(
+                "{}: bbox disconnected for commodity {}",
+                stage_name,
+                commodity.label);
+            return out;
+        }
+    }
+
     // BusMCF §1: f^{c,n}_{ij} variables
     auto f_vars = std::Vector<ArcVar> {};
     auto f_by_k = std::Vector<std::Vector<int>>(static_cast<std::size_t>(K));
     f_vars.reserve(static_cast<std::size_t>(K * A / 8 + 1));
     for (int k = 0; k < K; ++k) {
+        const auto global_id = bus_ids[static_cast<std::size_t>(k)];
+        const auto& commodity = local_com[static_cast<std::size_t>(k)];
         for (int a = 0; a < A; ++a) {
-            if (!arc_usable_for_class(
+            const auto& arc = graph.arcs[static_cast<std::size_t>(a)];
+            if (!arc_allowed_for_commodity(
                     graph,
-                    graph.arcs[static_cast<std::size_t>(a)],
-                    local_com[static_cast<std::size_t>(k)].cls,
-                    local_com[static_cast<std::size_t>(k)].cob_unit,
-                    local_com[static_cast<std::size_t>(k)].snk)) {
+                    arc,
+                    commodity,
+                    bbox_ctx,
+                    global_id,
+                    McfArcBBoxMode::Bus,
+                    McfCommodityBBox {})) {
                 continue;
             }
             const auto var_id = static_cast<int>(f_vars.size());
@@ -1918,7 +2046,7 @@ auto solve_bus_mcf(
                 "{} warm start led to non-optimal status ({}); retrying without warm start",
                 stage_name,
                 solve_res.model_status);
-            return solve_bus_mcf(graph, commodities, bus_ids, nullptr, diag);
+            return solve_bus_mcf(graph, commodities, bus_ids, bbox_ctx, nullptr, diag);
         }
         out.ok = false;
         out.message = std::format("{}: model not optimal ({})", stage_name, solve_res.model_status);
@@ -1964,6 +2092,7 @@ auto solve_simple_mcf_unit(
     const std::size_t unit_c,
     const std::Vector<std::size_t>& simple_ids_for_unit,
     const std::Vector<Net_cost_record>& records,
+    const McfBBoxContext& bbox_ctx,
     const std::map<std::pair<int, int>, int>& edge_capacity_override,
     const std::map<int, int>& node_capacity_override,
     const bool enable_mcf_obj,
@@ -1987,9 +2116,43 @@ auto solve_simple_mcf_unit(
     auto origin_groups = build_origin_groups(local_com, records);
     log_origin_groups(stage_name, origin_groups);
     auto commodity_origin_h = std::Vector<int>(static_cast<std::size_t>(K), -1);
+    auto origin_bbox_by_gid = std::map<int, McfCommodityBBox> {};
     for (const auto& group : origin_groups) {
         for (const auto k : group.commodity_local_indices) {
             commodity_origin_h[static_cast<std::size_t>(k)] = group.origin_group_id;
+        }
+        if (group.is_multi_fanout) {
+            auto global_ids = std::Vector<std::size_t> {};
+            auto record_indices = std::Vector<std::size_t> {};
+            for (const auto k : group.commodity_local_indices) {
+                const auto global_id = simple_ids_for_unit[static_cast<std::size_t>(k)];
+                global_ids.push_back(global_id);
+                record_indices.push_back(local_com[static_cast<std::size_t>(k)].record_index);
+            }
+            origin_bbox_by_gid[group.origin_group_id] =
+                compute_origin_group_bbox(global_ids, record_indices, records, bbox_ctx);
+        }
+    }
+
+    for (int k = 0; k < K; ++k) {
+        const auto global_id = simple_ids_for_unit[static_cast<std::size_t>(k)];
+        const auto& commodity = local_com[static_cast<std::size_t>(k)];
+        const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
+        const auto mode = origin_bbox_by_gid.contains(h) ? McfArcBBoxMode::SimpleOriginGroup
+                                                         : McfArcBBoxMode::SimpleCommodity;
+        const auto origin_bbox = origin_bbox_by_gid.contains(h) ? origin_bbox_by_gid.at(h) : McfCommodityBBox {};
+        const McfBBoxCommodityInput input {
+            commodity.record_index,
+            commodity.is_bus,
+            commodity.bus_key};
+        const auto effective = resolve_mcf_bbox(bbox_ctx, global_id, input, mode, origin_bbox);
+        if (effective.restricted && !commodity_bbox_connected(graph, commodity, effective)) {
+            out.ok = false;
+            out.message = std::format(
+                "{}: bbox disconnected for commodity {}",
+                stage_name,
+                commodity.label);
+            return out;
         }
     }
 
@@ -1998,13 +2161,22 @@ auto solve_simple_mcf_unit(
     auto f_by_k = std::Vector<std::Vector<int>>(static_cast<std::size_t>(K));
     f_vars.reserve(static_cast<std::size_t>(K * A / 8 + 1));
     for (int k = 0; k < K; ++k) {
+        const auto global_id = simple_ids_for_unit[static_cast<std::size_t>(k)];
+        const auto& commodity = local_com[static_cast<std::size_t>(k)];
+        const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
+        const auto mode = origin_bbox_by_gid.contains(h) ? McfArcBBoxMode::SimpleOriginGroup
+                                                         : McfArcBBoxMode::SimpleCommodity;
+        const auto origin_bbox = origin_bbox_by_gid.contains(h) ? origin_bbox_by_gid.at(h) : McfCommodityBBox {};
         for (int a = 0; a < A; ++a) {
-            if (!arc_usable_for_class(
+            const auto& arc = graph.arcs[static_cast<std::size_t>(a)];
+            if (!arc_allowed_for_commodity(
                     graph,
-                    graph.arcs[static_cast<std::size_t>(a)],
-                    local_com[static_cast<std::size_t>(k)].cls,
-                    local_com[static_cast<std::size_t>(k)].cob_unit,
-                    local_com[static_cast<std::size_t>(k)].snk)) {
+                    arc,
+                    commodity,
+                    bbox_ctx,
+                    global_id,
+                    mode,
+                    origin_bbox)) {
                 continue;
             }
             const auto var_id = static_cast<int>(f_vars.size());
@@ -2443,6 +2615,7 @@ auto solve_simple_mcf_unit(
                 unit_c,
                 simple_ids_for_unit,
                 records,
+                bbox_ctx,
                 edge_capacity_override,
                 node_capacity_override,
                 enable_mcf_obj,
@@ -2867,7 +3040,7 @@ auto run_mcf_global_routing_cob_units(
                 false,
                 0.0,
                 0,
-                std::String("record/ilp result size mismatch")};
+                std::String("record/SAT result size mismatch")};
         }
         out.summary.all_ok = false;
         return out;
@@ -2897,6 +3070,10 @@ auto run_mcf_global_routing_cob_units(
         simple_ids_by_unit[commodities[id].cob_unit].push_back(id);
     }
 
+    const auto bbox_inputs = to_bbox_inputs(commodities);
+    const auto bbox_ctx = build_mcf_bbox_context(records, bbox_inputs, ilp_result.range_level);
+    debug::info_fmt("MCF using SAT range_level={}", ilp_result.range_level);
+
     auto bus_warm_start = StageWarmStart {};
     auto simple_warm_start = StageWarmStart {};
     const StageWarmStart* bus_warm_start_ptr = nullptr;
@@ -2909,12 +3086,24 @@ auto run_mcf_global_routing_cob_units(
         }
         auto warm_used_edges = std::map<std::pair<int, int>, int> {};
         auto warm_used_nodes = std::map<int, int> {};
+        const auto bus_effective_bbox = [&](const std::size_t cid) -> McfCommodityBBox {
+            const auto& commodity = commodities[cid];
+            const McfBBoxCommodityInput input {
+                commodity.record_index,
+                commodity.is_bus,
+                commodity.bus_key};
+            return resolve_mcf_bbox(bbox_ctx, cid, input, McfArcBBoxMode::Bus, McfCommodityBBox {});
+        };
+        const auto simple_effective_bbox = [&](const std::size_t cid) -> McfCommodityBBox {
+            return effective_bbox_for_simple_commodity(cid, simple_ids, commodities, records, bbox_ctx);
+        };
         if (!disable_bus_mcf) {
             bus_warm_start = route_mcf_stage_warm_start(
                 "BusMCF",
                 graph,
                 commodities,
                 bus_ids,
+                bus_effective_bbox,
                 outgoing_arcs,
                 warm_used_edges,
                 warm_used_nodes);
@@ -2925,6 +3114,7 @@ auto run_mcf_global_routing_cob_units(
             graph,
             commodities,
             simple_ids,
+            simple_effective_bbox,
             outgoing_arcs,
             warm_used_edges,
             warm_used_nodes);
@@ -2949,7 +3139,7 @@ auto run_mcf_global_routing_cob_units(
         }
     }
     else {
-        bus_res = solve_bus_mcf(graph, commodities, bus_ids, bus_warm_start_ptr, diag);
+        bus_res = solve_bus_mcf(graph, commodities, bus_ids, bbox_ctx, bus_warm_start_ptr, diag);
     }
 
     // 得到剩余容量
@@ -2986,13 +3176,14 @@ auto run_mcf_global_routing_cob_units(
         if (enable_mcf_parallel) {
             simple_futures[u] = std::async(
                 std::launch::async,
-                [&graph, &commodities, &records, &simple_ids_by_unit, u, edge_cap, node_cap, enable_mcf_obj, simple_warm_start_ptr, diag]() {
+                [&graph, &commodities, &records, &bbox_ctx, &simple_ids_by_unit, u, edge_cap, node_cap, enable_mcf_obj, simple_warm_start_ptr, diag]() {
                     return solve_simple_mcf_unit(
                         graph,
                         commodities,
                         u,
                         simple_ids_by_unit[u],
                         records,
+                        bbox_ctx,
                         edge_cap,
                         node_cap,
                         enable_mcf_obj,
@@ -3007,6 +3198,7 @@ auto run_mcf_global_routing_cob_units(
                 u,
                 simple_ids_by_unit[u],
                 records,
+                bbox_ctx,
                 edge_cap,
                 node_cap,
                 enable_mcf_obj,
