@@ -7,6 +7,7 @@
 #include "common/tob_allocation_types.hh"
 #include "precompute/ilp_reach_precompute.hh"
 #include "ilp_allocation/tob_ilp_model.hh"
+#include "sat_allocation/solve_tob_mcf_pipeline.hh"
 #include "sat_allocation/solve_tob_sat.hh"
 
 #include <algo/netbuilder/netbuilder.hh>
@@ -258,24 +259,73 @@ auto run_main(int argc, char** argv) -> int {
         debug::info_fmt("CaDiCal solver logs enabled: directory={}", sat_diag.log_dir);
     }
 
-    const auto solve_begin = std::chrono::steady_clock::now();
-    const auto result = solve_tob_sat_with_cadical(records, sat_diag);
-    const auto solve_end = std::chrono::steady_clock::now();
-    const auto tob_sat_solve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(solve_end - solve_begin).count();
-    const auto peak_rss_mb = get_peak_rss_mb();
-    debug::info_fmt("timing phase=tob_sat_solve ms={}", tob_sat_solve_ms);
-    debug::info_fmt("Process peak RSS: {:.2f} MB", peak_rss_mb);
+    long long tob_sat_solve_ms = 0;
+    long long mcf_warm_start_ms = 0;
+    long long mcf_solve_ms = 0;
+    TobIlpResult result {};
+    CobMcfFullResult mcf_full {};
 
-    if (!result.ok) {
-        debug::error_fmt("SAT TOB: {}", result.message);
-        log_tob_sat_infeasibility_diagnosis(result);
-        debug::info_fmt(
-            "timing breakdown (ms): tob_sat_solve={}, mcf_warm_start={}, mcf_solve={}",
-            tob_sat_solve_ms,
-            0,
-            0);
-        log_total_runtime();
-        return 1;
+    if (enable_mcf) {
+        if (enable_mcf_parallel) {
+            debug::info("MCF: solving 16 COB units in parallel (std::async)");
+        }
+        const auto pipeline = solve_tob_mcf_with_range_iteration(
+            records,
+            interposer.get(),
+            *basedie.get(),
+            cob_grid,
+            enable_mcf_parallel,
+            enable_pre_routing,
+            enable_mcf_obj,
+            disable_bus_mcf,
+            !defer_maze_check_suspend,
+            sat_diag,
+            gurobi_diag);
+        tob_sat_solve_ms = pipeline.tob_sat_solve_ms;
+        mcf_warm_start_ms = pipeline.mcf_warm_start_ms;
+        mcf_solve_ms = pipeline.mcf_solve_ms;
+        debug::info_fmt("timing phase=tob_sat_solve ms={}", tob_sat_solve_ms);
+        debug::info_fmt("timing phase=mcf_warm_start ms={}", mcf_warm_start_ms);
+        debug::info_fmt("timing phase=mcf_solve ms={}", mcf_solve_ms);
+        const auto peak_rss_mb = get_peak_rss_mb();
+        debug::info_fmt("Process peak RSS: {:.2f} MB", peak_rss_mb);
+
+        if (!pipeline.ok) {
+            debug::error_fmt("SAT+MCF: {}", pipeline.message);
+            if (!pipeline.tob.infeasibility_hints.empty()) {
+                log_tob_sat_infeasibility_diagnosis(pipeline.tob);
+            }
+            debug::info_fmt(
+                "timing breakdown (ms): tob_sat_solve={}, mcf_warm_start={}, mcf_solve={}",
+                tob_sat_solve_ms,
+                mcf_warm_start_ms,
+                mcf_solve_ms);
+            log_total_runtime();
+            return 1;
+        }
+        result = std::move(pipeline.tob);
+        mcf_full = std::move(pipeline.mcf);
+    }
+    else {
+        const auto solve_begin = std::chrono::steady_clock::now();
+        result = solve_tob_sat_with_cadical(records, sat_diag);
+        const auto solve_end = std::chrono::steady_clock::now();
+        tob_sat_solve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(solve_end - solve_begin).count();
+        const auto peak_rss_mb = get_peak_rss_mb();
+        debug::info_fmt("timing phase=tob_sat_solve ms={}", tob_sat_solve_ms);
+        debug::info_fmt("Process peak RSS: {:.2f} MB", peak_rss_mb);
+
+        if (!result.ok) {
+            debug::error_fmt("SAT TOB: {}", result.message);
+            log_tob_sat_infeasibility_diagnosis(result);
+            debug::info_fmt(
+                "timing breakdown (ms): tob_sat_solve={}, mcf_warm_start={}, mcf_solve={}",
+                tob_sat_solve_ms,
+                0,
+                0);
+            log_total_runtime();
+            return 1;
+        }
     }
     log_tob_sat_bump_usage(result);
     for (const auto& d : result.route_details) {
@@ -333,26 +383,7 @@ auto run_main(int argc, char** argv) -> int {
     debug::info_fmt("SAT solved at range_level={}", result.range_level);
     debug::info_fmt("nets solved: {}", records.size());
 
-    long long mcf_warm_start_ms = 0;
-    long long mcf_solve_ms = 0;
     if (enable_mcf) {
-        if (enable_mcf_parallel) {
-            debug::info("MCF: solving 16 COB units in parallel (std::async)");
-        }
-        const auto mcf_full = run_mcf_global_routing_cob_units(
-            records,
-            result,
-            interposer.get(),
-            *basedie.get(),
-            cob_grid,
-            enable_mcf_parallel,
-            enable_pre_routing,
-            enable_mcf_obj,
-            defer_maze_check_suspend,
-            disable_bus_mcf,
-            gurobi_diag);
-        mcf_warm_start_ms = mcf_full.summary.mcf_warm_start_ms;
-        mcf_solve_ms = mcf_full.summary.mcf_solve_ms;
         if (maze_check_ilp_mcf) {
             (void)run_maze_check_ilp_mcf_after_mcf(
                 interposer.get(),
@@ -370,16 +401,6 @@ auto run_main(int argc, char** argv) -> int {
                 result,
                 mcf_full,
                 cob_grid);
-        }
-        if (!mcf_full.summary.all_ok) {
-            debug::error("MCF global routing: one or more COB unit solves failed; see MCF log lines");
-            debug::info_fmt(
-                "timing breakdown (ms): tob_sat_solve={}, mcf_warm_start={}, mcf_solve={}",
-                tob_sat_solve_ms,
-                mcf_warm_start_ms,
-                mcf_solve_ms);
-            log_total_runtime();
-            return 1;
         }
         if (check_golden && !run_wire_length_golden_check(config_path, mcf_full.summary.total_wire_length)) {
             log_total_runtime();

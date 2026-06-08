@@ -6,6 +6,14 @@
 
 namespace PR_tool {
 
+inline constexpr std::size_t kMaxRangeLevel = 4;
+
+auto solve_tob_sat_at_range_level(
+    std::Vector<Net_cost_record>& records,
+    std::size_t range_level,
+    const CadicalDiagnosticsOptions& diag = {}
+) -> TobIlpResult;
+
 auto solve_tob_sat_with_cadical(
     std::Vector<Net_cost_record>& records,
     const CadicalDiagnosticsOptions& diag = {}

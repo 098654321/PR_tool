@@ -89,9 +89,10 @@ xmake build test_ILP
 1) `parse::read_config` + `algo::build_nets`  
 2) `build_records()`：将 `circuit::Net` 展平为 2-pin 级 `Net_cost_record`，并分配 `record_id` 和 `bit_id`；`TrackToBumpsNet` 按 bump 拆成多条 `Tnet`（`from_track_to_bumps_split`）参与 TOB 分配，原 net 记入 `BuildRecordsResult::track_to_bumps_nets`；`BumpToBumpsNet` / `BumpToTracksNet` 为非法类型，直接报错退出  
 3) 可选 `--export-ilp-mps`：`precompute_reach_for_records()` + `write_mps_file()` 导出 legacy ILP MPS  
-4) `solve_tob_sat_with_cadical()`：按 `range_level 0..4` 迭代（`precompute_reach_for_range` → CNF → CaDiCal），输出 `TobIlpResult`（`assignments`、`active_w/active_s`、`route_details`、`record_track_endpoints`、`range_level`）  
-5) 若启用 `--enable-mcf-routing`：  
-   `run_mcf_global_routing_cob_units()`，COB 网格固定为 `hardware::Interposer::COB_ARRAY_HEIGHT/WIDTH`；读取 `ilp_result.range_level`，经 `build_mcf_bbox_context()` 为每条 commodity 构造与 TOB 一致的 bbox，在可行图 $E_n^c$ / $E_H^c$ 上做 BusMCF + SimpleMCF。若同时启用 `--enable-pre-routing`，warm start BFS 同样受 bbox 限制；MCF 返回前在 `Interposer` 上对路径 `suspend()`（见 [`source/AGENTS.md`](source/AGENTS.md)）
+4) TOB + 可选 MCF 按 `range_level 0..4` 迭代：  
+   - **未启用** `--enable-mcf-routing`：`solve_tob_sat_with_cadical()` 仅在 SAT UNSAT 时扩大范围  
+   - **启用** `--enable-mcf-routing`：`solve_tob_mcf_with_range_iteration()` 统一外层循环（第六版 §725+）：每轮 `solve_tob_sat_at_range_level` → `run_mcf_global_routing_cob_units`；SAT UNSAT 或 MCF infeasible（含 bbox 预检失败）时 `range_level++` 重跑；成功则输出 `TobIlpResult` + `CobMcfFullResult`  
+5) MCF 细节：COB 网格固定为 `hardware::Interposer::COB_ARRAY_HEIGHT/WIDTH`；读取当轮 `range_level`，经 `build_mcf_bbox_context()` 构造 bbox 可行图 $E_n^c$ / $E_H^c$ 做 BusMCF + SimpleMCF。`--enable-pre-routing` 时 warm start BFS 受 bbox 限制；pipeline 成功后在 `Interposer` 上 `suspend()`（maze-check 模式由 `maze_check` 负责 apply+suspend）
 
 建议把该链路理解为：
 
@@ -102,11 +103,11 @@ xmake build test_ILP
 
 | 日志前缀 | 含义 |
 | --- | --- |
-| `timing phase=tob_sat_solve` | `solve_tob_sat_with_cadical()` 整体（含 `range_level` 迭代） |
-| `timing phase=mcf_warm_start` | MCF 前在 `GlobalGraph` 上的 warm path 构造；未使用 `--enable-pre-routing` 时为 **0** |
-| `timing phase=mcf_solve` | BusMCF + 各 COBUnit SimpleMCF 的 Gurobi 求解之和 |
+| `timing phase=tob_sat_solve` | SAT 阶段耗时；MCF 路径下为 pipeline 内**所有尝试轮** SAT 之和（含失败轮） |
+| `timing phase=mcf_warm_start` | MCF warm path 构造；pipeline 下为**所有尝试轮**之和；未使用 `--enable-pre-routing` 时为 **0** |
+| `timing phase=mcf_solve` | BusMCF + SimpleMCF Gurobi 求解；pipeline 下为**所有尝试轮**之和 |
 
-`run_main` 退出前汇总：`timing breakdown (ms): tob_sat_solve=..., mcf_warm_start=..., mcf_solve=...`（未执行 MCF 时后两项为 **0**）。`CobMcfRunSummary::mcf_warm_start_ms` / `mcf_solve_ms` 与 MCF 两段一致。
+`run_main` 退出前汇总：`timing breakdown (ms): tob_sat_solve=..., mcf_warm_start=..., mcf_solve=...`（未执行 MCF 时后两项为 **0**）。MCF 重试日志：`range iteration: level=L SAT=... MCF=...`、`SAT+MCF solved at range_level=L (attempts=N)`。
 
 ---
 
@@ -118,15 +119,16 @@ xmake build test_ILP
   - CLI 参数解析（含 verbose `-v` 计数）
   - 2-pin 记录构建（`build_records` / `BuildRecordsResult`）与类型拆分（`classify_net`）
   - 可选 `--export-ilp-mps` 调度
-  - SAT TOB 求解（`solve_tob_sat_with_cadical`）与结果输出（`route_details`、`active_w`、`active_s`）
-  - 可选 MCF 阶段调度（含 `--enable-pre-routing` MCF warm start）
+  - SAT TOB 求解（SAT-only：`solve_tob_sat_with_cadical`；SAT+MCF：`solve_tob_mcf_with_range_iteration`）与结果输出
+  - 可选 MCF 阶段（含 `--enable-pre-routing` MCF warm start、maze-check）
 
 - `algorithm/test_ILP/ilp_allocation/ilp_apply_interposer.hh/.cc`
   - `apply_tob_ilp_result_to_interposer`（S 配置 `hori_to_vert`、W 写 `allocated_track`/`intersect_access_unit`）
 
 ### 3.2 SAT TOB 分配（主路径）
 
-- `algorithm/test_ILP/sat_allocation/solve_tob_sat.{hh,cc}`：`range_level` 外层循环入口
+- `algorithm/test_ILP/sat_allocation/solve_tob_sat.{hh,cc}`：单轮 SAT（`solve_tob_sat_at_range_level`）；SAT-only 时 `range_level` 循环（`solve_tob_sat_with_cadical`）
+- `algorithm/test_ILP/sat_allocation/solve_tob_mcf_pipeline.{hh,cc}`：SAT+MCF 统一 `range_level` 外层循环（§725+）
 - `algorithm/test_ILP/sat_allocation/tob_sat_encoder.{hh,cc}`：W/S/QS/QW/Y/A CNF（语义对齐第六版 §3–11）
 - `algorithm/test_ILP/sat_allocation/cadical_solver.{hh,cc}`：CaDiCal 封装
 - `algorithm/test_ILP/sat_allocation/tob_allocation_result.{hh,cc}`：SAT 赋值 → `TobIlpResult`
@@ -336,7 +338,7 @@ ILP 约束组：
 - **日志**：`MCF using SAT range_level=L`、`MCF bbox: range_level=L commodities=... bus_groups=...`
 - **warm start**：`route_one_mcf_warm_path` 使用与求解相同的 bbox 过滤
 
-**未实现**：MCF 失败时 `range_level++` 重跑 SAT（§725+）。
+**MCF 失败重试**（§725+，`solve_tob_mcf_pipeline`）：BusMCF 或任一 SimpleMCF unit 失败 → 丢弃本轮 SAT/MCF → `range_level++` 从 TOB SAT 重跑；中间轮 `defer_interposer_suspend=true`，仅最终成功时 suspend。
 
 ### 5.3 两阶段求解（第五版 SimpleMCF 无向 `x` + bbox：`solve_bus_mcf` + `solve_simple_mcf_unit`）
 
@@ -486,7 +488,7 @@ ILP 约束组：
 ./output/test_ILP <config_path> --enable-mcf-routing --enable-mcf-obj
 ```
 
-已验证端到端通过：`test/config/case1`、`case5`、`case6`（`range_level=0`，日志含 `MCF bbox:` / `MCF using SAT range_level=`）。
+已验证端到端通过：`test/config/case1`、`case5`、`case6`（`range_level=0`，日志含 `SAT+MCF solved at range_level=0`、`MCF bbox:` / `MCF using SAT range_level=`）。
 
 4) MCF with graph warm start：
 

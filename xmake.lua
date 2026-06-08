@@ -183,6 +183,7 @@ target("test_ILP")
         "algorithm/test_ILP/sat_allocation/cadical_solver.cc",
         "algorithm/test_ILP/sat_allocation/tob_allocation_result.cc",
         "algorithm/test_ILP/sat_allocation/solve_tob_sat.cc",
+        "algorithm/test_ILP/sat_allocation/solve_tob_mcf_pipeline.cc",
         "algorithm/test_ILP/precompute/ilp_bounding_box.cc",
         "algorithm/test_ILP/precompute/tob_reach_with_range.cc",
         "algorithm/test_ILP/precompute/tob_channel_kshortest.cc"
