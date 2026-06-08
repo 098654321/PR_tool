@@ -2,6 +2,11 @@
 
 This document provides an overview of the `test/` directory for AI agents. It details the testing infrastructure, data formats, and test cases used to validate the PR_tool EDA tool.
 
+## 0. 2个工作规则
+
+- 必须深入理解我给你的材料，在理解的基础上进行后续动作
+- 完成修改之后，维护相应的 AGENTS.md文件。如果改动比较大，需要在项目根目录的.plan目录下生成改动记录文件，内容可以参考该目录下已有的改动记录
+
 ## Directory Structure
 
 *   **`config/`**: Integration test cases (Benchmarks).
@@ -46,4 +51,9 @@ A typical test case directory (e.g., `test/config/case4/`) contains:
 ## How to Run Tests
 
 *   **Unit Tests**: Compiled sources in `module_test/` are typically linked against the core library.
+    *   Build: `xmake build PR_tool module_test`
+    *   Run from `output/`: `./module_test <test_name>` (e.g. `./module_test placer`)
+    *   Run all fast unit tests: `./module_test all`
+*   **`placer_iteratively` (slow, not in `all`)**: Runs `./PR_tool ../test/config/case5 -p` 100 times via subprocess. After each run, parses `output/debug.log` and fails if `Total Length >= 1100`, `Failed routing nubmer > 0`, or any `Routing failed for this net:` appears. Expect several minutes of runtime.
+    *   Run: `cd output && ./module_test placer_iteratively`
 *   **Regression**: The `regression_test` target runs the Catch2 suite, which likely iterates over the `config/` cases, runs the tool, and compares the output against `golden.txt`.

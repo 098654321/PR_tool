@@ -5,28 +5,28 @@
 #include <hardware/interposer.hh>
 #include <hardware/tob/tob.hh>
 #include <hardware/tob/tobcoord.hh>
-#include <hardware/cob/cob.hh>
 #include <hardware/track/track.hh>
 #include <hardware/bump/bump.hh>
 
 #include <circuit/net/net.hh>
 #include <circuit/net/nets.hh>
-#include <circuit/topdie/topdie.hh>
-#include <circuit/basedie.hh>
-#include <circuit/export/export.hh>
-#include <circuit/connection/connection.hh>
 
 #include <utility/random.hh>
 #include <random>
 
-#include <algo/netbuilder/netbuilder.hh>
-
 #include <std/collection.hh>
 #include <std/integer.hh>
-#include <std/math.hh>
-// #include <QColor>
 
 namespace PR_tool::algo {
+    auto SAPlaceStrategy::compute_search_budget(std::size_t n_chips) const -> SearchBudget {
+        auto chip_factor = std::max<std::size_t>(1, n_chips);
+        auto stall_chip_factor = std::max<std::size_t>(1, n_chips / 2);
+        return SearchBudget{
+            this->_base_solve_num * chip_factor,
+            this->_base_max_no_improvement * stall_chip_factor,
+        };
+    }
+
     auto SAPlaceStrategy::place(
         hardware::Interposer* interposer,
         std::Vector<circuit::TopDieInstance*>& topdies
@@ -37,7 +37,7 @@ namespace PR_tool::algo {
             return;
         }
         debug::info_fmt("Totally {} top-level chip instance(s) need to be laid out", topdies.size());
-        
+
         if (!interposer) {
             debug::error("Interposer pointer is empty");
             return;
@@ -48,24 +48,30 @@ namespace PR_tool::algo {
             debug::warning("No network connection");
         }
 
-        double temperature {this->_init_temperature}; 
-        // auto total_cost = this->total_net_cost(nets) * this->_wirelength_weight + this->congestion_cost(interposer) * this->_congestion_weight + this->thermal_cost(topdies) * this->_thermal_weight;
-        auto total_cost = this->total_net_cost(nets) * this->_wirelength_weight + this->thermal_cost(topdies) * this->_thermal_weight;
+        auto budget = this->compute_search_budget(topdies.size());
+        debug::info_fmt(
+            "SA search budget: chips={}, solve_num={}, max_no_improvement={}",
+            topdies.size(), budget.solve_num, budget.max_no_improvement
+        );
+
+        double temperature {this->_init_temperature};
+        auto initial_cost = this->total_net_cost(nets);
+        auto total_cost = initial_cost;
         auto best_cost = total_cost;
         auto best_solution = this->save_current_placement(topdies);
 
         std::size_t no_improvement_count = 0;
         std::size_t iteration = 0;
 
-        while (temperature > this->_freeze_temperature && no_improvement_count < this->_max_no_improvement) {
+        while (temperature > this->_freeze_temperature && no_improvement_count < budget.max_no_improvement) {
             bool improved = false;
-            for (std::usize n = 0; n < this->_solve_number; ++n) {
+            for (std::usize n = 0; n < budget.solve_num; ++n) {
                 auto new_total_cost = total_cost;
 
                 if (this->decide_to_swap_topdie_inst(temperature)) {
                     debug::debug("Swap two top-level chip instance");
                     auto [topdie_inst1, topdie_inst2] = this->randomly_choice_two_topdie_insts(topdies);
-                    
+
                     if (!topdie_inst1 || !topdie_inst2) {
                         debug::debug("topdie_inst is empty");
                         continue;
@@ -82,19 +88,17 @@ namespace PR_tool::algo {
                     }
 
                     for (auto net : changed_nets) {
-                        new_total_cost -= this->net_cost(net) * this->_wirelength_weight;
+                        new_total_cost -= this->net_cost(net);
                     }
-
-                    new_total_cost -= this->thermal_cost(topdies) * this->_thermal_weight;
 
                     auto tob1 = topdie_inst1->tob();
                     auto tob2 = topdie_inst2->tob();
-                    
+
                     if (!tob1 || !tob2) {
                         debug::debug_fmt("TOB {} or {} is empty", tob1->coord(), tob2->coord());
                         continue;
                     }
-                    
+
                     if (!this->is_changable(topdie_inst1, tob2) || !this->is_changable(topdie_inst2, tob1)) {
                         debug::debug_fmt("TOB {} or {} is not changable for {} and {}", tob1->coord(), tob2->coord(), topdie_inst1->name(), topdie_inst2->name());
                         continue;
@@ -102,7 +106,7 @@ namespace PR_tool::algo {
 
                     bool tob1_occupied = false;
                     bool tob2_occupied = false;
-                    
+
                     for (const auto& topdie : topdies) {
                         if (topdie != topdie_inst1 && topdie != topdie_inst2) {
                             if (topdie->tob() == tob1) {
@@ -113,20 +117,19 @@ namespace PR_tool::algo {
                             }
                         }
                     }
-                    
+
                     if (tob1_occupied || tob2_occupied) {
                         debug::debug_fmt("TOB {} or {} is occupied", tob1->coord(), tob2->coord());
                         continue;
                     }
-                    
+
                     debug::debug_fmt("Swap {} on TOB {} and {} on TOB {}", topdie_inst1->name(), tob1->coord(), topdie_inst2->name(), tob2->coord());
                     topdie_inst1->swap_tob_with(topdie_inst2);
 
                     for (auto net : changed_nets) {
-                        new_total_cost += this->net_cost(net) * this->_wirelength_weight;
+                        new_total_cost += this->net_cost(net);
                     }
- 
-                    new_total_cost += this->thermal_cost(topdies) * this->_thermal_weight;
+
                     auto deltaCost = new_total_cost - total_cost;
 
                     if (deltaCost <= 0) {
@@ -137,7 +140,7 @@ namespace PR_tool::algo {
                         if (random_f64() <= std::exp(exp_x)) {
                             debug::debug("Accept movement");
                             total_cost = new_total_cost;
-                            
+
                         } else {
                             debug::debug("Reject movement");
                             topdie_inst1->swap_tob_with(topdie_inst2);
@@ -147,7 +150,7 @@ namespace PR_tool::algo {
                 } else {
                     debug::debug("Move one top-level chip instance to another TOB");
                     auto topdie_inst = this->randomly_choice_one_topdie_insts(topdies);
-                    
+
                     if (!topdie_inst) {
                         debug::debug_fmt("Top-level chip instance is empty");
                         continue;
@@ -156,12 +159,12 @@ namespace PR_tool::algo {
                     debug::debug_fmt("Get Top-level chip instance {}", topdie_inst->name());
                     auto prev_tob = topdie_inst->tob();
                     auto next_tob_option = interposer->randomly_get_a_idle_tob();
-                   
+
                     if (!next_tob_option.has_value()) {
                         debug::debug_fmt("No idle TOB");
-                        continue; 
+                        continue;
                     }
-                    auto next_tob = *next_tob_option; 
+                    auto next_tob = *next_tob_option;
 
                     if (this->is_changable(topdie_inst, next_tob) == false) {
                         debug::debug_fmt("TOB {} is not changable", next_tob->coord());
@@ -175,25 +178,23 @@ namespace PR_tool::algo {
                             break;
                         }
                     }
-                    
+
                     if (next_tob_occupied) {
                         debug::debug_fmt("TOB {} is occupied", next_tob->coord());
                         continue;
                     }
 
                     for (auto net : topdie_inst->nets()) {
-                        new_total_cost -= this->net_cost(net) * this->_wirelength_weight;
+                        new_total_cost -= this->net_cost(net);
                     }
 
-                    new_total_cost -= this->thermal_cost(topdies) * this->_thermal_weight;
                     topdie_inst->move_to_tob(next_tob);
                     debug::debug_fmt("Move {} from TOB {} to TOB {}", topdie_inst->name(), prev_tob->coord(), next_tob->coord());
 
                     for (auto net : topdie_inst->nets()) {
-                        new_total_cost += this->net_cost(net) * this->_wirelength_weight;
+                        new_total_cost += this->net_cost(net);
                     }
 
-                    new_total_cost += this->thermal_cost(topdies) * this->_thermal_weight;
                     auto deltaCost = new_total_cost - total_cost;
 
                     if (deltaCost <= 0) {
@@ -204,14 +205,14 @@ namespace PR_tool::algo {
                         if (random_f64() <= std::exp(exp_x)) {
                             debug::debug("Accept movement");
                             total_cost = new_total_cost;
-                            
+
                         } else {
                             debug::debug("Reject movement");
                             topdie_inst->move_to_tob(prev_tob);
                             this->check_nets(topdies);
                         }
                     }
-                }   
+                }
             }
 
             if (total_cost < best_cost) {
@@ -227,10 +228,11 @@ namespace PR_tool::algo {
             iteration++;
             debug::info_fmt("Iteration {}: Temperature={:.2f}, Current cost={}, optimal cost={}", iteration, temperature, total_cost, best_cost);
         }
-        // debug
         this->restore_placement(topdies, best_solution);
-        //
-        debug::info("Layout completed");
+        debug::info_fmt(
+            "Layout completed: initial_HPWL={}, best_HPWL={}",
+            initial_cost, best_cost
+        );
     }
 
     auto SAPlaceStrategy::is_changable(circuit::TopDieInstance* inst, hardware::TOB* target_tob) const -> bool {
@@ -243,20 +245,14 @@ namespace PR_tool::algo {
     }
 
     auto SAPlaceStrategy::evaluate_placement(
-        hardware::Interposer* interposer,
+        hardware::Interposer* /*interposer*/,
         const std::Vector<circuit::TopDieInstance*>& topdies,
-        circuit::BaseDie* basedie
+        circuit::BaseDie* /*basedie*/
     ) const -> std::i64 {
-        auto nets = this->collect_nets(topdies); 
+        auto nets = this->collect_nets(topdies);
         auto wirelength = this->total_net_cost(nets);
-        // auto congestion = this->congestion_cost(interposer);
-        auto thermal = this->thermal_cost(topdies);
-        auto power = this->power_cost(topdies, basedie);
-        
-        // auto total_cost = wirelength * this->_wirelength_weight + congestion * this->_congestion_weight + thermal * this->_thermal_weight + power * this->_power_weight;
-        auto total_cost = wirelength * this->_wirelength_weight + thermal * this->_thermal_weight;                    
-        debug::info_fmt("Layout evaluation: Line length: {}, thermal distribution: {}, power consumption: {}, total cost: {}", wirelength, thermal, power, total_cost);     
-        return total_cost;
+        debug::info_fmt("Layout evaluation: HPWL={}, total cost={}", wirelength, wirelength);
+        return wirelength;
     }
 
     auto SAPlaceStrategy::collect_nets(const std::Vector<circuit::TopDieInstance*>& topdies) const -> std::HashSet<circuit::Net*> {
@@ -290,113 +286,14 @@ namespace PR_tool::algo {
 
         for (std::usize i = 1; i < coords.size(); ++i) {
             min_row = std::min(min_row, coords[i].row);
-            max_row = std::max(max_row, coords[i].row);        
+            max_row = std::max(max_row, coords[i].row);
             min_col = std::min(min_col, coords[i].col);
             max_col = std::max(max_col, coords[i].col);
         }
-        // Half week long term
         return (max_row - min_row) + (max_col - min_col);
     }
 
-    // auto SAPlaceStrategy::congestion_cost(hardware::Interposer* interposer) const -> std::i64 {
-    //     std::i64 cost = 0;
-        
-    //     // Obtain COB unit
-    //     auto& cobs = interposer->cobs();       
-    //     // Usage rate of each COB
-    //     for (auto& cob : cobs) {
-    //         auto usage = cob.second->usage_rate();
-    //         if (usage > 0.8) {
-    //             cost += static_cast<std::i64>((usage - 0.8) * 100);
-    //         }
-    //     }
-    //     return cost;
-    // }
-
-    auto SAPlaceStrategy::thermal_cost(const std::Vector<circuit::TopDieInstance*>& topdies) const -> std::i64 {
-        std::i64 cost = 0;
-        std::Vector<const circuit::TopDieInstance*> high_power_chips;
-
-        for (const auto& topdie : topdies) {
-            double power = this->get_topdie_power(*topdie);
-
-            if (power > this->_thermal_threshold) {
-                high_power_chips.push_back(topdie);
-            }
-        }
-
-        for (std::size_t i = 0; i < high_power_chips.size(); ++i) {
-            for (std::size_t j = i + 1; j < high_power_chips.size(); ++j) {
-                auto tob1 = high_power_chips[i]->tob();
-                auto tob2 = high_power_chips[j]->tob();
-                
-                if (!tob1 || !tob2) continue;
-                auto distance = this->manhattan_distance(tob1->coord(), tob2->coord());
-                if (distance < this->_thermal_safe_distance) {
-                    cost += (this->_thermal_safe_distance - distance) * 10;
-                }
-            }
-        }       
-        return cost;
-    }
-
-    auto SAPlaceStrategy::power_cost(
-        const std::Vector<circuit::TopDieInstance*>& topdies, 
-        circuit::BaseDie* basedie
-    ) const -> std::i64 {
-        std::i64 cost = 0;
-        if (!basedie) return cost;
-
-        auto pose_ports = basedie->pose_ports();
-        auto nege_ports = basedie->nege_ports();
-        std::Vector<const circuit::TopDieInstance*> high_power_chips;
-        for (const auto& topdie : topdies) {
-            double power = this->get_topdie_power(*topdie);
-            if (power > this->_power_threshold) {
-                high_power_chips.push_back(topdie);
-            }
-        }
-
-        for (const auto& chip : high_power_chips) {
-            auto tob = chip->tob();
-            if (!tob) continue;
-            
-            auto chip_coord = tob->coord();
-            std::i64 min_pose_distance = std::numeric_limits<std::i64>::max();
-            for (const auto& port : pose_ports) {
-                // auto track = port.coord();
-                auto track = port;
-                auto distance = std::abs(track.row - chip_coord.row) + std::abs(track.col - chip_coord.col);
-                min_pose_distance = std::min(min_pose_distance, distance);
-            }
-
-            std::i64 min_nege_distance = std::numeric_limits<std::i64>::max();
-            for (const auto& port : nege_ports) {
-                // auto track = port.coord();
-                auto track = port;
-                auto distance = std::abs(track.row - chip_coord.row) + std::abs(track.col - chip_coord.col);
-                min_nege_distance = std::min(min_nege_distance, distance);
-            }
-
-            if (min_pose_distance > this->_power_safe_distance) {
-                cost += (min_pose_distance - this->_power_safe_distance) * 5;
-            }
-            
-            if (min_nege_distance > this->_power_safe_distance) {
-                cost += (min_nege_distance - this->_power_safe_distance) * 5;
-            }
-        }      
-        return cost;
-    }
-
-    auto SAPlaceStrategy::manhattan_distance(
-        const hardware::TOBCoord& coord1, 
-        const hardware::TOBCoord& coord2
-    ) const -> std::i64 {
-        return std::abs(coord1.row - coord2.row) + std::abs(coord1.col - coord2.col);
-    }
-
-    auto SAPlaceStrategy::save_current_placement(const std::Vector<circuit::TopDieInstance*>& topdies) const 
+    auto SAPlaceStrategy::save_current_placement(const std::Vector<circuit::TopDieInstance*>& topdies) const
         -> std::HashMap<circuit::TopDieInstance*, hardware::TOB*> {
         std::HashMap<circuit::TopDieInstance*, hardware::TOB*> placement;
         for (const auto& topdie : topdies) {
@@ -428,7 +325,7 @@ namespace PR_tool::algo {
             }
 
             auto occ_it = tob_to_topdie.find(target_tob);
-            if (occ_it != tob_to_topdie.end() && occ_it->second != topdie) { // target_tob has already have a topdie
+            if (occ_it != tob_to_topdie.end() && occ_it->second != topdie) {
                 auto* other = occ_it->second;
                 auto* tob1 = topdie->tob();
                 auto* tob2 = other->tob();
@@ -461,7 +358,7 @@ namespace PR_tool::algo {
             debug::warning("Insufficient number of chips for exchange");
             return {nullptr, nullptr};
         }
-        
+
         auto topdie_inst1 = this->randomly_choice_one_topdie_insts(topdies);
         circuit::TopDieInstance* topdie_inst2 = nullptr;
         do {
@@ -478,7 +375,7 @@ namespace PR_tool::algo {
     auto SAPlaceStrategy::random_f64() const -> double {
         std::random_device rd;
         std::mt19937_64 gen(rd());
-        
+
         std::uniform_real_distribution<double> dis(0.0, 1.0);
         return dis(gen);
     }
@@ -486,19 +383,6 @@ namespace PR_tool::algo {
     auto SAPlaceStrategy::calculate_next_temperature(double current_temp, std::size_t iteration) const -> double {
         return current_temp * this->_cooling_rate;
     }
-
-    // auto SAPlaceStrategy::try_routing(
-    //     hardware::Interposer* interposer,
-    //     circuit::BaseDie* basedie,
-    //     const RouteStrategy& route_strategy
-    // ) const -> std::i64 {
-    //     try {
-    //         return route_nets(interposer, basedie, route_strategy);
-    //     } catch (const std::exception& e) {
-    //         debug::warning_fmt("Wiring evaluation failed: {}", e.what());
-    //         return std::numeric_limits<std::i64>::max(); 
-    //     }
-    // }
 
     auto SAPlaceStrategy::is_valid_placement(
         hardware::Interposer* interposer,
@@ -523,30 +407,24 @@ namespace PR_tool::algo {
 
         auto interposer_rows = hardware::Interposer::TOB_ARRAY_HEIGHT;
         auto interposer_cols = hardware::Interposer::TOB_ARRAY_WIDTH;
-        
+
         for (const auto& topdie : topdies) {
             auto tob = topdie->tob();
             auto coord = tob->coord();
-            
-            if (coord.row < 0 || coord.row >= interposer_rows || 
+
+            if (coord.row < 0 || coord.row >= interposer_rows ||
                 coord.col < 0 || coord.col >= interposer_cols) {
-                debug::error_fmt("Chip {} is located outside the Interposer boundary: {}", 
+                debug::error_fmt("Chip {} is located outside the Interposer boundary: {}",
                     topdie->name(), coord);
                 return false;
             }
-        }   
+        }
         return true;
-    }
-
-    auto SAPlaceStrategy::get_topdie_power(const circuit::TopDieInstance& topdie) const -> double {
-        auto nets = topdie.nets();
-        return static_cast<double>(nets.size()) / 10.0; 
     }
 
     auto SAPlaceStrategy::check_nets(
         const std::Vector<circuit::TopDieInstance*>& topdies
     ) const -> void {
-        auto nets = std::HashSet<circuit::Net*>{};
         std::usize suspicious_count {0};
 
         for (auto* td : topdies) {
@@ -574,10 +452,10 @@ namespace PR_tool::algo {
                             btb->name(), bb->tob()->coord(), bb->coord(), eb->coord()
                         );
                     }
-                }   
+                }
             }
         }
-        
+
         if (suspicious_count > 0) {
             debug::warning_fmt("Placement driver: {} suspicious BumpToBump nets found on same TOB", suspicious_count);
         }

@@ -4,6 +4,9 @@
 # Xmake cache
 .xmake/
 build/
+.plan/
+.cursor/
+.venv/
 
 # MacOS Cache
 .DS_Store
