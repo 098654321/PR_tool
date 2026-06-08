@@ -184,8 +184,8 @@ auto compute_bounding_box_level0(const Net_cost_record& record) -> IlpBoundingBo
     return merged;
 }
 
-auto expand_bounding_box(const IlpBoundingBox& base, const std::size_t range_level, const bool is_bus_net) -> IlpBoundingBox {
-    if (range_level == 0 || is_bus_net) {
+auto expand_bounding_box(const IlpBoundingBox& base, const std::size_t range_level) -> IlpBoundingBox {
+    if (range_level == 0) {
         return base;
     }
     auto box = base;
@@ -199,7 +199,7 @@ auto expand_bounding_box(const IlpBoundingBox& base, const std::size_t range_lev
 
 auto compute_bounding_box(const Net_cost_record& record, const std::size_t range_level) -> IlpBoundingBox {
     const auto base = compute_bounding_box_level0(record);
-    return expand_bounding_box(base, range_level, is_sync_bus_record(record));
+    return expand_bounding_box(base, range_level);
 }
 
 auto rect_hull_boxes(const std::Vector<IlpBoundingBox>& boxes) -> IlpBoundingBox {

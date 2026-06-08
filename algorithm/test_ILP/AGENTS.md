@@ -220,6 +220,10 @@ ILP 约束组：
   - 返回 `IlpReachPrecomputeStats` 统计信息
   - 内部 `std::logic_error`（如 diagonal 上 `delta == 0`、或 `starts` 为空）会在消息中带 **`net_name` / `origin_key` / `record_id` / `end_track`** 及几何标志，便于定位是哪条 2-pin record 触发异常
 
+- `algorithm/test_ILP/precompute/ilp_bounding_box.{hh,cc}`、`tob_reach_with_range.{hh,cc}`
+  - `compute_bounding_box(record, range_level)`：`range_level=0` 为第二版 base bbox；`range_level>0` 时**所有 net 类型**（含 SyncNet sync bus 的 Bnet、Tnet、PNnet）四边各扩大 `range_level` 格，再 clamp 到 COB 阵列
+  - `range_level>0` 另在扩大后的 bbox 内做 k-shortest（`k=1+2*range_level`）扩展 start track 候选集
+
 ### 3.8 MCF 结果展示
 
 - `run_mcf_global_routing_cob_units()` 末尾：先按 COBUnit 打印每条 commodity 的摘要（`path_count` 等），再按 **MCF 求解分组** 输出完整 track 路径：**BusMCF** 按 SyncNet `origin_key`；**SimpleMCF** 按 `(COBUnit, origin_uid)`（`record_origin_group_uid()`，与 `build_origin_groups()` 一致；TTB/PN 多扇出共一组，独立 B2B 各一组），`display` 为可读 `origin_key`

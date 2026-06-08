@@ -26,7 +26,7 @@ auto is_sync_bus_record(const Net_cost_record& record) -> bool;
 
 auto compute_bounding_box_level0(const Net_cost_record& record) -> IlpBoundingBox;
 
-auto expand_bounding_box(const IlpBoundingBox& base, std::size_t range_level, bool is_bus_net) -> IlpBoundingBox;
+auto expand_bounding_box(const IlpBoundingBox& base, std::size_t range_level) -> IlpBoundingBox;
 
 auto compute_bounding_box(const Net_cost_record& record, std::size_t range_level) -> IlpBoundingBox;
 
