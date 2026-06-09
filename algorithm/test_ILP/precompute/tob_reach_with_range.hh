@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/ilp_types.hh"
+#include "common/tob_bbox_expansion.hh"
 #include "precompute/ilp_reach_precompute.hh"
 
 #include <cstddef>
@@ -19,6 +20,16 @@ struct TobReachRangeStats {
 };
 
 auto precompute_reach_for_range(std::Vector<Net_cost_record>& records, std::size_t range_level) -> TobReachRangeStats;
+
+auto precompute_reach_for_bbox_state(
+    std::Vector<Net_cost_record>& records,
+    const TobBBoxExpansionState& state
+) -> TobReachRangeStats;
+
+auto log_reach_endpoints_for_bbox_state(
+    const std::Vector<Net_cost_record>& records,
+    const TobBBoxExpansionState& state
+) -> void;
 
 auto log_reach_endpoints_for_range(
     const std::Vector<Net_cost_record>& records,

@@ -23,12 +23,14 @@ algorithm/test_ILP/
 ├── main.cc                 # CLI、build_records、阶段调度
 ├── common/
 │   ├── ilp_types.hh        # Net_cost_record、MCF 共用类型
-│   └── tob_allocation_types.hh  # TobIlpResult 等 TOB 分配结果类型
+│   ├── tob_allocation_types.hh  # TobIlpResult、bbox_expand_by_record 等
+│   └── tob_bbox_expansion.hh    # per-record ρ 状态与 expand_records()
 ├── sat_allocation/         # 阶段 A：TOB SAT 编码与求解
 │   ├── tob_sat_encoder.{hh,cc}
 │   ├── cadical_solver.{hh,cc}
 │   ├── tob_allocation_result.{hh,cc}
-│   └── solve_tob_sat.{hh,cc}
+│   ├── solve_tob_sat.{hh,cc}
+│   └── solve_tob_mcf_pipeline.{hh,cc}  # SAT+MCF 局部 bbox retry 外层循环
 ├── ilp_allocation/         # TOB ILP 模型（仅 --export-ilp-mps）、apply、wirelength_study 遗留
 │   ├── tob_ilp_model.{hh,cc}
 │   ├── gurobi.{hh,cc}
@@ -49,6 +51,8 @@ algorithm/test_ILP/
 │   ├── maze_check.{hh,cc}           # MCF 失败后的 maze 诊断（--maze-check-*）
 │   ├── maze_route_ilp_fixed.{hh,cc} # ILP 固定 TOB 端点 maze（供 maze-check / simple-maze）
 │   └── simple_maze_routing.{hh,cc}  # --simple-maze：按 origin net 替代 SimpleMCF Gurobi
+├── test/
+│   └── tob_bbox_expansion_state_test.cc  # TobBBoxExpansionState 单元测试（`test_ILP_unit`）
 ├── case1/、case2/
 └── problem_formulation/
 ```
@@ -69,14 +73,14 @@ xmake build test_ILP
 - `config_path`：配置目录（例如 `algorithm/test_ILP/case1`）
 - `-v` / `-vv` / …：设置 verbose 模式（`-v` 计数越多越详细），启用后将 debug level 设为 `Debug`；`-v` 时 SAT 阶段额外打印每条 record 的 bbox / end_track / start_tracks
 - `--export-ilp-mps <path>`：可选，导出 legacy TOB ILP 的 MPS 文件（`tob_ilp_model`，与 SAT 求解解耦，用于对照/debug）
-- `--sat-log`：为 CaDiCal 写出 API trace（`./cadical-log/sat_range{N}.trace`）
+- `--sat-log`：为 CaDiCal 写出 API trace（`./cadical-log/sat_range{N}.trace`；`N` 为当轮 `max_rho` 兼容摘要）
 - `--enable-mcf-routing`：在 SAT TOB 分配成功后继续执行 MCF 阶段
 - `--disable-bus-mcf`：须与 `--enable-mcf-routing` 联用；跳过 BusMCF（不占用 Bus 边/节点残余），仅求解 SimpleMCF；SyncNet bus commodity 不会得到 MCF 路径
 - `--enable-mcf-parallel`：SimpleMCF 按 COBUnit 并行求解（`std::async`，每个 unit 独立 Gurobi 模型）
 - `--enable-mcf-obj`：与 `--enable-mcf-routing` 联用时，SimpleMCF 加入 `min Σ x` 目标函数；**省略时 SimpleMCF 为纯可行性求解**（所有变量成本为 0）。BusMCF 始终带 `min Σ f` 目标
 - `--enable-pre-routing`：**仅 MCF 阶段** warm start。须与 `--enable-mcf-routing` 联用；在 `mcf/cob_mcf_router.cc` 的 `GlobalGraph` 上按 BusMCF/SimpleMCF 顺序跑 BFS maze，把路径转为 MCF 变量初值。单独指定时无效果并打 warning。失败的预布线只记录日志；若 Gurobi 使用 warm start 后未返回 optimal，会自动无 warm start 重试
 - `--gurobi-log`：**仅 MCF 阶段**（BusMCF、各 SimpleMCF unit）。在与 `debug.log` 同目录下的 `gurobi-log/` 写出求解器日志（`./gurobi-log/gurobi_{stage}_{seq}.log`）。约束矩阵诊断写入 `./gurobi-log/modelinfo.log`（见 §5.5）
-- `--simple-maze`：须与 `--enable-mcf-routing` 联用；与 `--maze-check-*` **互斥**。BusMCF 仍用 Gurobi；**SimpleMCF 改为 maze**：`reset_regs` → `apply_tob_ilp_result_to_interposer` → suspend BusMCF 路径后，按 **origin net**（`record_origin_group_uid`）顺序、SAT 固定 TOB 端点做 BFS maze（`maze_check/maze_route_ilp_fixed.{hh,cc}`）。**与 `--maze-check-mcf` 不同**：`TracksToBumpsNet`（PNnet）从 SAT 分配的 bump `start_track` 布到**任意可达 0/1 端口**（BFS 起点**不含** 0/1 端口，避免平凡路径）；`TrackToBumpsNet` 每条 split `Tnet` 从 bump `start_track` 布到共享 COB `end_track`（与 MCF commodity 方向一致）。日志：`simple-maze origin="..." result=OK|FAILED`（失败含 `failed_at_record_index`）；失败 record 另打 `simple-maze record_id=... result=FAILED`；`-v` 下每条 record 成功也打明细，origin 级 `path=` 用 `[rec=N] ... | ...` 分段。全部 origin 失败后 `all_ok=false` 并触发 `range_level` 重试。`--enable-mcf-parallel` / `--enable-mcf-obj` 无效果（warning）
+- `--simple-maze`：须与 `--enable-mcf-routing` 联用；与 `--maze-check-*` **互斥**。BusMCF 仍用 Gurobi；**SimpleMCF 改为 maze**：`reset_regs` → `apply_tob_ilp_result_to_interposer` → suspend BusMCF 路径后，按 **origin net**（`record_origin_group_uid`）顺序、SAT 固定 TOB 端点做 BFS maze（`maze_check/maze_route_ilp_fixed.{hh,cc}`）。**与 `--maze-check-mcf` 不同**：`TracksToBumpsNet`（PNnet）从 SAT 分配的 bump `start_track` 布到**任意可达 0/1 端口**（BFS 起点**不含** 0/1 端口，避免平凡路径）；`TrackToBumpsNet` 每条 split `Tnet` 从 bump `start_track` 布到共享 COB `end_track`（与 MCF commodity 方向一致）。日志：`simple-maze origin="..." result=OK|FAILED`（失败含 `failed_at_record_index`）；失败 record 另打 `simple-maze record_id=... result=FAILED`；`-v` 下每条 record 成功也打明细，origin 级 `path=` 用 `[rec=N] ... | ...` 分段。失败 origin 所在 SimpleMCF unit 会进入局部 bbox retry 集合。`--enable-mcf-parallel` / `--enable-mcf-obj` 无效果（warning）
 - `--maze-check-ilp-mcf` / `--maze-check-mcf`：须与 `--enable-mcf-routing` 联用，**二者互斥**。MCF 结束后（即使 SimpleMCF 失败）在真实 `Interposer` 上先 `apply_tob_ilp_result_to_interposer`，再 `suspend` 已有 BusMCF + 成功 SimpleMCF 路径，对 **SimpleMCF 失败 unit** 中的 net 按 `origin_key` 去重做 maze 诊断：
   - `--maze-check-ilp-mcf`：调用主工程 `Net::route(MazeRouteStrategy)`（完整 maze，TOB track 可重选）
   - `--maze-check-mcf`：复用 SAT 已 apply 的 TOB 分配，对 origin_net 做 COB 段 BFS maze。一般 2-pin net 验证 SAT 固定起终点是否可达；**`TracksToBumpsNet`（PNnet）** 与 simple-maze 相同修复后的 `route_tracks_to_bumps_net_ilp_fixed`（bump start → 任意 0/1 端口，起点不含 0/1 端口）。失败 record 打 `maze-check-mcf record_id=... result=FAILED`
@@ -92,10 +96,10 @@ xmake build test_ILP
 1) `parse::read_config` + `algo::build_nets`  
 2) `build_records()`：将 `circuit::Net` 展平为 2-pin 级 `Net_cost_record`，并分配 `record_id` 和 `bit_id`；`TrackToBumpsNet` 按 bump 拆成多条 `Tnet`（`from_track_to_bumps_split`）参与 TOB 分配，原 net 记入 `BuildRecordsResult::track_to_bumps_nets`；`BumpToBumpsNet` / `BumpToTracksNet` 为非法类型，直接报错退出  
 3) 可选 `--export-ilp-mps`：`precompute_reach_for_records()` + `write_mps_file()` 导出 legacy ILP MPS  
-4) TOB + 可选 MCF 按 `range_level 0..4` 迭代：  
-   - **未启用** `--enable-mcf-routing`：`solve_tob_sat_with_cadical()` 仅在 SAT UNSAT 时扩大范围  
-   - **启用** `--enable-mcf-routing`：`solve_tob_mcf_with_range_iteration()` 统一外层循环（第六版 §725+）：每轮 `solve_tob_sat_at_range_level` → `run_mcf_global_routing_cob_units`；SAT UNSAT 或 MCF infeasible（含 bbox 预检失败）时 `range_level++` 重跑；成功则输出 `TobIlpResult` + `CobMcfFullResult`  
-5) MCF 细节：COB 网格固定为 `hardware::Interposer::COB_ARRAY_HEIGHT/WIDTH`；读取当轮 `range_level`，经 `build_mcf_bbox_context()` 构造 bbox 可行图 $E_n^c$ / $E_H^c$ 做 BusMCF + SimpleMCF。`--enable-pre-routing` 时 warm start BFS 受 bbox 限制；pipeline 成功后在 `Interposer` 上 `suspend()`（maze-check 模式由 `maze_check` 负责 apply+suspend）
+4) TOB + 可选 MCF 使用 per-record 局部扩展状态 `rho[record_id] ∈ [0,4]`：  
+   - **未启用** `--enable-mcf-routing`：`solve_tob_sat_with_cadical()` 在 SAT UNSAT 时只扩展 `Tnet/PNnet` records  
+   - **启用** `--enable-mcf-routing`：`solve_tob_mcf_with_range_iteration()` 统一外层循环；每轮 `solve_tob_sat_with_bbox_state` → `run_mcf_global_routing_cob_units`。SAT UNSAT 扩展 `Tnet/PNnet`；BusMCF 失败扩展失败 `bus_key` 的 member records；SimpleMCF / `--simple-maze` 失败扩展失败 unit 的 simple records，并把相关多扇出 origin 的所有 child records 一并扩展  
+5) MCF 细节：COB 网格固定为 `hardware::Interposer::COB_ARRAY_HEIGHT/WIDTH`；读取 SAT 结果中的 `bbox_expand_by_record`，经 `build_mcf_bbox_context()` 构造 bbox 可行图 $E_n^c$ / $E_H^c$ 做 BusMCF + SimpleMCF。`range_level` 字段仅保留为 `max(rho)` 兼容摘要，不作为真实 MCF 范围来源。`--enable-pre-routing` 时 warm start BFS 受 bbox 限制；pipeline 成功后在 `Interposer` 上 `suspend()`（maze-check 模式由 `maze_check` 负责 apply+suspend）
 
 建议把该链路理解为：
 
@@ -110,7 +114,7 @@ xmake build test_ILP
 | `timing phase=mcf_warm_start` | MCF warm path 构造；pipeline 下为**所有尝试轮**之和；未使用 `--enable-pre-routing` 时为 **0** |
 | `timing phase=mcf_solve` | BusMCF + SimpleMCF Gurobi 求解；pipeline 下为**所有尝试轮**之和 |
 
-`run_main` 退出前汇总：`timing breakdown (ms): tob_sat_solve=..., mcf_warm_start=..., mcf_solve=...`（未执行 MCF 时后两项为 **0**）。MCF 重试日志：`range iteration: level=L SAT=... MCF=...`、`SAT+MCF solved at range_level=L (attempts=N)`。
+`run_main` 退出前汇总：`timing breakdown (ms): tob_sat_solve=..., mcf_warm_start=..., mcf_solve=...`（未执行 MCF 时后两项为 **0**）。MCF 重试日志使用 `bbox iteration: attempt=A ... max_rho=R`，并打印 `changed_records` 与 `rho_by_record` 摘要。
 
 ---
 
@@ -130,13 +134,14 @@ xmake build test_ILP
 
 ### 3.2 SAT TOB 分配（主路径）
 
-- `algorithm/test_ILP/sat_allocation/solve_tob_sat.{hh,cc}`：单轮 SAT（`solve_tob_sat_at_range_level`）；SAT-only 时 `range_level` 循环（`solve_tob_sat_with_cadical`）
-- `algorithm/test_ILP/sat_allocation/solve_tob_mcf_pipeline.{hh,cc}`：SAT+MCF 统一 `range_level` 外层循环（§725+）
+- `algorithm/test_ILP/sat_allocation/solve_tob_sat.{hh,cc}`：单轮 SAT（`solve_tob_sat_with_bbox_state`；`solve_tob_sat_at_range_level` 仅为 uniform `rho` 兼容包装）；SAT-only 时按局部 `rho` 重试（`solve_tob_sat_with_cadical`）
+- `algorithm/test_ILP/sat_allocation/solve_tob_mcf_pipeline.{hh,cc}`：SAT+MCF 统一局部 bbox retry 外层循环（per-record `rho[record_id]`）
 - `algorithm/test_ILP/sat_allocation/tob_sat_encoder.{hh,cc}`：W/S/QS/QW/Y/A CNF（语义对齐第六版 §3–11）
 - `algorithm/test_ILP/sat_allocation/cadical_solver.{hh,cc}`：CaDiCal 封装
 - `algorithm/test_ILP/sat_allocation/tob_allocation_result.{hh,cc}`：SAT 赋值 → `TobIlpResult`
-- `algorithm/test_ILP/precompute/tob_reach_with_range.{hh,cc}`、`ilp_bounding_box.{hh,cc}`、`tob_channel_kshortest.{hh,cc}`：可达性与 range 扩展
-- `algorithm/test_ILP/common/tob_allocation_types.hh`：`TobIlpResult` 等
+- `algorithm/test_ILP/precompute/tob_reach_with_range.{hh,cc}`、`ilp_bounding_box.{hh,cc}`、`tob_channel_kshortest.{hh,cc}`：可达性与 per-record bbox 扩展
+- `algorithm/test_ILP/common/tob_bbox_expansion.hh`：`TobBBoxExpansionState`（`rho_by_record`、`expand_records`）
+- `algorithm/test_ILP/common/tob_allocation_types.hh`：`TobIlpResult`（含 `bbox_expand_by_record`；`range_level` 仅为 `max(rho)` 摘要）等
 
 ### 3.3 类型与元数据
 
@@ -198,8 +203,9 @@ ILP 约束组：
   - `NodeMeta`：节点元数据，包含 `track_dir`（0=Horizontal, 1=Vertical）、`track_row`、`track_col`、`unit`、`track`
   - `Arc`：有向弧，包含 `u`/`v` 端点、`is_virtual`/`is_turn` 标记、`unit`、`cob`（所属 COB 线性编号）、`track_in`/`track_out`（输入/输出 track）、`from_dir`/`to_dir`（COBDirection，Wilton 转弯方向）
   - `PreparedCommodity`：每个 commodity 的 `label`、`origin_name`、源/汇节点、类别（`Plain`/`P`/`N`）、bus 标识、reach 步序列
-  - `mcf/mcf_bbox.{hh,cc}`：`build_mcf_bbox_context()`、`physical_arc_in_bbox()`、`resolve_mcf_bbox()`；与 `ilp_bounding_box` 共用 `compute_bounding_box(record, range_level)`
-  - `StageSolveResult`：单阶段求解结果（已用边/节点、路径）
+  - `mcf/mcf_bbox.{hh,cc}`：`build_mcf_bbox_context()`、`physical_arc_in_bbox()`、`resolve_mcf_bbox()`；与 `ilp_bounding_box` 共用 `compute_bounding_box(record, rho[record_id])`
+  - `StageSolveResult`：单阶段求解结果（已用边/节点、路径、`failed_bus_keys` / `failed_record_indices`）
+  - `CobMcfRetryHints`：MCF 失败时回传 pipeline 的局部扩展提示（`failed_bus_keys`、`failed_simple_units`、`failed_record_indices`、`bus_failure_unlocalized`）
   - `arc_usable_for_class()`：按 `unit` 和 P/N 类别过滤 arc
   - `extract_path()`：从整数流解中通过 BFS 提取单 commodity 路径
 
@@ -224,9 +230,11 @@ ILP 约束组：
   - 内部 `std::logic_error`（如 diagonal 上 `delta == 0`、或 `starts` 为空）会在消息中带 **`net_name` / `origin_key` / `record_id` / `end_track`** 及几何标志，便于定位是哪条 2-pin record 触发异常
 
 - `algorithm/test_ILP/precompute/ilp_bounding_box.{hh,cc}`、`tob_reach_with_range.{hh,cc}`
-  - `compute_bounding_box(record, range_level)`：`range_level=0` 为第二版 base bbox；`range_level>0` 时**所有 net 类型**（含 SyncNet sync bus 的 Bnet、Tnet、PNnet）四边各扩大 `range_level` 格，再 clamp 到 COB 阵列
-  - `range_level=1..3`：在扩大后的 bbox 内 k-shortest（`k=1+2*range_level`）扩展 start track（无 `reach` 步）
-  - `range_level=4`：每个 `end_track` 加入与 `end_track` 同 COBUnit 的 8 条 track（`cobunit_to_tracks(map_track(end_track))`，无 `reach` 步）
+  - `TobBBoxExpansionState` 保存 `rho_by_record`，每条 record 的 `rho_n` 上限为 4；`range_level` 只作为 `max(rho)` 兼容摘要
+  - `precompute_reach_for_bbox_state(records, state)`：先执行 base `precompute_reach_for_records()`，再按每条 record 自己的 `rho_n` 扩展候选 start tracks
+  - `rho_n=1..3`：逐层使用 `compute_bounding_box(record, rho)`，对每个 `end_track` 在新 bbox 内追加最近且未出现过的最多 2 条 start tracks（无 `reach` 步）
+  - `rho_n=4`：每个 `end_track` 加入与 `end_track` 同 COBUnit 的 8 条 track（`cobunit_to_tracks(map_track(end_track))`，无 `reach` 步）
+  - `precompute_reach_for_range(records, range_level)` 保留为 uniform `rho` 兼容包装
 
 ### 3.8 MCF 结果展示
 
@@ -329,13 +337,13 @@ ILP 约束组：
 
 ### 5.2.1 MCF bbox 可行图（第六版 §456–717）
 
-`run_mcf_global_routing_cob_units()` 在 `prepare_commodities()` 之后调用 `build_mcf_bbox_context(records, commodities, ilp_result.range_level)`：
+`run_mcf_global_routing_cob_units()` 在 `prepare_commodities()` 之后从 `ilp_result.bbox_expand_by_record` 构造 `TobBBoxExpansionState`，再调用 `build_mcf_bbox_context(records, commodities, state)`：
 
 | 对象 | MCF 范围 |
 |------|----------|
-| Bnet / Tnet | `compute_bounding_box(record, range_level)` |
-| BusMCF（SyncNet） | 同 `bus_key` 内所有成员 net bbox 的 `rect_hull_boxes` |
-| SimpleMCF 多扇出 origin | 各 child net bbox 的 RectHull（TTB 等） |
+| Bnet / Tnet | `compute_bounding_box(record, rho[record_id])` |
+| BusMCF（SyncNet） | 同 `bus_key` 内所有成员 record 当前 bbox 的 `rect_hull_boxes` |
+| SimpleMCF 多扇出 origin | 各 child record 当前 bbox 的 RectHull（TTB 等） |
 | Pnet / Nnet | **不裁剪**（第五版全图 + virtual 边） |
 
 实现要点：
@@ -343,10 +351,15 @@ ILP 约束组：
 - **弧过滤**：`arc_allowed_for_commodity()` = `arc_usable_for_class` ∧ `physical_arc_in_bbox`（转弯边看 `arc.cob`；通道边要求相邻两 COB 均在 bbox 内，与 `tob_channel_kshortest` 一致）
 - **变量**：范围外不建 `f` / `x`；约束求和自然限于可行边集
 - **预检**：受限 commodity 在允许弧上 BFS 不可达 → `bbox disconnected`，跳过 Gurobi
-- **日志**：`MCF using SAT range_level=L`、`MCF bbox: range_level=L commodities=... bus_groups=...`
+- **日志**：`MCF using SAT bbox max_rho=... rho_by_record=...`、`MCF bbox: max_rho=... commodities=... bus_groups=...`
 - **warm start**：`route_one_mcf_warm_path` 使用与求解相同的 bbox 过滤
 
-**MCF 失败重试**（§725+，`solve_tob_mcf_pipeline`）：BusMCF 或任一 SimpleMCF unit 失败 → 丢弃本轮 SAT/MCF → `range_level++` 从 TOB SAT 重跑；中间轮 `defer_interposer_suspend=true`，仅最终成功时 suspend。
+**MCF 失败重试**（`solve_tob_mcf_pipeline`）：
+
+- TOB SAT UNSAT：扩展所有 `Tnet/PNnet` records；不做 UNSAT core 归因。
+- BusMCF 失败：扩展失败 `bus_key` 下所有 member records。bbox disconnected 可直接定位 commodity；Gurobi infeasible 从 IIS metadata 收集 `bus_key`。若无法定位任何 `bus_key`，直接失败，不扩展全部 bus。
+- SimpleMCF / `--simple-maze` 失败：扩展失败 unit 内所有 simple records；若其中包含多扇出 origin，则扩展该 origin 的所有 child records。
+- 终止条件：成功返回；或某轮失败需要扩展但 `expand(fail_set)` 没有改变任何 record（说明相关 records 已到 `rho=4`）。
 
 ### 5.3 两阶段求解（第五版 SimpleMCF 无向 `x` + bbox：`solve_bus_mcf` + `solve_simple_mcf_unit`）
 
@@ -354,7 +367,7 @@ ILP 约束组：
 
 `run_mcf_global_routing_cob_units()` 流程：
 
-1. `build_mcf_bbox_context()`（沿用 SAT 成功轮的 `range_level`）
+1. `build_mcf_bbox_context()`（沿用 SAT 成功轮每条 record 的局部 `rho`）
 2. **BusMCF**（`solve_bus_mcf()`，全局一次）：仅在各 commodity 的 bus RectHull 可行图上建 `f^{c,n}`、`o^{c,n}`；目标 `min Σ f`；约束含流守恒、边容量、节点占用、同步线长
 3. **SimpleMCF**（`solve_simple_mcf_unit(c)`，每个 COBUnit 独立 Gurobi 模型）：按 commodity / origin 组 bbox 建 `f^{c,n}`、`x^{c,H}_e`、`o^{c,H}_i`；目标 `min Σ x_e` **仅当** `--enable-mcf-obj`，否则纯可行性
 
@@ -483,7 +496,7 @@ ILP 约束组：
 
 ## 9. 最小验证清单（每次改动后）
 
-1) `xmake build test_ILP` 成功  
+1) `xmake build test_ILP` 与 `xmake build test_ILP_unit` 成功（后者覆盖 `tob_bbox_expansion_state_test`）  
 2) SAT TOB only：
 
 ```bash
@@ -496,7 +509,7 @@ ILP 约束组：
 ./output/test_ILP <config_path> --enable-mcf-routing --enable-mcf-obj
 ```
 
-已验证端到端通过：`test/config/case1`、`case5`、`case6`（`range_level=0`，日志含 `SAT+MCF solved at range_level=0`、`MCF bbox:` / `MCF using SAT range_level=`）。
+历史端到端验证：`test/config/case1`、`case5`、`case6` 在 base bbox 下通过（旧日志为 `range_level=0`；当前日志应看 `max_rho=0`、`MCF bbox:` / `MCF using SAT bbox`）。
 
 4) MCF with graph warm start：
 
@@ -542,7 +555,8 @@ ILP 约束组：
 - **Wilton 转弯边**：同一 COB tile 内非相对方向对的边，`is_turn=true`，inner index 通过 Wilton 映射改变
 - **BusMCF**：第一阶段求解，仅 `SyncNet in group {正整数}` commodity，带同步等长约束
 - **SimpleMCF**：第二阶段，按 COBUnit 独立求解其余 commodity（含 `in_group_-1` 的 BumpToBumpNet、Tnet、TTB 等）；默认纯可行性，可选 `--enable-mcf-obj` 启用 `min Σ x`
-- **MCF bbox**：第六版在 MCF 阶段沿用的 COB 矩形范围；与 TOB SAT 共用 `compute_bounding_box(record, range_level)`
+- **rho / MCF bbox**：每条 record 的局部扩展量 `rho[record_id] ∈ [0,4]`；MCF 与 TOB SAT 共用 `compute_bounding_box(record, rho[record_id])`。`range_level` 仅表示 `max(rho)` 兼容摘要
+- **bbox_expand_by_record**：`TobIlpResult` 中每条 record 的 `rho` 向量，MCF 阶段的真实 bbox 来源
 
 **case5（`test/config/case5`）MCF 诊断预期**（`--enable-mcf-routing`）：`BusMCF commodities=80`、`bus_equal_length=64`（16 组 SyncNet：4×(8−1) + 12×(4−1)）；`BumpToBumpNet in_group_-1` 的 32 条记录在 SimpleMCF 中各用独立 `origin_uid`（每条 1 Origin）。
 - **reach_steps**：Wilton 转弯步序列（`IlpReachStep`），描述 end_track 到 start_track 的转弯路径

@@ -1,40 +1,102 @@
 #include "sat_allocation/solve_tob_mcf_pipeline.hh"
 
 #include "mcf/mcf_graph.hh"
+#include "precompute/ilp_bounding_box.hh"
 #include "sat_allocation/solve_tob_sat.hh"
 
+#include <algorithm>
 #include <chrono>
 #include <debug/debug.hh>
 #include <format>
+#include <set>
 
 namespace PR_tool {
 
 namespace {
 
-auto log_mcf_failure_reason(const CobMcfFullResult& mcf, const std::size_t range_level) -> void {
-    auto failed_units = std::Vector<std::size_t> {};
-    for (std::size_t u = 0; u < 16; ++u) {
-        if (mcf.has_simple_commodities[u] && !mcf.simple_mcf_ok[u]) {
-            failed_units.push_back(u);
+auto format_record_indices(const std::Vector<std::size_t>& indices) -> std::String {
+    if (indices.empty()) {
+        return "{}";
+    }
+    auto out = std::String {"{"};
+    for (std::size_t i = 0; i < indices.size(); ++i) {
+        if (i != 0) {
+            out += ",";
+        }
+        out += std::format("{}", indices[i]);
+    }
+    out += "}";
+    return out;
+}
+
+auto format_string_vector(const std::Vector<std::String>& values) -> std::String {
+    if (values.empty()) {
+        return "{}";
+    }
+    auto out = std::String {"{"};
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out += ",";
+        }
+        out += values[i];
+    }
+    out += "}";
+    return out;
+}
+
+auto sat_failure_expansion_records(const std::Vector<Net_cost_record>& records) -> std::Vector<std::size_t> {
+    auto out = std::Vector<std::size_t> {};
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        if (records[i].type == Net_type::Tnet || records[i].type == Net_type::PNnet) {
+            out.push_back(i);
         }
     }
-    if (!failed_units.empty()) {
-        auto unit_text = std::String {};
-        for (std::size_t i = 0; i < failed_units.size(); ++i) {
-            if (i > 0) {
-                unit_text += ",";
-            }
-            unit_text += std::to_string(failed_units[i]);
+    return out;
+}
+
+auto bus_member_record_indices(
+    const std::Vector<Net_cost_record>& records,
+    const std::Vector<std::String>& bus_keys
+) -> std::Vector<std::size_t> {
+    auto key_set = std::set<std::String> {bus_keys.begin(), bus_keys.end()};
+    auto out = std::Vector<std::size_t> {};
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        const auto& record = records[i];
+        const auto origin_name = record.origin_key.empty() ? record.net_name : record.origin_key;
+        if (!is_sync_bus_record(record)) {
+            continue;
         }
+        if (key_set.contains(record_origin_group_uid(record)) || key_set.contains(origin_name)) {
+            out.push_back(i);
+        }
+    }
+    return out;
+}
+
+auto log_mcf_failure_reason(const CobMcfFullResult& mcf, const TobBBoxExpansionState& state) -> void {
+    if (mcf.retry_hints.bus_failure_unlocalized) {
         debug::info_fmt(
-            "range iteration: MCF failed at level={}, expanding range (SimpleMCF units {})",
-            range_level,
-            unit_text);
+            "bbox iteration: MCF failed at max_rho={}, BusMCF bus_key unlocalized",
+            state.max_rho());
+        return;
+    }
+    if (!mcf.retry_hints.failed_bus_keys.empty()) {
+        debug::info_fmt(
+            "bbox iteration: MCF failed at max_rho={}, BusMCF bus_keys={}",
+            state.max_rho(),
+            format_string_vector(mcf.retry_hints.failed_bus_keys));
+        return;
+    }
+    if (!mcf.retry_hints.failed_simple_units.empty()) {
+        debug::info_fmt(
+            "bbox iteration: MCF failed at max_rho={}, SimpleMCF units={}",
+            state.max_rho(),
+            format_record_indices(mcf.retry_hints.failed_simple_units));
         return;
     }
     debug::info_fmt(
-        "range iteration: MCF failed at level={}, expanding range (BusMCF)",
-        range_level);
+        "bbox iteration: MCF failed at max_rho={}, no retry hint records",
+        state.max_rho());
 }
 
 } // namespace
@@ -54,29 +116,58 @@ auto solve_tob_mcf_with_range_iteration(
     const GurobiDiagnosticsOptions& gurobi_diag
 ) -> TobMcfPipelineResult {
     auto out = TobMcfPipelineResult {};
+    auto state = TobBBoxExpansionState::initial(records.size());
+    const auto sat_fail_set = sat_failure_expansion_records(records);
+    const auto max_attempts = records.size() * kTobBBoxMaxExpand + 1;
 
-    for (std::size_t range_level = 0; range_level <= kMaxRangeLevel; ++range_level) {
+    for (std::size_t attempt = 0; attempt < max_attempts; ++attempt) {
         out.attempts += 1;
+        debug::info_fmt(
+            "SAT+MCF bbox attempt={} max_rho={} rho_by_record={}",
+            attempt,
+            state.max_rho(),
+            state.rho_summary());
 
         const auto sat_t0 = std::chrono::steady_clock::now();
-        auto tob = solve_tob_sat_at_range_level(records, range_level, sat_diag);
+        auto tob = solve_tob_sat_with_bbox_state(records, state, sat_diag);
         const auto sat_t1 = std::chrono::steady_clock::now();
         out.tob_sat_solve_ms += std::chrono::duration_cast<std::chrono::milliseconds>(sat_t1 - sat_t0).count();
 
         if (!tob.ok) {
             if (tob.model_status == 20) {
-                debug::info_fmt("range iteration: level={} SAT=UNSAT", range_level);
+                debug::info_fmt("bbox iteration: attempt={} SAT=UNSAT max_rho={}", attempt, state.max_rho());
+                const auto changed = state.expand_records(sat_fail_set);
+                debug::info_fmt(
+                    "bbox iteration: SAT expand changed_records={} max_rho={} rho_by_record={}",
+                    format_record_indices(changed),
+                    state.max_rho(),
+                    state.rho_summary());
+                if (changed.empty()) {
+                    out.ok = false;
+                    out.message = std::format(
+                        "SAT+MCF: SAT UNSAT and no Tnet/PNnet bbox record can expand further (max_rho={})",
+                        state.max_rho());
+                    out.tob = std::move(tob);
+                    out.range_level = state.max_rho();
+                    debug::error_fmt("{}", out.message);
+                    return out;
+                }
             }
             else {
                 debug::error_fmt(
-                    "range iteration: level={} SAT=parse_fail ({})",
-                    range_level,
+                    "bbox iteration: attempt={} SAT=parse_fail ({})",
+                    attempt,
                     tob.message);
+                out.ok = false;
+                out.message = tob.message;
+                out.tob = std::move(tob);
+                out.range_level = state.max_rho();
+                return out;
             }
             continue;
         }
 
-        debug::info_fmt("range iteration: level={} SAT=SAT", range_level);
+        debug::info_fmt("bbox iteration: attempt={} SAT=SAT max_rho={}", attempt, state.max_rho());
 
         const auto mcf = run_mcf_global_routing_cob_units(
             records,
@@ -97,12 +188,53 @@ auto solve_tob_mcf_with_range_iteration(
         out.mcf_solve_ms += mcf.summary.mcf_solve_ms;
 
         if (!mcf.summary.all_ok) {
-            debug::info_fmt("range iteration: level={} SAT=SAT MCF=fail", range_level);
-            log_mcf_failure_reason(mcf, range_level);
+            debug::info_fmt("bbox iteration: attempt={} SAT=SAT MCF=fail max_rho={}", attempt, state.max_rho());
+            log_mcf_failure_reason(mcf, state);
+            if (mcf.retry_hints.bus_failure_unlocalized) {
+                out.ok = false;
+                out.message = "SAT+MCF: BusMCF failed but failed bus_key could not be localized";
+                out.tob = std::move(tob);
+                out.mcf = mcf;
+                out.range_level = state.max_rho();
+                debug::error_fmt("{}", out.message);
+                return out;
+            }
+
+            auto fail_set = std::Vector<std::size_t> {};
+            if (!mcf.retry_hints.failed_bus_keys.empty()) {
+                fail_set = bus_member_record_indices(records, mcf.retry_hints.failed_bus_keys);
+                if (fail_set.empty()) {
+                    fail_set = mcf.retry_hints.failed_record_indices;
+                }
+            }
+            else {
+                fail_set = mcf.retry_hints.failed_record_indices;
+            }
+            std::sort(fail_set.begin(), fail_set.end());
+            fail_set.erase(std::unique(fail_set.begin(), fail_set.end()), fail_set.end());
+
+            const auto changed = state.expand_records(fail_set);
+            debug::info_fmt(
+                "bbox iteration: MCF expand fail_set={} changed_records={} max_rho={} rho_by_record={}",
+                format_record_indices(fail_set),
+                format_record_indices(changed),
+                state.max_rho(),
+                state.rho_summary());
+            if (changed.empty()) {
+                out.ok = false;
+                out.message = std::format(
+                    "SAT+MCF: MCF failed and no localized bbox record can expand further (max_rho={})",
+                    state.max_rho());
+                out.tob = std::move(tob);
+                out.mcf = mcf;
+                out.range_level = state.max_rho();
+                debug::error_fmt("{}", out.message);
+                return out;
+            }
             continue;
         }
 
-        debug::info_fmt("range iteration: level={} SAT=SAT MCF=ok", range_level);
+        debug::info_fmt("bbox iteration: attempt={} SAT=SAT MCF=ok max_rho={}", attempt, state.max_rho());
 
         if (apply_interposer_suspend_on_success && interposer != nullptr) {
             const auto graph = build_mcf_track_graph(cob_grid);
@@ -110,19 +242,20 @@ auto solve_tob_mcf_with_range_iteration(
         }
 
         out.ok = true;
-        out.message = std::format("SAT+MCF solved at range_level={}", range_level);
+        out.message = std::format("SAT+MCF solved with bbox max_rho={}", state.max_rho());
         out.tob = std::move(tob);
         out.mcf = mcf;
-        out.range_level = range_level;
+        out.range_level = state.max_rho();
         debug::info_fmt(
-            "SAT+MCF solved at range_level={} (attempts={})",
-            range_level,
+            "SAT+MCF solved with bbox max_rho={} (attempts={})",
+            state.max_rho(),
             out.attempts);
         return out;
     }
 
     out.ok = false;
-    out.message = std::format("SAT+MCF: all range levels failed (0..{})", kMaxRangeLevel);
+    out.message = std::format("SAT+MCF: bbox retry attempts exhausted (attempts={})", max_attempts);
+    out.range_level = state.max_rho();
     debug::error_fmt("{}", out.message);
     return out;
 }

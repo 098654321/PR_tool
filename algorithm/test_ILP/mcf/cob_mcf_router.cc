@@ -22,6 +22,7 @@
 #include <format>
 #include <functional>
 #include <future>
+#include <limits>
 #include <map>
 #include <optional>
 #include <queue>
@@ -74,6 +75,8 @@ struct PreparedCommodity {
 struct McfConstraintMeta {
     std::String kind;
     std::String detail;
+    std::String bus_key {};
+    std::size_t record_index{std::numeric_limits<std::size_t>::max()};
 };
 
 struct StageSolveResult {
@@ -88,6 +91,9 @@ struct StageSolveResult {
     std::array<std::map<int, int>, 16> unit_used_nodes {};
     std::Vector<McfPathInfo> paths;
     std::Vector<McfConstraintMeta> infeasibility_hints;
+    std::Vector<std::String> failed_bus_keys;
+    std::Vector<std::size_t> failed_record_indices;
+    bool bus_failure_unlocalized{false};
 };
 
 struct StageWarmStart {
@@ -135,10 +141,36 @@ struct GurobiMcfSolveResult {
 constexpr int kHardwareSwitchesPerCobUnit = 48;
 constexpr int kChannelsPerCobLink = 8;
 constexpr int kMaxIisLogPerKind = 20;
+constexpr std::size_t kInvalidRecordIndex = std::numeric_limits<std::size_t>::max();
 
 auto normalized_edge_key(int u, int v) -> std::pair<int, int>;
 auto node_text(const GlobalGraph& g, const int node) -> std::String;
 auto fmt_join_parts(const std::Vector<std::String>& parts) -> std::String;
+
+template <typename T>
+auto append_unique(std::Vector<T>& values, const T& value) -> void {
+    if (std::find(values.begin(), values.end(), value) == values.end()) {
+        values.push_back(value);
+    }
+}
+
+auto append_bus_retry_hint(StageSolveResult& out, const std::String& bus_key, const std::size_t record_index) -> void {
+    if (!bus_key.empty()) {
+        append_unique(out.failed_bus_keys, bus_key);
+    }
+    if (record_index != kInvalidRecordIndex) {
+        append_unique(out.failed_record_indices, record_index);
+    }
+}
+
+auto collect_bus_retry_hints_from_iis(StageSolveResult& out, const std::Vector<McfConstraintMeta>& hints) -> void {
+    for (const auto& hint : hints) {
+        append_bus_retry_hint(out, hint.bus_key, hint.record_index);
+    }
+    if (out.failed_bus_keys.empty()) {
+        out.bus_failure_unlocalized = true;
+    }
+}
 
 struct HChannelKey {
     int r{0};
@@ -1708,6 +1740,7 @@ auto solve_bus_mcf(
                 "{}: bbox disconnected for commodity {}",
                 stage_name,
                 commodity.label);
+            append_bus_retry_hint(out, commodity.bus_key, commodity.record_index);
             return out;
         }
     }
@@ -1739,6 +1772,7 @@ auto solve_bus_mcf(
     if (f_vars.empty()) {
         out.ok = false;
         out.message = std::format("{}: no feasible arc-variable pairs", stage_name);
+        out.bus_failure_unlocalized = true;
         return out;
     }
 
@@ -1777,7 +1811,9 @@ auto solve_bus_mcf(
                 std::format(
                     "commodity={} node={} (unset)",
                     local_com[static_cast<std::size_t>(k)].label,
-                    node_text(graph, n))});
+                    node_text(graph, n)),
+                local_com[static_cast<std::size_t>(k)].bus_key,
+                local_com[static_cast<std::size_t>(k)].record_index});
         flow_row[key] = row;
         return row;
     };
@@ -1834,14 +1870,18 @@ auto solve_bus_mcf(
                 "commodity={} node={} rhs=+{} (source)",
                 local_com[static_cast<std::size_t>(k)].label,
                 node_text(graph, s),
-                d)};
+                d),
+            local_com[static_cast<std::size_t>(k)].bus_key,
+            local_com[static_cast<std::size_t>(k)].record_index};
         row_meta[static_cast<std::size_t>(rt)] = McfConstraintMeta {
             "flow_conservation",
             std::format(
                 "commodity={} node={} rhs=-{} (sink)",
                 local_com[static_cast<std::size_t>(k)].label,
                 node_text(graph, t),
-                d)};
+                d),
+            local_com[static_cast<std::size_t>(k)].bus_key,
+            local_com[static_cast<std::size_t>(k)].record_index};
     }
 
     // BusMCF §5: f <= o, Σ_n o_i <= 1
@@ -1876,7 +1916,9 @@ auto solve_bus_mcf(
                 std::format(
                     "commodity={} node={}",
                     local_com[static_cast<std::size_t>(k)].label,
-                    node_text(graph, n))});
+                    node_text(graph, n)),
+                local_com[static_cast<std::size_t>(k)].bus_key,
+                local_com[static_cast<std::size_t>(k)].record_index});
         for (const auto j : vars) {
             f_entries[static_cast<std::size_t>(j)].push_back({row_link, 1.0});
         }
@@ -1914,7 +1956,9 @@ auto solve_bus_mcf(
                         "bus_key={} ref={} cur={}",
                         key,
                         local_com[static_cast<std::size_t>(group.front())].label,
-                        local_com[static_cast<std::size_t>(group[gi])].label)});
+                        local_com[static_cast<std::size_t>(group[gi])].label),
+                    key,
+                    kInvalidRecordIndex});
             ++bus_equal_length_rows;
             const auto cur = group[gi];
             for (const auto j : f_by_k[static_cast<std::size_t>(cur)]) {
@@ -2039,6 +2083,7 @@ auto solve_bus_mcf(
     if (!solve_res.ok) {
         out.ok = false;
         out.message = solve_res.message;
+        out.bus_failure_unlocalized = true;
         return out;
     }
     if (solve_res.model_status != GRB_OPTIMAL) {
@@ -2052,6 +2097,7 @@ auto solve_bus_mcf(
         out.ok = false;
         out.message = std::format("{}: model not optimal ({})", stage_name, solve_res.model_status);
         out.infeasibility_hints = solve_res.iis_rows;
+        collect_bus_retry_hints_from_iis(out, out.infeasibility_hints);
         return out;
     }
 
@@ -3026,6 +3072,63 @@ auto to_simple_maze_commodities(const std::Vector<PreparedCommodity>& commoditie
     return out;
 }
 
+template <typename T>
+auto sort_unique(std::Vector<T>& values) -> void {
+    std::sort(values.begin(), values.end());
+    values.erase(std::unique(values.begin(), values.end()), values.end());
+}
+
+auto merge_bus_stage_retry_hints(CobMcfRetryHints& hints, const StageSolveResult& bus_res) -> void {
+    for (const auto& key : bus_res.failed_bus_keys) {
+        append_unique(hints.failed_bus_keys, key);
+    }
+    for (const auto record_index : bus_res.failed_record_indices) {
+        append_unique(hints.failed_record_indices, record_index);
+    }
+    if (!bus_res.ok && (bus_res.bus_failure_unlocalized || bus_res.failed_bus_keys.empty())) {
+        hints.bus_failure_unlocalized = true;
+    }
+}
+
+auto add_simple_unit_retry_hints(
+    CobMcfRetryHints& hints,
+    const std::size_t unit,
+    const std::array<std::Vector<std::size_t>, 16>& simple_ids_by_unit,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::Vector<Net_cost_record>& records
+) -> void {
+    append_unique(hints.failed_simple_units, unit);
+
+    auto multi_fanout_origins = std::set<std::String> {};
+    for (const auto cid : simple_ids_by_unit[unit]) {
+        if (cid >= commodities.size()) {
+            continue;
+        }
+        const auto record_index = commodities[cid].record_index;
+        if (record_index >= records.size()) {
+            continue;
+        }
+        append_unique(hints.failed_record_indices, record_index);
+        const auto& record = records[record_index];
+        if (record.from_track_to_bumps_split || record.type == Net_type::PNnet) {
+            multi_fanout_origins.insert(record_origin_group_uid(record));
+        }
+    }
+
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        if (!multi_fanout_origins.contains(record_origin_group_uid(records[i]))) {
+            continue;
+        }
+        append_unique(hints.failed_record_indices, i);
+    }
+}
+
+auto normalize_retry_hints(CobMcfRetryHints& hints) -> void {
+    sort_unique(hints.failed_bus_keys);
+    sort_unique(hints.failed_simple_units);
+    sort_unique(hints.failed_record_indices);
+}
+
 } // namespace
 
 auto run_mcf_global_routing_cob_units(
@@ -3102,8 +3205,15 @@ auto run_mcf_global_routing_cob_units(
     }
 
     const auto bbox_inputs = to_bbox_inputs(commodities);
-    const auto bbox_ctx = build_mcf_bbox_context(records, bbox_inputs, ilp_result.range_level);
-    debug::info_fmt("MCF using SAT range_level={}", ilp_result.range_level);
+    const auto bbox_state = TobBBoxExpansionState::from_vector(
+        records.size(),
+        ilp_result.bbox_expand_by_record,
+        ilp_result.range_level);
+    const auto bbox_ctx = build_mcf_bbox_context(records, bbox_inputs, bbox_state);
+    debug::info_fmt(
+        "MCF using SAT bbox max_rho={} rho_by_record={}",
+        bbox_state.max_rho(),
+        bbox_state.rho_summary());
 
     auto bus_warm_start = StageWarmStart {};
     auto simple_warm_start = StageWarmStart {};
@@ -3174,6 +3284,9 @@ auto run_mcf_global_routing_cob_units(
     else {
         bus_res = solve_bus_mcf(graph, commodities, bus_ids, bbox_ctx, bus_warm_start_ptr, diag);
     }
+    if (!bus_res.ok) {
+        merge_bus_stage_retry_hints(out.retry_hints, bus_res);
+    }
 
     // 得到剩余容量
     auto build_edge_residual = [&](const std::size_t unit_c) {
@@ -3229,6 +3342,16 @@ auto run_mcf_global_routing_cob_units(
                 out.simple_mcf_ok = maze_result.simple_mcf_ok;
                 if (!all_simple_ok) {
                     debug::error("SimpleMCF-maze: one or more origin nets failed");
+                    for (std::size_t u = 0; u < 16; ++u) {
+                        if (out.has_simple_commodities[u] && !out.simple_mcf_ok[u]) {
+                            add_simple_unit_retry_hints(
+                                out.retry_hints,
+                                u,
+                                simple_ids_by_unit,
+                                commodities,
+                                records);
+                        }
+                    }
                 }
             }
         }
@@ -3308,6 +3431,12 @@ auto run_mcf_global_routing_cob_units(
             if (!simple_results[u].ok) {
                 all_simple_ok = false;
                 debug::error_fmt("SimpleMCF unit {} failed: {}", u, simple_results[u].message);
+                add_simple_unit_retry_hints(
+                    out.retry_hints,
+                    u,
+                    simple_ids_by_unit,
+                    commodities,
+                    records);
             }
             simple_objective += simple_results[u].objective;
         }
@@ -3324,6 +3453,15 @@ auto run_mcf_global_routing_cob_units(
         debug::error_fmt("BusMCF failed: {}", bus_res.message);
     }
     out.summary.all_ok = bus_res.ok && all_simple_ok;
+    normalize_retry_hints(out.retry_hints);
+    if (!out.summary.all_ok) {
+        debug::info_fmt(
+            "MCF retry hints: bus_keys={} simple_units={} record_indices={} bus_unlocalized={}",
+            out.retry_hints.failed_bus_keys.size(),
+            out.retry_hints.failed_simple_units.size(),
+            out.retry_hints.failed_record_indices.size(),
+            out.retry_hints.bus_failure_unlocalized);
+    }
 
     for (std::size_t u = 0; u < 16; ++u) {
         const auto obj = bus_res.objective + simple_objective;

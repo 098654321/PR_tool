@@ -66,10 +66,11 @@ auto arc_allowed_in_mcf_bbox(
 auto build_mcf_bbox_context(
     const std::Vector<Net_cost_record>& records,
     const std::Vector<McfBBoxCommodityInput>& commodities,
-    const std::size_t range_level
+    const TobBBoxExpansionState& state
 ) -> McfBBoxContext {
     McfBBoxContext ctx {};
-    ctx.range_level = range_level;
+    ctx.range_level = state.max_rho();
+    ctx.bbox_expand_by_record = state.rho_by_record;
     ctx.per_commodity.resize(commodities.size());
 
     std::size_t restricted_count = 0;
@@ -82,7 +83,7 @@ auto build_mcf_bbox_context(
             continue;
         }
         out.restricted = true;
-        out.box = compute_bounding_box(record, range_level);
+        out.box = compute_bounding_box(record, state.rho_for_record(input.record_index));
         ++restricted_count;
     }
 
@@ -108,12 +109,20 @@ auto build_mcf_bbox_context(
     }
 
     debug::info_fmt(
-        "MCF bbox: range_level={} commodities={} restricted={} bus_groups={}",
-        range_level,
+        "MCF bbox: max_rho={} commodities={} restricted={} bus_groups={}",
+        state.max_rho(),
         commodities.size(),
         restricted_count,
         ctx.per_bus_key.size());
     return ctx;
+}
+
+auto build_mcf_bbox_context(
+    const std::Vector<Net_cost_record>& records,
+    const std::Vector<McfBBoxCommodityInput>& commodities,
+    const std::size_t range_level
+) -> McfBBoxContext {
+    return build_mcf_bbox_context(records, commodities, TobBBoxExpansionState::uniform(records.size(), range_level));
 }
 
 auto compute_origin_group_bbox(

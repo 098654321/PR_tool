@@ -278,16 +278,19 @@ auto kshortest_reachable_tob_tracks(
 
     const auto paths = yen_k_shortest(graph, src, targets, k);
     auto out = std::Vector<std::size_t> {};
+    auto seen = std::set<std::size_t> {};
     for (const auto& path : paths) {
         if (path.empty()) {
             continue;
         }
         const auto end_key = path.back();
         const auto tc = key_to_coord(end_key);
+        if (seen.contains(tc.index)) {
+            continue;
+        }
+        seen.insert(tc.index);
         out.push_back(tc.index);
     }
-    std::sort(out.begin(), out.end());
-    out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
 }
 

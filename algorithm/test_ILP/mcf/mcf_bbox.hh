@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/ilp_types.hh"
+#include "common/tob_bbox_expansion.hh"
 #include "mcf/mcf_graph.hh"
 #include "precompute/ilp_bounding_box.hh"
 
@@ -21,7 +22,9 @@ struct McfBBoxCommodityInput {
 };
 
 struct McfBBoxContext {
+    /// Compatibility summary only: max per-record rho.
     std::size_t range_level{0};
+    std::Vector<std::size_t> bbox_expand_by_record;
     std::Vector<McfCommodityBBox> per_commodity;
     std::map<std::String, IlpBoundingBox> per_bus_key;
 };
@@ -40,6 +43,12 @@ auto arc_allowed_in_mcf_bbox(
     const IlpBoundingBox& bbox,
     int cols
 ) -> bool;
+
+auto build_mcf_bbox_context(
+    const std::Vector<Net_cost_record>& records,
+    const std::Vector<McfBBoxCommodityInput>& commodities,
+    const TobBBoxExpansionState& state
+) -> McfBBoxContext;
 
 auto build_mcf_bbox_context(
     const std::Vector<Net_cost_record>& records,

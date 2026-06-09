@@ -56,6 +56,13 @@ struct McfPathInfo {
     std::Vector<std::Vector<std::size_t>> track_paths;
 };
 
+struct CobMcfRetryHints {
+    std::Vector<std::String> failed_bus_keys;
+    std::Vector<std::size_t> failed_simple_units;
+    std::Vector<std::size_t> failed_record_indices;
+    bool bus_failure_unlocalized{false};
+};
+
 struct CobMcfFullResult {
     CobMcfRunSummary summary;
     std::array<std::Vector<McfPathInfo>, 16> paths_by_unit {};
@@ -63,6 +70,7 @@ struct CobMcfFullResult {
     std::array<bool, 16> simple_mcf_ok {};
     /// Unit has at least one non-Bus SimpleMCF commodity.
     std::array<bool, 16> has_simple_commodities {};
+    CobMcfRetryHints retry_hints;
 };
 
 /// Per-cobunit MCF: getNetinCOBUnit → merge → build_commodities → BusMCF (global) + SimpleMCF (per unit).

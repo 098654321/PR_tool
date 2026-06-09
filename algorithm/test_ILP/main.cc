@@ -403,7 +403,7 @@ auto run_main(int argc, char** argv) -> int {
             s.k);
     }
     debug::info_fmt("objective value: {}", result.objective);
-    debug::info_fmt("SAT solved at range_level={}", result.range_level);
+    debug::info_fmt("SAT solved with bbox max_rho={}", result.range_level);
     debug::info_fmt("nets solved: {}", records.size());
 
     if (enable_mcf) {

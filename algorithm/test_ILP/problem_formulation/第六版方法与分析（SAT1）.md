@@ -399,7 +399,7 @@ $$
 
 ```python
 for range_level in increasing_range:
-    compute bounding_box(net, range_level)  # range_level = 0的时候，bounding_box就是第二版方法当中规定的范围；range_level每增加1，非bus net的net使用的box上下左右的边界扩大1，但是不能超过COB阵列的真实范围
+    compute bounding_box(net, range_level)  # range_level = 0的时候，bounding_box就是第二版方法当中规定的范围；range_level每增加1，box上下左右的边界扩大1，但是不能超过COB阵列的真实范围
     endtrack的计算方法不变，但根据bounding_box重新计算start_tracks
     build SAT clauses using the constraints above
     solve SAT
@@ -761,3 +761,212 @@ report failure
 1. 如果 TOB SAT 返回 UNSAT，说明当前范围内不存在合法的 TOB track 分配，直接扩大 `range_level`。
 2. 如果 TOB SAT 返回 SAT，但 BusMCF 无解，说明当前范围和当前 TOB 分配下，Bus 线在 COB 阵列内无法同时满足容量、节点互斥和等长约束。此时丢弃本轮 SAT 结果，令 `range_level+1`，重新从 TOB SAT 开始求解。
 3. 如果 BusMCF 有解，但某个 COBUnit 的 SimpleMCF 无解，说明当前范围和当前 Bus 占用结果下，普通 net 或多扇出 net 无法布通。此时同样丢弃本轮 SAT 和 MCF 结果，令 `range_level+1`，重新从 TOB SAT 开始求解。
+
+
+
+
+
+## 分析
+
+### 1. 将全局范围扩展改为失败驱动的局部范围扩展
+
+前面章节中的 `range_level` 是一个全局变量。只要求解失败，下一轮所有 net 的 bounding box 都会同时扩大。这种做法比较保守，但会带来两个问题：
+
+1. 失败通常只和一部分 net 有关，成功 net 的范围没有必要扩大。
+2. 全局扩大范围会让更多 net 获得更长的候选路径，可能增加后续 MCF 的变量数量，也可能使最终路径变长。
+
+因此，范围扩展策略改为以 record 为单位维护。记拆分后的 2-pin record 为 $n$，为每个 record 定义独立的扩展量：
+
+$$
+\rho_n\in\{0,1,2,3,4\}
+$$
+
+其中 $\rho_n=0$ 表示使用第二版方法中的基础 bounding box。若 $\rho_n>0$，则在基础 bounding box 的上、下、左、右四条边各扩展 $\rho_n$ 格，并将结果裁剪到真实 COB 阵列范围内：
+
+$$
+BBox(n,\rho_n)=Expand(BBox_0(n),\rho_n)
+$$
+
+求解失败后，只有被判定为失败相关的 record 才执行：
+
+$$
+\rho_n\leftarrow \min(\rho_n+1,4)
+$$
+
+其余已经通过当前轮求解、且没有被归入失败集合的 record 保持原来的 $\rho_n$ 不变。这样可以把范围放宽限制在真正需要放宽的局部区域内。
+
+### 2. TOB SAT 失败时的扩展对象
+
+TOB SAT 返回 UNSAT 时，纯 SAT 结果通常不能直接指出是哪一条 net 导致无解。这里不对所有 record 做全局扩展，而是只扩展端口中带有固定 track 的 record。原因是这类 net 的可达空间更受端口位置约束，当前 bounding box 过小时更容易导致可选 start track 不足。
+
+在原始 net 类型上，TOB SAT 失败时扩展以下对象：
+
+- `TrackToBumpNet`
+- `BumpToTrackNet`
+- `TrackToBumpsNet`
+- Pnet / Nnet
+
+在 `test_ILP` 的 record 表示中，上述对象对应：
+
+- `Tnet`：包括普通 `BumpToTrackNet`、`TrackToBumpNet`，以及 `TrackToBumpsNet` 拆出的 child record。如果 SyncNet 中的 BTT/TTB 子网被拆成 `Tnet`，也按同一规则处理，因为它同样带有固定 track 端点。
+- `PNnet`：由 Pnet / Nnet 对应的 `TracksToBumpsNet` 拆分得到。
+
+因此，TOB SAT 失败时的扩展集合可以写为：
+
+$$
+FailSet_{SAT}=\{n\mid type(n)=Tnet\ \lor\ type(n)=PNnet\}
+$$
+
+`Bnet` 不因为一次 TOB SAT UNSAT 被直接扩展。它的两个端点都是 bump，约束主要来自 TOB 资源互斥和两个 bump 之间的配对可达性。若后续 BusMCF 或 SimpleMCF 证明某些 `Bnet` 所在组布线失败，再由 MCF 失败规则扩展。
+
+### 3. BusMCF 失败时的扩展对象
+
+BusMCF 失败说明某条同步 bus 在当前 TOB 分配和当前 MCF 可行图内无法同时满足容量、节点互斥和等长约束。由于 BusMCF 的等长约束以 bus 为单位耦合多个 bit，失败不能只归因到单个 child record。
+
+因此，BusMCF 失败时扩展失败 bus 下的所有 member records。若失败 bus 的标识为 `bus_key`，则：
+
+$$
+FailSet_{Bus}=\{n\mid bus\_key(n)=bus\_key_{fail}\}
+$$
+
+这些 record 的 $\rho_n$ 在下一轮各增加 1。其它 bus 和普通 net 不扩展。
+
+实现上需要在 BusMCF 失败诊断中保留可定位的 `bus_key`。本策略不使用“无法定位时扩展所有 bus”的兜底规则；如果无法定位失败 `bus_key`，应当报告诊断信息不足，而不是扩大无关 bus 的范围。
+
+### 4. SimpleMCF 失败时的扩展对象
+
+SimpleMCF 按 COBUnit 求解。若某个 COBUnit 的 SimpleMCF 失败，说明该 unit 内的普通 net 或 origin net 在 BusMCF 已占用资源之后无法完成布线。
+
+对于失败的 COBUnit $c$，首先收集该 unit 中参与 SimpleMCF 的所有 simple records：
+
+$$
+FailSet_{Simple,c}=\{n\mid n\text{ belongs to failed SimpleMCF unit }c\}
+$$
+
+若其中某些 record 属于多扇出 origin net $H$，则扩展该 origin 下的所有 child records，而不是只扩展失败路径中某一个 child。这样做的原因是 SimpleMCF 中多扇出 net 共享 origin-level 的 $x^{c,H}_e$ 和 $o^{c,H}_i$ 变量，多个 child flow 会共同决定树形主干是否可行。只扩展单个 child 可能破坏 origin 级共享路径的建模意图。
+
+因此多扇出扩展规则为：
+
+$$
+FailSet_{Simple,c}
+\leftarrow
+FailSet_{Simple,c}\cup
+\{n\mid origin(n)=H,\ H\text{ intersects failed unit }c\}
+$$
+
+若多个 COBUnit 同时失败，则对所有失败 unit 的扩展集合取并集。
+
+### 5. 每次扩展后如何更新 start track 集合
+
+当某个 record $n$ 的 $\rho_n$ 从 $r$ 增加到 $r+1$ 后，需要基于新的 $BBox(n,r+1)$ 重新扩展其可达 start track 集合。对每个 end track $r_e$，设上一轮已有集合为：
+
+$$
+Starttrack_{n,r_e}^{old}
+$$
+
+在新的 bounding box 内，从 $r_e$ 到 start bump 所在 TOB channel 计算最近的可达 track，并选出不在旧集合中的新 track。每次扩展期望最多加入 2 条新的 start track：
+
+$$
+NewStart_{n,r_e}
+=
+\text{nearest 2 tracks in }BBox(n,\rho_n)
+\setminus Starttrack_{n,r_e}^{old}
+$$
+
+然后更新：
+
+$$
+Starttrack_{n,r_e}
+\leftarrow
+Starttrack_{n,r_e}^{old}\cup NewStart_{n,r_e}
+$$
+
+如果新范围内不足 2 条未加入过的可达 track，则加入实际能够找到的数量。一个 end track 在同一个 COBUnit 下理论上最多对应 8 条 start track。因此 $\rho_n$ 的上限取 4；当某条 record 已经扩展 4 次时，认为它已经达到本策略允许的最大候选范围。
+
+需要注意，新增 start track 主要用于 TOB SAT 的可达性约束和 MCF 端点选择。若新增 track 没有完整的 Wilton reach step 信息，仍然可以先作为候选 start track 使用；后续需要实际恢复详细路径时，再根据选中的 start/end pair 补充或重新计算对应路径信息。
+
+### 6. MCF 阶段如何使用局部扩展后的 bbox
+
+MCF 阶段继续遵循前文“MCF 范围的来源”中的原则，只是把全局 `range_level` 替换为每条 record 自己的 $\rho_n$。
+
+对于普通 2-pin net：
+
+$$
+BBox^{MCF}_n = BBox(n,\rho_n)
+$$
+
+对于 BusMCF，同一条 bus 内所有 member records 共用一个 bus bbox。该 bbox 由成员 record 当前的局部 bbox 取最小外接矩形得到：
+
+$$
+BBox^{MCF}_{Bus}
+=
+RectHull(\{BBox(n,\rho_n)\mid n\in Bus\})
+$$
+
+对于 SimpleMCF 中的多扇出 origin net $H$，origin bbox 同样由 child records 当前的局部 bbox 取最小外接矩形得到：
+
+$$
+BBox^{MCF}_H
+=
+RectHull(\{BBox(n,\rho_n)\mid n\in H.child\_net\})
+$$
+
+对于 Pnet / Nnet 对应的 `PNnet`，TOB SAT 阶段会使用 $\rho_n$ 扩展候选 start track 集合。但按照前文 MCF 建模约定，SimpleMCF 中的 Pnet / Nnet 暂时不加 MCF bounding box 限制，仍然通过 `virtual_Pnode` / `virtual_Nnode` 连接当前 COBUnit 内可选端口。也就是说，$\rho_n$ 对 `PNnet` 的主要作用是影响 TOB SAT 阶段的 start track 可选集合，而不是在 MCF 阶段裁剪 PNnet 的虚拟端口图。
+
+### 7. 完整迭代流程
+
+调整后的外层流程如下：
+
+```python
+for each record n:
+    rho[n] = 0
+
+for attempt in range(max_attempt):
+    compute BBox(n, rho[n]) for each record n
+    compute Endtrack and Starttrack using each record's own BBox(n, rho[n])
+
+    build TOB SAT model
+    solve TOB SAT
+
+    if TOB SAT is UNSAT:
+        fail_set = {n | type(n) is Tnet or PNnet}
+        if expand(fail_set) changed nothing:
+            report failure
+        continue
+
+    extract assigned_track(p)
+    allocateNettoCOBUnit()
+    prepare MCF feasible graph using BBox(n, rho[n])
+
+    solve BusMCF
+    if BusMCF is infeasible:
+        fail_set = all member records of failed bus_key
+        if expand(fail_set) changed nothing:
+            report failure
+        continue
+
+    solve SimpleMCF for each COBUnit
+    if any SimpleMCF unit is infeasible:
+        fail_set = all simple records in failed units
+        fail_set += all child records of failed multi-fanout origins
+        if expand(fail_set) changed nothing:
+            report failure
+        continue
+
+    return final routing result
+
+report failure
+```
+
+其中 `expand(fail_set)` 表示对集合中尚未达到上限的 record 执行 $\rho_n\leftarrow \rho_n+1$。若集合中所有 record 的 $\rho_n$ 都已经等于 4，则本轮扩展没有产生任何新范围，说明当前局部扩展策略已经耗尽，应当报告失败，而不是继续重复求解同一个问题。
+
+### 8. 该策略的预期效果与边界
+
+这个调整保留了原方法“先小范围、失败后放宽”的思想，但把放宽对象从所有 net 缩小到失败相关 net。它的预期效果是：
+
+1. 减少不相关 net 的候选 start track 数量，避免 SAT 搜索空间无谓增大。
+2. 减少 MCF 中不相关 net 的可行边集合，避免 MCF 变量和约束无谓增多。
+3. 尽量保持已经可布通 net 的短范围约束，降低最终路径变长的风险。
+
+该策略也有一个边界条件：TOB SAT 的 UNSAT 失败不提供精确失败 net。因此这里采用工程上更稳定的近似规则，只扩展带 track 端口的 `Tnet` 和 `PNnet`。这不会保证每次扩展都是最小必要集合，但比全局扩展更有针对性，也避免了在 SAT 层引入复杂的 UNSAT core 分析。
+
