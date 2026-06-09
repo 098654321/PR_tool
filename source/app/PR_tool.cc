@@ -60,7 +60,7 @@ namespace PR_tool {
     auto print_verion() -> void {
         using console::Color;
 
-        console::println_fmt("PR_tool v1.0 ({} {})\n", __DATE__, __TIME__);
+        console::println_fmt("PR_tool v1.0.0 ({} {})\n", __DATE__, __TIME__);
         console::println_with_color(PR_toollogo, Color::Blue);
         console::println("👉 Source: https://github.com/The-PR_tool-Project/PR_tool.git");
     }
