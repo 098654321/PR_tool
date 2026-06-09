@@ -410,7 +410,8 @@ for range_level in increasing_range:
 # 其中increasing_range = [0,1,2,3,4]
 # 重新计算start_tracks的方法如下：
 # 1. 如果是range_level=0，保持原来的计算方法
-# 2. 如果range_level > 0，在新的bounding_box当中计算从end_track到start_track所在Channel（也就是TOB位置处的那个Channel）的k-shortest path，然后看一下能够到达的track，把track加入start_track集合。其中k=1+2*range_level。注意，这些新加入的start_track并没有计算reach信息，因为暂时不需要
+# 2. 如果range_level > 0但range_level < 4，在新的bounding_box当中计算从end_track到start_track所在Channel（也就是TOB位置处的那个Channel）的k-shortest path，然后看一下能够到达的track，把track加入start_track集合。其中k=1+2*range_level。注意，这些新加入的start_track并没有计算reach信息，因为暂时不需要
+# 3. 如果range_level=4，对于每一个end_track，其对应的start_track可以是与end_track位于相同COBUnit下的所有track（应该是8条），同样不需要计算reach信息
 ```
 
 如果某一轮范围太小，SAT 返回 UNSAT，说明在当前范围内不存在满足 TOB 资源互斥和可达性约束的 track 分配。扩大范围后，只需要重新生成 `Endtrack`、`Starttrack` 和对应 forbidden clauses。

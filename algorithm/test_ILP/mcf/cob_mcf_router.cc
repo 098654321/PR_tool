@@ -1,5 +1,6 @@
 #include "mcf/cob_mcf_router.hh"
 
+#include "maze_check/simple_maze_routing.hh"
 #include "mcf/mcf_bbox.hh"
 #include "mcf/mcf_graph.hh"
 #include "mcf/mcf_hw_map.hh"
@@ -3000,6 +3001,31 @@ auto log_mcf_paths_by_origin_net(
     return total_wire_length;
 }
 
+auto to_simple_maze_commodities(const std::Vector<PreparedCommodity>& commodities) -> std::Vector<SimpleMazeCommodityInput> {
+    auto out = std::Vector<SimpleMazeCommodityInput> {};
+    out.reserve(commodities.size());
+    for (const auto& c : commodities) {
+        if (c.is_bus) {
+            continue;
+        }
+        SimpleMazeCommodityInput item {};
+        item.label = c.label;
+        item.origin_name = c.origin_name;
+        item.origin_uid = c.origin_uid;
+        item.record_index = c.record_index;
+        item.record_id = c.record_id;
+        item.record_indices = c.record_indices;
+        item.cob_unit = c.cob_unit;
+        item.start_track = c.start_track;
+        item.end_track = c.end_track;
+        item.src = c.src;
+        item.snk = c.snk;
+        item.demand = c.demand;
+        out.push_back(std::move(item));
+    }
+    return out;
+}
+
 } // namespace
 
 auto run_mcf_global_routing_cob_units(
@@ -3013,13 +3039,18 @@ auto run_mcf_global_routing_cob_units(
     const bool enable_mcf_obj,
     const bool defer_interposer_suspend,
     const bool disable_bus_mcf,
+    const bool enable_simple_maze,
+    const bool verbose_maze_records,
     const GurobiDiagnosticsOptions& diag
 ) -> CobMcfFullResult {
-    (void)basedie;
 
     const auto mcf_start = std::chrono::steady_clock::now();
     const auto peak_before = get_peak_rss_mb();
-    if (disable_bus_mcf) {
+    if (enable_simple_maze) {
+        debug::info_fmt(
+            "MCF: BusMCF (global) + SimpleMCF-maze (per origin net, ILP-fixed TOB)");
+    }
+    else if (disable_bus_mcf) {
         debug::info_fmt(
             "MCF: SimpleMCF only (--disable-bus-mcf); SimpleMCF objective={}",
             enable_mcf_obj ? "min_sum_x (--enable-mcf-obj)" : "feasibility only");
@@ -3109,16 +3140,18 @@ auto run_mcf_global_routing_cob_units(
                 warm_used_nodes);
             bus_warm_start_ptr = &bus_warm_start;
         }
-        simple_warm_start = route_mcf_stage_warm_start(
-            "SimpleMCF",
-            graph,
-            commodities,
-            simple_ids,
-            simple_effective_bbox,
-            outgoing_arcs,
-            warm_used_edges,
-            warm_used_nodes);
-        simple_warm_start_ptr = &simple_warm_start;
+        if (!enable_simple_maze) {
+            simple_warm_start = route_mcf_stage_warm_start(
+                "SimpleMCF",
+                graph,
+                commodities,
+                simple_ids,
+                simple_effective_bbox,
+                outgoing_arcs,
+                warm_used_edges,
+                warm_used_nodes);
+            simple_warm_start_ptr = &simple_warm_start;
+        }
     }
     const auto mcf_warm_t1 = std::chrono::steady_clock::now();
     out.summary.mcf_warm_start_ms = static_cast<int>(
@@ -3158,99 +3191,137 @@ auto run_mcf_global_routing_cob_units(
         return node_cap;
     };
 
-    // solve
+  // solve
     auto simple_results = std::array<StageSolveResult, 16> {};
     auto simple_futures = std::array<std::future<StageSolveResult>, 16> {};
     auto has_simple_unit = std::array<bool, 16> {};
     has_simple_unit.fill(false);
+    auto maze_result = SimpleMazeSolveResult {};
+    bool all_simple_ok = true;
+    double simple_objective = 0.0;
 
-    for (std::size_t u = 0; u < 16; ++u) {
-        if (simple_ids_by_unit[u].empty()) {
-            simple_results[u].ok = true;
-            simple_results[u].message = "empty stage";
-            continue;
+    if (enable_simple_maze) {
+        for (std::size_t u = 0; u < 16; ++u) {
+            has_simple_unit[u] = !simple_ids_by_unit[u].empty();
         }
-        has_simple_unit[u] = true;
-        const auto edge_cap = build_edge_residual(u);
-        const auto node_cap = build_node_residual(u);
-        if (enable_mcf_parallel) {
-            simple_futures[u] = std::async(
-                std::launch::async,
-                [&graph, &commodities, &records, &bbox_ctx, &simple_ids_by_unit, u, edge_cap, node_cap, enable_mcf_obj, simple_warm_start_ptr, diag]() {
-                    return solve_simple_mcf_unit(
-                        graph,
-                        commodities,
-                        u,
-                        simple_ids_by_unit[u],
-                        records,
-                        bbox_ctx,
-                        edge_cap,
-                        node_cap,
-                        enable_mcf_obj,
-                        simple_warm_start_ptr,
-                        diag);
-                });
-        }
-        else {
-            simple_results[u] = solve_simple_mcf_unit(
-                graph,
-                commodities,
-                u,
-                simple_ids_by_unit[u],
-                records,
-                bbox_ctx,
-                edge_cap,
-                node_cap,
-                enable_mcf_obj,
-                simple_warm_start_ptr,
-                diag);
-            debug::info_fmt(
-                "SimpleMCF unit {}: ok={} objective={:.0f} paths={}",
-                u,
-                simple_results[u].ok,
-                simple_results[u].objective,
-                simple_results[u].paths.size());
+        if (bus_res.ok) {
+            if (interposer == nullptr) {
+                all_simple_ok = false;
+                debug::error("simple-maze: interposer is null");
+            }
+            else {
+                auto bus_paths_by_unit = std::array<std::Vector<McfPathInfo>, 16> {};
+                for (const auto& path : bus_res.paths) {
+                    bus_paths_by_unit[path.cob_unit].push_back(path);
+                }
+                auto maze_inputs = to_simple_maze_commodities(commodities);
+                maze_result = solve_simple_mcf_with_maze(
+                    interposer,
+                    const_cast<circuit::BaseDie&>(basedie),
+                    graph,
+                    records,
+                    ilp_result,
+                    maze_inputs,
+                    bus_paths_by_unit,
+                    verbose_maze_records);
+                all_simple_ok = maze_result.all_ok;
+                out.has_simple_commodities = maze_result.has_simple_commodities;
+                out.simple_mcf_ok = maze_result.simple_mcf_ok;
+                if (!all_simple_ok) {
+                    debug::error("SimpleMCF-maze: one or more origin nets failed");
+                }
+            }
         }
     }
-
-    // 统计结果
-    if (enable_mcf_parallel) {
+    else {
         for (std::size_t u = 0; u < 16; ++u) {
-            if (!has_simple_unit[u]) {
+            if (simple_ids_by_unit[u].empty()) {
+                simple_results[u].ok = true;
+                simple_results[u].message = "empty stage";
                 continue;
             }
-            simple_results[u] = simple_futures[u].get();
-            debug::info_fmt(
-                "SimpleMCF unit {}: ok={} objective={:.0f} paths={}",
-                u,
-                simple_results[u].ok,
-                simple_results[u].objective,
-                simple_results[u].paths.size());
+            has_simple_unit[u] = true;
+            const auto edge_cap = build_edge_residual(u);
+            const auto node_cap = build_node_residual(u);
+            if (enable_mcf_parallel) {
+                simple_futures[u] = std::async(
+                    std::launch::async,
+                    [&graph, &commodities, &records, &bbox_ctx, &simple_ids_by_unit, u, edge_cap, node_cap, enable_mcf_obj, simple_warm_start_ptr, diag]() {
+                        return solve_simple_mcf_unit(
+                            graph,
+                            commodities,
+                            u,
+                            simple_ids_by_unit[u],
+                            records,
+                            bbox_ctx,
+                            edge_cap,
+                            node_cap,
+                            enable_mcf_obj,
+                            simple_warm_start_ptr,
+                            diag);
+                    });
+            }
+            else {
+                simple_results[u] = solve_simple_mcf_unit(
+                    graph,
+                    commodities,
+                    u,
+                    simple_ids_by_unit[u],
+                    records,
+                    bbox_ctx,
+                    edge_cap,
+                    node_cap,
+                    enable_mcf_obj,
+                    simple_warm_start_ptr,
+                    diag);
+                debug::info_fmt(
+                    "SimpleMCF unit {}: ok={} objective={:.0f} paths={}",
+                    u,
+                    simple_results[u].ok,
+                    simple_results[u].objective,
+                    simple_results[u].paths.size());
+            }
+        }
+
+        if (enable_mcf_parallel) {
+            for (std::size_t u = 0; u < 16; ++u) {
+                if (!has_simple_unit[u]) {
+                    continue;
+                }
+                simple_results[u] = simple_futures[u].get();
+                debug::info_fmt(
+                    "SimpleMCF unit {}: ok={} objective={:.0f} paths={}",
+                    u,
+                    simple_results[u].ok,
+                    simple_results[u].objective,
+                    simple_results[u].paths.size());
+            }
+        }
+
+        for (std::size_t u = 0; u < 16; ++u) {
+            out.has_simple_commodities[u] = has_simple_unit[u];
+            if (!has_simple_unit[u]) {
+                out.simple_mcf_ok[u] = true;
+                continue;
+            }
+            out.simple_mcf_ok[u] = simple_results[u].ok;
+            if (!simple_results[u].ok) {
+                all_simple_ok = false;
+                debug::error_fmt("SimpleMCF unit {} failed: {}", u, simple_results[u].message);
+            }
+            simple_objective += simple_results[u].objective;
         }
     }
 
     const auto solve_t1 = std::chrono::steady_clock::now();
-    const auto solve_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(solve_t1 - solve_t0).count());
+    const auto solve_ms = enable_simple_maze
+        ? maze_result.solve_ms
+        : static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(solve_t1 - solve_t0).count());
     out.summary.mcf_solve_ms = solve_ms;
     debug::info_fmt("timing phase=mcf_solve ms={}", solve_ms);
 
     if (!bus_res.ok) {
         debug::error_fmt("BusMCF failed: {}", bus_res.message);
-    }
-    bool all_simple_ok = true;
-    double simple_objective = 0.0;
-    for (std::size_t u = 0; u < 16; ++u) {
-        out.has_simple_commodities[u] = has_simple_unit[u];
-        if (!has_simple_unit[u]) {
-            out.simple_mcf_ok[u] = true;
-            continue;
-        }
-        out.simple_mcf_ok[u] = simple_results[u].ok;
-        if (!simple_results[u].ok) {
-            all_simple_ok = false;
-            debug::error_fmt("SimpleMCF unit {} failed: {}", u, simple_results[u].message);
-        }
-        simple_objective += simple_results[u].objective;
     }
     out.summary.all_ok = bus_res.ok && all_simple_ok;
 
@@ -3268,9 +3339,18 @@ auto run_mcf_global_routing_cob_units(
     for (auto& p : bus_res.paths) {
         out.paths_by_unit[p.cob_unit].push_back(std::move(p));
     }
-    for (std::size_t u = 0; u < 16; ++u) {
-        for (auto& p : simple_results[u].paths) {
-            out.paths_by_unit[u].push_back(std::move(p));
+    if (enable_simple_maze) {
+        for (std::size_t u = 0; u < 16; ++u) {
+            for (auto& p : maze_result.paths_by_unit[u]) {
+                out.paths_by_unit[u].push_back(std::move(p));
+            }
+        }
+    }
+    else {
+        for (std::size_t u = 0; u < 16; ++u) {
+            for (auto& p : simple_results[u].paths) {
+                out.paths_by_unit[u].push_back(std::move(p));
+            }
         }
     }
 
@@ -3297,7 +3377,7 @@ auto run_mcf_global_routing_cob_units(
     const auto arc_index = build_undirected_arc_index(graph);
     const auto resource_usage = aggregate_mcf_resource_usage(graph, arc_index, out.paths_by_unit);
     log_mcf_resource_usage(resource_catalog, resource_usage, out.summary.all_ok);
-    if (!out.summary.all_ok) {
+    if (!out.summary.all_ok && !enable_simple_maze) {
         log_mcf_infeasibility_summary(bus_res, simple_results);
     }
 

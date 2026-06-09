@@ -2,6 +2,7 @@
 
 #include "common/ilp_types.hh"
 #include "ilp_allocation/ilp_apply_interposer.hh"
+#include "maze_check/maze_route_ilp_fixed.hh"
 #include "mcf/mcf_graph.hh"
 
 #include <algo/router/common/maze/mazererouter.hh>
@@ -73,11 +74,6 @@ struct MazeCheckContext {
     MazeCheckSummary summary;
 };
 
-struct MazeIlpFixedContext {
-    const McfGlobalGraph* graph{nullptr};
-    const CobMcfFullResult* mcf_result{nullptr};
-};
-
 auto record_origin_key(const Net_cost_record& record) -> std::String {
     return record.origin_key.empty() ? record.net_name : record.origin_key;
 }
@@ -86,34 +82,6 @@ auto is_simple_mcf_record(const Net_cost_record& record) -> bool {
     return !is_sync_bus_mcf_origin_key(record_origin_key(record));
 }
 
-auto track_coord_text(const hardware::TrackCoord& tc) -> std::String {
-    const auto dir = tc.dir == hardware::TrackDirection::Horizontal ? "H" : "V";
-    return std::format("({},{},{},idx={})", tc.row, tc.col, dir, tc.index);
-}
-
-auto pathpackage_to_text(const circuit::PathPackage& package) -> std::String {
-    if (package._regular_path.empty()) {
-        return "(empty regular_path)";
-    }
-    auto parts = std::Vector<std::String> {};
-    parts.reserve(package._regular_path.size());
-    for (const auto& hop : package._regular_path) {
-        const auto* track = std::get<0>(hop);
-        if (track == nullptr) {
-            parts.emplace_back("(null-track)");
-            continue;
-        }
-        parts.emplace_back(track_coord_text(track->coord()));
-    }
-    auto text = std::String {};
-    for (std::size_t i = 0; i < parts.size(); ++i) {
-        if (i != 0) {
-            text += " -> ";
-        }
-        text += parts[i];
-    }
-    return text;
-}
 
 auto collect_failed_simple_records(
     const std::Vector<Net_cost_record>& records,
@@ -178,810 +146,6 @@ auto outcome_label(const MazeOriginOutcome outcome) -> const char* {
     }
 }
 
-auto bump_to_coord(const hardware::Bump* bump) -> Bump_coord {
-    const auto bump_index = bump->index();
-    const auto tob_coord = bump->tob()->coord();
-    return Bump_coord {
-        static_cast<std::size_t>(tob_coord.row * hardware::Interposer::TOB_ARRAY_WIDTH + tob_coord.col),
-        bump_index / 64,
-        (bump_index % 64) / 8,
-        bump_index % 8
-    };
-}
-
-auto bumps_equal(const Bump_coord& a, const Bump_coord& b) -> bool {
-    return a.TOB == b.TOB && a.Bank == b.Bank && a.Group == b.Group && a.Index == b.Index;
-}
-
-auto tob_from_linear(const std::size_t tob_linear) -> hardware::TOBCoord {
-    const auto width = static_cast<std::size_t>(hardware::Interposer::TOB_ARRAY_WIDTH);
-    return hardware::TOBCoord {
-        static_cast<std::i64>(tob_linear / width),
-        static_cast<std::i64>(tob_linear % width)};
-}
-
-auto find_bump(hardware::Interposer* interposer, const Bump_coord& bump_coord) -> hardware::Bump* {
-    const auto tob = interposer->get_tob(tob_from_linear(bump_coord.TOB));
-    if (!tob.has_value()) {
-        return nullptr;
-    }
-    const auto bump_index = bump_coord.Bank * 64 + bump_coord.Group * 8 + bump_coord.Index;
-    const auto bump = (*tob)->get_bump(bump_index);
-    if (!bump.has_value()) {
-        return nullptr;
-    }
-    return bump.value();
-}
-
-auto track_from_bump_and_index(
-    hardware::Interposer* interposer,
-    const Bump_coord& bump_coord,
-    const std::size_t track_index
-) -> hardware::Track* {
-    auto* bump = find_bump(interposer, bump_coord);
-    if (bump == nullptr) {
-        return nullptr;
-    }
-    const auto& bump_hw_coord = bump->coord();
-    const auto track_coord = hardware::TrackCoord {
-        bump_hw_coord.row,
-        bump_hw_coord.col,
-        hardware::TrackDirection::Vertical,
-        track_index};
-    const auto track = interposer->get_track(track_coord);
-    if (!track.has_value()) {
-        return nullptr;
-    }
-    return track.value();
-}
-
-auto track_from_coord(hardware::Interposer* interposer, const hardware::TrackCoord& tc) -> hardware::Track* {
-    const auto track = interposer->get_track(tc);
-    if (!track.has_value()) {
-        return nullptr;
-    }
-    return track.value();
-}
-
-auto resolve_start_track(
-    hardware::Interposer* interposer,
-    const Net_cost_record& record,
-    const TobIlpRecordTrackEndpoint& endpoint
-) -> hardware::Track* {
-    if (!endpoint.has_start_track || record.start_bumps.empty()) {
-        return nullptr;
-    }
-    return track_from_bump_and_index(interposer, record.start_bumps.front(), endpoint.start_track);
-}
-
-auto resolve_end_track(
-    hardware::Interposer* interposer,
-    const Net_cost_record& record,
-    const TobIlpRecordTrackEndpoint& endpoint
-) -> hardware::Track* {
-    if (!endpoint.has_end_track) {
-        return nullptr;
-    }
-    if (record.type == Net_type::Bnet) {
-        if (record.end_bumps.empty()) {
-            return nullptr;
-        }
-        return track_from_bump_and_index(interposer, record.end_bumps.front(), endpoint.end_track);
-    }
-    if (record.type == Net_type::Tnet) {
-        if (!record.mcf_has_end_track) {
-            return nullptr;
-        }
-        return track_from_coord(interposer, record.mcf_end_track);
-    }
-    if (record.type == Net_type::PNnet) {
-        const auto it = record.pn_end_track_coord_by_index.find(endpoint.end_track);
-        if (it == record.pn_end_track_coord_by_index.end()) {
-            return nullptr;
-        }
-        return track_from_coord(interposer, it->second);
-    }
-    return nullptr;
-}
-
-// Mirrors MazeRouteStrategy::maze_search (BFS on adjacent_idle_tracks).
-auto ilp_fixed_maze_search(
-    hardware::Interposer* interposer,
-    const std::Vector<hardware::Track*>& begin_tracks,
-    const std::HashSet<hardware::Track*>& end_tracks,
-    const std::HashSet<hardware::Track*>& occupied_tracks
-) -> RoutedPath {
-    using namespace hardware;
-
-    auto queue = std::Queue<Track*> {};
-    auto prev_track_infos = std::HashMap<Track*, std::Option<std::Tuple<Track*, COBConnector>>> {};
-
-    for (auto* t : begin_tracks) {
-        queue.push(t);
-        prev_track_infos.insert({t, std::nullopt});
-    }
-
-    while (!queue.empty()) {
-        auto* track = queue.front();
-        queue.pop();
-
-        if (algo::check_found(end_tracks, track)) {
-            auto path = std::Vector<std::Tuple<Track*, std::Option<COBConnector>>> {};
-            auto* cur_track = track;
-            while (true) {
-                const auto prev_track_info = prev_track_infos.find(cur_track);
-                if (prev_track_info == prev_track_infos.end()) {
-                    throw algo::FinalError("ilp_fixed_maze_search: cannot find previous track");
-                }
-                if (!prev_track_info->second.has_value()) {
-                    break;
-                }
-                path.emplace_back(cur_track, std::get<1>(*prev_track_info->second));
-                cur_track = std::get<0>(*prev_track_info->second);
-            }
-            path.emplace_back(cur_track, std::nullopt);
-            return path;
-        }
-
-        for (auto& [next_track, connector] : interposer->adjacent_idle_tracks(track)) {
-            if (prev_track_infos.contains(next_track) || occupied_tracks.contains(next_track)) {
-                continue;
-            }
-            queue.push(next_track);
-            prev_track_infos.insert({next_track, std::Tuple<Track*, COBConnector> {track, connector}});
-        }
-    }
-
-    throw algo::RetryExpt("ilp_fixed_maze_search: path not found");
-}
-
-// Mirrors MazeRouteStrategy::route_path (reverse path + suspend COB connectors).
-auto ilp_fixed_route_path(
-    hardware::Interposer* interposer,
-    const std::Vector<hardware::Track*>& begin_tracks,
-    const std::HashSet<hardware::Track*>& end_tracks,
-    const std::HashSet<hardware::Track*>& occupied_tracks
-) -> RoutedPath {
-    auto path_info = ilp_fixed_maze_search(interposer, begin_tracks, end_tracks, occupied_tracks);
-    auto path = RoutedPath {};
-    path.reserve(path_info.size());
-    for (auto it = path_info.rbegin(); it != path_info.rend(); ++it) {
-        path.push_back(*it);
-    }
-    for (auto& [track, cobconnector] : path) {
-        (void)track;
-        if (cobconnector.has_value()) {
-            cobconnector.value().suspend();
-        }
-    }
-    return path;
-}
-
-auto track_set_from_ptr(hardware::Track* track) -> std::HashSet<hardware::Track*> {
-    auto set = std::HashSet<hardware::Track*> {};
-    set.emplace(track);
-    return set;
-}
-
-auto find_record_index(
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const auto& predicate
-) -> std::optional<std::size_t> {
-    for (const auto idx : record_indices) {
-        if (predicate(records[idx])) {
-            return idx;
-        }
-    }
-    return std::nullopt;
-}
-
-auto attach_bump_to_track_tob(
-    hardware::Interposer* interposer,
-    hardware::Bump* bump,
-    hardware::Track* track,
-    circuit::PathPackage& package
-) -> void {
-    auto tracks_map = interposer->available_tracks_bump_to_track(bump);
-    for (auto& [t, connector] : tracks_map) {
-        if (t->coord() == track->coord()) {
-            connector.give_out();
-            package._tob_to_track.emplace_back(
-                std::Tuple<hardware::Bump*, hardware::TOBConnector, hardware::Track*> {bump, connector, track});
-            return;
-        }
-    }
-}
-
-auto attach_track_to_bump_tob(
-    hardware::Interposer* interposer,
-    hardware::Bump* bump,
-    hardware::Track* track,
-    circuit::PathPackage& package
-) -> void {
-    auto tracks_map = interposer->available_tracks_track_to_bump(bump);
-    for (auto& [t, connector] : tracks_map) {
-        if (t->coord() == track->coord()) {
-            connector.give_out();
-            package._track_to_tob.emplace_back(
-                std::Tuple<hardware::Bump*, hardware::TOBConnector, hardware::Track*> {bump, connector, track});
-            return;
-        }
-    }
-}
-
-auto route_single_ilp_segment(
-    hardware::Interposer* interposer,
-    hardware::Track* start_track,
-    hardware::Track* end_track,
-    const std::HashSet<hardware::Track*>& occupied_tracks
-) -> RoutedPath {
-    if (start_track == nullptr || end_track == nullptr) {
-        throw algo::RetryExpt("route_single_ilp_segment: null endpoint track");
-    }
-    auto begin_vec = std::Vector<hardware::Track*> {start_track};
-    return ilp_fixed_route_path(interposer, begin_vec, track_set_from_ptr(end_track), occupied_tracks);
-}
-
-auto route_record_ilp_segment(
-    hardware::Interposer* interposer,
-    const Net_cost_record& record,
-    const TobIlpRecordTrackEndpoint& endpoint,
-    const std::HashSet<hardware::Track*>& occupied_tracks
-) -> RoutedPath {
-    auto* start = resolve_start_track(interposer, record, endpoint);
-    auto* end = resolve_end_track(interposer, record, endpoint);
-    return route_single_ilp_segment(interposer, start, end, occupied_tracks);
-}
-
-auto find_record_for_btb(
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const hardware::Bump* begin_bump,
-    const hardware::Bump* end_bump
-) -> std::optional<std::size_t> {
-    const auto begin = bump_to_coord(begin_bump);
-    const auto end = bump_to_coord(end_bump);
-    return find_record_index(record_indices, records, [&](const Net_cost_record& r) {
-        return r.type == Net_type::Bnet && !r.start_bumps.empty() && !r.end_bumps.empty()
-            && bumps_equal(r.start_bumps.front(), begin) && bumps_equal(r.end_bumps.front(), end);
-    });
-}
-
-auto find_record_for_btt(
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const hardware::Bump* begin_bump,
-    const hardware::Track* end_track
-) -> std::optional<std::size_t> {
-    const auto begin = bump_to_coord(begin_bump);
-    const auto end_coord = end_track->coord();
-    return find_record_index(record_indices, records, [&](const Net_cost_record& r) {
-        return r.type == Net_type::Tnet && !r.start_bumps.empty() && bumps_equal(r.start_bumps.front(), begin)
-            && r.mcf_has_end_track && r.mcf_end_track == end_coord;
-    });
-}
-
-auto find_record_for_ttb(
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const hardware::Track* begin_track,
-    const hardware::Bump* end_bump
-) -> std::optional<std::size_t> {
-    const auto end = bump_to_coord(end_bump);
-    const auto begin_coord = begin_track->coord();
-    return find_record_index(record_indices, records, [&](const Net_cost_record& r) {
-        return r.type == Net_type::Tnet && !r.start_bumps.empty() && bumps_equal(r.start_bumps.front(), end)
-            && r.mcf_has_end_track && r.mcf_end_track == begin_coord;
-    });
-}
-
-auto find_record_for_bump(
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const hardware::Bump* bump
-) -> std::optional<std::size_t> {
-    const auto coord = bump_to_coord(bump);
-    return find_record_index(record_indices, records, [&](const Net_cost_record& r) {
-        return !r.start_bumps.empty() && bumps_equal(r.start_bumps.front(), coord);
-    });
-}
-
-auto bump_from_record(hardware::Interposer* interposer, const Net_cost_record& record) -> hardware::Bump* {
-    if (record.start_bumps.empty()) {
-        throw algo::RetryExpt("bump_from_record: missing start bump");
-    }
-    auto* bump = find_bump(interposer, record.start_bumps.front());
-    if (bump == nullptr) {
-        throw algo::RetryExpt(std::format("bump_from_record: bump not found for net \"{}\"", record.net_name));
-    }
-    return bump;
-}
-
-auto track_set_from_begin_tracks(circuit::TracksToBumpsNet* net) -> std::HashSet<hardware::Track*> {
-    auto set = std::HashSet<hardware::Track*> {};
-    for (auto* t : net->begin_tracks()) {
-        set.emplace(t);
-    }
-    return set;
-}
-
-auto dedupe_track_vector(const std::Vector<hardware::Track*>& tracks) -> std::Vector<hardware::Track*> {
-    auto out = std::Vector<hardware::Track*> {};
-    auto seen = std::HashSet<hardware::Track*> {};
-    out.reserve(tracks.size());
-    for (auto* t : tracks) {
-        if (t == nullptr || seen.contains(t)) {
-            continue;
-        }
-        seen.emplace(t);
-        out.emplace_back(t);
-    }
-    return out;
-}
-
-auto track_from_mcf_graph_index(
-    hardware::Interposer* interposer,
-    const McfGlobalGraph& graph,
-    const std::size_t cob_unit,
-    const std::size_t track_index
-) -> hardware::Track* {
-    for (const auto& meta : graph.nodes) {
-        if (meta.is_virtual || meta.unit != cob_unit || meta.track != track_index) {
-            continue;
-        }
-        const auto tc = hardware::TrackCoord {
-            static_cast<std::i64>(meta.track_row),
-            static_cast<std::i64>(meta.track_col),
-            meta.track_dir == 0 ? hardware::TrackDirection::Horizontal : hardware::TrackDirection::Vertical,
-            track_index};
-        const auto track = interposer->get_track(tc);
-        if (track.has_value()) {
-            return track.value();
-        }
-    }
-    return nullptr;
-}
-
-auto collect_origin_mcf_seed_tracks(
-    hardware::Interposer* interposer,
-    const McfGlobalGraph& graph,
-    const CobMcfFullResult& mcf_result,
-    const std::Vector<Net_cost_record>& records,
-    const TobIlpResult& ilp_result,
-    const std::String& origin_uid,
-    const std::set<std::size_t>& failed_record_indices
-) -> std::Vector<hardware::Track*> {
-    auto out = std::Vector<hardware::Track*> {};
-    if (records.size() != ilp_result.record_track_endpoints.size()) {
-        return out;
-    }
-    for (std::size_t i = 0; i < records.size(); ++i) {
-        if (failed_record_indices.contains(i)) {
-            continue;
-        }
-        const auto& record = records[i];
-        if (record.type != Net_type::PNnet || record_origin_group_uid(record) != origin_uid) {
-            continue;
-        }
-        const auto cob_unit = ilp_result.record_track_endpoints[i].cob_unit;
-        if (cob_unit >= 16) {
-            continue;
-        }
-        const auto unit_ok = mcf_result.simple_mcf_ok[cob_unit];
-        if (!unit_ok) {
-            continue;
-        }
-        for (const auto& info : mcf_result.paths_by_unit[cob_unit]) {
-            if (info.record_id != record.record_id) {
-                continue;
-            }
-            for (const auto& track_path : info.track_paths) {
-                for (const auto track_index : track_path) {
-                    auto* t = track_from_mcf_graph_index(interposer, graph, cob_unit, track_index);
-                    if (t != nullptr) {
-                        out.emplace_back(t);
-                    }
-                }
-            }
-            break;
-        }
-    }
-    return out;
-}
-
-auto route_bump_to_bump_net_ilp_fixed(
-    hardware::Interposer* interposer,
-    circuit::BumpToBumpNet* net,
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const TobIlpResult& ilp_result
-) -> circuit::PathPackage {
-    const auto rec_idx = find_record_for_btb(record_indices, records, net->begin_bump(), net->end_bump());
-    if (!rec_idx.has_value()) {
-        throw algo::RetryExpt("route_bump_to_bump_net_ilp_fixed: no matching SAT record");
-    }
-    const auto& record = records[*rec_idx];
-    const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
-    auto package = circuit::PathPackage {};
-    package._regular_path = route_record_ilp_segment(interposer, record, endpoint, {});
-    auto* begin_track = resolve_start_track(interposer, record, endpoint);
-    auto* end_track = resolve_end_track(interposer, record, endpoint);
-    attach_bump_to_track_tob(interposer, net->begin_bump(), begin_track, package);
-    attach_track_to_bump_tob(interposer, net->end_bump(), end_track, package);
-    package._length = package._regular_path.size() + 2;
-    net->set_pathpackage(package);
-    return package;
-}
-
-auto route_bump_to_track_net_ilp_fixed(
-    hardware::Interposer* interposer,
-    circuit::BumpToTrackNet* net,
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const TobIlpResult& ilp_result
-) -> circuit::PathPackage {
-    const auto rec_idx = find_record_for_btt(record_indices, records, net->begin_bump(), net->end_track());
-    if (!rec_idx.has_value()) {
-        throw algo::RetryExpt("route_bump_to_track_net_ilp_fixed: no matching SAT record");
-    }
-    const auto& record = records[*rec_idx];
-    const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
-    auto occupied = std::HashSet<hardware::Track*> {};
-    occupied.emplace(net->end_track());
-    auto package = circuit::PathPackage {};
-    package._regular_path = route_record_ilp_segment(interposer, record, endpoint, occupied);
-    auto* begin_track = resolve_start_track(interposer, record, endpoint);
-    attach_bump_to_track_tob(interposer, net->begin_bump(), begin_track, package);
-    package._length = package._regular_path.size() + 1;
-    net->set_pathpackage(package);
-    return package;
-}
-
-auto route_track_to_bump_net_ilp_fixed(
-    hardware::Interposer* interposer,
-    circuit::TrackToBumpNet* net,
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const TobIlpResult& ilp_result
-) -> circuit::PathPackage {
-    const auto rec_idx = find_record_for_ttb(record_indices, records, net->begin_track(), net->end_bump());
-    if (!rec_idx.has_value()) {
-        throw algo::RetryExpt("route_track_to_bump_net_ilp_fixed: no matching SAT record");
-    }
-    const auto& record = records[*rec_idx];
-    const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
-    auto occupied = std::HashSet<hardware::Track*> {};
-    occupied.emplace(net->begin_track());
-    auto package = circuit::PathPackage {};
-    package._regular_path = route_record_ilp_segment(interposer, record, endpoint, occupied);
-    auto* end_track = resolve_end_track(interposer, record, endpoint);
-    attach_track_to_bump_tob(interposer, net->end_bump(), end_track, package);
-    package._length = package._regular_path.size() + 1;
-    net->set_pathpackage(package);
-    return package;
-}
-
-auto route_bump_to_bumps_net_ilp_fixed(
-    hardware::Interposer* interposer,
-    circuit::BumpToBumpsNet* net,
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const TobIlpResult& ilp_result
-) -> circuit::PathPackage {
-    auto begin_tracks_vec = std::Vector<hardware::Track*> {};
-    auto total_regular_path = RoutedPath {};
-    auto package = circuit::PathPackage {};
-    std::size_t total_length {0};
-
-    for (auto* end_bump : net->end_bumps()) {
-        const auto rec_idx = find_record_for_btb(record_indices, records, net->begin_bump(), end_bump);
-        if (!rec_idx.has_value()) {
-            throw algo::RetryExpt("route_bump_to_bumps_net_ilp_fixed: no matching SAT record for end bump");
-        }
-        const auto& record = records[*rec_idx];
-        const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
-        auto* start = resolve_start_track(interposer, record, endpoint);
-        auto* end = resolve_end_track(interposer, record, endpoint);
-        if (begin_tracks_vec.empty()) {
-            begin_tracks_vec.push_back(start);
-        }
-        const auto regular_path = route_single_ilp_segment(interposer, begin_tracks_vec.front(), end, {});
-        total_regular_path.insert(total_regular_path.end(), regular_path.begin(), regular_path.end());
-
-        auto path = std::Vector<hardware::Track*> {};
-        for (auto& [t, connector] : regular_path) {
-            (void)connector;
-            path.emplace_back(t);
-        }
-        attach_track_to_bump_tob(interposer, end_bump, end, package);
-        begin_tracks_vec.insert(begin_tracks_vec.end(), path.begin(), path.end());
-        total_length += path.size() + 1;
-    }
-
-    attach_bump_to_track_tob(interposer, net->begin_bump(), begin_tracks_vec.front(), package);
-    package._regular_path = total_regular_path;
-    package._length = total_length;
-    net->set_pathpackage(package);
-    return package;
-}
-
-auto route_bump_to_tracks_net_ilp_fixed(
-    hardware::Interposer* interposer,
-    circuit::BumpToTracksNet* net,
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const TobIlpResult& ilp_result
-) -> circuit::PathPackage {
-    auto begin_tracks_vec = std::Vector<hardware::Track*> {};
-    auto total_regular_path = RoutedPath {};
-    auto package = circuit::PathPackage {};
-    std::size_t total_length {0};
-
-    for (auto* end_track : net->end_tracks()) {
-        const auto rec_idx = find_record_for_btt(record_indices, records, net->begin_bump(), end_track);
-        if (!rec_idx.has_value()) {
-            throw algo::RetryExpt("route_bump_to_tracks_net_ilp_fixed: no matching SAT record for end track");
-        }
-        const auto& record = records[*rec_idx];
-        const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
-        auto* start = resolve_start_track(interposer, record, endpoint);
-        auto occupied = std::HashSet<hardware::Track*> {};
-        occupied.emplace(end_track);
-        const auto regular_path = route_single_ilp_segment(interposer, start, end_track, occupied);
-        total_regular_path.insert(total_regular_path.end(), regular_path.begin(), regular_path.end());
-
-        auto path = std::Vector<hardware::Track*> {};
-        for (auto& [t, connector] : regular_path) {
-            (void)connector;
-            path.emplace_back(t);
-        }
-        attach_bump_to_track_tob(interposer, net->begin_bump(), path.front(), package);
-        begin_tracks_vec.insert(begin_tracks_vec.end(), path.begin(), path.end());
-        total_length += path.size() + 1;
-    }
-
-    package._regular_path = total_regular_path;
-    package._length = total_length;
-    net->set_pathpackage(package);
-    return package;
-}
-
-auto route_track_to_bumps_net_ilp_fixed(
-    hardware::Interposer* interposer,
-    circuit::TrackToBumpsNet* net,
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const TobIlpResult& ilp_result
-) -> circuit::PathPackage {
-    auto begin_tracks_vec = std::Vector<hardware::Track*> {net->begin_track()};
-    auto total_regular_path = RoutedPath {};
-    auto package = circuit::PathPackage {};
-    std::size_t total_length {0};
-
-    for (auto* end_bump : net->end_bumps()) {
-        const auto rec_idx = find_record_for_bump(record_indices, records, end_bump);
-        if (!rec_idx.has_value()) {
-            throw algo::RetryExpt("route_track_to_bumps_net_ilp_fixed: no matching SAT record for end bump");
-        }
-        const auto& record = records[*rec_idx];
-        const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
-        auto* end = resolve_end_track(interposer, record, endpoint);
-        const auto regular_path = route_single_ilp_segment(interposer, begin_tracks_vec.front(), end, {});
-        total_regular_path.insert(total_regular_path.end(), regular_path.begin(), regular_path.end());
-
-        auto path = std::Vector<hardware::Track*> {};
-        for (auto& [t, connector] : regular_path) {
-            (void)connector;
-            path.emplace_back(t);
-        }
-        attach_track_to_bump_tob(interposer, end_bump, end, package);
-        begin_tracks_vec.insert(begin_tracks_vec.end(), path.begin(), path.end());
-        total_length += path.size() + 1;
-    }
-
-    package._regular_path = total_regular_path;
-    package._length = total_length + 1;
-    net->set_pathpackage(package);
-    return package;
-}
-
-auto route_tracks_to_bumps_net_ilp_fixed(
-    hardware::Interposer* interposer,
-    circuit::TracksToBumpsNet* net,
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const TobIlpResult& ilp_result,
-    const MazeIlpFixedContext* mcf_ctx
-) -> circuit::PathPackage {
-    if (record_indices.empty()) {
-        throw algo::RetryExpt("route_tracks_to_bumps_net_ilp_fixed: empty record_indices");
-    }
-
-    auto sorted_indices = record_indices;
-    std::sort(sorted_indices.begin(), sorted_indices.end());
-
-    const auto origin_uid = record_origin_group_uid(records[sorted_indices.front()]);
-    const auto failed_set = std::set<std::size_t>(record_indices.begin(), record_indices.end());
-
-    auto begin_tracks_vec = std::Vector<hardware::Track*> {};
-    for (auto* t : net->begin_tracks()) {
-        begin_tracks_vec.emplace_back(t);
-    }
-    if (mcf_ctx != nullptr && mcf_ctx->graph != nullptr && mcf_ctx->mcf_result != nullptr) {
-        const auto mcf_seeds = collect_origin_mcf_seed_tracks(
-            interposer,
-            *mcf_ctx->graph,
-            *mcf_ctx->mcf_result,
-            records,
-            ilp_result,
-            origin_uid,
-            failed_set);
-        begin_tracks_vec.insert(begin_tracks_vec.end(), mcf_seeds.begin(), mcf_seeds.end());
-    }
-    begin_tracks_vec = dedupe_track_vector(begin_tracks_vec);
-
-    const auto end_targets = track_set_from_begin_tracks(net);
-    auto total_regular_path = RoutedPath {};
-    auto package = circuit::PathPackage {};
-    std::size_t total_length {0};
-
-    for (const auto rec_idx : sorted_indices) {
-        const auto& record = records[rec_idx];
-        if (record.type != Net_type::PNnet) {
-            throw algo::RetryExpt(std::format(
-                "route_tracks_to_bumps_net_ilp_fixed: expected PNnet record for \"{}\"",
-                record.net_name));
-        }
-        const auto& endpoint = ilp_result.record_track_endpoints[rec_idx];
-        auto* bump = bump_from_record(interposer, record);
-        auto* start = resolve_start_track(interposer, record, endpoint);
-
-        auto begin_vec = dedupe_track_vector(begin_tracks_vec);
-        if (start != nullptr) {
-            begin_vec.insert(begin_vec.begin(), start);
-            begin_vec = dedupe_track_vector(begin_vec);
-        }
-
-        const auto regular_path = ilp_fixed_route_path(interposer, begin_vec, end_targets, {});
-        total_regular_path.insert(total_regular_path.end(), regular_path.begin(), regular_path.end());
-
-        auto path = std::Vector<hardware::Track*> {};
-        path.reserve(regular_path.size());
-        for (auto& [t, connector] : regular_path) {
-            (void)connector;
-            path.emplace_back(t);
-        }
-        if (path.empty()) {
-            throw algo::RetryExpt(std::format(
-                "route_tracks_to_bumps_net_ilp_fixed: empty path for \"{}\"",
-                record.net_name));
-        }
-        auto* end_track = path.back();
-        if (!end_targets.contains(end_track)) {
-            throw algo::RetryExpt(
-                "route_tracks_to_bumps_net_ilp_fixed: end track not in 0/1 port set");
-        }
-        attach_track_to_bump_tob(interposer, bump, end_track, package);
-        for (auto* t : path) {
-            begin_tracks_vec.emplace_back(t);
-        }
-        total_length += path.size() + 1;
-    }
-
-    package._regular_path = total_regular_path;
-    package._length = total_length;
-    net->set_pathpackage(package);
-    return package;
-}
-
-auto route_sync_net_ilp_fixed(
-    hardware::Interposer* interposer,
-    circuit::SyncNet* sync_net,
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const TobIlpResult& ilp_result
-) -> circuit::PathPackage {
-    auto occupied_tracks = std::HashSet<hardware::Track*> {};
-    for (const auto& btt : sync_net->bttnets()) {
-        occupied_tracks.emplace(btt->end_track());
-    }
-    for (const auto& ttb : sync_net->ttbnets()) {
-        occupied_tracks.emplace(ttb->begin_track());
-    }
-
-    for (const auto& btb : sync_net->btbnets()) {
-        const auto rec_idx = find_record_for_btb(record_indices, records, btb->begin_bump(), btb->end_bump());
-        if (!rec_idx.has_value()) {
-            throw algo::RetryExpt("route_sync_net_ilp_fixed: no matching BTB SAT record");
-        }
-        const auto& record = records[*rec_idx];
-        const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
-        auto package = circuit::PathPackage {};
-        package._regular_path = route_record_ilp_segment(interposer, record, endpoint, occupied_tracks);
-        auto* begin_track = resolve_start_track(interposer, record, endpoint);
-        auto* end_track = resolve_end_track(interposer, record, endpoint);
-        attach_bump_to_track_tob(interposer, btb->begin_bump(), begin_track, package);
-        attach_track_to_bump_tob(interposer, btb->end_bump(), end_track, package);
-        package._length = package._regular_path.size() + 2;
-        btb->set_pathpackage(package);
-    }
-
-    for (const auto& ttb : sync_net->ttbnets()) {
-        const auto rec_idx = find_record_for_ttb(record_indices, records, ttb->begin_track(), ttb->end_bump());
-        if (!rec_idx.has_value()) {
-            throw algo::RetryExpt("route_sync_net_ilp_fixed: no matching TTB SAT record");
-        }
-        const auto& record = records[*rec_idx];
-        const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
-        auto local_occupied = occupied_tracks;
-        local_occupied.erase(ttb->begin_track());
-        auto package = circuit::PathPackage {};
-        package._regular_path = route_record_ilp_segment(interposer, record, endpoint, local_occupied);
-        auto* end_track = resolve_end_track(interposer, record, endpoint);
-        attach_track_to_bump_tob(interposer, ttb->end_bump(), end_track, package);
-        package._length = package._regular_path.size() + 1;
-        ttb->set_pathpackage(package);
-    }
-
-    for (const auto& btt : sync_net->bttnets()) {
-        const auto rec_idx = find_record_for_btt(record_indices, records, btt->begin_bump(), btt->end_track());
-        if (!rec_idx.has_value()) {
-            throw algo::RetryExpt("route_sync_net_ilp_fixed: no matching BTT SAT record");
-        }
-        const auto& record = records[*rec_idx];
-        const auto& endpoint = ilp_result.record_track_endpoints[*rec_idx];
-        auto local_occupied = occupied_tracks;
-        local_occupied.erase(btt->end_track());
-        auto package = circuit::PathPackage {};
-        package._regular_path = route_record_ilp_segment(interposer, record, endpoint, local_occupied);
-        auto* begin_track = resolve_start_track(interposer, record, endpoint);
-        attach_bump_to_track_tob(interposer, btt->begin_bump(), begin_track, package);
-        package._length = package._regular_path.size() + 1;
-        btt->set_pathpackage(package);
-    }
-
-    if (!sync_net->collect_package()) {
-        throw algo::RetryExpt("route_sync_net_ilp_fixed: collect_package failed");
-    }
-    return sync_net->pathpackage();
-}
-
-auto route_origin_net_ilp_fixed(
-    hardware::Interposer* interposer,
-    circuit::Net* net,
-    const std::Vector<std::size_t>& record_indices,
-    const std::Vector<Net_cost_record>& records,
-    const TobIlpResult& ilp_result,
-    const MazeIlpFixedContext* mcf_ctx
-) -> circuit::PathPackage {
-    if (auto* bb = dynamic_cast<circuit::BumpToBumpNet*>(net)) {
-        return route_bump_to_bump_net_ilp_fixed(interposer, bb, record_indices, records, ilp_result);
-    }
-    if (auto* bt = dynamic_cast<circuit::BumpToTrackNet*>(net)) {
-        return route_bump_to_track_net_ilp_fixed(interposer, bt, record_indices, records, ilp_result);
-    }
-    if (auto* tb = dynamic_cast<circuit::TrackToBumpNet*>(net)) {
-        return route_track_to_bump_net_ilp_fixed(interposer, tb, record_indices, records, ilp_result);
-    }
-    if (auto* tbs = dynamic_cast<circuit::TrackToBumpsNet*>(net)) {
-        return route_track_to_bumps_net_ilp_fixed(interposer, tbs, record_indices, records, ilp_result);
-    }
-    if (auto* bbs = dynamic_cast<circuit::BumpToBumpsNet*>(net)) {
-        return route_bump_to_bumps_net_ilp_fixed(interposer, bbs, record_indices, records, ilp_result);
-    }
-    if (auto* bts = dynamic_cast<circuit::BumpToTracksNet*>(net)) {
-        return route_bump_to_tracks_net_ilp_fixed(interposer, bts, record_indices, records, ilp_result);
-    }
-    if (auto* tsbs = dynamic_cast<circuit::TracksToBumpsNet*>(net)) {
-        return route_tracks_to_bumps_net_ilp_fixed(
-            interposer, tsbs, record_indices, records, ilp_result, mcf_ctx);
-    }
-    if (auto* sync = dynamic_cast<circuit::SyncNet*>(net)) {
-        return route_sync_net_ilp_fixed(interposer, sync, record_indices, records, ilp_result);
-    }
-    throw algo::RetryExpt(std::format("route_origin_net_ilp_fixed: unsupported net type \"{}\"", net->name()));
-}
 
 auto prepare_maze_check_context(
     const std::Vector<Net_cost_record>& records,
@@ -1107,17 +271,24 @@ auto run_maze_check_loop(
             continue;
         }
 
+        std::size_t last_failed_record_index {0};
         try {
             net->check_accessable_cobunit();
             interposer->manage_cobunit_resources();
             net->search_related_nets(routed_nets);
-            const MazeIlpFixedContext mcf_ctx {&graph, &mcf_result};
-            const auto package =
-                route_origin(interposer, net, state.record_indices, records, ilp_result, &mcf_ctx);
+            MazeIlpFixedContext mcf_ctx {};
+            mcf_ctx.graph = &graph;
+            mcf_ctx.mcf_result = &mcf_result;
+            mcf_ctx.log_prefix = ctx.log_prefix.c_str();
+            mcf_ctx.last_failed_record_index = &last_failed_record_index;
+            OriginRouteSegments segments {};
+            const auto package = route_origin(
+                interposer, net, state.record_indices, records, ilp_result, &mcf_ctx, &segments);
             routed_nets.push_back(net);
 
             state.outcome = MazeOriginOutcome::Ok;
-            state.path_text = pathpackage_to_text(package);
+            state.path_text = segments.by_record_index.empty() ? pathpackage_regular_path_text(package)
+                                                               : segments_path_text(segments);
             state.path_hops = package._regular_path.size();
             ctx.summary.maze_ok += 1;
             ctx.summary.unique_origins_routed += 1;
@@ -1137,11 +308,12 @@ auto run_maze_check_loop(
             ctx.summary.maze_failed += 1;
             ctx.summary.unique_origins_routed += 1;
             debug::info_fmt(
-                "{} origin=\"{}\" COBUnit={} records={} result=FAILED reason=\"{}\"",
+                "{} origin=\"{}\" COBUnit={} records={} failed_at_record_index={} result=FAILED reason=\"{}\"",
                 ctx.log_prefix,
                 net->name(),
                 state.representative_cob_unit,
                 state.record_indices.size(),
+                last_failed_record_index,
                 state.message);
         }
         catch (const std::exception& e) {
@@ -1150,11 +322,12 @@ auto run_maze_check_loop(
             ctx.summary.maze_failed += 1;
             ctx.summary.unique_origins_routed += 1;
             debug::info_fmt(
-                "{} origin=\"{}\" COBUnit={} records={} result=FAILED reason=\"{}\"",
+                "{} origin=\"{}\" COBUnit={} records={} failed_at_record_index={} result=FAILED reason=\"{}\"",
                 ctx.log_prefix,
                 net->name(),
                 state.representative_cob_unit,
                 state.record_indices.size(),
+                last_failed_record_index,
                 state.message);
         }
     }
@@ -1207,7 +380,8 @@ auto run_maze_check_ilp_mcf_after_mcf(
             const std::Vector<std::size_t>&,
             const std::Vector<Net_cost_record>&,
             const TobIlpResult&,
-            const MazeIlpFixedContext*) {
+            const MazeIlpFixedContext*,
+            OriginRouteSegments*) {
             net->route(ip, maze);
             return net->pathpackage();
         });
@@ -1235,8 +409,10 @@ auto run_maze_check_mcf_after_mcf(
             const std::Vector<std::size_t>& record_indices,
             const std::Vector<Net_cost_record>& records,
             const TobIlpResult& ilp_result,
-            const MazeIlpFixedContext* mcf_ctx) {
-            return route_origin_net_ilp_fixed(ip, net, record_indices, records, ilp_result, mcf_ctx);
+            const MazeIlpFixedContext* mcf_ctx,
+            OriginRouteSegments* segments_out) {
+            return route_origin_net_ilp_fixed(
+                ip, net, record_indices, records, ilp_result, mcf_ctx, segments_out);
         });
 }
 

@@ -73,6 +73,7 @@ constexpr auto kTestIlpUsage =
     "[--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
     "[--sat-log] [--gurobi-log] "
     "[--maze-check-ilp-mcf | --maze-check-mcf] "
+    "[--simple-maze] "
     "[--check-golden]";
 
 auto run_main(int argc, char** argv) -> int {
@@ -99,6 +100,7 @@ auto run_main(int argc, char** argv) -> int {
     bool enable_pre_routing = false;
     bool maze_check_ilp_mcf = false;
     bool maze_check_mcf = false;
+    bool enable_simple_maze = false;
     bool enable_gurobi_log = false;
     bool enable_sat_log = false;
     int verbose_v_count = 0;
@@ -159,6 +161,10 @@ auto run_main(int argc, char** argv) -> int {
             maze_check_mcf = true;
             continue;
         }
+        if (arg == "--simple-maze") {
+            enable_simple_maze = true;
+            continue;
+        }
         if (arg == "--gurobi-log") {
             enable_gurobi_log = true;
             continue;
@@ -198,6 +204,22 @@ auto run_main(int argc, char** argv) -> int {
         debug::error("--maze-check-ilp-mcf and --maze-check-mcf are mutually exclusive");
         log_total_runtime();
         return 1;
+    }
+    if (enable_simple_maze && !enable_mcf) {
+        debug::error("--simple-maze requires --enable-mcf-routing");
+        log_total_runtime();
+        return 1;
+    }
+    if (enable_simple_maze && (maze_check_ilp_mcf || maze_check_mcf)) {
+        debug::error("--simple-maze is mutually exclusive with --maze-check-ilp-mcf / --maze-check-mcf");
+        log_total_runtime();
+        return 1;
+    }
+    if (enable_simple_maze && enable_mcf_parallel) {
+        debug::info("warning: --enable-mcf-parallel has no effect with --simple-maze");
+    }
+    if (enable_simple_maze && enable_mcf_obj) {
+        debug::info("warning: --enable-mcf-obj has no effect with --simple-maze");
     }
     if (enable_pre_routing && !enable_mcf) {
         debug::info("warning: --enable-pre-routing has no effect without --enable-mcf-routing (MCF graph warm start only)");
@@ -278,6 +300,7 @@ auto run_main(int argc, char** argv) -> int {
             enable_pre_routing,
             enable_mcf_obj,
             disable_bus_mcf,
+            enable_simple_maze,
             !defer_maze_check_suspend,
             sat_diag,
             gurobi_diag);

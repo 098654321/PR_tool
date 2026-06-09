@@ -8,6 +8,9 @@
 
 namespace PR_tool {
 
+// Must match solve_tob_sat.hh::kMaxRangeLevel (SAT+MCF outer loop 0..4).
+inline constexpr std::size_t kTobReachMaxRangeLevel = 4;
+
 struct TobReachRangeStats {
     std::size_t range_level{0};
     std::size_t total_records{0};

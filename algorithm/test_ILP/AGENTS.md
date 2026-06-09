@@ -46,7 +46,9 @@ algorithm/test_ILP/
 │   ├── mcf_graph.hh
 │   └── mcf_hw_map.hh
 ├── maze_check/
-│   └── maze_check.{hh,cc}
+│   ├── maze_check.{hh,cc}           # MCF 失败后的 maze 诊断（--maze-check-*）
+│   ├── maze_route_ilp_fixed.{hh,cc} # ILP 固定 TOB 端点 maze（供 maze-check / simple-maze）
+│   └── simple_maze_routing.{hh,cc}  # --simple-maze：按 origin net 替代 SimpleMCF Gurobi
 ├── case1/、case2/
 └── problem_formulation/
 ```
@@ -59,7 +61,7 @@ algorithm/test_ILP/
 
 ```bash
 xmake build test_ILP
-./output/test_ILP <config_path> [-v|-vv|...] [--export-ilp-mps <path>] [--enable-mcf-routing] [--disable-bus-mcf] [--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] [--sat-log] [--gurobi-log] [--maze-check-ilp-mcf | --maze-check-mcf] [--check-golden]
+./output/test_ILP <config_path> [-v|-vv|...] [--export-ilp-mps <path>] [--enable-mcf-routing] [--disable-bus-mcf] [--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] [--sat-log] [--gurobi-log] [--simple-maze] [--maze-check-ilp-mcf | --maze-check-mcf] [--check-golden]
 ```
 
 参数语义（以 `main.cc` 为准）：
@@ -74,10 +76,11 @@ xmake build test_ILP
 - `--enable-mcf-obj`：与 `--enable-mcf-routing` 联用时，SimpleMCF 加入 `min Σ x` 目标函数；**省略时 SimpleMCF 为纯可行性求解**（所有变量成本为 0）。BusMCF 始终带 `min Σ f` 目标
 - `--enable-pre-routing`：**仅 MCF 阶段** warm start。须与 `--enable-mcf-routing` 联用；在 `mcf/cob_mcf_router.cc` 的 `GlobalGraph` 上按 BusMCF/SimpleMCF 顺序跑 BFS maze，把路径转为 MCF 变量初值。单独指定时无效果并打 warning。失败的预布线只记录日志；若 Gurobi 使用 warm start 后未返回 optimal，会自动无 warm start 重试
 - `--gurobi-log`：**仅 MCF 阶段**（BusMCF、各 SimpleMCF unit）。在与 `debug.log` 同目录下的 `gurobi-log/` 写出求解器日志（`./gurobi-log/gurobi_{stage}_{seq}.log`）。约束矩阵诊断写入 `./gurobi-log/modelinfo.log`（见 §5.5）
+- `--simple-maze`：须与 `--enable-mcf-routing` 联用；与 `--maze-check-*` **互斥**。BusMCF 仍用 Gurobi；**SimpleMCF 改为 maze**：`reset_regs` → `apply_tob_ilp_result_to_interposer` → suspend BusMCF 路径后，按 **origin net**（`record_origin_group_uid`）顺序、SAT 固定 TOB 端点做 BFS maze（`maze_check/maze_route_ilp_fixed.{hh,cc}`）。**与 `--maze-check-mcf` 不同**：`TracksToBumpsNet`（PNnet）从 SAT 分配的 bump `start_track` 布到**任意可达 0/1 端口**（BFS 起点**不含** 0/1 端口，避免平凡路径）；`TrackToBumpsNet` 每条 split `Tnet` 从 bump `start_track` 布到共享 COB `end_track`（与 MCF commodity 方向一致）。日志：`simple-maze origin="..." result=OK|FAILED`（失败含 `failed_at_record_index`）；失败 record 另打 `simple-maze record_id=... result=FAILED`；`-v` 下每条 record 成功也打明细，origin 级 `path=` 用 `[rec=N] ... | ...` 分段。全部 origin 失败后 `all_ok=false` 并触发 `range_level` 重试。`--enable-mcf-parallel` / `--enable-mcf-obj` 无效果（warning）
 - `--maze-check-ilp-mcf` / `--maze-check-mcf`：须与 `--enable-mcf-routing` 联用，**二者互斥**。MCF 结束后（即使 SimpleMCF 失败）在真实 `Interposer` 上先 `apply_tob_ilp_result_to_interposer`，再 `suspend` 已有 BusMCF + 成功 SimpleMCF 路径，对 **SimpleMCF 失败 unit** 中的 net 按 `origin_key` 去重做 maze 诊断：
   - `--maze-check-ilp-mcf`：调用主工程 `Net::route(MazeRouteStrategy)`（完整 maze，TOB track 可重选）
-  - `--maze-check-mcf`：复用 ILP 已 apply 的 TOB 分配，对 origin_net 做 COB 段 BFS maze（`maze_check/maze_check.cc` 中 `ilp_fixed_route_path`）。一般 2-pin net 验证 ILP 固定起终点是否可达；**`TracksToBumpsNet`（Pose/Nege nets）** 仅诊断 SimpleMCF 失败子集内的 PNnet bump，语义对齐主工程 `MazeRouteStrategy::route_tracks_to_bumps_net`：多起点（ILP bump track + 全部 0/1 端口 + 同 origin 已成功 MCF 路径 track + 本次已累积路径）→ 终点为任意 0/1 端口 track，TOB 接到 BFS 到达的端口
-  - 日志末尾输出每个 origin/record 的 maze 成功路径或失败原因（用于区分 MCF 建模问题与真实不可达）
+  - `--maze-check-mcf`：复用 SAT 已 apply 的 TOB 分配，对 origin_net 做 COB 段 BFS maze。一般 2-pin net 验证 SAT 固定起终点是否可达；**`TracksToBumpsNet`（PNnet）** 与 simple-maze 相同修复后的 `route_tracks_to_bumps_net_ilp_fixed`（bump start → 任意 0/1 端口，起点不含 0/1 端口）。失败 record 打 `maze-check-mcf record_id=... result=FAILED`
+  - 日志末尾 `log_record_shared_results` 输出每个失败 MCF record 的 maze 结果（用于区分 MCF 建模问题与真实不可达）
 - MCF 完成后（未启用 maze-check 时），`mcf/cob_mcf_router.cc` 会将已有路径 `suspend` 到 `Interposer`；成功时按 **`origin_key`（与 `build_nets()` 得到的逻辑 net 名一致）** 分组打印 track 级路径；仍保留按 COBUnit 的 commodity 摘要行便于对照容量
 
 ---
@@ -222,7 +225,8 @@ ILP 约束组：
 
 - `algorithm/test_ILP/precompute/ilp_bounding_box.{hh,cc}`、`tob_reach_with_range.{hh,cc}`
   - `compute_bounding_box(record, range_level)`：`range_level=0` 为第二版 base bbox；`range_level>0` 时**所有 net 类型**（含 SyncNet sync bus 的 Bnet、Tnet、PNnet）四边各扩大 `range_level` 格，再 clamp 到 COB 阵列
-  - `range_level>0` 另在扩大后的 bbox 内做 k-shortest（`k=1+2*range_level`）扩展 start track 候选集
+  - `range_level=1..3`：在扩大后的 bbox 内 k-shortest（`k=1+2*range_level`）扩展 start track（无 `reach` 步）
+  - `range_level=4`：每个 `end_track` 加入与 `end_track` 同 COBUnit 的 8 条 track（`cobunit_to_tracks(map_track(end_track))`，无 `reach` 步）
 
 ### 3.8 MCF 结果展示
 

@@ -1,5 +1,6 @@
 #include "precompute/tob_reach_with_range.hh"
 
+#include "ilp_allocation/ilp_speedup.hh"
 #include "precompute/ilp_bounding_box.hh"
 #include "precompute/tob_channel_kshortest.hh"
 
@@ -13,12 +14,6 @@
 namespace PR_tool {
 
 namespace {
-
-auto merge_unique(std::Vector<std::size_t>& dst, const std::Vector<std::size_t>& src) -> void {
-    dst.insert(dst.end(), src.begin(), src.end());
-    std::sort(dst.begin(), dst.end());
-    dst.erase(std::unique(dst.begin(), dst.end()), dst.end());
-}
 
 auto net_type_label(const Net_type type) -> std::string_view {
     switch (type) {
@@ -56,6 +51,25 @@ auto format_track_set(const std::Vector<std::size_t>& tracks) -> std::String {
     return out;
 }
 
+auto same_cobunit_tracks_for_end_track(const std::size_t end_track) -> std::Vector<std::size_t> {
+    return cobunit_to_tracks(map_track(end_track));
+}
+
+auto merge_extra_start_tracks_without_reach(
+    std::Vector<std::size_t>& starts,
+    std::map<std::size_t, std::Vector<IlpReachStep>>& reaches,
+    const std::Vector<std::size_t>& extra
+) -> void {
+    for (const auto t : extra) {
+        if (!reaches.contains(t)) {
+            starts.push_back(t);
+            reaches[t] = {};
+        }
+    }
+    std::sort(starts.begin(), starts.end());
+    starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
+}
+
 auto end_track_coord(const Net_cost_record& record, std::size_t end_track) -> std::Option<hardware::TrackCoord> {
     if (record.type == Net_type::Tnet) {
         if (record.mcf_has_end_track && record.mcf_end_track.index == end_track) {
@@ -90,17 +104,27 @@ auto precompute_reach_for_range(std::Vector<Net_cost_record>& records, const std
         return stats;
     }
 
+    const bool use_same_cobunit_tracks = range_level == kTobReachMaxRangeLevel;
+
     for (auto& record : records) {
-        const auto bbox = compute_bounding_box(record, range_level);
-        const auto k = 1 + 2 * range_level;
         if (record.start_bumps.empty()) {
             continue;
         }
+        const auto bbox = compute_bounding_box(record, range_level);
+        const auto k = 1 + 2 * range_level;
         const auto start_tob = record.start_bumps.front().TOB;
 
         for (const auto end_track : record.end_tracks) {
             auto& starts = record.starttrack_by_endtrack[end_track];
             auto& reaches = record.reach_by_end_start[end_track];
+
+            if (use_same_cobunit_tracks) {
+                merge_extra_start_tracks_without_reach(
+                    starts,
+                    reaches,
+                    same_cobunit_tracks_for_end_track(end_track));
+                continue;
+            }
 
             if (record.type == Net_type::Bnet) {
                 if (record.end_bumps.empty()) {
@@ -116,12 +140,7 @@ auto precompute_reach_for_range(std::Vector<Net_cost_record>& records, const std
                     start_tob,
                     bbox,
                     k);
-                for (const auto t : extra) {
-                    if (!reaches.contains(t)) {
-                        starts.push_back(t);
-                        reaches[t] = {};
-                    }
-                }
+                merge_extra_start_tracks_without_reach(starts, reaches, extra);
             }
             else {
                 const auto end_coord_opt = end_track_coord(record, end_track);
@@ -129,15 +148,8 @@ auto precompute_reach_for_range(std::Vector<Net_cost_record>& records, const std
                     continue;
                 }
                 const auto extra = kshortest_reachable_tob_tracks(*end_coord_opt, start_tob, bbox, k);
-                for (const auto t : extra) {
-                    if (!reaches.contains(t)) {
-                        starts.push_back(t);
-                        reaches[t] = {};
-                    }
-                }
+                merge_extra_start_tracks_without_reach(starts, reaches, extra);
             }
-            std::sort(starts.begin(), starts.end());
-            starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
         }
     }
 

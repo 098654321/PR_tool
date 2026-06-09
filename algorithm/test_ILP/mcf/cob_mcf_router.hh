@@ -80,6 +80,8 @@ auto run_mcf_global_routing_cob_units(
     bool enable_mcf_obj = false,
     bool defer_interposer_suspend = false,
     bool disable_bus_mcf = false,
+    bool enable_simple_maze = false,
+    bool verbose_maze_records = false,
     const GurobiDiagnosticsOptions& diag = {}
 ) -> CobMcfFullResult;
 

@@ -48,6 +48,7 @@ auto solve_tob_mcf_with_range_iteration(
     const bool enable_pre_routing,
     const bool enable_mcf_obj,
     const bool disable_bus_mcf,
+    const bool enable_simple_maze,
     const bool apply_interposer_suspend_on_success,
     const CadicalDiagnosticsOptions& sat_diag,
     const GurobiDiagnosticsOptions& gurobi_diag
@@ -88,6 +89,8 @@ auto solve_tob_mcf_with_range_iteration(
             enable_mcf_obj,
             true,
             disable_bus_mcf,
+            enable_simple_maze,
+            sat_diag.verbose_reach_endpoints,
             gurobi_diag);
 
         out.mcf_warm_start_ms += mcf.summary.mcf_warm_start_ms;
