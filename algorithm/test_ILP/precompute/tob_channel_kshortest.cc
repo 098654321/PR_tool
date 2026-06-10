@@ -46,6 +46,16 @@ auto track_cob(const hardware::TrackCoord& tc) -> hardware::COBCoord {
     return mcf::track_to_cob(tc);
 }
 
+auto cobunit_from_track(const std::size_t track) -> std::size_t {
+    return track < 64 ? track % 8 : track % 8 + 8;
+}
+
+auto track_from_cobunit_inner(const std::size_t cob_unit, const std::size_t inner) -> std::size_t {
+    const auto bank = cob_unit < 8 ? 0UL : 1UL;
+    const auto unit = cob_unit % 8;
+    return bank * 64 + inner * 8 + unit;
+}
+
 } // namespace
 
 auto tob_channel_track_coords(const std::size_t tob_linear) -> std::Vector<hardware::TrackCoord> {
@@ -92,7 +102,10 @@ auto is_straight_through(hardware::COBDirection from, hardware::COBDirection to)
         || (from == D::Up && to == D::Down) || (from == D::Down && to == D::Up);
 }
 
-auto build_bbox_track_graph(const IlpBoundingBox& bbox) -> std::map<TrackKey, std::Vector<TrackKey>> {
+auto build_bbox_track_graph(
+    const IlpBoundingBox& bbox,
+    const std::size_t cob_unit
+) -> std::map<TrackKey, std::Vector<TrackKey>> {
     using D = hardware::COBDirection;
     auto graph = std::map<TrackKey, std::Vector<TrackKey>> {};
     const auto rows = static_cast<std::i64>(hardware::Interposer::COB_ARRAY_HEIGHT);
@@ -122,8 +135,10 @@ auto build_bbox_track_graph(const IlpBoundingBox& bbox) -> std::map<TrackKey, st
                         const auto [in_r, in_c, in_dir] = side_track_pos(from, cob_r, cob_c);
                         const auto [out_r, out_c, out_dir] = side_track_pos(to, cob_r, cob_c);
                         const auto mapped = hardware::COBUnit::index_map(from, inner, to);
-                        const auto u = track_key(hardware::TrackCoord {in_r, in_c, in_dir, inner});
-                        const auto v = track_key(hardware::TrackCoord {out_r, out_c, out_dir, mapped});
+                        const auto u_track = track_from_cobunit_inner(cob_unit, inner);
+                        const auto v_track = track_from_cobunit_inner(cob_unit, mapped);
+                        const auto u = track_key(hardware::TrackCoord {in_r, in_c, in_dir, u_track});
+                        const auto v = track_key(hardware::TrackCoord {out_r, out_c, out_dir, v_track});
                         const auto u_cob = track_cob(key_to_coord(u));
                         const auto v_cob = track_cob(key_to_coord(v));
                         if (!cob_in_bbox(u_cob, bbox) || !cob_in_bbox(v_cob, bbox)) {
@@ -265,7 +280,8 @@ auto kshortest_reachable_tob_tracks(
     if (k == 0) {
         return {};
     }
-    auto graph = build_bbox_track_graph(bbox);
+    const auto cob_unit = cobunit_from_track(end_track.index);
+    auto graph = build_bbox_track_graph(bbox, cob_unit);
     const auto src = track_key(end_track);
     if (!graph.contains(src)) {
         graph[src] = {};
@@ -273,10 +289,14 @@ auto kshortest_reachable_tob_tracks(
 
     auto targets = std::set<TrackKey> {};
     for (const auto& tc : tob_channel_track_coords(start_tob_linear)) {
+        if (cobunit_from_track(tc.index) != cob_unit) {
+            continue;
+        }
         targets.insert(track_key(tc));
     }
 
-    const auto paths = yen_k_shortest(graph, src, targets, k);
+    const auto path_limit = std::min(k, targets.size() * 2);
+    const auto paths = yen_k_shortest(graph, src, targets, path_limit);
     auto out = std::Vector<std::size_t> {};
     auto seen = std::set<std::size_t> {};
     for (const auto& path : paths) {
