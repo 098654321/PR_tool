@@ -7,6 +7,7 @@
 #include "sat_allocation/cadical_solver.hh"
 
 #include <hardware/interposer.hh>
+#include <array>
 #include <std/string.hh>
 
 namespace PR_tool::circuit {
@@ -25,6 +26,8 @@ struct TobMcfPipelineResult {
     long long tob_sat_solve_ms{0};
     long long mcf_warm_start_ms{0};
     long long mcf_solve_ms{0};
+    long long bus_mcf_solve_ms{0};
+    std::array<long long, 16> simple_mcf_solve_ms_by_unit {};
 };
 
 auto solve_tob_mcf_with_range_iteration(

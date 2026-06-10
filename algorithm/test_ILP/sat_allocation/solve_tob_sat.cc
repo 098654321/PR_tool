@@ -130,10 +130,9 @@ auto solve_tob_sat_with_cadical(
 
     for (std::size_t attempt = 0; attempt < max_attempts; ++attempt) {
         debug::info_fmt(
-            "SAT-only bbox attempt={} max_rho={} rho_by_record={}",
+            "SAT-only bbox attempt={} max_rho={}",
             attempt,
-            state.max_rho(),
-            state.rho_summary());
+            state.max_rho());
         out = solve_tob_sat_with_bbox_state(records, state, base_diag);
         if (!out.ok) {
             if (out.model_status != 20) {
@@ -142,11 +141,10 @@ auto solve_tob_sat_with_cadical(
             }
             const auto changed = state.expand_records(fail_set);
             debug::info_fmt(
-                "SAT-only bbox expand: attempt={} changed_records={} max_rho={} rho_by_record={}",
+                "SAT-only bbox expand: attempt={} changed_records={} max_rho={}",
                 attempt,
                 format_record_indices(changed),
-                state.max_rho(),
-                state.rho_summary());
+                state.max_rho());
             if (changed.empty()) {
                 out.ok = false;
                 out.message = std::format(

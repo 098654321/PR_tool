@@ -52,10 +52,22 @@ struct BuildRecordsResult {
     std::Vector<Net_cost_record> records {};
     std::Vector<std::Rc<circuit::Net>> deferred_multi_fanout {};
     std::Vector<std::Rc<circuit::Net>> track_to_bumps_nets {};
+    std::size_t skipped_01_mcf_nets{0};
+    std::size_t skipped_multipin_io_nets{0};
+    std::size_t skipped_2pin_io_nets{0};
+};
+
+struct BuildRecordOptions {
+    bool disable_01_mcf{false};
+    bool disable_multipin_io{false};
+    bool disable_2pin_io{false};
 };
 
 auto classify_net(const std::Rc<circuit::Net>& net) -> Net_cost_record;
-auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecordsResult;
+auto build_records(
+    const std::Vector<std::Rc<circuit::Net>>& nets,
+    const BuildRecordOptions& options
+) -> BuildRecordsResult;
 auto write_mps_file(
     const std::Vector<Net_cost_record>& records,
     const std::String& output_mps
@@ -70,6 +82,7 @@ auto run_wire_length_golden_check(const std::String& config_path, std::size_t ac
 constexpr auto kTestIlpUsage =
     "Usage: xmake run test_ILP <config_path> [-v|-vv|...] "
     "[--export-ilp-mps <path>] [--enable-mcf-routing] [--disable-bus-mcf] "
+    "[--disable-01-mcf] [--disable-multipin-io] [--disable-2pin-io] "
     "[--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
     "[--sat-log] [--gurobi-log] "
     "[--maze-check-ilp-mcf | --maze-check-mcf] "
@@ -103,6 +116,9 @@ auto run_main(int argc, char** argv) -> int {
     bool enable_simple_maze = false;
     bool enable_gurobi_log = false;
     bool enable_sat_log = false;
+    bool disable_01_mcf = false;
+    bool disable_multipin_io = false;
+    bool disable_2pin_io = false;
     int verbose_v_count = 0;
     for (int argi = 2; argi < argc; ++argi) {
         const auto arg = std::String(argv[argi]);
@@ -139,6 +155,18 @@ auto run_main(int argc, char** argv) -> int {
         }
         if (arg == "--disable-bus-mcf") {
             disable_bus_mcf = true;
+            continue;
+        }
+        if (arg == "--disable-01-mcf") {
+            disable_01_mcf = true;
+            continue;
+        }
+        if (arg == "--disable-multipin-io") {
+            disable_multipin_io = true;
+            continue;
+        }
+        if (arg == "--disable-2pin-io") {
+            disable_2pin_io = true;
             continue;
         }
         if (arg == "--enable-mcf-parallel") {
@@ -246,7 +274,11 @@ auto run_main(int argc, char** argv) -> int {
 
     // build records
     const auto nets = basedie->nets_to_vector();
-    auto built = build_records(nets);
+    const BuildRecordOptions build_options {
+        disable_01_mcf,
+        disable_multipin_io,
+        disable_2pin_io};
+    auto built = build_records(nets, build_options);
     auto records = std::move(built.records);
     const auto& deferred_multi_fanout = built.deferred_multi_fanout;
     const auto& track_to_bumps_nets = built.track_to_bumps_nets;
@@ -259,6 +291,21 @@ auto run_main(int argc, char** argv) -> int {
         debug::info_fmt(
             "TrackToBumpsNet: {} net(s) split for SAT TOB; COB segment routed in SimpleMCF",
             track_to_bumps_nets.size());
+    }
+    if (disable_01_mcf || built.skipped_01_mcf_nets > 0) {
+        debug::info_fmt(
+            "build_records: skipped {} TracksToBumpsNet net(s) due to --disable-01-mcf",
+            built.skipped_01_mcf_nets);
+    }
+    if (disable_multipin_io || built.skipped_multipin_io_nets > 0) {
+        debug::info_fmt(
+            "build_records: skipped {} TrackToBumpsNet net(s) due to --disable-multipin-io",
+            built.skipped_multipin_io_nets);
+    }
+    if (disable_2pin_io || built.skipped_2pin_io_nets > 0) {
+        debug::info_fmt(
+            "build_records: skipped {} top-level TrackToBumpNet/BumpToTrackNet net(s) due to --disable-2pin-io",
+            built.skipped_2pin_io_nets);
     }
     log_tob_sat_bump_demand(records);
 
@@ -284,6 +331,8 @@ auto run_main(int argc, char** argv) -> int {
     long long tob_sat_solve_ms = 0;
     long long mcf_warm_start_ms = 0;
     long long mcf_solve_ms = 0;
+    long long bus_mcf_solve_ms = 0;
+    auto simple_mcf_solve_ms_by_unit = std::array<long long, 16> {};
     TobIlpResult result {};
     CobMcfFullResult mcf_full {};
 
@@ -307,8 +356,17 @@ auto run_main(int argc, char** argv) -> int {
         tob_sat_solve_ms = pipeline.tob_sat_solve_ms;
         mcf_warm_start_ms = pipeline.mcf_warm_start_ms;
         mcf_solve_ms = pipeline.mcf_solve_ms;
+        bus_mcf_solve_ms = pipeline.bus_mcf_solve_ms;
+        simple_mcf_solve_ms_by_unit = pipeline.simple_mcf_solve_ms_by_unit;
         debug::info_fmt("timing phase=tob_sat_solve ms={}", tob_sat_solve_ms);
         debug::info_fmt("timing phase=mcf_warm_start ms={}", mcf_warm_start_ms);
+        debug::info_fmt("timing phase=mcf_bus_solve_total ms={}", bus_mcf_solve_ms);
+        for (std::size_t u = 0; u < 16; ++u) {
+            debug::info_fmt(
+                "timing phase=simple_mcf_unit{}_solve_total ms={}",
+                u,
+                simple_mcf_solve_ms_by_unit[u]);
+        }
         debug::info_fmt("timing phase=mcf_solve ms={}", mcf_solve_ms);
         const auto peak_rss_mb = get_peak_rss_mb();
         debug::info_fmt("Process peak RSS: {:.2f} MB", peak_rss_mb);
@@ -665,7 +723,10 @@ auto classify_net(const std::Rc<circuit::Net>& net) -> Net_cost_record {
     return record;
 }
 
-auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecordsResult {
+auto build_records(
+    const std::Vector<std::Rc<circuit::Net>>& nets,
+    const BuildRecordOptions& options
+) -> BuildRecordsResult {
     BuildRecordsResult out {};
     auto& records = out.records;
     records.reserve(nets.size());
@@ -681,6 +742,10 @@ auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecor
                 net->name()));
         }
         if (const auto* ttbn = dynamic_cast<const circuit::TrackToBumpsNet*>(net.get())) {
+            if (options.disable_multipin_io) {
+                ++out.skipped_multipin_io_nets;
+                continue;
+            }
             const auto cobunit = map_track(ttbn->begin_track()->coord().index);
             const auto begin_track_index = ttbn->begin_track()->coord().index;
             std::size_t bump_idx = 0;
@@ -710,6 +775,10 @@ auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecor
             continue;
         }
         if (const auto* tsb_net = dynamic_cast<const circuit::TracksToBumpsNet*>(net.get())) {
+            if (options.disable_01_mcf) {
+                ++out.skipped_01_mcf_nets;
+                continue;
+            }
             // Split one TracksToBumpsNet into multiple "bump -> tracks" pseudo nets.
             auto candidate_cobunits = std::Vector<std::size_t> {};
             auto pn_end_tracks = std::Vector<std::size_t> {};
@@ -810,6 +879,13 @@ auto build_records(const std::Vector<std::Rc<circuit::Net>>& nets) -> BuildRecor
                 record.origin_uid = net->uid();
                 records.emplace_back(std::move(record));
             }
+            continue;
+        }
+
+        if (options.disable_2pin_io
+            && (dynamic_cast<const circuit::BumpToTrackNet*>(net.get()) != nullptr
+                || dynamic_cast<const circuit::TrackToBumpNet*>(net.get()) != nullptr)) {
+            ++out.skipped_2pin_io_nets;
             continue;
         }
 

@@ -223,13 +223,6 @@ target("test_ILP")
         end
     end
 
-target("test_ILP_unit")
-    set_kind("binary")
-    set_targetdir("./output")
-    set_default(false)
-    add_includedirs("source", "source/global", "algorithm/test_ILP")
-    add_files("algorithm/test_ILP/test/tob_bbox_expansion_state_test.cc")
-
 target("wirelength_study")
     set_kind("binary")
     set_targetdir("./output")

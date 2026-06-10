@@ -84,6 +84,7 @@ struct StageSolveResult {
     std::String message;
     std::String stage_name;
     double objective{0.0};
+    int solve_ms{0};
     int model_status{0};
     std::map<std::pair<int, int>, int> used_edges;
     std::map<int, int> used_nodes;
@@ -95,6 +96,20 @@ struct StageSolveResult {
     std::Vector<std::size_t> failed_record_indices;
     bool bus_failure_unlocalized{false};
 };
+
+auto stage_solve_elapsed_ms(const std::chrono::steady_clock::time_point begin) -> int {
+    const auto end = std::chrono::steady_clock::now();
+    return static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
+}
+
+auto finish_stage_solve_result(
+    StageSolveResult& out,
+    const std::chrono::steady_clock::time_point begin
+) -> StageSolveResult {
+    out.solve_ms = stage_solve_elapsed_ms(begin);
+    return out;
+}
 
 struct StageWarmStart {
     std::map<std::size_t, std::Vector<int>> nodes_by_record_id;
@@ -1708,13 +1723,14 @@ auto solve_bus_mcf(
     const GurobiDiagnosticsOptions& diag
 ) -> StageSolveResult {
     constexpr auto stage_name = "BusMCF";
+    const auto solve_begin = std::chrono::steady_clock::now();
     StageSolveResult out {};
     out.stage_name = stage_name;
     if (bus_ids.empty()) {
         out.ok = true;
         out.message = "empty stage";
         out.model_status = GRB_OPTIMAL;
-        return out;
+        return finish_stage_solve_result(out, solve_begin);
     }
 
     const auto K = static_cast<int>(bus_ids.size());
@@ -1741,7 +1757,7 @@ auto solve_bus_mcf(
                 stage_name,
                 commodity.label);
             append_bus_retry_hint(out, commodity.bus_key, commodity.record_index);
-            return out;
+            return finish_stage_solve_result(out, solve_begin);
         }
     }
 
@@ -1773,7 +1789,7 @@ auto solve_bus_mcf(
         out.ok = false;
         out.message = std::format("{}: no feasible arc-variable pairs", stage_name);
         out.bus_failure_unlocalized = true;
-        return out;
+        return finish_stage_solve_result(out, solve_begin);
     }
 
     log_mcf_model_graph(stage_name, graph, K);
@@ -2084,7 +2100,7 @@ auto solve_bus_mcf(
         out.ok = false;
         out.message = solve_res.message;
         out.bus_failure_unlocalized = true;
-        return out;
+        return finish_stage_solve_result(out, solve_begin);
     }
     if (solve_res.model_status != GRB_OPTIMAL) {
         if (warm_start != nullptr) {
@@ -2092,13 +2108,15 @@ auto solve_bus_mcf(
                 "{} warm start led to non-optimal status ({}); retrying without warm start",
                 stage_name,
                 solve_res.model_status);
-            return solve_bus_mcf(graph, commodities, bus_ids, bbox_ctx, nullptr, diag);
+            auto retry = solve_bus_mcf(graph, commodities, bus_ids, bbox_ctx, nullptr, diag);
+            retry.solve_ms += stage_solve_elapsed_ms(solve_begin);
+            return retry;
         }
         out.ok = false;
         out.message = std::format("{}: model not optimal ({})", stage_name, solve_res.model_status);
         out.infeasibility_hints = solve_res.iis_rows;
         collect_bus_retry_hints_from_iis(out, out.infeasibility_hints);
-        return out;
+        return finish_stage_solve_result(out, solve_begin);
     }
 
     out.ok = true;
@@ -2130,7 +2148,7 @@ auto solve_bus_mcf(
     }
 
     append_paths_from_f_solution(stage_name, graph, local_com, f_vars, f_values, out);
-    return out;
+    return finish_stage_solve_result(out, solve_begin);
 }
 
 auto solve_simple_mcf_unit(
@@ -2147,13 +2165,14 @@ auto solve_simple_mcf_unit(
     const GurobiDiagnosticsOptions& diag
 ) -> StageSolveResult {
     const auto stage_name = std::format("SimpleMCF_unit{}", unit_c);
+    const auto solve_begin = std::chrono::steady_clock::now();
     StageSolveResult out {};
     out.stage_name = stage_name;
     if (simple_ids_for_unit.empty()) {
         out.ok = true;
         out.message = "empty stage";
         out.model_status = GRB_OPTIMAL;
-        return out;
+        return finish_stage_solve_result(out, solve_begin);
     }
 
     const auto K = static_cast<int>(simple_ids_for_unit.size());
@@ -2199,7 +2218,7 @@ auto solve_simple_mcf_unit(
                 "{}: bbox disconnected for commodity {}",
                 stage_name,
                 commodity.label);
-            return out;
+            return finish_stage_solve_result(out, solve_begin);
         }
     }
 
@@ -2234,7 +2253,7 @@ auto solve_simple_mcf_unit(
     if (f_vars.empty()) {
         out.ok = false;
         out.message = std::format("{}: no feasible arc-variable pairs", stage_name);
-        return out;
+        return finish_stage_solve_result(out, solve_begin);
     }
 
     log_mcf_model_graph(stage_name, graph, K, unit_c);
@@ -2648,7 +2667,7 @@ auto solve_simple_mcf_unit(
     if (!solve_res.ok) {
         out.ok = false;
         out.message = solve_res.message;
-        return out;
+        return finish_stage_solve_result(out, solve_begin);
     }
     if (solve_res.model_status != GRB_OPTIMAL) {
         if (warm_start != nullptr) {
@@ -2656,7 +2675,7 @@ auto solve_simple_mcf_unit(
                 "{} warm start led to non-optimal status ({}); retrying without warm start",
                 stage_name,
                 solve_res.model_status);
-            return solve_simple_mcf_unit(
+            auto retry = solve_simple_mcf_unit(
                 graph,
                 commodities,
                 unit_c,
@@ -2668,11 +2687,13 @@ auto solve_simple_mcf_unit(
                 enable_mcf_obj,
                 nullptr,
                 diag);
+            retry.solve_ms += stage_solve_elapsed_ms(solve_begin);
+            return retry;
         }
         out.ok = false;
         out.message = std::format("{}: model not optimal ({})", stage_name, solve_res.model_status);
         out.infeasibility_hints = solve_res.iis_rows;
-        return out;
+        return finish_stage_solve_result(out, solve_begin);
     }
 
     out.ok = true;
@@ -2700,7 +2721,7 @@ auto solve_simple_mcf_unit(
     }
 
     append_paths_from_f_solution(stage_name, graph, local_com, f_vars, f_values, out);
-    return out;
+    return finish_stage_solve_result(out, solve_begin);
 }
 
 auto path_to_text(const GlobalGraph& graph, const std::Vector<int>& path) -> std::String {
@@ -3210,10 +3231,7 @@ auto run_mcf_global_routing_cob_units(
         ilp_result.bbox_expand_by_record,
         ilp_result.range_level);
     const auto bbox_ctx = build_mcf_bbox_context(records, bbox_inputs, bbox_state);
-    debug::info_fmt(
-        "MCF using SAT bbox max_rho={} rho_by_record={}",
-        bbox_state.max_rho(),
-        bbox_state.rho_summary());
+    debug::info_fmt("MCF using SAT bbox max_rho={}", bbox_state.max_rho());
 
     auto bus_warm_start = StageWarmStart {};
     auto simple_warm_start = StageWarmStart {};
@@ -3284,6 +3302,8 @@ auto run_mcf_global_routing_cob_units(
     else {
         bus_res = solve_bus_mcf(graph, commodities, bus_ids, bbox_ctx, bus_warm_start_ptr, diag);
     }
+    out.summary.bus_mcf_solve_ms = bus_res.solve_ms;
+    debug::info_fmt("timing phase=mcf_bus_solve ms={}", out.summary.bus_mcf_solve_ms);
     if (!bus_res.ok) {
         merge_bus_stage_retry_hints(out.retry_hints, bus_res);
     }
@@ -3398,11 +3418,12 @@ auto run_mcf_global_routing_cob_units(
                     simple_warm_start_ptr,
                     diag);
                 debug::info_fmt(
-                    "SimpleMCF unit {}: ok={} objective={:.0f} paths={}",
+                    "SimpleMCF unit {}: ok={} objective={:.0f} paths={} solve_ms={}",
                     u,
                     simple_results[u].ok,
                     simple_results[u].objective,
-                    simple_results[u].paths.size());
+                    simple_results[u].paths.size(),
+                    simple_results[u].solve_ms);
             }
         }
 
@@ -3413,11 +3434,12 @@ auto run_mcf_global_routing_cob_units(
                 }
                 simple_results[u] = simple_futures[u].get();
                 debug::info_fmt(
-                    "SimpleMCF unit {}: ok={} objective={:.0f} paths={}",
+                    "SimpleMCF unit {}: ok={} objective={:.0f} paths={} solve_ms={}",
                     u,
                     simple_results[u].ok,
                     simple_results[u].objective,
-                    simple_results[u].paths.size());
+                    simple_results[u].paths.size(),
+                    simple_results[u].solve_ms);
             }
         }
 
@@ -3428,6 +3450,7 @@ auto run_mcf_global_routing_cob_units(
                 continue;
             }
             out.simple_mcf_ok[u] = simple_results[u].ok;
+            out.summary.simple_mcf_solve_ms_by_unit[u] = simple_results[u].solve_ms;
             if (!simple_results[u].ok) {
                 all_simple_ok = false;
                 debug::error_fmt("SimpleMCF unit {} failed: {}", u, simple_results[u].message);
@@ -3443,10 +3466,15 @@ auto run_mcf_global_routing_cob_units(
     }
 
     const auto solve_t1 = std::chrono::steady_clock::now();
-    const auto solve_ms = enable_simple_maze
-        ? maze_result.solve_ms
-        : static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(solve_t1 - solve_t0).count());
+    const auto solve_ms = static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(solve_t1 - solve_t0).count());
     out.summary.mcf_solve_ms = solve_ms;
+    for (std::size_t u = 0; u < 16; ++u) {
+        debug::info_fmt(
+            "timing phase=simple_mcf_unit{}_solve ms={}",
+            u,
+            out.summary.simple_mcf_solve_ms_by_unit[u]);
+    }
     debug::info_fmt("timing phase=mcf_solve ms={}", solve_ms);
 
     if (!bus_res.ok) {
@@ -3470,7 +3498,7 @@ auto run_mcf_global_routing_cob_units(
             bus_count_by_unit[u] + simple_count_by_unit[u],
             out.summary.all_ok,
             obj,
-            solve_ms,
+            bus_res.solve_ms + out.summary.simple_mcf_solve_ms_by_unit[u],
             out.summary.all_ok ? std::String("ok") : std::String("stage failed")};
     }
 

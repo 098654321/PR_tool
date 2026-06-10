@@ -123,10 +123,9 @@ auto solve_tob_mcf_with_range_iteration(
     for (std::size_t attempt = 0; attempt < max_attempts; ++attempt) {
         out.attempts += 1;
         debug::info_fmt(
-            "SAT+MCF bbox attempt={} max_rho={} rho_by_record={}",
+            "SAT+MCF bbox attempt={} max_rho={}",
             attempt,
-            state.max_rho(),
-            state.rho_summary());
+            state.max_rho());
 
         const auto sat_t0 = std::chrono::steady_clock::now();
         auto tob = solve_tob_sat_with_bbox_state(records, state, sat_diag);
@@ -138,10 +137,9 @@ auto solve_tob_mcf_with_range_iteration(
                 debug::info_fmt("bbox iteration: attempt={} SAT=UNSAT max_rho={}", attempt, state.max_rho());
                 const auto changed = state.expand_records(sat_fail_set);
                 debug::info_fmt(
-                    "bbox iteration: SAT expand changed_records={} max_rho={} rho_by_record={}",
+                    "bbox iteration: SAT expand changed_records={} max_rho={}",
                     format_record_indices(changed),
-                    state.max_rho(),
-                    state.rho_summary());
+                    state.max_rho());
                 if (changed.empty()) {
                     out.ok = false;
                     out.message = std::format(
@@ -186,6 +184,10 @@ auto solve_tob_mcf_with_range_iteration(
 
         out.mcf_warm_start_ms += mcf.summary.mcf_warm_start_ms;
         out.mcf_solve_ms += mcf.summary.mcf_solve_ms;
+        out.bus_mcf_solve_ms += mcf.summary.bus_mcf_solve_ms;
+        for (std::size_t u = 0; u < 16; ++u) {
+            out.simple_mcf_solve_ms_by_unit[u] += mcf.summary.simple_mcf_solve_ms_by_unit[u];
+        }
 
         if (!mcf.summary.all_ok) {
             debug::info_fmt("bbox iteration: attempt={} SAT=SAT MCF=fail max_rho={}", attempt, state.max_rho());
@@ -215,11 +217,10 @@ auto solve_tob_mcf_with_range_iteration(
 
             const auto changed = state.expand_records(fail_set);
             debug::info_fmt(
-                "bbox iteration: MCF expand fail_set={} changed_records={} max_rho={} rho_by_record={}",
+                "bbox iteration: MCF expand fail_set={} changed_records={} max_rho={}",
                 format_record_indices(fail_set),
                 format_record_indices(changed),
-                state.max_rho(),
-                state.rho_summary());
+                state.max_rho());
             if (changed.empty()) {
                 out.ok = false;
                 out.message = std::format(

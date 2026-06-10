@@ -37,6 +37,10 @@ struct CobMcfRunSummary {
     int mcf_warm_start_ms{0};
     /// Wall time for BusMCF + SimpleMCF Gurobi solves only.
     int mcf_solve_ms{0};
+    /// Wall time for the BusMCF stage only.
+    int bus_mcf_solve_ms{0};
+    /// Wall time for each SimpleMCF unit solve; 0 for empty units or simple-maze mode.
+    std::array<int, 16> simple_mcf_solve_ms_by_unit {};
     /// Sum of per-origin-group wire lengths (track + bump count); 0 if not computed.
     std::size_t total_wire_length{0};
 };
