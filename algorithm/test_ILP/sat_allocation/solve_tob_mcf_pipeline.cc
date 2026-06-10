@@ -136,10 +136,6 @@ auto solve_tob_mcf_with_range_iteration(
             if (tob.model_status == 20) {
                 debug::info_fmt("bbox iteration: attempt={} SAT=UNSAT max_rho={}", attempt, state.max_rho());
                 const auto changed = state.expand_records(sat_fail_set);
-                debug::info_fmt(
-                    "bbox iteration: SAT expand changed_records={} max_rho={}",
-                    format_record_indices(changed),
-                    state.max_rho());
                 if (changed.empty()) {
                     out.ok = false;
                     out.message = std::format(

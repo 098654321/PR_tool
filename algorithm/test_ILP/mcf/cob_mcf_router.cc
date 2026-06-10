@@ -1528,6 +1528,68 @@ auto build_local_commodities(
     return local_com;
 }
 
+auto route_simple_mcf_stage_warm_start_by_origin(
+    const GlobalGraph& graph,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::Vector<std::size_t>& simple_ids,
+    const std::Vector<Net_cost_record>& records,
+    const std::function<McfCommodityBBox(std::size_t)>& effective_bbox_for,
+    const std::Vector<std::Vector<int>>& outgoing_arcs,
+    std::map<std::pair<int, int>, int>& used_edges,
+    std::map<int, int>& used_nodes
+) -> StageWarmStart {
+    auto warm = StageWarmStart {};
+    auto local_com = build_local_commodities(commodities, simple_ids);
+    auto origin_groups = build_origin_groups(local_com, records);
+
+    std::size_t routed = 0;
+    std::size_t failed = 0;
+    std::size_t routed_groups = 0;
+    std::size_t failed_groups = 0;
+    for (const auto& group : origin_groups) {
+        auto group_paths = std::Vector<std::pair<std::size_t, std::Vector<int>>> {};
+        group_paths.reserve(group.commodity_local_indices.size());
+        std::size_t group_failed = 0;
+        for (const auto local_k : group.commodity_local_indices) {
+            const auto cid = simple_ids[static_cast<std::size_t>(local_k)];
+            const auto& commodity = commodities[cid];
+            auto path = route_one_mcf_warm_path(
+                graph,
+                commodity,
+                effective_bbox_for(cid),
+                outgoing_arcs,
+                used_edges,
+                used_nodes);
+            if (path.empty()) {
+                ++failed;
+                ++group_failed;
+                debug::warning_fmt("pre-routing SimpleMCF warm start failed for commodity {}", commodity.label);
+                continue;
+            }
+            ++routed;
+            group_paths.push_back({commodity.record_id, std::move(path)});
+        }
+
+        if (group_failed == group.commodity_local_indices.size()) {
+            ++failed_groups;
+            continue;
+        }
+        ++routed_groups;
+        for (auto& [record_id, path] : group_paths) {
+            mark_mcf_warm_path_used(graph, path, used_edges, used_nodes);
+            warm.nodes_by_record_id.emplace(record_id, std::move(path));
+        }
+    }
+
+    debug::info_fmt(
+        "pre-routing SimpleMCF warm start: routed_commodities={} failed_commodities={} routed_origin_groups={} failed_origin_groups={}",
+        routed,
+        failed,
+        routed_groups,
+        failed_groups);
+    return warm;
+}
+
 auto append_paths_from_f_solution(
     const std::String& stage_name,
     const GlobalGraph& graph,
@@ -1900,7 +1962,7 @@ auto solve_bus_mcf(
             local_com[static_cast<std::size_t>(k)].record_index};
     }
 
-    // BusMCF §5: f <= o, Σ_n o_i <= 1
+    // BusMCF §5: f <= o, o <= Σ incident f, Σ_n o_i <= 1
     auto o_entries = std::Vector<std::Vector<std::pair<int, double>>> {};
     auto o_vars = std::Vector<OVar> {};
     auto node_row = std::map<int, int> {};
@@ -1925,6 +1987,16 @@ auto solve_bus_mcf(
         if (vars.empty()) {
             continue;
         }
+        const auto row_o_le_sum_f = add_le(
+            0.0,
+            McfConstraintMeta {
+                "o_le_sum_f_link",
+                std::format(
+                    "commodity={} node={}",
+                    local_com[static_cast<std::size_t>(k)].label,
+                    node_text(graph, n)),
+                local_com[static_cast<std::size_t>(k)].bus_key,
+                local_com[static_cast<std::size_t>(k)].record_index});
         const auto row_link = add_le(
             0.0,
             McfConstraintMeta {
@@ -1937,10 +2009,12 @@ auto solve_bus_mcf(
                 local_com[static_cast<std::size_t>(k)].record_index});
         for (const auto j : vars) {
             f_entries[static_cast<std::size_t>(j)].push_back({row_link, 1.0});
+            f_entries[static_cast<std::size_t>(j)].push_back({row_o_le_sum_f, -1.0});
         }
         o_vars.push_back(OVar {k, n});
         auto col = std::Vector<std::pair<int, double>> {};
         col.push_back({row_link, -2.0});
+        col.push_back({row_o_le_sum_f, 1.0});
         col.push_back({node_row.at(n), 1.0});
         o_entries.push_back(std::move(col));
     }
@@ -2005,6 +2079,7 @@ auto solve_bus_mcf(
             {"flow_conservation", static_cast<int>(flow_row.size())},
             {"edge_capacity", static_cast<int>(edge_row.size())},
             {"f_le_o_link", static_cast<int>(o_vars.size())},
+            {"o_le_sum_f_link", static_cast<int>(o_vars.size())},
             {"node_capacity", static_cast<int>(node_row.size())},
             {"bus_equal_length", bus_equal_length_rows},
         });
@@ -3269,11 +3344,11 @@ auto run_mcf_global_routing_cob_units(
             bus_warm_start_ptr = &bus_warm_start;
         }
         if (!enable_simple_maze) {
-            simple_warm_start = route_mcf_stage_warm_start(
-                "SimpleMCF",
+            simple_warm_start = route_simple_mcf_stage_warm_start_by_origin(
                 graph,
                 commodities,
                 simple_ids,
+                records,
                 simple_effective_bbox,
                 outgoing_arcs,
                 warm_used_edges,
