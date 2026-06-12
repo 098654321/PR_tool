@@ -41,13 +41,6 @@ enum class Net_type {
     PNnet
 };
 
-struct IlpReachStep {
-    char from_dir{'L'};
-    char to_dir{'U'};
-    std::size_t index_in{0};
-    std::size_t index_out{0};
-};
-
 struct Net_cost_record {
     std::String net_name;
     Net_type type;
@@ -83,7 +76,6 @@ struct Net_cost_record {
     /// First-mod precompute payload.
     std::Vector<std::size_t> end_tracks {};
     std::map<std::size_t, std::Vector<std::size_t>> starttrack_by_endtrack {};
-    std::map<std::size_t, std::map<std::size_t, std::Vector<IlpReachStep>>> reach_by_end_start {};
 };
 
 struct TobIlpWarmStart {

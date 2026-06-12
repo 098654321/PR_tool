@@ -3,6 +3,7 @@
 #include "common/ilp_types.hh"
 
 #include <hardware/cob/cobcoord.hh>
+#include <hardware/tob/tobcoord.hh>
 
 #include <cstddef>
 #include <std/collection.hh>
@@ -24,12 +25,12 @@ constexpr std::string_view kSyncBusOriginPrefix = "SyncNet in group ";
 
 auto is_sync_bus_record(const Net_cost_record& record) -> bool;
 
-auto compute_bounding_box_level0(const Net_cost_record& record) -> IlpBoundingBox;
-
-auto expand_bounding_box(const IlpBoundingBox& base, std::size_t range_level) -> IlpBoundingBox;
-
-auto compute_bounding_box(const Net_cost_record& record, std::size_t range_level) -> IlpBoundingBox;
+auto tob_anchor_cob(std::size_t tob_linear) -> hardware::COBCoord;
 
 auto rect_hull_boxes(const std::Vector<IlpBoundingBox>& boxes) -> IlpBoundingBox;
+
+auto merge_coord_into_bbox(IlpBoundingBox& box, const hardware::COBCoord& cob) -> void;
+
+auto bbox_area(const IlpBoundingBox& box) -> std::size_t;
 
 } // namespace PR_tool

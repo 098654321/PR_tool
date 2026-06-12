@@ -11,7 +11,7 @@ struct CadicalDiagnosticsOptions {
     bool enable_sat_log{false};
     bool verbose_reach_endpoints{false};
     std::String log_dir {"./cadical-log"};
-    std::size_t range_level{0};
+    std::size_t max_tier{0};
 };
 
 struct CadicalSolveResult {

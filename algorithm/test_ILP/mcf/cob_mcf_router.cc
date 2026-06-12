@@ -2,6 +2,7 @@
 
 #include "maze_check/simple_maze_routing.hh"
 #include "mcf/mcf_bbox.hh"
+#include "precompute/tob_path_precompute.hh"
 #include "mcf/mcf_graph.hh"
 #include "mcf/mcf_hw_map.hh"
 
@@ -69,7 +70,6 @@ struct PreparedCommodity {
     McfClass cls{McfClass::Plain};
     bool is_bus{false};
     std::String bus_key;
-    std::Vector<IlpReachStep> reach_steps;
 };
 
 struct McfConstraintMeta {
@@ -1131,15 +1131,6 @@ auto prepare_commodities(
             continue;
         }
 
-        if (endpoint.has_end_track) {
-            const auto it_end = record.reach_by_end_start.find(endpoint.end_track);
-            if (it_end != record.reach_by_end_start.end()) {
-                const auto it_start = it_end->second.find(endpoint.start_track);
-                if (it_start != it_end->second.end()) {
-                    c.reach_steps = it_start->second;
-                }
-            }
-        }
         out.push_back(std::move(c));
     }
     return out;
@@ -1193,7 +1184,15 @@ auto arc_allowed_for_commodity(
         commodity.is_bus,
         commodity.bus_key};
     const auto effective = resolve_mcf_bbox(ctx, global_commodity_id, input, mode, origin_group_bbox);
-    return arc_allowed_in_mcf_bbox(arc, effective.restricted, effective.box, graph.cols);
+    return arc_allowed_in_mcf_bbox(
+        arc,
+        graph.nodes[static_cast<std::size_t>(arc.u)],
+        graph.nodes[static_cast<std::size_t>(arc.v)],
+        effective.restricted,
+        effective.box,
+        graph.cols,
+        commodity.src,
+        commodity.snk);
 }
 
 auto commodity_bbox_connected(
@@ -1221,7 +1220,15 @@ auto commodity_bbox_connected(
             if (!arc_usable_for_class(graph, arc, commodity.cls, commodity.cob_unit, commodity.snk)) {
                 continue;
             }
-            if (!arc_allowed_in_mcf_bbox(arc, true, effective_bbox.box, graph.cols)) {
+            if (!arc_allowed_in_mcf_bbox(
+                    arc,
+                    graph.nodes[static_cast<std::size_t>(arc.u)],
+                    graph.nodes[static_cast<std::size_t>(arc.v)],
+                    true,
+                    effective_bbox.box,
+                    graph.cols,
+                    commodity.src,
+                    commodity.snk)) {
                 continue;
             }
             if (prev[static_cast<std::size_t>(arc.v)] != -1) {
@@ -1364,7 +1371,15 @@ auto route_one_mcf_warm_path(
             if (!arc_usable_for_class(graph, arc, commodity.cls, commodity.cob_unit, commodity.snk)) {
                 continue;
             }
-            if (!arc_allowed_in_mcf_bbox(arc, effective_bbox.restricted, effective_bbox.box, graph.cols)) {
+            if (!arc_allowed_in_mcf_bbox(
+                    arc,
+                    graph.nodes[static_cast<std::size_t>(arc.u)],
+                    graph.nodes[static_cast<std::size_t>(arc.v)],
+                    effective_bbox.restricted,
+                    effective_bbox.box,
+                    graph.cols,
+                    commodity.src,
+                    commodity.snk)) {
                 continue;
             }
             if (!arc.is_virtual) {
@@ -3230,6 +3245,7 @@ auto normalize_retry_hints(CobMcfRetryHints& hints) -> void {
 auto run_mcf_global_routing_cob_units(
     const std::Vector<Net_cost_record>& records,
     const TobIlpResult& ilp_result,
+    const TobPathPrecomputeCache& path_cache,
     hardware::Interposer* interposer,
     const circuit::BaseDie& basedie,
     const CobMcfGridDims cob_grid,
@@ -3301,12 +3317,8 @@ auto run_mcf_global_routing_cob_units(
     }
 
     const auto bbox_inputs = to_bbox_inputs(commodities);
-    const auto bbox_state = TobBBoxExpansionState::from_vector(
-        records.size(),
-        ilp_result.bbox_expand_by_record,
-        ilp_result.range_level);
-    const auto bbox_ctx = build_mcf_bbox_context(records, bbox_inputs, bbox_state);
-    debug::info_fmt("MCF using SAT bbox max_rho={}", bbox_state.max_rho());
+    const auto bbox_ctx = build_mcf_bbox_context(records, bbox_inputs, ilp_result, path_cache);
+    debug::info_fmt("MCF using SAT path bbox max_tier={}", bbox_ctx.max_tier);
 
     auto bus_warm_start = StageWarmStart {};
     auto simple_warm_start = StageWarmStart {};

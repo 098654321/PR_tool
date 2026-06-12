@@ -1,9 +1,10 @@
 #pragma once
 
 #include "common/ilp_types.hh"
-#include "common/tob_bbox_expansion.hh"
+#include "common/tob_allocation_types.hh"
 #include "mcf/mcf_graph.hh"
 #include "precompute/ilp_bounding_box.hh"
+#include "precompute/tob_path_precompute.hh"
 
 #include <std/collection.hh>
 #include <std/string.hh>
@@ -22,9 +23,8 @@ struct McfBBoxCommodityInput {
 };
 
 struct McfBBoxContext {
-    /// Compatibility summary only: max per-record rho.
-    std::size_t range_level{0};
-    std::Vector<std::size_t> bbox_expand_by_record;
+    std::size_t max_tier{0};
+    std::Vector<std::size_t> tier_by_record;
     std::Vector<McfCommodityBBox> per_commodity;
     std::map<std::String, IlpBoundingBox> per_bus_key;
 };
@@ -37,23 +37,24 @@ enum class McfArcBBoxMode {
 
 auto physical_arc_in_bbox(const McfArc& arc, const IlpBoundingBox& bbox, int cols) -> bool;
 
+auto track_node_allowed_in_mcf_bbox(const McfNodeMeta& node, const IlpBoundingBox& bbox) -> bool;
+
 auto arc_allowed_in_mcf_bbox(
     const McfArc& arc,
+    const McfNodeMeta& u,
+    const McfNodeMeta& v,
     bool restricted,
     const IlpBoundingBox& bbox,
-    int cols
+    int cols,
+    int endpoint_src = -1,
+    int endpoint_snk = -1
 ) -> bool;
 
 auto build_mcf_bbox_context(
     const std::Vector<Net_cost_record>& records,
     const std::Vector<McfBBoxCommodityInput>& commodities,
-    const TobBBoxExpansionState& state
-) -> McfBBoxContext;
-
-auto build_mcf_bbox_context(
-    const std::Vector<Net_cost_record>& records,
-    const std::Vector<McfBBoxCommodityInput>& commodities,
-    std::size_t range_level
+    const TobIlpResult& ilp_result,
+    const TobPathPrecomputeCache& cache
 ) -> McfBBoxContext;
 
 auto compute_origin_group_bbox(

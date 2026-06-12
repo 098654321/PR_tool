@@ -60,9 +60,9 @@ struct TobIlpResult {
     std::String message;
     double objective{0.0};
     int model_status{0};
-    /// Compatibility summary only: max(bbox_expand_by_record).
-    std::size_t range_level{0};
-    std::Vector<std::size_t> bbox_expand_by_record;
+    /// Compatibility summary only: max(tier_by_record).
+    std::size_t max_tier{0};
+    std::Vector<std::size_t> tier_by_record;
     std::Vector<TobIlpNetAssignment> assignments;
     std::Vector<TobIlpWAssignment> active_w;
     std::Vector<TobIlpSAssignment> active_s;

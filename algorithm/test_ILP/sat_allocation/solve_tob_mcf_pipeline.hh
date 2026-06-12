@@ -21,7 +21,7 @@ struct TobMcfPipelineResult {
     std::String message;
     TobIlpResult tob;
     CobMcfFullResult mcf;
-    std::size_t range_level{0};
+    std::size_t max_tier{0};
     std::size_t attempts{0};
     long long tob_sat_solve_ms{0};
     long long mcf_warm_start_ms{0};
@@ -35,6 +35,7 @@ auto solve_tob_mcf_with_range_iteration(
     hardware::Interposer* interposer,
     const circuit::BaseDie& basedie,
     CobMcfGridDims cob_grid,
+    bool enable_presat_parallel,
     bool enable_mcf_parallel,
     bool enable_pre_routing,
     bool enable_mcf_obj,

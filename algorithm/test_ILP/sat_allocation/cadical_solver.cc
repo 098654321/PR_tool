@@ -20,7 +20,7 @@ auto solve_tob_sat_cnf(const TobSatCnf& cnf, const CadicalDiagnosticsOptions& di
 
     if (diag.enable_sat_log) {
         std::filesystem::create_directories(diag.log_dir);
-        const auto trace_path = std::format("{}/sat_range{}.trace", diag.log_dir, diag.range_level);
+        const auto trace_path = std::format("{}/sat_tier{}.trace", diag.log_dir, diag.max_tier);
         if (FILE* fp = std::fopen(trace_path.c_str(), "w")) {
             solver.trace_api_calls(fp);
             debug::info_fmt("CaDiCal API trace enabled: {}", trace_path);

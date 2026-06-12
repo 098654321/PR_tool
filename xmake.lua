@@ -175,7 +175,7 @@ target("test_ILP")
         "algorithm/test_ILP/ilp_allocation/gurobi_model_stats.cc",
         "algorithm/test_ILP/ilp_allocation/ilp_speedup.cc",
         "algorithm/test_ILP/ilp_allocation/ilp_apply_interposer.cc",
-        "algorithm/test_ILP/precompute/ilp_reach_precompute.cc",
+        "algorithm/test_ILP/precompute/tob_path_precompute.cc",
         "algorithm/test_ILP/mcf/cob_mcf_router.cc",
         "algorithm/test_ILP/mcf/mcf_bbox.cc",
         "algorithm/test_ILP/maze_check/maze_check.cc",
@@ -187,8 +187,7 @@ target("test_ILP")
         "algorithm/test_ILP/sat_allocation/solve_tob_sat.cc",
         "algorithm/test_ILP/sat_allocation/solve_tob_mcf_pipeline.cc",
         "algorithm/test_ILP/precompute/ilp_bounding_box.cc",
-        "algorithm/test_ILP/precompute/tob_reach_with_range.cc",
-        "algorithm/test_ILP/precompute/tob_channel_kshortest.cc"
+        "algorithm/test_ILP/precompute/tob_reach_with_range.cc"
     )
     add_files(
         "source/algo/**.cc",
@@ -239,7 +238,8 @@ target("wirelength_study")
         "algorithm/test_ILP/ilp_allocation/gurobi.cc",
         "algorithm/test_ILP/ilp_allocation/ilp_speedup.cc",
         "algorithm/test_ILP/ilp_allocation/ilp_apply_interposer.cc",
-        "algorithm/test_ILP/precompute/ilp_reach_precompute.cc")
+        "algorithm/test_ILP/precompute/tob_path_precompute.cc",
+        "algorithm/test_ILP/precompute/ilp_bounding_box.cc")
     add_files(
         "source/algo/**.cc",
         "source/circuit/**.cc",

@@ -1,0 +1,114 @@
+{
+    "Topdie_inst_2_3" : {
+        "topdie" : "AI",
+        "coord" : {
+            "row" : 3,
+            "col" : 1
+        }
+    },
+    "Topdie_inst_4_9" : {
+        "topdie" : "cpu",
+        "coord" : {
+            "row" : 2,
+            "col" : 3
+        }
+    },
+    "Topdie_inst_4_6" : {
+        "topdie" : "mem",
+        "coord" : {
+            "row" : 2,
+            "col" : 2
+        }
+    },
+    "Topdie_inst_6_0" : {
+        "topdie" : "cpu",
+        "coord" : {
+            "row" : 1,
+            "col" : 0
+        }
+    },
+    "Topdie_inst_6_9" : {
+        "topdie" : "cpu",
+        "coord" : {
+            "row" : 1,
+            "col" : 3
+        }
+    },
+    "Topdie_inst_6_6" : {
+        "topdie" : "mem",
+        "coord" : {
+            "row" : 1,
+            "col" : 2
+        }
+    },
+    "Topdie_inst_4_0" : {
+        "topdie" : "cpu",
+        "coord" : {
+            "row" : 2,
+            "col" : 0
+        }
+    },
+    "Topdie_inst_6_3" : {
+        "topdie" : "mem",
+        "coord" : {
+            "row" : 1,
+            "col" : 1
+        }
+    },
+    "Topdie_inst_4_3" : {
+        "topdie" : "mem",
+        "coord" : {
+            "row" : 2,
+            "col" : 1
+        }
+    },
+    "Topdie_inst_2_9" : {
+        "topdie" : "AI",
+        "coord" : {
+            "row" : 3,
+            "col" : 3
+        }
+    },
+    "Topdie_inst_2_6" : {
+        "topdie" : "AI",
+        "coord" : {
+            "row" : 3,
+            "col" : 2
+        }
+    },
+    "Topdie_inst_8_9" : {
+        "topdie" : "AI",
+        "coord" : {
+            "row" : 0,
+            "col" : 3
+        }
+    },
+    "Topdie_inst_8_6" : {
+        "topdie" : "AI",
+        "coord" : {
+            "row" : 0,
+            "col" : 2
+        }
+    },
+    "Topdie_inst_8_3" : {
+        "topdie" : "AI",
+        "coord" : {
+            "row" : 0,
+            "col" : 1
+        }
+    },
+    "Topdie_inst_8_0" : {
+        "topdie" : "AI",
+        "coord" : {
+            "row" : 0,
+            "col" : 0
+        }
+    },
+    "Topdie_inst_2_0" : {
+        "topdie" : "AI",
+        "coord" : {
+            "row" : 3,
+            "col" : 0
+        }
+    }
+}

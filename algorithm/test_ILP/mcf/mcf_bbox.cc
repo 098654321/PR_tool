@@ -1,8 +1,10 @@
 #include "mcf/mcf_bbox.hh"
 
-#include "debug/debug.hh"
+#include <debug/debug.hh>
 
 #include <hardware/cob/cob.hh>
+
+#include <stdexcept>
 
 namespace PR_tool {
 
@@ -21,6 +23,56 @@ auto is_straight_through(
     using D = hardware::COBDirection;
     return (from == D::Left && to == D::Right) || (from == D::Right && to == D::Left)
         || (from == D::Up && to == D::Down) || (from == D::Down && to == D::Up);
+}
+
+auto path_bbox_for_record(
+    const std::size_t record_index,
+    const Net_cost_record& record,
+    const TobIlpRecordTrackEndpoint& endpoint,
+    const TobPathPrecomputeCache& cache
+) -> std::optional<IlpBoundingBox> {
+    if (!endpoint.has_start_track || !endpoint.has_end_track) {
+        return std::nullopt;
+    }
+    return lookup_path_bbox(cache, record_index, endpoint.end_track, endpoint.start_track);
+}
+
+auto is_endpoint_node(const int node_id, const int endpoint_src, const int endpoint_snk) -> bool {
+    return node_id >= 0 && (node_id == endpoint_src || node_id == endpoint_snk);
+}
+
+auto arc_incident_to_endpoint(const McfArc& arc, const int endpoint_src, const int endpoint_snk) -> bool {
+    return is_endpoint_node(arc.u, endpoint_src, endpoint_snk)
+        || is_endpoint_node(arc.v, endpoint_src, endpoint_snk);
+}
+
+auto endpoint_incident_arc_in_bbox(
+    const McfArc& arc,
+    const IlpBoundingBox& bbox,
+    const int cols,
+    const int endpoint_src,
+    const int endpoint_snk
+) -> bool {
+    if (!arc_incident_to_endpoint(arc, endpoint_src, endpoint_snk)) {
+        return false;
+    }
+    if (arc.cob < 0) {
+        return false;
+    }
+    return bbox.contains(cob_from_linear(arc.cob, cols));
+}
+
+auto node_allowed_in_mcf_bbox(
+    const McfNodeMeta& node,
+    const int node_id,
+    const IlpBoundingBox& bbox,
+    const int endpoint_src,
+    const int endpoint_snk
+) -> bool {
+    if (is_endpoint_node(node_id, endpoint_src, endpoint_snk)) {
+        return true;
+    }
+    return track_node_allowed_in_mcf_bbox(node, bbox);
 }
 
 } // namespace
@@ -51,26 +103,51 @@ auto physical_arc_in_bbox(const McfArc& arc, const IlpBoundingBox& bbox, const i
     return bbox.contains(cob);
 }
 
+auto track_node_allowed_in_mcf_bbox(const McfNodeMeta& node, const IlpBoundingBox& bbox) -> bool {
+    if (node.is_virtual) {
+        return true;
+    }
+    if (node.track_dir == 0) {
+        return node.track_col != bbox.col_min && node.track_col != bbox.col_max + 1;
+    }
+    return node.track_row != bbox.row_min && node.track_row != bbox.row_max + 1;
+}
+
 auto arc_allowed_in_mcf_bbox(
     const McfArc& arc,
+    const McfNodeMeta& u,
+    const McfNodeMeta& v,
     const bool restricted,
     const IlpBoundingBox& bbox,
-    const int cols
+    const int cols,
+    const int endpoint_src,
+    const int endpoint_snk
 ) -> bool {
     if (!restricted) {
         return true;
     }
-    return physical_arc_in_bbox(arc, bbox, cols);
+    if (!physical_arc_in_bbox(arc, bbox, cols)
+        && !endpoint_incident_arc_in_bbox(arc, bbox, cols, endpoint_src, endpoint_snk)) {
+        return false;
+    }
+    if (!node_allowed_in_mcf_bbox(u, arc.u, bbox, endpoint_src, endpoint_snk)) {
+        return false;
+    }
+    if (!node_allowed_in_mcf_bbox(v, arc.v, bbox, endpoint_src, endpoint_snk)) {
+        return false;
+    }
+    return true;
 }
 
 auto build_mcf_bbox_context(
     const std::Vector<Net_cost_record>& records,
     const std::Vector<McfBBoxCommodityInput>& commodities,
-    const TobBBoxExpansionState& state
+    const TobIlpResult& ilp_result,
+    const TobPathPrecomputeCache& cache
 ) -> McfBBoxContext {
     McfBBoxContext ctx {};
-    ctx.range_level = state.max_rho();
-    ctx.bbox_expand_by_record = state.rho_by_record;
+    ctx.max_tier = ilp_result.max_tier;
+    ctx.tier_by_record = ilp_result.tier_by_record;
     ctx.per_commodity.resize(commodities.size());
 
     std::size_t restricted_count = 0;
@@ -83,7 +160,25 @@ auto build_mcf_bbox_context(
             continue;
         }
         out.restricted = true;
-        out.box = compute_bounding_box(record, state.rho_for_record(input.record_index));
+        if (input.record_index >= ilp_result.record_track_endpoints.size()) {
+            throw std::runtime_error(std::format(
+                "MCF bbox: missing endpoint for record_index={} record_id={} net=\"{}\"",
+                input.record_index,
+                record.record_id,
+                record.net_name));
+        }
+        const auto& endpoint = ilp_result.record_track_endpoints[input.record_index];
+        const auto bbox_opt = path_bbox_for_record(input.record_index, record, endpoint, cache);
+        if (!bbox_opt.has_value()) {
+            throw std::runtime_error(std::format(
+                "MCF bbox: missing path bbox for record_index={} record_id={} net=\"{}\" end_track={} start_track={}",
+                input.record_index,
+                record.record_id,
+                record.net_name,
+                endpoint.end_track,
+                endpoint.start_track));
+        }
+        out.box = *bbox_opt;
         ++restricted_count;
     }
 
@@ -109,20 +204,12 @@ auto build_mcf_bbox_context(
     }
 
     debug::info_fmt(
-        "MCF bbox: max_rho={} commodities={} restricted={} bus_groups={}",
-        state.max_rho(),
+        "MCF bbox: max_tier={} commodities={} restricted={} bus_groups={}",
+        ctx.max_tier,
         commodities.size(),
         restricted_count,
         ctx.per_bus_key.size());
     return ctx;
-}
-
-auto build_mcf_bbox_context(
-    const std::Vector<Net_cost_record>& records,
-    const std::Vector<McfBBoxCommodityInput>& commodities,
-    const std::size_t range_level
-) -> McfBBoxContext {
-    return build_mcf_bbox_context(records, commodities, TobBBoxExpansionState::uniform(records.size(), range_level));
 }
 
 auto compute_origin_group_bbox(

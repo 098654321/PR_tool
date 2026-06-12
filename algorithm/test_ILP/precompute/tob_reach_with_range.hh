@@ -2,38 +2,35 @@
 
 #include "common/ilp_types.hh"
 #include "common/tob_bbox_expansion.hh"
-#include "precompute/ilp_reach_precompute.hh"
+#include "precompute/tob_path_precompute.hh"
 
 #include <cstddef>
 #include <std/collection.hh>
 
 namespace PR_tool {
 
-// Must match solve_tob_sat.hh::kMaxRangeLevel (SAT+MCF outer loop 0..4).
-inline constexpr std::size_t kTobReachMaxRangeLevel = 4;
-
 struct TobReachRangeStats {
-    std::size_t range_level{0};
+    std::size_t max_tier{0};
     std::size_t total_records{0};
     std::size_t total_endtracks{0};
     std::size_t total_starttrack_edges{0};
 };
 
-auto precompute_reach_for_range(std::Vector<Net_cost_record>& records, std::size_t range_level) -> TobReachRangeStats;
-
-auto precompute_reach_for_bbox_state(
+auto apply_tier_precompute_for_sat(
     std::Vector<Net_cost_record>& records,
-    const TobBBoxExpansionState& state
+    const TobPathPrecomputeCache& cache,
+    const TobTierState& state
 ) -> TobReachRangeStats;
 
-auto log_reach_endpoints_for_bbox_state(
+auto log_path_precompute_cache(
     const std::Vector<Net_cost_record>& records,
-    const TobBBoxExpansionState& state
+    const TobPathPrecomputeCache& cache
 ) -> void;
 
-auto log_reach_endpoints_for_range(
+auto log_reach_endpoints_for_tier_state(
     const std::Vector<Net_cost_record>& records,
-    std::size_t range_level
+    const TobPathPrecomputeCache& cache,
+    const TobTierState& state
 ) -> void;
 
 } // namespace PR_tool

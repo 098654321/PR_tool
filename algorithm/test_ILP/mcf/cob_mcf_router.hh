@@ -3,6 +3,8 @@
 #include "ilp_allocation/gurobi.hh"
 #include "ilp_allocation/gurobi_model_stats.hh"
 #include "common/ilp_types.hh"
+#include "common/tob_allocation_types.hh"
+#include "precompute/tob_path_precompute.hh"
 
 #include <hardware/interposer.hh>
 #include <std/collection.hh>
@@ -84,6 +86,7 @@ struct CobMcfFullResult {
 auto run_mcf_global_routing_cob_units(
     const std::Vector<Net_cost_record>& records,
     const TobIlpResult& ilp_result,
+    const TobPathPrecomputeCache& path_cache,
     hardware::Interposer* interposer,
     const circuit::BaseDie& basedie,
     CobMcfGridDims cob_grid,

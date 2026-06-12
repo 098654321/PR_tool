@@ -5,7 +5,9 @@
 #include "ilp_allocation/gurobi_model_stats.hh"
 #include "common/ilp_types.hh"
 #include "common/tob_allocation_types.hh"
-#include "precompute/ilp_reach_precompute.hh"
+#include "precompute/tob_path_precompute.hh"
+#include "precompute/tob_reach_with_range.hh"
+#include "common/tob_bbox_expansion.hh"
 #include "ilp_allocation/tob_ilp_model.hh"
 #include "sat_allocation/solve_tob_mcf_pipeline.hh"
 #include "sat_allocation/solve_tob_sat.hh"
@@ -83,7 +85,7 @@ constexpr auto kTestIlpUsage =
     "Usage: xmake run test_ILP <config_path> [-v|-vv|...] "
     "[--export-ilp-mps <path>] [--enable-mcf-routing] [--disable-bus-mcf] "
     "[--disable-01-mcf] [--disable-multipin-io] [--disable-2pin-io] "
-    "[--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
+    "[--enable-presat-parallel] [--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
     "[--sat-log] [--gurobi-log] "
     "[--maze-check-ilp-mcf | --maze-check-mcf] "
     "[--simple-maze] "
@@ -108,6 +110,7 @@ auto run_main(int argc, char** argv) -> int {
     bool enable_mcf = false;
     bool check_golden = false;
     bool disable_bus_mcf = false;
+    bool enable_presat_parallel = false;
     bool enable_mcf_parallel = false;
     bool enable_mcf_obj = false;
     bool enable_pre_routing = false;
@@ -167,6 +170,10 @@ auto run_main(int argc, char** argv) -> int {
         }
         if (arg == "--disable-2pin-io") {
             disable_2pin_io = true;
+            continue;
+        }
+        if (arg == "--enable-presat-parallel") {
+            enable_presat_parallel = true;
             continue;
         }
         if (arg == "--enable-mcf-parallel") {
@@ -252,6 +259,9 @@ auto run_main(int argc, char** argv) -> int {
     if (enable_pre_routing && !enable_mcf) {
         debug::info("warning: --enable-pre-routing has no effect without --enable-mcf-routing (MCF graph warm start only)");
     }
+    if (enable_presat_parallel) {
+        debug::info("SAT path precompute: parallel enabled (std::async over end_track work items)");
+    }
     const bool defer_maze_check_suspend = maze_check_ilp_mcf || maze_check_mcf;
 
     // read file and build nets
@@ -310,12 +320,16 @@ auto run_main(int argc, char** argv) -> int {
     log_tob_sat_bump_demand(records);
 
     if (!export_ilp_mps.empty()) {
-        const auto reach_stats = precompute_reach_for_records(records);
+        const auto cache = precompute_all_path_caches(records, interposer.get(), enable_presat_parallel);
+        if (verbose_v_count > 0) {
+            log_path_precompute_cache(records, cache);
+        }
+        const auto tier_state = TobTierState::initial(records.size());
+        const auto start_edges = apply_tier_to_starttracks(records, cache, tier_state);
         debug::info_fmt(
-            "MPS export reach precompute: records={} total_endtracks={} total_starttrack_edges={}",
-            reach_stats.total_records,
-            reach_stats.total_endtracks,
-            reach_stats.total_starttrack_edges);
+            "MPS export path precompute: records={} total_starttrack_edges={}",
+            records.size(),
+            start_edges);
         write_mps_file(records, export_ilp_mps);
         debug::info_fmt("TOB legacy ILP MPS export written: {}", export_ilp_mps);
     }
@@ -345,6 +359,7 @@ auto run_main(int argc, char** argv) -> int {
             interposer.get(),
             *basedie.get(),
             cob_grid,
+            enable_presat_parallel,
             enable_mcf_parallel,
             enable_pre_routing,
             enable_mcf_obj,
@@ -389,7 +404,7 @@ auto run_main(int argc, char** argv) -> int {
     }
     else {
         const auto solve_begin = std::chrono::steady_clock::now();
-        result = solve_tob_sat_with_cadical(records, sat_diag);
+        result = solve_tob_sat_with_cadical(records, interposer.get(), sat_diag, enable_presat_parallel);
         const auto solve_end = std::chrono::steady_clock::now();
         tob_sat_solve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(solve_end - solve_begin).count();
         const auto peak_rss_mb = get_peak_rss_mb();
@@ -461,7 +476,7 @@ auto run_main(int argc, char** argv) -> int {
             s.k);
     }
     debug::info_fmt("objective value: {}", result.objective);
-    debug::info_fmt("SAT solved with bbox max_rho={}", result.range_level);
+    debug::info_fmt("SAT solved with max_tier={}", result.max_tier);
     debug::info_fmt("nets solved: {}", records.size());
 
     if (enable_mcf) {
