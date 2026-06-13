@@ -26,9 +26,10 @@ namespace PR_tool {
 
     auto place(PR_tool::hardware::Interposer*, PR_tool::circuit::BaseDie*, std::vector<PR_tool::circuit::TopDieInstance*>&) -> void;
 
+    // Returns true when route_nets was executed (caller should write controlbits).
     auto route(
         PR_tool::hardware::Interposer*, PR_tool::circuit::BaseDie*,
-        std::StringView,  const std::FilePath&,
+        std::StringView,
         int mode, std::optional<int> compare, bool try_all_modes
-    ) -> void;
+    ) -> bool;
 }

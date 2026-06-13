@@ -55,15 +55,11 @@ static void test_basic_placement() {
     debug::debug("Start layout ...");
     // Simulated Annealing Layout
     auto strategy = SAPlaceStrategy{
-        100.0,  // initial temperature
-        0.5,    // freezing temperature
-        50,     // solution times
-        0.95,   // cooling rate
-        50,     // maximum times
-        1.0,    // line length
-        0.5,    // jam
-        0.3,    // heat distribution
-        0.2     // power consumption
+        100.0,  // init_temp
+        0.5,    // freeze_temp
+        50,     // solve_num
+        0.95,   // cooling_rate
+        50      // max_no_improvement
     };
     place(&interposer, topdieinstances, strategy);
     ASSERT(strategy.is_valid_placement(&interposer, topdieinstances));
@@ -213,15 +209,11 @@ static void test_sa_place_strategy_components() {
 //         }
         
 //         auto strategy = SAPlaceStrategy{
-//             100.0,  
-//             0.5,    
-//             50,     
-//             0.95,   
-//             50,     
-//             1.0,    
-//             0.5,    
-//             0.3,    
-//             0.2     
+//             100.0,
+//             0.5,
+//             50,
+//             0.95,
+//             50
 //         }; 
 //         place(interposer.get(), topdies, basedie.get(), strategy);
 //         ASSERT(strategy.is_valid_placement(interposer.get(), topdies));

@@ -52,7 +52,7 @@ namespace PR_tool::test{
             PLEASE_DO_NOT_FAIL(2, "Muyan topdie with both synchroinzed and unsynchronized nets");
             PLEASE_DO_NOT_FAIL(3, "Muyan topdie with unsynchronized nets only");
             // PLEASE_DO_NOT_FAIL(4, "A complete case with more nets and net types");  
-            // PLEASE_DO_NOT_FAIL(6, "a case with more nets then case1");
+            PLEASE_DO_NOT_FAIL(5, "a case for midterm test");
             
         }
     }

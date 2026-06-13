@@ -6,6 +6,11 @@ PR_tool 是面向 chiplet interposer 的布局布线工具：输入一份系统�
 
 ---
 
+## 0. 2个工作规则
+
+- 必须深入理解我给你的材料，在理解的基础上进行后续动作
+- 完成修改之后，维护相应的 AGENTS.md文件。如果改动比较大，需要在项目根目录的.plan目录下生成改动记录文件，内容可以参考该目录下已有的改动记录
+
 ## 1. 快速上手（构建 / 运行 / 测试）
 
 构建系统使用 xmake，主要入口在仓库根目录的 `xmake.lua`。
@@ -216,13 +221,17 @@ Pin 名的解析规则（`Reader::parse_connection_pin`）：
 ```text
 Input:
   interposer, topdies
-Hyper-parameters (默认值):
+Hyper-parameters (base 默认值):
   T_init = 100.0                // 初始温度
   T_freeze = 0.5                // 停止温度
-  alpha = 0.95                  // 冷却速率（几何降温）
-  solve_num = 50                // 每个温度下尝试扰动次数
-  max_no_improvement = 50       // 最优解连续未改进上限
-  w_wire = 1.0, w_thermal = 0.3 // 当前总代价只用这两项
+  alpha = 0.97                  // 冷却速率（几何降温）
+  base_solve_num = 50           // 每层扰动次数基数
+  base_max_no_improvement = 50  // 无改进停搜层数基数
+
+Search budget（按 chip 数缩放，始终启用）:
+  n_chips = topdies.size()
+  effective_solve_num = base_solve_num * max(1, n_chips)
+  effective_max_no_improvement = base_max_no_improvement * max(1, n_chips / 2)
 
 Cost definitions:
   net_cost(net):
@@ -232,19 +241,7 @@ Cost definitions:
     return HPWL
 
   total_net_cost(nets) = Σ net_cost(net)
-
-  thermal_cost(topdies):
-    high_power_chips = {chip | get_topdie_power(chip) > 0.8}
-    // get_topdie_power(chip) = chip.nets().size() / 10.0
-    cost = 0
-    for each unordered pair (i, j) in high_power_chips:
-      d = Manhattan(chip_i.tob.coord, chip_j.tob.coord)
-      if d < 3:
-        cost += (3 - d) * 10
-    return cost
-
-  total_cost = w_wire * total_net_cost(all_nets) + w_thermal * thermal_cost(topdies)
-  // congestion/power 在当前 place() 中未计入
+  total_cost = total_net_cost(all_nets)
 
 State:
   每个 TopDieInstance 绑定一个 TOB
@@ -254,10 +251,12 @@ State:
   no_improvement_count = 0
   iteration = 0
 
-while T > T_freeze and no_improvement_count < max_no_improvement:
+budget = compute_search_budget(n_chips)
+
+while T > T_freeze and no_improvement_count < budget.max_no_improvement:
   improved = false
 
-  repeat solve_num times:
+  repeat budget.solve_num times:
     new_total_cost = total_cost
 
     // 扰动类型选择（温度相关）
@@ -272,13 +271,11 @@ while T > T_freeze and no_improvement_count < max_no_improvement:
       若 tob_a 或 tob_b 被第三方 chip 占用 -> continue
 
       changed_nets = nets(a) ∪ nets(b)
-      new_total_cost -= w_wire * Σ net_cost(net), net in changed_nets
-      new_total_cost -= w_thermal * thermal_cost(topdies)
+      new_total_cost -= Σ net_cost(net), net in changed_nets
 
       执行 a 与 b 的 TOB 交换
 
-      new_total_cost += w_wire * Σ net_cost(net), net in changed_nets
-      new_total_cost += w_thermal * thermal_cost(topdies)
+      new_total_cost += Σ net_cost(net), net in changed_nets
 
       delta = new_total_cost - total_cost
       if delta <= 0:
@@ -296,13 +293,11 @@ while T > T_freeze and no_improvement_count < max_no_improvement:
       若 tob_new 已被其他 chip 占用 -> continue
 
       tob_old = a.tob
-      new_total_cost -= w_wire * Σ net_cost(net), net in nets(a)
-      new_total_cost -= w_thermal * thermal_cost(topdies)
+      new_total_cost -= Σ net_cost(net), net in nets(a)
 
       执行 a 从 tob_old 移到 tob_new
 
-      new_total_cost += w_wire * Σ net_cost(net), net in nets(a)
-      new_total_cost += w_thermal * thermal_cost(topdies)
+      new_total_cost += Σ net_cost(net), net in nets(a)
 
       delta = new_total_cost - total_cost
       if delta <= 0:
@@ -324,6 +319,7 @@ while T > T_freeze and no_improvement_count < max_no_improvement:
   iteration += 1
 
 循环结束后：restore_placement(best_solution)
+日志：启动时打印 effective 超参；结束时打印 initial_HPWL 与 best_HPWL
 
 约束函数 is_changable(inst, target_tob):
   若 inst 的任意 net 已经包含 target_tob 端口，则返回 false；否则 true

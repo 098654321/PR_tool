@@ -46,7 +46,10 @@ namespace PR_tool {
             place(interposer.get(), basedie.get(), topdies);
         }
         
-        route(interposer.get(), basedie.get(), config_path, output_file, mode, compare, try_all_modes);
+        bool has_route = route(interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes);
+        if (has_route) {
+            parse::output_from_routing_results(interposer.get(), output_file, basedie.get(), mode, try_all_modes);
+        }
 
         return 0;
     }
@@ -80,37 +83,39 @@ debug::info_fmt("Layout time: {} milliseconds", duration.count());
 
     auto route(
         PR_tool::hardware::Interposer* interposer, PR_tool::circuit::BaseDie* basedie,
-        std::StringView config_path,  const std::FilePath& output_file,
+        std::StringView config_path,
         int mode, std::optional<int> compare, bool try_all_modes
-    ) -> void {
+    ) -> bool {
         debug::debug("Start routing ...");
         if (!try_all_modes && mode == 0) {  // not incremental routing 
             auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer, basedie, mode, try_all_modes);
             if (!has_bits) {
                 algo::route_nets(interposer, basedie, algo::MazeRouteStrategy{false}, algo::HK{}, mode, false, try_all_modes);
-                parse::output_from_routing_results(interposer, output_file, basedie, mode, try_all_modes);
+                return true;
             }
-            else if (has_other_bits) {
+            if (has_other_bits) {
                 debug::info("Has other control bits, skip the routing process");
             }
+            return false;
         }
-        else {  // incremental routing with two situations: route all modes (try_all_modes == true) or route single mode (try_all_modes == false && mode > 0)
-            basedie->merge_same_mode_nets();
-            auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer, basedie, mode, try_all_modes);
-            if (!has_bits) {
-                algo::route_nets(interposer, basedie, algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, try_all_modes, has_other_bits);
-                parse::output_from_routing_results(interposer, output_file, basedie, mode, try_all_modes);
-            }
-            else {
-                debug::info("Already has control bits, skip the routing process");
-            }
 
-            if (!try_all_modes && compare.has_value()) {
-                std::string current_file {"controlbits_" + std::to_string(mode) + ".txt"};
-                std::string target_file {"controlbits_" + std::to_string(compare.value()) + ".txt"};
-                parse::compare(current_file, target_file);
-            }
+        // incremental routing: route all modes (try_all_modes) or single mode (mode > 0)
+        basedie->merge_same_mode_nets();
+        auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer, basedie, mode, try_all_modes);
+        if (!has_bits) {
+            algo::route_nets(interposer, basedie, algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, try_all_modes, has_other_bits);
         }
+        else {
+            debug::info("Already has control bits, skip the routing process");
+        }
+
+        if (!try_all_modes && compare.has_value()) {
+            std::string current_file {"controlbits_" + std::to_string(mode) + ".txt"};
+            std::string target_file {"controlbits_" + std::to_string(compare.value()) + ".txt"};
+            parse::compare(current_file, target_file);
+        }
+
+        return !has_bits;
     }
     
 

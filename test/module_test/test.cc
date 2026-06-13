@@ -18,6 +18,7 @@ extern void test_debug_main();
 extern void test_config_main();
 extern void test_comparator_main();
 extern void test_path_length_main();
+extern void test_placer_iteratively_main();
 
 #define REGISTER_TEST(test_name)\
 functions.emplace(#test_name, & test_##test_name##_main);\
@@ -45,6 +46,12 @@ try {
     REGISTER_TEST(config)
     REGISTER_TEST(comparator)
     REGISTER_TEST(path_length)
+
+    if (target == "placer_iteratively") {
+        PR_tool::console::println_fmt("Run test 'placer_iteratively'");
+        test_placer_iteratively_main();
+        return 0;
+    }
 
     if (target == "all") {
         for (auto [test_name, test_func] : functions) {

@@ -1,0 +1,158 @@
+[
+  {
+    "file": "connections_pose_1.json",
+    "port_id": "1",
+    "cob": {
+      "dir": "vert",
+      "row": 0,
+      "col": 5,
+      "index": 10
+    },
+    "chiplet": "muyan_1",
+    "pin": "chipID0",
+    "manhattan_dist": 2
+  },
+  {
+    "file": "connections_pose_2.json",
+    "port_id": "2",
+    "cob": {
+      "dir": "vert",
+      "row": 0,
+      "col": 5,
+      "index": 19
+    },
+    "chiplet": "muyan_1",
+    "pin": "chipID1",
+    "manhattan_dist": 2
+  },
+  {
+    "file": "connections_pose_3.json",
+    "port_id": "3",
+    "cob": {
+      "dir": "vert",
+      "row": 0,
+      "col": 5,
+      "index": 28
+    },
+    "chiplet": "muyan_1",
+    "pin": "chipID2",
+    "manhattan_dist": 2
+  },
+  {
+    "file": "connections_pose_4.json",
+    "port_id": "4",
+    "cob": {
+      "dir": "vert",
+      "row": 0,
+      "col": 5,
+      "index": 37
+    },
+    "chiplet": "muyan_1",
+    "pin": "chipID3",
+    "manhattan_dist": 2
+  },
+  {
+    "file": "connections_pose_5.json",
+    "port_id": "5",
+    "cob": {
+      "dir": "vert",
+      "row": 9,
+      "col": 4,
+      "index": 46
+    },
+    "chiplet": "muyan_13",
+    "pin": "chipID0",
+    "manhattan_dist": 1
+  },
+  {
+    "file": "connections_pose_6.json",
+    "port_id": "6",
+    "cob": {
+      "dir": "vert",
+      "row": 9,
+      "col": 4,
+      "index": 55
+    },
+    "chiplet": "muyan_13",
+    "pin": "chipID1",
+    "manhattan_dist": 1
+  },
+  {
+    "file": "connections_pose_7.json",
+    "port_id": "7",
+    "cob": {
+      "dir": "vert",
+      "row": 9,
+      "col": 4,
+      "index": 122
+    },
+    "chiplet": "muyan_13",
+    "pin": "chipID2",
+    "manhattan_dist": 1
+  },
+  {
+    "file": "connections_pose_8.json",
+    "port_id": "8",
+    "cob": {
+      "dir": "vert",
+      "row": 9,
+      "col": 4,
+      "index": 115
+    },
+    "chiplet": "muyan_13",
+    "pin": "chipID3",
+    "manhattan_dist": 1
+  },
+  {
+    "file": "connections_pose_9.json",
+    "port_id": "9",
+    "cob": {
+      "dir": "hori",
+      "row": 4,
+      "col": 12,
+      "index": 108
+    },
+    "chiplet": "muyan_7",
+    "pin": "chipID0",
+    "manhattan_dist": 2
+  },
+  {
+    "file": "connections_pose_10.json",
+    "port_id": "10",
+    "cob": {
+      "dir": "hori",
+      "row": 4,
+      "col": 12,
+      "index": 101
+    },
+    "chiplet": "muyan_7",
+    "pin": "chipID1",
+    "manhattan_dist": 2
+  },
+  {
+    "file": "connections_pose_11.json",
+    "port_id": "11",
+    "cob": {
+      "dir": "hori",
+      "row": 4,
+      "col": 12,
+      "index": 94
+    },
+    "chiplet": "muyan_7",
+    "pin": "chipID2",
+    "manhattan_dist": 2
+  },
+  {
+    "file": "connections_pose_12.json",
+    "port_id": "12",
+    "cob": {
+      "dir": "hori",
+      "row": 4,
+      "col": 12,
+      "index": 87
+    },
+    "chiplet": "muyan_7",
+    "pin": "chipID3",
+    "manhattan_dist": 2
+  }
+]
