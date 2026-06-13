@@ -69,8 +69,8 @@ namespace PR_tool::algo {
     private:
         const double _init_temperature {100.0};
         const double _freeze_temperature {0.5};
-        const std::size_t _base_solve_num {50};
-        const double _cooling_rate {0.97};
+        const std::size_t _base_solve_num {80};
+        const double _cooling_rate {0.99};
         const std::size_t _base_max_no_improvement {50};
     };
 }

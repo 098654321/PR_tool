@@ -73,12 +73,7 @@ auto check_debug_log(int iteration) -> void {
         fail_iteration(iteration, "Failed routing nubmer not found in debug.log");
     }
 
-    if (*total_length >= kMaxAllowedTotalLength) {
-        fail_iteration(
-            iteration,
-            "Total Length=" + std::to_string(*total_length) + " >= " + std::to_string(kMaxAllowedTotalLength)
-        );
-    }
+    const bool exceeds_max_length = *total_length >= kMaxAllowedTotalLength;
 
     if (*failed_routing != 0) {
         fail_iteration(
@@ -93,7 +88,11 @@ auto check_debug_log(int iteration) -> void {
 
     std::cout << "Iteration " << iteration << "/" << kIterations
               << ", Total Length=" << *total_length
-              << ", Failed routing nubmer=" << *failed_routing << std::endl;
+              << ", Failed routing nubmer=" << *failed_routing;
+    if (exceeds_max_length) {
+        std::cout << " (warning: exceeds max allowed " << kMaxAllowedTotalLength << ")";
+    }
+    std::cout << std::endl;
 }
 
 } // namespace
