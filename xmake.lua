@@ -6,7 +6,7 @@ if is_plat("linux") then
     add_cxxflags("-std=c++2b")
 end
 
-if is_plat("windows") then
+if is_plat("windows", "macosx") then
     add_requires("catch2")
 end
 -- add_requires("xlnt", {configs = {shared = false}})
@@ -114,7 +114,7 @@ target("regression_test")
     set_kind("binary")
     set_targetdir("./output")
     set_default(true)
-    if is_plat("windows") then
+    if is_plat("windows", "macosx") then
         add_packages("catch2")
     elseif is_plat("linux") then
         add_includedirs("$(env CONDA_PREFIX)/include")
