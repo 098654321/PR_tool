@@ -5,6 +5,7 @@
 #include <hardware/cob/cob.hh>
 #include <hardware/interposer.hh>
 #include <std/collection.hh>
+#include <array>
 #include <set>
 #include <tuple>
 
@@ -39,8 +40,8 @@ struct McfGlobalGraph {
     int rows{0};
     int cols{0};
     int num_cob{0};
-    int vp_node{-1};
-    int vn_node{-1};
+    std::array<int, 16> vp_node_by_unit {};
+    std::array<int, 16> vn_node_by_unit {};
     std::Vector<McfNodeMeta> nodes;
     std::Vector<McfArc> arcs;
     std::map<McfNodeKey, int> node_id_by_key;

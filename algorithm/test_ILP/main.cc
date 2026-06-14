@@ -1,7 +1,6 @@
 // SAT TOB allocation + optional MCF routing (Gurobi for MCF only).
 
 #include "mcf/cob_mcf_router.hh"
-#include "maze_check/maze_check.hh"
 #include "ilp_allocation/gurobi_model_stats.hh"
 #include "common/ilp_types.hh"
 #include "common/tob_allocation_types.hh"
@@ -86,9 +85,8 @@ constexpr auto kTestIlpUsage =
     "[--export-ilp-mps <path>] [--enable-mcf-routing] [--disable-bus-mcf] "
     "[--disable-01-mcf] [--disable-multipin-io] [--disable-2pin-io] "
     "[--enable-presat-parallel] [--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
+    "[--show-pre-route] "
     "[--sat-log] [--gurobi-log] "
-    "[--maze-check-ilp-mcf | --maze-check-mcf] "
-    "[--simple-maze] "
     "[--check-golden]";
 
 auto run_main(int argc, char** argv) -> int {
@@ -114,9 +112,7 @@ auto run_main(int argc, char** argv) -> int {
     bool enable_mcf_parallel = false;
     bool enable_mcf_obj = false;
     bool enable_pre_routing = false;
-    bool maze_check_ilp_mcf = false;
-    bool maze_check_mcf = false;
-    bool enable_simple_maze = false;
+    bool show_pre_route = false;
     bool enable_gurobi_log = false;
     bool enable_sat_log = false;
     bool disable_01_mcf = false;
@@ -188,16 +184,8 @@ auto run_main(int argc, char** argv) -> int {
             enable_pre_routing = true;
             continue;
         }
-        if (arg == "--maze-check-ilp-mcf") {
-            maze_check_ilp_mcf = true;
-            continue;
-        }
-        if (arg == "--maze-check-mcf") {
-            maze_check_mcf = true;
-            continue;
-        }
-        if (arg == "--simple-maze") {
-            enable_simple_maze = true;
+        if (arg == "--show-pre-route") {
+            show_pre_route = true;
             continue;
         }
         if (arg == "--gurobi-log") {
@@ -225,36 +213,18 @@ auto run_main(int argc, char** argv) -> int {
         static_cast<int>(hardware::Interposer::COB_ARRAY_WIDTH),
     };
 
-    if ((maze_check_ilp_mcf || maze_check_mcf) && !enable_mcf) {
-        debug::error("maze-check flags require --enable-mcf-routing");
-        log_total_runtime();
-        return 1;
-    }
     if (disable_bus_mcf && !enable_mcf) {
         debug::error("--disable-bus-mcf requires --enable-mcf-routing");
         log_total_runtime();
         return 1;
     }
-    if (maze_check_ilp_mcf && maze_check_mcf) {
-        debug::error("--maze-check-ilp-mcf and --maze-check-mcf are mutually exclusive");
+    if (show_pre_route && !enable_mcf) {
+        debug::error("--show-pre-route requires --enable-mcf-routing");
         log_total_runtime();
         return 1;
     }
-    if (enable_simple_maze && !enable_mcf) {
-        debug::error("--simple-maze requires --enable-mcf-routing");
-        log_total_runtime();
-        return 1;
-    }
-    if (enable_simple_maze && (maze_check_ilp_mcf || maze_check_mcf)) {
-        debug::error("--simple-maze is mutually exclusive with --maze-check-ilp-mcf / --maze-check-mcf");
-        log_total_runtime();
-        return 1;
-    }
-    if (enable_simple_maze && enable_mcf_parallel) {
-        debug::info("warning: --enable-mcf-parallel has no effect with --simple-maze");
-    }
-    if (enable_simple_maze && enable_mcf_obj) {
-        debug::info("warning: --enable-mcf-obj has no effect with --simple-maze");
+    if (show_pre_route) {
+        enable_pre_routing = true;
     }
     if (enable_pre_routing && !enable_mcf) {
         debug::info("warning: --enable-pre-routing has no effect without --enable-mcf-routing (MCF graph warm start only)");
@@ -262,7 +232,6 @@ auto run_main(int argc, char** argv) -> int {
     if (enable_presat_parallel) {
         debug::info("SAT path precompute: parallel enabled (std::async over end_track work items)");
     }
-    const bool defer_maze_check_suspend = maze_check_ilp_mcf || maze_check_mcf;
 
     // read file and build nets
     debug::initial_log("./debug.log");
@@ -364,8 +333,7 @@ auto run_main(int argc, char** argv) -> int {
             enable_pre_routing,
             enable_mcf_obj,
             disable_bus_mcf,
-            enable_simple_maze,
-            !defer_maze_check_suspend,
+            show_pre_route,
             sat_diag,
             gurobi_diag);
         tob_sat_solve_ms = pipeline.tob_sat_solve_ms;
@@ -480,24 +448,6 @@ auto run_main(int argc, char** argv) -> int {
     debug::info_fmt("nets solved: {}", records.size());
 
     if (enable_mcf) {
-        if (maze_check_ilp_mcf) {
-            (void)run_maze_check_ilp_mcf_after_mcf(
-                interposer.get(),
-                basedie.get(),
-                records,
-                result,
-                mcf_full,
-                cob_grid);
-        }
-        if (maze_check_mcf) {
-            (void)run_maze_check_mcf_after_mcf(
-                interposer.get(),
-                basedie.get(),
-                records,
-                result,
-                mcf_full,
-                cob_grid);
-        }
         if (check_golden && !run_wire_length_golden_check(config_path, mcf_full.summary.total_wire_length)) {
             log_total_runtime();
             return 1;

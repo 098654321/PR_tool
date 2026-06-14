@@ -2,10 +2,11 @@
 % Edit the parameters below, then click Run in the editor (or press F5).
 
 %% Parameters (edit here)
-log_path    = '../../../output/debug.log';
-unit        = 3;          % COBUnit index 0..15
-show_labels = false;      % show used/total on each COB tile
-save_png    = '';         % e.g. 'unit8.png'; leave empty to only display
+log_path        = '/Users/jiaheng/FDU_files/Tao_group/论文/papers/ASP-DAC27_SiIF/Projects/0614-test-pre-post-route/case5.log';
+unit            = 15;          % COBUnit index 0..15
+resource_phase  = 'post-solve';  % 'post-solve' | 'pre-route'
+show_labels     = true;      % show used/total on each COB tile
+save_png        = '';         % e.g. 'unit8.png'; leave empty to only display
 
 %% Setup paths
 script_dir = fileparts(mfilename('fullpath'));
@@ -26,19 +27,20 @@ if strlength(string(save_png)) > 0
 end
 
 %% Run
-fprintf('Log:  %s\n', log_path);
-fprintf('Unit: U%d\n', unit);
+fprintf('Log:   %s\n', log_path);
+fprintf('Unit:  U%d\n', unit);
+fprintf('Phase: %s\n', resource_phase);
 
 if strlength(string(save_png)) > 0
     fig = visualize_cob_unit_usage(log_path, unit, ...
-        'ShowLabels', show_labels, 'SavePath', save_png);
+        'Phase', resource_phase, 'ShowLabels', show_labels, 'SavePath', save_png);
     fprintf('Saved: %s\n', save_png);
 else
     fig = visualize_cob_unit_usage(log_path, unit, ...
-        'ShowLabels', show_labels);
+        'Phase', resource_phase, 'ShowLabels', show_labels);
 end
 
-data = parse_mcf_resource_usage(log_path);
+data = parse_mcf_resource_usage(log_path, resource_phase);
 u = data.units(unit + 1);
 fprintf('all_ok=%s  switches=%d/%d  channels=%d/%d\n', ...
     string(data.all_ok), ...

@@ -41,7 +41,7 @@ struct CobMcfRunSummary {
     int mcf_solve_ms{0};
     /// Wall time for the BusMCF stage only.
     int bus_mcf_solve_ms{0};
-    /// Wall time for each SimpleMCF unit solve; 0 for empty units or simple-maze mode.
+    /// Wall time for each SimpleMCF unit solve; 0 for empty units.
     std::array<int, 16> simple_mcf_solve_ms_by_unit {};
     /// Sum of per-origin-group wire lengths (track + bump count); 0 if not computed.
     std::size_t total_wire_length{0};
@@ -95,8 +95,7 @@ auto run_mcf_global_routing_cob_units(
     bool enable_mcf_obj = false,
     bool defer_interposer_suspend = false,
     bool disable_bus_mcf = false,
-    bool enable_simple_maze = false,
-    bool verbose_maze_records = false,
+    bool show_pre_route = false,
     const GurobiDiagnosticsOptions& diag = {}
 ) -> CobMcfFullResult;
 

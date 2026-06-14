@@ -3,14 +3,16 @@ function fig = visualize_cob_unit_usage(log_path, unit, varargin)
 %
 %   fig = visualize_cob_unit_usage(log_path, unit)
 %   fig = visualize_cob_unit_usage(log_path, unit, 'ShowLabels', true)
+%   fig = visualize_cob_unit_usage(log_path, unit, 'Phase', 'pre-route')
 %   fig = visualize_cob_unit_usage(log_path, unit, 'SavePath', 'u8.png')
 %
 %   log_path : path to debug.log (or any log containing MCF resource usage)
 %   unit     : COBUnit index 0..15 (matches log "Unit N:")
+%   Phase    : 'post-solve' (default) | 'pre-route'
 %
 %   Examples:
 %     visualize_cob_unit_usage('../../output/debug.log', 8);
-%     visualize_cob_unit_usage('projects/0602_visualization_5$8$13/case5.log', 0);
+%     visualize_cob_unit_usage('../../output/debug.log', 8, 'Phase', 'pre-route');
 
     if nargin < 2
         error('visualize_cob_unit_usage:NotEnoughInputs', ...
@@ -23,11 +25,24 @@ function fig = visualize_cob_unit_usage(log_path, unit, varargin)
             'unit must be an integer in [0, 15], got %g.', unit);
     end
 
+    p = inputParser;
+    addParameter(p, 'ShowLabels', false, @islogical);
+    addParameter(p, 'SavePath', '', @(x) ischar(x) || isstring(x));
+    addParameter(p, 'Phase', 'post-solve', @(x) ischar(x) || isstring(x));
+  addParameter(p, 'Parent', [], @(x) isempty(x) || isgraphics(x, 'axes'));
+    parse(p, varargin{:});
+    phase = char(p.Results.Phase);
+
     script_dir = fileparts(mfilename('fullpath'));
     addpath(script_dir);
 
-    data = parse_mcf_resource_usage(log_path);
+    data = parse_mcf_resource_usage(log_path, phase);
     unit_data = data.units(unit + 1);
 
-    fig = draw_cob_unit_usage(unit_data, unit, data.all_ok, varargin{:});
+    draw_args = {'ShowLabels', p.Results.ShowLabels, 'SavePath', p.Results.SavePath, ...
+        'Phase', phase};
+    if ~isempty(p.Results.Parent)
+        draw_args = [draw_args, {'Parent', p.Results.Parent}];
+    end
+    fig = draw_cob_unit_usage(unit_data, unit, data.all_ok, draw_args{:});
 end

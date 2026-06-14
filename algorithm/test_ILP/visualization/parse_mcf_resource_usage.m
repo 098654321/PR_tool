@@ -1,14 +1,24 @@
-function data = parse_mcf_resource_usage(log_path)
-%PARSE_MCF_RESOURCE_USAGE Parse MCF post-solve resource usage from debug.log.
+function data = parse_mcf_resource_usage(log_path, phase)
+%PARSE_MCF_RESOURCE_USAGE Parse MCF resource usage from debug.log.
 %
 %   data = parse_mcf_resource_usage(log_path)
+%   data = parse_mcf_resource_usage(log_path, phase)
 %
-%   Reads the last "MCF resource usage (post-solve, ...)" block and returns
-%   per-COBUnit switch and channel utilization for all 16 units.
+%   phase: 'post-solve' (default) | 'pre-route'
+%   Reads the last matching "MCF resource usage (<phase>, ...)" block and
+%   returns per-COBUnit switch and channel utilization for all 16 units.
 
     if nargin < 1 || strlength(string(log_path)) == 0
         error('parse_mcf_resource_usage:InvalidInput', ...
             'log_path must be a non-empty path to a debug.log file.');
+    end
+    if nargin < 2 || strlength(string(phase)) == 0
+        phase = 'post-solve';
+    end
+    phase = char(phase);
+    if ~strcmp(phase, 'post-solve') && ~strcmp(phase, 'pre-route')
+        error('parse_mcf_resource_usage:BadPhase', ...
+            'phase must be ''post-solve'' or ''pre-route'', got ''%s''.', phase);
     end
 
     if ~isfile(log_path)
@@ -17,24 +27,29 @@ function data = parse_mcf_resource_usage(log_path)
     end
 
     raw = fileread(log_path);
-    marker = 'MCF resource usage (post-solve, all_ok=';
+    marker = sprintf('MCF resource usage (%s, all_ok=', phase);
     idx = strfind(raw, marker);
     if isempty(idx)
+        if strcmp(phase, 'pre-route')
+            hint = ['Run test_ILP with --enable-mcf-routing --show-pre-route ', ...
+                    'and ensure BusMCF succeeded.'];
+        else
+            hint = ['Run test_ILP with --enable-mcf-routing and ensure MCF completed.'];
+        end
         error('parse_mcf_resource_usage:NoResourceBlock', ...
-            ['No MCF resource usage block found. Run test_ILP with ', ...
-             '--enable-mcf-routing and ensure MCF completed.']);
+            'No MCF resource usage block for phase ''%s''. %s', phase, hint);
     end
 
     tail = raw(idx(end):end);
-    all_ok_match = regexp(tail, ...
-        'MCF resource usage \(post-solve, all_ok=(true|false)\)', ...
-        'tokens', 'once');
+    header_pat = sprintf('MCF resource usage \\(%s, all_ok=(true|false)\\)', phase);
+    all_ok_match = regexp(tail, header_pat, 'tokens', 'once');
     if isempty(all_ok_match)
         error('parse_mcf_resource_usage:BadHeader', ...
-            'Could not parse all_ok flag from MCF resource usage header.');
+            'Could not parse all_ok flag from MCF resource usage header (phase=%s).', phase);
     end
 
     data = struct();
+    data.phase = phase;
     data.all_ok = strcmp(all_ok_match{1}, 'true');
     data.rows = 9;
     data.cols = 12;
@@ -45,7 +60,7 @@ function data = parse_mcf_resource_usage(log_path)
     unit_ids = regexp(tail, unit_pat, 'tokens');
     if numel(unit_starts) < 16
         error('parse_mcf_resource_usage:IncompleteUnits', ...
-            'Expected 16 Unit blocks, found %d.', numel(unit_starts));
+            'Expected 16 Unit blocks for phase ''%s'', found %d.', phase, numel(unit_starts));
     end
 
     for k = 1:16

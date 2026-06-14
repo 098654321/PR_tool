@@ -40,8 +40,7 @@ auto solve_tob_mcf_with_range_iteration(
     bool enable_pre_routing,
     bool enable_mcf_obj,
     bool disable_bus_mcf,
-    bool enable_simple_maze,
-    bool apply_interposer_suspend_on_success,
+    bool show_pre_route,
     const CadicalDiagnosticsOptions& sat_diag,
     const GurobiDiagnosticsOptions& gurobi_diag
 ) -> TobMcfPipelineResult;

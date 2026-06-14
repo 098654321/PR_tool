@@ -9,7 +9,6 @@
 - TOB 阶段：用 CaDiCal SAT 求解 bump/track 到 TOB 资源的可行分配。
 - 路径预计算阶段：为每个 record 的 `(end_track, start_track)` 预计算同 COBUnit 内受限最短路、path bbox 和 path-length 分层。
 - MCF 阶段：可选启用 Gurobi，在 track 级图上求解 BusMCF 和 SimpleMCF。
-- 诊断阶段：可选用 maze-check 或 simple-maze 判断 MCF 失败是否来自建模/容量限制。
 
 该子工程的硬件和电路基础来自项目根目录下的 `source/hardware` 与 `source/circuit`。算法依据优先参考 `algorithm/test_ILP/problem_formulation/` 中的方法文档，尤其是当前实现对应的“第七版方法与分析（SAT1）”。
 
@@ -31,8 +30,7 @@ algorithm/test_ILP/
 ├── sat_allocation/         # TOB SAT 编码、CaDiCal 封装、SAT-only 与 SAT+MCF pipeline
 ├── precompute/             # bbox、path precompute、path-length tier 放开
 ├── mcf/                    # track 级 BusMCF / SimpleMCF、bbox 可行图、硬件映射
-├── maze_check/             # MCF 失败后的 maze 诊断与 simple-maze
-├── ilp_allocation/         # legacy TOB ILP、MPS 导出、Interposer apply
+├── ilp_allocation/         # legacy TOB ILP、MPS 导出
 ├── visualization/          # MCF 资源使用可视化辅助脚本
 ├── case1/、case2/           # 历史样例
 └── problem_formulation/    # 方法定义与分析文档
@@ -43,11 +41,11 @@ algorithm/test_ILP/
 - `main.cc`
   - 解析 CLI 参数，读取 config，调用 `algo::build_nets`。
   - `build_records()` 将电路 net 展平为 2-pin 粒度 `Net_cost_record`，分配 `record_id` 与 `bit_id`。
-  - 调度 SAT-only、SAT+MCF、legacy MPS 导出、maze-check、结果日志输出。
+  - 调度 SAT-only、SAT+MCF、legacy MPS 导出、结果日志输出。
 
 - `common/ilp_types.hh`
   - 定义 `Net_cost_record`、`Net_type`、端点类型、reach step、`map_track()` 等 SAT/MCF 共用数据。
-  - `record_id` 是跨 SAT、MCF、maze-check 对齐数据的主键，不能随意重排或复用。
+  - `record_id` 是跨 SAT、MCF 对齐数据的主键，不能随意重排或复用。
 
 - `common/tob_allocation_types.hh` 与 `common/tob_bbox_expansion.hh`
   - `TobIlpResult` 保存 SAT 分配结果、track endpoint、`tier_by_record`。
@@ -66,17 +64,12 @@ algorithm/test_ILP/
 
 - `mcf/`
   - `cob_mcf_router.*` 构建 track 级全局图，准备 commodity，求解 BusMCF 与 SimpleMCF。
+  - PNnet（`TracksToBumpsNet`）使用 **per-unit** 虚拟 P/N 节点（`vp_node_by_unit` / `vn_node_by_unit`）；0/1 port 经 virtual arc 连到本 unit 的 hub。
   - `mcf_bbox.*` 根据 SAT 选定路径的 bbox 构造 MCF 可行图；对 track 节点施加 H/V 边界修剪（§第七版 6.2）。
   - `mcf_hw_map.hh` 封装 TOB/COB/track 坐标映射。
 
-- `maze_check/`
-  - `maze_check.*` 做 MCF 失败后的连通性诊断。
-  - `maze_route_ilp_fixed.*` 复用 SAT 固定端点做 maze。
-  - `simple_maze_routing.*` 用 simple-maze 替代 SimpleMCF Gurobi。
-
 - `ilp_allocation/`
   - `tob_ilp_model.*` 与 `gurobi.*` 保留 legacy TOB ILP 求解（`wirelength_study`）与 `--export-ilp-mps` 对照能力。
-  - `ilp_apply_interposer.*` 将 SAT 分配结果应用到 `Interposer`（maze-check / simple-maze）。
 
 ## 构建、运行、测试方法
 
@@ -95,8 +88,6 @@ xmake build test_ILP
 ./output/test_ILP <config_path> --enable-mcf-routing --enable-pre-routing
 ./output/test_ILP <config_path> --enable-presat-parallel
 ./output/test_ILP <config_path> --enable-presat-parallel --enable-mcf-routing --enable-pre-routing
-./output/test_ILP <config_path> --enable-mcf-routing --enable-mcf-obj --maze-check-mcf
-./output/test_ILP <config_path> --enable-mcf-routing --simple-maze --disable-01-mcf
 ./output/test_ILP <config_path> --export-ilp-mps <path>
 ```
 
@@ -107,18 +98,17 @@ xmake build test_ILP
 - 路径预计算会输出 `path precompute progress: [####------] N% (done/total)` 进度条日志（串行/并行均支持）。
 - `--enable-mcf-routing`：SAT 成功后继续执行 MCF。
 - `--enable-mcf-obj`：SimpleMCF 使用 `min Σ x` 目标；不加时 SimpleMCF 只做可行性求解。
-- `--enable-pre-routing`：为 **MCF** Gurobi 提供 warm start 初值（`cob_mcf_router` 内 MCF 图 BFS），不改变硬约束。BusMCF warm start 在 Bus 求解前执行；SimpleMCF warm start 在 Bus 求解成功后、按 COBUnit 以 Bus 实际占用初始化后再 BFS。与 TOB 阶段无关。
-- `--simple-maze`：BusMCF 仍用 Gurobi，SimpleMCF 改为 SAT 固定端点下的 maze。
+- `--enable-pre-routing`：为 **MCF** Gurobi 提供 warm start 初值（`cob_mcf_router` 内 MCF 图 BFS），不改变硬约束。BusMCF warm start 在 Bus 求解前执行；SimpleMCF warm start 在 Bus 求解成功后、按 COBUnit 以 Bus 实际占用初始化后再 BFS。多扇出 origin（`TrackToBumpsNet` / `TracksToBumpsNet`）采用增量 frontier：TTB 以共享 snk 为 hub、按 `end_bumps()` 顺序；PNnet 以本 unit 的 `vp`/`vn` 为 hub、按 record 顺序；部分 child 失败时成功的仍写入 warm start。与 TOB 阶段无关。
+- `--show-pre-route`：自动开启 pre-routing；在 SimpleMCF warm start 结束后输出 `MCF resource usage (pre-route, ...)` 日志块（BusMCF 路径 + warm start 路径），格式与 post-solve 相同。要求 `--enable-mcf-routing`。
 - `--disable-01-mcf`：跳过顶层 `TracksToBumpsNet`，即不生成 Pnet/Nnet records；SyncNet 内部拆分不受影响。
 - `--disable-multipin-io`：跳过顶层 `TrackToBumpsNet`，即不生成对应多扇出 IO split records。
 - `--disable-2pin-io`：跳过顶层 `TrackToBumpNet` 与 `BumpToTrackNet`；SyncNet 内部 btt/ttb 不受影响。
-- `--maze-check-mcf` / `--maze-check-ilp-mcf`：MCF 后追加失败诊断，不改变 MCF 求解逻辑。
-- `--sat-log` / `--gurobi-log`：分别输出 SAT trace 与 MCF Gurobi 日志。
+- `--sat-log` / `--gurobi-log`：分别输出 SAT 与 MCF Gurobi 日志。
 
 MCF 计时日志：
 
 - `timing phase=mcf_bus_solve ms=...`：单轮 BusMCF 求解时间。
-- `timing phase=simple_mcf_unitN_solve ms=...`：单轮 SimpleMCF unit N 求解时间；simple-maze 模式下为 0。
+- `timing phase=simple_mcf_unitN_solve ms=...`：单轮 SimpleMCF unit N 求解时间。
 - `timing phase=mcf_bus_solve_total ms=...` 与 `simple_mcf_unitN_solve_total`：SAT+MCF retry 全部尝试轮的累计时间。
 
 TOB SAT最小验证建议：
@@ -138,17 +128,19 @@ xmake build test_ILP
 ./output/test_ILP test/config/case9 --enable-mcf-routing  --enable-pre-routing
 ```
 
+`algorithm/test_ILP/visualization/` 从 `debug.log` 解析 `MCF resource usage` 块并绘图。`matlab_main.m` 中 `resource_phase` 可选 `post-solve`（默认，Gurobi 求解后）或 `pre-route`（需 `--show-pre-route`）；`visualize_cob_unit_usage(..., 'Phase', ...)` 同理。
+
 ## 项目工程风格
 
 - 小步、局部、可解释：每个改动都应能对应到方法文档、bug 或用户明确需求。
 - 不做无关重构；不要顺手改格式、命名或主工程接口。
 - `records.size()`、`assignments.size()`、`record_track_endpoints.size()` 必须保持一致。
-- `record_id` 全局唯一，由 `build_records()` 输出顺序分配，SAT/MCF/maze-check 都依赖它对齐。
+- `record_id` 全局唯一，由 `build_records()` 输出顺序分配，SAT/MCF 都依赖它对齐。
 - `tier_by_record[record_index]` 是局部 path-length 层级；`max_tier` 只作为全局摘要，不应作为 MCF 真实范围来源。
 - 默认日志不打印完整 tier 数组；需要定位局部扩展时优先看 `max_tier`、`changed_records`、`fail_set`。
 - SAT UNSAT 当前不做 UNSAT core 归因；按 pipeline 规则扩展相关 `Tnet/PNnet`。
 - BusMCF 失败只扩展可定位 `bus_key` 的 member records；无法定位时应失败并记录原因。
-- SimpleMCF 或 simple-maze 失败按失败 unit 的 simple records 扩展；多扇出 origin 要扩展同 origin 的所有 child records。
+- SimpleMCF 失败按失败 unit 的 simple records 扩展；多扇出 origin 要扩展同 origin 的所有 child records。
 - PNnet 在 MCF 中继续不裁剪；它的 tier 只影响 SAT 阶段候选 start tracks。
 - track 只能在所属 COBUnit 内连通；path precompute 不允许跨 COBUnit 搜索。
 - MCF bbox 使用 SAT 选中 path 的 bbox；当前 commodity 的 `src/snk` endpoint node 及其 bbox 内 endpoint 接入边可做局部豁免，避免边界修剪切断 SAT 固定端点。

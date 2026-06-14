@@ -112,8 +112,7 @@ auto solve_tob_mcf_with_range_iteration(
     const bool enable_pre_routing,
     const bool enable_mcf_obj,
     const bool disable_bus_mcf,
-    const bool enable_simple_maze,
-    const bool apply_interposer_suspend_on_success,
+    const bool show_pre_route,
     const CadicalDiagnosticsOptions& sat_diag,
     const GurobiDiagnosticsOptions& gurobi_diag
 ) -> TobMcfPipelineResult {
@@ -181,8 +180,7 @@ auto solve_tob_mcf_with_range_iteration(
             enable_mcf_obj,
             true,
             disable_bus_mcf,
-            enable_simple_maze,
-            sat_diag.verbose_reach_endpoints,
+            show_pre_route,
             gurobi_diag);
 
         out.mcf_warm_start_ms += mcf.summary.mcf_warm_start_ms;
@@ -241,7 +239,7 @@ auto solve_tob_mcf_with_range_iteration(
 
         debug::info_fmt("tier iteration: attempt={} SAT=SAT MCF=ok max_tier={}", attempt, state.max_tier());
 
-        if (apply_interposer_suspend_on_success && interposer != nullptr) {
+        if (interposer != nullptr) {
             const auto graph = build_mcf_track_graph(cob_grid);
             suspend_mcf_paths_on_interposer(interposer, graph, mcf.paths_by_unit);
         }
