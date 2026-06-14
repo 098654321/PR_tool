@@ -157,6 +157,8 @@ constexpr int kHardwareSwitchesPerCobUnit = 48;
 constexpr int kChannelsPerCobLink = 8;
 constexpr int kMaxIisLogPerKind = 20;
 constexpr std::size_t kInvalidRecordIndex = std::numeric_limits<std::size_t>::max();
+/// SimpleMCF min-Sum-x: cost multiplier for x^H_e on warm-start-used physical edges (ninth-edition symmetry break).
+constexpr double kSimpleMcfWarmStartUsedEdgeCost = 0.95;
 
 auto normalized_edge_key(int u, int v) -> std::pair<int, int>;
 auto node_text(const GlobalGraph& g, const int node) -> std::String;
@@ -1435,7 +1437,9 @@ auto route_mcf_warm_path_to_frontier(
     const McfCommodityBBox& effective_bbox,
     const std::Vector<std::Vector<int>>& outgoing_arcs,
     const std::map<std::pair<int, int>, int>& used_edges,
-    const std::map<int, int>& used_nodes
+    const std::map<int, int>& used_nodes,
+    const std::set<std::pair<int, int>>& tree_edges,
+    const std::set<int>& tree_nodes
 ) -> std::Vector<int> {
     if (frontier.contains(src)) {
         return std::Vector<int> {src};
@@ -1470,12 +1474,14 @@ auto route_mcf_warm_path_to_frontier(
             }
             if (!arc.is_virtual) {
                 const auto edge_key = normalized_edge_key(arc.u, arc.v);
-                if (const auto it = used_edges.find(edge_key); it != used_edges.end() && it->second >= 1) {
+                if (const auto it = used_edges.find(edge_key);
+                    it != used_edges.end() && it->second >= 1 && !tree_edges.contains(edge_key)) {
                     continue;
                 }
             }
             if (!graph.nodes[static_cast<std::size_t>(arc.v)].is_virtual) {
-                if (const auto it = used_nodes.find(arc.v); it != used_nodes.end() && it->second >= 1) {
+                if (const auto it = used_nodes.find(arc.v);
+                    it != used_nodes.end() && it->second >= 1 && !tree_nodes.contains(arc.v)) {
                     continue;
                 }
             }
@@ -1498,6 +1504,32 @@ auto route_mcf_warm_path_to_frontier(
     path.push_back(src);
     std::reverse(path.begin(), path.end());
     return path;
+}
+
+auto add_mcf_warm_path_to_origin_tree(
+    const GlobalGraph& graph,
+    const std::Vector<int>& path,
+    std::set<std::pair<int, int>>& tree_edges,
+    std::set<int>& tree_nodes
+) -> void {
+    for (const auto node : path) {
+        if (!graph.nodes[static_cast<std::size_t>(node)].is_virtual) {
+            tree_nodes.insert(node);
+        }
+    }
+    for (std::size_t i = 0; i + 1 < path.size(); ++i) {
+        const auto u = path[i];
+        const auto v = path[i + 1];
+        for (const auto& arc : graph.arcs) {
+            if (arc.u != u || arc.v != v) {
+                continue;
+            }
+            if (!arc.is_virtual) {
+                tree_edges.insert(normalized_edge_key(u, v));
+            }
+            break;
+        }
+    }
 }
 
 auto expand_frontier_from_path(
@@ -1618,6 +1650,47 @@ auto mark_mcf_warm_path_used(
             break;
         }
     }
+}
+
+struct WarmStartSymmetryBreakInfo {
+    std::map<int, std::set<std::pair<int, int>>> used_edges_by_h;
+    std::size_t matched_paths{0};
+};
+
+auto collect_warm_start_used_edges_by_origin(
+    const GlobalGraph& graph,
+    const StageWarmStart& warm_start,
+    const std::Vector<PreparedCommodity>& local_com,
+    const std::Vector<int>& commodity_origin_h
+) -> WarmStartSymmetryBreakInfo {
+    WarmStartSymmetryBreakInfo out;
+    for (int k = 0; k < static_cast<int>(local_com.size()); ++k) {
+        const auto& commodity = local_com[static_cast<std::size_t>(k)];
+        const auto path_it = warm_start.nodes_by_record_id.find(commodity.record_id);
+        if (path_it == warm_start.nodes_by_record_id.end()) {
+            continue;
+        }
+        const auto& path = path_it->second;
+        if (path.size() < 2) {
+            continue;
+        }
+        ++out.matched_paths;
+        const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
+        for (std::size_t i = 0; i + 1 < path.size(); ++i) {
+            const auto u = path[i];
+            const auto v = path[i + 1];
+            for (const auto& arc : graph.arcs) {
+                if (arc.u != u || arc.v != v) {
+                    continue;
+                }
+                if (!arc.is_virtual) {
+                    out.used_edges_by_h[h].insert(normalized_edge_key(u, v));
+                }
+                break;
+            }
+        }
+    }
+    return out;
 }
 
 auto route_mcf_stage_warm_start(
@@ -1805,6 +1878,8 @@ auto route_simple_mcf_stage_warm_start_by_origin(
         }
 
         auto frontier = std::set<int> {*hub};
+        auto tree_edges = std::set<std::pair<int, int>> {};
+        auto tree_nodes = std::set<int> {};
         const auto ordered = sort_multi_fanout_children(group, local_com, records);
         auto group_paths = std::Vector<std::pair<std::size_t, std::Vector<int>>> {};
         group_paths.reserve(ordered.size());
@@ -1820,7 +1895,9 @@ auto route_simple_mcf_stage_warm_start_by_origin(
                 effective_bbox_for(cid),
                 outgoing_arcs,
                 used_edges,
-                used_nodes);
+                used_nodes,
+                tree_edges,
+                tree_nodes);
             if (path.empty()) {
                 ++failed;
                 ++group_failed;
@@ -1829,6 +1906,7 @@ auto route_simple_mcf_stage_warm_start_by_origin(
             }
             ++routed;
             group_paths.push_back({commodity.record_id, std::move(path)});
+            add_mcf_warm_path_to_origin_tree(graph, group_paths.back().second, tree_edges, tree_nodes);
             mark_mcf_warm_path_used(graph, group_paths.back().second, used_edges, used_nodes);
             expand_frontier_from_path(frontier, group_paths.back().second);
         }
@@ -2967,6 +3045,11 @@ auto solve_simple_mcf_unit(
         enable_mcf_obj ? "enabled (--enable-mcf-obj)" : "disabled (feasibility only)");
 
     // SimpleMCF objective: min Σ x on non-virtual arcs (optional via --enable-mcf-obj)
+    const bool apply_symmetry_break =
+        enable_mcf_obj && warm_start != nullptr && !warm_start->nodes_by_record_id.empty();
+    const auto symmetry_break = apply_symmetry_break
+        ? collect_warm_start_used_edges_by_origin(graph, *warm_start, local_com, commodity_origin_h)
+        : WarmStartSymmetryBreakInfo {};
     auto col_cost = std::vector<double>(static_cast<std::size_t>(num_col), 0.0);
     auto col_lo = std::vector<double>(static_cast<std::size_t>(num_col), 0.0);
     auto col_up = std::vector<double>(static_cast<std::size_t>(num_col), 1.0);
@@ -2975,10 +3058,33 @@ auto solve_simple_mcf_unit(
     for (int j = 0; j < num_f; ++j) {
         col_entries[static_cast<std::size_t>(j)] = f_entries[static_cast<std::size_t>(j)];
     }
+    std::size_t discounted_x_vars = 0;
     for (int j = 0; j < num_origin_x; ++j) {
         const auto col = num_f + j;
-        col_cost[static_cast<std::size_t>(col)] = enable_mcf_obj ? 1.0 : 0.0;
+        const auto& xv = origin_x_vars[static_cast<std::size_t>(j)];
+        double cost = 0.0;
+        if (enable_mcf_obj) {
+            cost = 1.0;
+            if (apply_symmetry_break) {
+                const auto e = normalized_edge_key(xv.u, xv.v);
+                const auto h_it = symmetry_break.used_edges_by_h.find(xv.h);
+                if (h_it != symmetry_break.used_edges_by_h.end() && h_it->second.contains(e)) {
+                    cost = kSimpleMcfWarmStartUsedEdgeCost;
+                    ++discounted_x_vars;
+                }
+            }
+        }
+        col_cost[static_cast<std::size_t>(col)] = cost;
         col_entries[static_cast<std::size_t>(col)] = origin_x_entries[static_cast<std::size_t>(j)];
+    }
+    if (apply_symmetry_break) {
+        debug::info_fmt(
+            "{} objective symmetry-break: used_edge_cost={} discounted_x_vars={} total_x_vars={} matched_warm_paths={}",
+            stage_name,
+            kSimpleMcfWarmStartUsedEdgeCost,
+            discounted_x_vars,
+            origin_x_vars.size(),
+            symmetry_break.matched_paths);
     }
     for (int j = 0; j < num_origin_o; ++j) {
         const auto col = num_f + num_origin_x + j;
