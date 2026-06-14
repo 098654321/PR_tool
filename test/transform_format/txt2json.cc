@@ -159,8 +159,8 @@ int main() {
     PR_tool::debug::initial_log("./debug.log");
 
     for (int i = 8; i <= 15; i++) {
-        std::FilePath config_folder = "../test/config/case" + std::to_string(i);
-        std::FilePath json_folder = "./json/case" + std::to_string(i);
+        std::FilePath config_folder = "/Users/jiaheng/FDU_files/Tao_group/PR_tool/jsy_version_tool/excel_2_txt/config";
+        std::FilePath json_folder = "/Users/jiaheng/FDU_files/Tao_group/PR_tool/jsy_version_tool/excel_2_txt/config/json";
         PR_tool::parse::txt2json(config_folder, json_folder, 0, false);
     }
     
