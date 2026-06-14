@@ -97,7 +97,7 @@ xmake build test_ILP
 - `--enable-presat-parallel`：并行执行 SAT 前路径预计算（按 `(record, end_track)` 分块，只读 `Interposer`）。
 - 路径预计算会输出 `path precompute progress: [####------] N% (done/total)` 进度条日志（串行/并行均支持）。
 - `--enable-mcf-routing`：SAT 成功后继续执行 MCF。
-- `--enable-mcf-obj`：SimpleMCF 使用 `min Σ x` 目标；不加时 SimpleMCF 只做可行性求解。
+- `--enable-mcf-obj`：SimpleMCF 使用 `min Σ x` 目标；不加时 SimpleMCF 只做可行性求解。与 `--enable-pre-routing` 同时开启时，对 warm start 成功路径上的 `x^H_e` 使用 `kSimpleMcfWarmStartUsedEdgeCost`（0.95，见 `cob_mcf_router.cc`）软加权，其余 `x` 为 1.0，用于软破坏对称性；warm start 重试时恢复全 1.0。
 - `--enable-pre-routing`：为 **MCF** Gurobi 提供 warm start 初值（`cob_mcf_router` 内 MCF 图 BFS），不改变硬约束。BusMCF warm start 在 Bus 求解前执行；SimpleMCF warm start 在 Bus 求解成功后、按 COBUnit 以 Bus 实际占用初始化后再 BFS。多扇出 origin（`TrackToBumpsNet` / `TracksToBumpsNet`）采用增量 frontier：TTB 以共享 snk 为 hub、按 `end_bumps()` 顺序；PNnet 以本 unit 的 `vp`/`vn` 为 hub、按 record 顺序；部分 child 失败时成功的仍写入 warm start。与 TOB 阶段无关。
 - `--show-pre-route`：自动开启 pre-routing；在 SimpleMCF warm start 结束后输出 `MCF resource usage (pre-route, ...)` 日志块（BusMCF 路径 + warm start 路径），格式与 post-solve 相同。要求 `--enable-mcf-routing`。
 - `--disable-01-mcf`：跳过顶层 `TracksToBumpsNet`，即不生成 Pnet/Nnet records；SyncNet 内部拆分不受影响。
@@ -126,9 +126,16 @@ xmake build test_ILP
 ./output/test_ILP test/config/case7 --enable-mcf-routing  --enable-pre-routing
 ./output/test_ILP test/config/case8 --enable-mcf-routing  --enable-pre-routing
 ./output/test_ILP test/config/case9 --enable-mcf-routing  --enable-pre-routing
+./output/test_ILP test/config/case7 --enable-mcf-routing --enable-pre-routing --enable-mcf-obj
 ```
 
+最后一行验证第九版对称性软破坏（日志应含 `objective symmetry-break`）。
+
 `algorithm/test_ILP/visualization/` 从 `debug.log` 解析 `MCF resource usage` 块并绘图。`matlab_main.m` 中 `resource_phase` 可选 `post-solve`（默认，Gurobi 求解后）或 `pre-route`（需 `--show-pre-route`）；`visualize_cob_unit_usage(..., 'Phase', ...)` 同理。
+
+一个排错方法：
+
+如果出现类似`Build system >> Add external ports >> { row: 7, col: 13, dir: PR_tool::hardware::TrackDirection::Horizontal, index: 45 } is not a valid external port coord!`的错误，可以去修改source/hardware/interposer.hh: COB_ARRAY_WIDTH 这个参数，要么是12，要么是13
 
 ## 项目工程风格
 
