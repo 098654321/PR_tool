@@ -12,7 +12,6 @@ namespace PR_tool {
 auto solve_tob_ilp_with_gurobi(
     const std::Vector<Net_cost_record>& records,
     bool enable_parallel = false,
-    const TobIlpWarmStart* warm_start = nullptr,
     const GurobiDiagnosticsOptions& diag = {}
 )
     -> TobIlpResult;

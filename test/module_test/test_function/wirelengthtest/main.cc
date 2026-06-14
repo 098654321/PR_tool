@@ -215,7 +215,7 @@ auto run_wirelength_study_main(int argc, char** argv) -> int {
         path_cache.by_record.size(),
         start_edges);
 
-    const auto ilp_result = solve_tob_ilp_with_gurobi(records, false, nullptr);
+    const auto ilp_result = solve_tob_ilp_with_gurobi(records, false);
     if (!ilp_result.ok) {
         debug::error_fmt("ILP failed: {}", ilp_result.message);
         return 1;

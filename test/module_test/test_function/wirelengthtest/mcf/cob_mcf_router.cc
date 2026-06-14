@@ -64,7 +64,6 @@ struct PreparedCommodity {
     McfClass cls{McfClass::Plain};
     bool is_bus{false};
     std::String bus_key;
-    std::Vector<IlpReachStep> reach_steps;
     std::Vector<int> bbox_cobs;
 };
 
@@ -1065,15 +1064,6 @@ auto prepare_commodities(
         }
 
         c.bbox_cobs = bbox_cob_indices(grid, bbox_start, bbox_end);
-        if (endpoint.has_end_track) {
-            const auto it_end = record.reach_by_end_start.find(endpoint.end_track);
-            if (it_end != record.reach_by_end_start.end()) {
-                const auto it_start = it_end->second.find(endpoint.start_track);
-                if (it_start != it_end->second.end()) {
-                    c.reach_steps = it_start->second;
-                }
-            }
-        }
         out.push_back(std::move(c));
     }
     return out;

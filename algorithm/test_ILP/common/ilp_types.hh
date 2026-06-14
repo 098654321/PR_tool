@@ -78,12 +78,6 @@ struct Net_cost_record {
     std::map<std::size_t, std::Vector<std::size_t>> starttrack_by_endtrack {};
 };
 
-struct TobIlpWarmStart {
-    std::map<std::String, double> values;
-    std::size_t routed_nets{0};
-    std::size_t failed_nets{0};
-};
-
 inline auto map_track(std::size_t track) -> std::size_t {
     return track < 64 ? track % 8 : track % 8 + 8;
 }

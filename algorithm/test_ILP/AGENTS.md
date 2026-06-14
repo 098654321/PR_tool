@@ -29,7 +29,7 @@ algorithm/test_ILP/
 ├── main.cc                 # CLI、build_records、阶段调度
 ├── common/                 # record、SAT/MCF 结果、path tier 状态等共用类型
 ├── sat_allocation/         # TOB SAT 编码、CaDiCal 封装、SAT-only 与 SAT+MCF pipeline
-├── precompute/             # bbox、path precompute、reach、legacy ILP reach 预计算
+├── precompute/             # bbox、path precompute、path-length tier 放开
 ├── mcf/                    # track 级 BusMCF / SimpleMCF、bbox 可行图、硬件映射
 ├── maze_check/             # MCF 失败后的 maze 诊断与 simple-maze
 ├── ilp_allocation/         # legacy TOB ILP、MPS 导出、Interposer apply
@@ -75,9 +75,8 @@ algorithm/test_ILP/
   - `simple_maze_routing.*` 用 simple-maze 替代 SimpleMCF Gurobi。
 
 - `ilp_allocation/`
-  - `tob_ilp_model.*` 与 `gurobi.*` 保留 legacy TOB ILP/MPS 对照能力。
-  - `ilp_apply_interposer.*` 将 SAT/ILP 分配应用到 `Interposer`。
-  - `ilp_speedup.*` 提供 `cobunit_to_tracks()`、`track_to_jk()` 等辅助映射。
+  - `tob_ilp_model.*` 与 `gurobi.*` 保留 legacy TOB ILP 求解（`wirelength_study`）与 `--export-ilp-mps` 对照能力。
+  - `ilp_apply_interposer.*` 将 SAT 分配结果应用到 `Interposer`（maze-check / simple-maze）。
 
 ## 构建、运行、测试方法
 
@@ -108,7 +107,7 @@ xmake build test_ILP
 - 路径预计算会输出 `path precompute progress: [####------] N% (done/total)` 进度条日志（串行/并行均支持）。
 - `--enable-mcf-routing`：SAT 成功后继续执行 MCF。
 - `--enable-mcf-obj`：SimpleMCF 使用 `min Σ x` 目标；不加时 SimpleMCF 只做可行性求解。
-- `--enable-pre-routing`：仅影响 MCF warm start，不改变硬约束。
+- `--enable-pre-routing`：为 **MCF** Gurobi 提供 warm start 初值（`cob_mcf_router` 内 MCF 图 BFS），不改变硬约束。BusMCF warm start 在 Bus 求解前执行；SimpleMCF warm start 在 Bus 求解成功后、按 COBUnit 以 Bus 实际占用初始化后再 BFS。与 TOB 阶段无关。
 - `--simple-maze`：BusMCF 仍用 Gurobi，SimpleMCF 改为 SAT 固定端点下的 maze。
 - `--disable-01-mcf`：跳过顶层 `TracksToBumpsNet`，即不生成 Pnet/Nnet records；SyncNet 内部拆分不受影响。
 - `--disable-multipin-io`：跳过顶层 `TrackToBumpsNet`，即不生成对应多扇出 IO split records。

@@ -1605,6 +1605,59 @@ auto route_simple_mcf_stage_warm_start_by_origin(
     return warm;
 }
 
+auto seed_warm_used_from_bus_unit(
+    const StageSolveResult& bus_res,
+    const std::size_t unit_c,
+    std::map<std::pair<int, int>, int>& used_edges,
+    std::map<int, int>& used_nodes
+) -> void {
+    used_edges.clear();
+    used_nodes.clear();
+    for (const auto& [edge, used] : bus_res.unit_used_edges[unit_c]) {
+        if (used >= 1) {
+            used_edges[edge] = used;
+        }
+    }
+    for (const auto& [node, used] : bus_res.unit_used_nodes[unit_c]) {
+        if (used >= 1) {
+            used_nodes[node] = used;
+        }
+    }
+}
+
+auto merge_stage_warm_start(StageWarmStart& target, StageWarmStart&& source) -> void {
+    for (auto& [record_id, path] : source.nodes_by_record_id) {
+        target.nodes_by_record_id.emplace(record_id, std::move(path));
+    }
+}
+
+auto run_simple_warm_start_for_unit(
+    const GlobalGraph& graph,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::Vector<std::size_t>& simple_ids_for_unit,
+    const std::Vector<Net_cost_record>& records,
+    const McfBBoxContext& bbox_ctx,
+    const StageSolveResult& bus_res,
+    const std::size_t unit_c,
+    const std::Vector<std::Vector<int>>& outgoing_arcs
+) -> StageWarmStart {
+    auto warm_used_edges = std::map<std::pair<int, int>, int> {};
+    auto warm_used_nodes = std::map<int, int> {};
+    seed_warm_used_from_bus_unit(bus_res, unit_c, warm_used_edges, warm_used_nodes);
+    const auto simple_effective_bbox = [&](const std::size_t cid) -> McfCommodityBBox {
+        return effective_bbox_for_simple_commodity(cid, simple_ids_for_unit, commodities, records, bbox_ctx);
+    };
+    return route_simple_mcf_stage_warm_start_by_origin(
+        graph,
+        commodities,
+        simple_ids_for_unit,
+        records,
+        simple_effective_bbox,
+        outgoing_arcs,
+        warm_used_edges,
+        warm_used_nodes);
+}
+
 auto append_paths_from_f_solution(
     const std::String& stage_name,
     const GlobalGraph& graph,
@@ -3324,12 +3377,17 @@ auto run_mcf_global_routing_cob_units(
     auto simple_warm_start = StageWarmStart {};
     const StageWarmStart* bus_warm_start_ptr = nullptr;
     const StageWarmStart* simple_warm_start_ptr = nullptr;
-    const auto mcf_warm_t0 = std::chrono::steady_clock::now();
+    auto outgoing_arcs = std::Vector<std::Vector<int>> {};
     if (enable_pre_routing) {
-        auto outgoing_arcs = std::Vector<std::Vector<int>>(graph.nodes.size());
+        outgoing_arcs.resize(graph.nodes.size());
         for (std::size_t a = 0; a < graph.arcs.size(); ++a) {
             outgoing_arcs[static_cast<std::size_t>(graph.arcs[a].u)].push_back(static_cast<int>(a));
         }
+    }
+    int bus_warm_start_ms = 0;
+    int simple_warm_start_ms = 0;
+    if (enable_pre_routing && !disable_bus_mcf) {
+        const auto bus_warm_t0 = std::chrono::steady_clock::now();
         auto warm_used_edges = std::map<std::pair<int, int>, int> {};
         auto warm_used_nodes = std::map<int, int> {};
         const auto bus_effective_bbox = [&](const std::size_t cid) -> McfCommodityBBox {
@@ -3340,38 +3398,21 @@ auto run_mcf_global_routing_cob_units(
                 commodity.bus_key};
             return resolve_mcf_bbox(bbox_ctx, cid, input, McfArcBBoxMode::Bus, McfCommodityBBox {});
         };
-        const auto simple_effective_bbox = [&](const std::size_t cid) -> McfCommodityBBox {
-            return effective_bbox_for_simple_commodity(cid, simple_ids, commodities, records, bbox_ctx);
-        };
-        if (!disable_bus_mcf) {
-            bus_warm_start = route_mcf_stage_warm_start(
-                "BusMCF",
-                graph,
-                commodities,
-                bus_ids,
-                bus_effective_bbox,
-                outgoing_arcs,
-                warm_used_edges,
-                warm_used_nodes);
-            bus_warm_start_ptr = &bus_warm_start;
-        }
-        if (!enable_simple_maze) {
-            simple_warm_start = route_simple_mcf_stage_warm_start_by_origin(
-                graph,
-                commodities,
-                simple_ids,
-                records,
-                simple_effective_bbox,
-                outgoing_arcs,
-                warm_used_edges,
-                warm_used_nodes);
-            simple_warm_start_ptr = &simple_warm_start;
-        }
+        bus_warm_start = route_mcf_stage_warm_start(
+            "BusMCF",
+            graph,
+            commodities,
+            bus_ids,
+            bus_effective_bbox,
+            outgoing_arcs,
+            warm_used_edges,
+            warm_used_nodes);
+        bus_warm_start_ptr = &bus_warm_start;
+        const auto bus_warm_t1 = std::chrono::steady_clock::now();
+        bus_warm_start_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(bus_warm_t1 - bus_warm_t0).count());
+        debug::info_fmt("timing phase=mcf_bus_warm_start ms={}", bus_warm_start_ms);
     }
-    const auto mcf_warm_t1 = std::chrono::steady_clock::now();
-    out.summary.mcf_warm_start_ms = static_cast<int>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(mcf_warm_t1 - mcf_warm_t0).count());
-    debug::info_fmt("timing phase=mcf_warm_start ms={}", out.summary.mcf_warm_start_ms);
 
     const auto solve_t0 = std::chrono::steady_clock::now();
     auto bus_res = StageSolveResult {};
@@ -3394,6 +3435,34 @@ auto run_mcf_global_routing_cob_units(
     if (!bus_res.ok) {
         merge_bus_stage_retry_hints(out.retry_hints, bus_res);
     }
+
+    if (enable_pre_routing && !enable_simple_maze && bus_res.ok) {
+        const auto simple_warm_t0 = std::chrono::steady_clock::now();
+        for (std::size_t u = 0; u < 16; ++u) {
+            if (simple_ids_by_unit[u].empty()) {
+                continue;
+            }
+            auto unit_warm = run_simple_warm_start_for_unit(
+                graph,
+                commodities,
+                simple_ids_by_unit[u],
+                records,
+                bbox_ctx,
+                bus_res,
+                u,
+                outgoing_arcs);
+            merge_stage_warm_start(simple_warm_start, std::move(unit_warm));
+        }
+        if (!simple_warm_start.nodes_by_record_id.empty()) {
+            simple_warm_start_ptr = &simple_warm_start;
+        }
+        const auto simple_warm_t1 = std::chrono::steady_clock::now();
+        simple_warm_start_ms = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(simple_warm_t1 - simple_warm_t0).count());
+        debug::info_fmt("timing phase=mcf_simple_warm_start ms={}", simple_warm_start_ms);
+    }
+    out.summary.mcf_warm_start_ms = bus_warm_start_ms + simple_warm_start_ms;
+    debug::info_fmt("timing phase=mcf_warm_start ms={}", out.summary.mcf_warm_start_ms);
 
     // 得到剩余容量
     auto build_edge_residual = [&](const std::size_t unit_c) {

@@ -173,7 +173,6 @@ target("test_ILP")
         "algorithm/test_ILP/ilp_allocation/tob_ilp_model.cc",
         "algorithm/test_ILP/ilp_allocation/gurobi.cc",
         "algorithm/test_ILP/ilp_allocation/gurobi_model_stats.cc",
-        "algorithm/test_ILP/ilp_allocation/ilp_speedup.cc",
         "algorithm/test_ILP/ilp_allocation/ilp_apply_interposer.cc",
         "algorithm/test_ILP/precompute/tob_path_precompute.cc",
         "algorithm/test_ILP/mcf/cob_mcf_router.cc",
@@ -236,7 +235,7 @@ target("wirelength_study")
         "test/module_test/test_function/wirelengthtest/mcf/cob_mcf_router.cc",
         "algorithm/test_ILP/ilp_allocation/tob_ilp_model.cc",
         "algorithm/test_ILP/ilp_allocation/gurobi.cc",
-        "algorithm/test_ILP/ilp_allocation/ilp_speedup.cc",
+        "algorithm/test_ILP/ilp_allocation/gurobi_model_stats.cc",
         "algorithm/test_ILP/ilp_allocation/ilp_apply_interposer.cc",
         "algorithm/test_ILP/precompute/tob_path_precompute.cc",
         "algorithm/test_ILP/precompute/ilp_bounding_box.cc")
