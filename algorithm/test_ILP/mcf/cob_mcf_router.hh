@@ -17,6 +17,16 @@ class BaseDie;
 
 namespace PR_tool {
 
+/// Ninth-edition MCF stage outcome (BusMCF / SimpleMCF Gurobi or presolve).
+enum class McfSolutionClass { Optimal, Suboptimal, TimeLimit, Failed, Skipped };
+
+auto classify_gurobi_status(int status) -> McfSolutionClass;
+auto solution_class_name(McfSolutionClass c) -> std::String;
+/// Optimal, Suboptimal, or Skipped.
+auto stage_result_ok(McfSolutionClass c) -> bool;
+/// Optimal or Suboptimal (extracted Gurobi solution).
+auto stage_result_usable(McfSolutionClass c) -> bool;
+
 /// COB tile grid size for MCF graph construction (must match `hardware::Interposer::COB_ARRAY_*` when passed from CLI).
 struct CobMcfGridDims {
     int rows{0};

@@ -155,10 +155,6 @@ auto build_mcf_bbox_context(
         const auto& input = commodities[i];
         const auto& record = records[input.record_index];
         auto& out = ctx.per_commodity[i];
-        if (record.type == Net_type::PNnet) {
-            out.restricted = false;
-            continue;
-        }
         out.restricted = true;
         if (input.record_index >= ilp_result.record_track_endpoints.size()) {
             throw std::runtime_error(std::format(
@@ -223,9 +219,6 @@ auto compute_origin_group_bbox(
     for (std::size_t i = 0; i < count; ++i) {
         const auto global_idx = global_commodity_ids[i];
         const auto& record = records[record_indices[i]];
-        if (record.type == Net_type::PNnet) {
-            continue;
-        }
         if (global_idx >= ctx.per_commodity.size()) {
             continue;
         }

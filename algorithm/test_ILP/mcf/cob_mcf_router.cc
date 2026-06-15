@@ -37,15 +37,48 @@
 
 namespace PR_tool {
 
+auto classify_gurobi_status(const int status) -> McfSolutionClass {
+    switch (status) {
+        case GRB_OPTIMAL:
+            return McfSolutionClass::Optimal;
+        case GRB_SUBOPTIMAL:
+            return McfSolutionClass::Suboptimal;
+        case GRB_TIME_LIMIT:
+            return McfSolutionClass::TimeLimit;
+        default:
+            return McfSolutionClass::Failed;
+    }
+}
+
+auto solution_class_name(const McfSolutionClass c) -> std::String {
+    switch (c) {
+        case McfSolutionClass::Optimal:    return "Optimal";
+        case McfSolutionClass::Suboptimal: return "Suboptimal";
+        case McfSolutionClass::TimeLimit:  return "TimeLimit";
+        case McfSolutionClass::Failed:     return "Failed";
+        case McfSolutionClass::Skipped:    return "Skipped";
+    }
+    return "Unknown";
+}
+
+auto stage_result_ok(const McfSolutionClass c) -> bool {
+    switch (c) {
+        case McfSolutionClass::Optimal:
+        case McfSolutionClass::Suboptimal:
+        case McfSolutionClass::Skipped:
+            return true;
+        default:
+            return false;
+    }
+}
+
+auto stage_result_usable(const McfSolutionClass c) -> bool {
+    return c == McfSolutionClass::Optimal || c == McfSolutionClass::Suboptimal;
+}
+
 namespace {
 
 using namespace mcf;
-
-enum class McfClass : int {
-    Plain = 0,
-    P = 1,
-    N = 2
-};
 
 using NodeMeta = McfNodeMeta;
 using Arc = McfArc;
@@ -67,7 +100,6 @@ struct PreparedCommodity {
     int src{-1};
     int snk{-1};
     int demand{1};
-    McfClass cls{McfClass::Plain};
     bool is_bus{false};
     std::String bus_key;
 };
@@ -81,6 +113,7 @@ struct McfConstraintMeta {
 
 struct StageSolveResult {
     bool ok{false};
+    McfSolutionClass solution_class{McfSolutionClass::Failed};
     std::String message;
     std::String stage_name;
     double objective{0.0};
@@ -103,11 +136,29 @@ auto stage_solve_elapsed_ms(const std::chrono::steady_clock::time_point begin) -
         std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 }
 
+auto gurobi_status_name(int status) -> std::String;
+
+auto apply_stage_solution_class(StageSolveResult& out, const McfSolutionClass cls) -> void {
+    out.solution_class = cls;
+    out.ok = stage_result_ok(cls);
+}
+
 auto finish_stage_solve_result(
     StageSolveResult& out,
     const std::chrono::steady_clock::time_point begin
 ) -> StageSolveResult {
     out.solve_ms = stage_solve_elapsed_ms(begin);
+    if (!out.stage_name.empty()) {
+        debug::info_fmt(
+            "{}: model_status={}({}) solution_class={} ok={} objective={:.0f} solve_ms={}",
+            out.stage_name,
+            gurobi_status_name(out.model_status),
+            out.model_status,
+            solution_class_name(out.solution_class),
+            out.ok,
+            out.objective,
+            out.solve_ms);
+    }
     return out;
 }
 
@@ -146,6 +197,7 @@ struct McfOriginGroup {
 
 struct GurobiMcfSolveResult {
     bool ok{false};
+    McfSolutionClass solution_class{McfSolutionClass::Failed};
     std::String message;
     int model_status{0};
     double objective{0.0};
@@ -613,10 +665,11 @@ auto log_mcf_infeasibility_summary(
     }
     else if (!bus_res.ok) {
         debug::error_fmt(
-            "MCF failure diagnosis: stage={} status={}({}) message={}",
+            "MCF failure diagnosis: stage={} status={}({}) solution_class={} message={}",
             bus_res.stage_name.empty() ? std::String("BusMCF") : bus_res.stage_name,
             gurobi_status_name(bus_res.model_status),
             bus_res.model_status,
+            solution_class_name(bus_res.solution_class),
             bus_res.message);
     }
     for (std::size_t u = 0; u < 16; ++u) {
@@ -631,10 +684,11 @@ auto log_mcf_infeasibility_summary(
         }
         else {
             debug::error_fmt(
-                "MCF failure diagnosis: stage={} status={}({}) message={}",
+                "MCF failure diagnosis: stage={} status={}({}) solution_class={} message={}",
                 simple_results[u].stage_name.empty() ? std::format("SimpleMCF_unit{}", u) : simple_results[u].stage_name,
                 gurobi_status_name(simple_results[u].model_status),
                 simple_results[u].model_status,
+                solution_class_name(simple_results[u].solution_class),
                 simple_results[u].message);
         }
     }
@@ -716,7 +770,14 @@ auto solve_binary_columns_with_gurobi(
 
         model.optimize();
         out.model_status = model.get(GRB_IntAttr_Status);
-        if (out.model_status == GRB_OPTIMAL) {
+        out.solution_class = classify_gurobi_status(out.model_status);
+        if (out.solution_class == McfSolutionClass::TimeLimit) {
+            debug::warning_fmt(
+                "{}: unexpected Gurobi TIME_LIMIT status ({})",
+                stage_name,
+                out.model_status);
+        }
+        if (stage_result_usable(out.solution_class)) {
             out.objective = model.get(GRB_DoubleAttr_ObjVal);
             out.col_value.resize(vars.size(), 0.0);
             for (std::size_t c = 0; c < vars.size(); ++c) {
@@ -747,16 +808,22 @@ auto solve_binary_columns_with_gurobi(
                 }
             }
         }
-        out.ok = true;
-        out.message = "ok";
+        out.ok = stage_result_usable(out.solution_class);
+        out.message = out.ok ? std::String("ok")
+                             : std::format(
+                                   "{}: {}",
+                                   stage_name,
+                                   solution_class_name(out.solution_class));
         return out;
     }
     catch (const GRBException& e) {
+        out.solution_class = McfSolutionClass::Failed;
         out.ok = false;
         out.message = std::format("{}: Gurobi exception {}: {}", stage_name, e.getErrorCode(), e.getMessage());
         return out;
     }
     catch (const std::exception& e) {
+        out.solution_class = McfSolutionClass::Failed;
         out.ok = false;
         out.message = std::format("{}: Gurobi solve failed: {}", stage_name, e.what());
         return out;
@@ -905,13 +972,6 @@ auto build_track_graph(const CobMcfGridDims& grid) -> GlobalGraph {
             }
         }
     }
-    g.vp_node_by_unit.fill(-1);
-    g.vn_node_by_unit.fill(-1);
-    for (std::size_t unit = 0; unit < 16; ++unit) {
-        g.vp_node_by_unit[unit] = add_node(g, NodeMeta {true, 1, unit, 0, 0, 0, 0});
-        g.vn_node_by_unit[unit] = add_node(g, NodeMeta {true, 2, unit, 0, 0, 0, 0});
-    }
-
     constexpr auto dirs = std::array {
         hardware::COBDirection::Left,
         hardware::COBDirection::Right,
@@ -1058,74 +1118,43 @@ auto prepare_commodities(
             if (c.cob_unit >= 16) {
                 continue;
             }
-            if (record.power_kind == IlpPowerKind::Pose) {
-                c.cls = McfClass::P;
-                c.snk = graph.vp_node_by_unit[c.cob_unit];
+            if (!endpoint.has_end_track) {
+                debug::warning_fmt("MCF prepare: PNnet record {} has no selected end track", record.net_name);
+                continue;
             }
-            else {
-                c.cls = McfClass::N;
-                c.snk = graph.vn_node_by_unit[c.cob_unit];
-            }
-
-            auto virtual_edges_added = 0;
-            for (const auto& [end_track, start_tracks] : record.starttrack_by_endtrack) {
-                if (!std::binary_search(start_tracks.begin(), start_tracks.end(), endpoint.start_track)) {
-                    continue;
-                }
-                if (map_track(end_track) != c.cob_unit) {
-                    continue;
-                }
-                if (!record.pn_end_track_coord_by_index.contains(end_track)) {
-                    continue;
-                }
-                const auto& tc = record.pn_end_track_coord_by_index.at(end_track);
-                const auto n_end = node_from_track_coord(graph, c.cob_unit, tc, end_track);
-                if (n_end < 0) {
-                    continue;
-                }
-                add_arc(
-                    graph,
-                    n_end,
-                    c.snk,
-                    true,
-                    false,
+            if (map_track(endpoint.end_track) != c.cob_unit) {
+                debug::warning_fmt(
+                    "MCF prepare: PNnet end track {} not in assigned cobunit {} for record {}",
+                    endpoint.end_track,
                     c.cob_unit,
-                    -1,
-                    end_track,
-                    end_track);
-                add_arc(
-                    graph,
-                    c.snk,
-                    n_end,
-                    true,
-                    false,
-                    c.cob_unit,
-                    -1,
-                    end_track,
-                    end_track);
-                c.end_track = end_track;
-                virtual_edges_added += 1;
+                    record.net_name);
+                continue;
             }
-            if (virtual_edges_added == 0 && endpoint.has_end_track
-                && record.pn_end_track_coord_by_index.contains(endpoint.end_track)) {
-                const auto& tc = record.pn_end_track_coord_by_index.at(endpoint.end_track);
-                const auto n_end = node_from_track_coord(graph, c.cob_unit, tc, endpoint.end_track);
-                if (n_end >= 0) {
-                    add_arc(graph, n_end, c.snk, true, false, c.cob_unit, -1, endpoint.end_track, endpoint.end_track);
-                    add_arc(graph, c.snk, n_end, true, false, c.cob_unit, -1, endpoint.end_track, endpoint.end_track);
-                    c.end_track = endpoint.end_track;
-                }
+            if (!record.pn_end_track_coord_by_index.contains(endpoint.end_track)) {
+                debug::warning_fmt(
+                    "MCF prepare: PNnet record {} missing coord for selected end track {}",
+                    record.net_name,
+                    endpoint.end_track);
+                continue;
             }
+            const auto& tc = record.pn_end_track_coord_by_index.at(endpoint.end_track);
+            c.snk = node_from_track_coord(graph, c.cob_unit, tc, endpoint.end_track);
+            if (c.snk < 0) {
+                debug::warning_fmt(
+                    "MCF prepare: PNnet record {} unresolved selected end track node {}",
+                    record.net_name,
+                    endpoint.end_track);
+                continue;
+            }
+            c.end_track = endpoint.end_track;
         }
         else if (record.type == Net_type::Tnet) {
-            c.cls = McfClass::Plain;
             if (!endpoint.has_end_track) {
                 continue;
             }
             c.snk = node_from_track_coord(graph, c.cob_unit, record.mcf_end_track, endpoint.end_track);
         }
         else {
-            c.cls = McfClass::Plain;
             if (record.end_bumps.empty() || !endpoint.has_end_track) {
                 continue;
             }
@@ -1146,26 +1175,15 @@ auto prepare_commodities(
     return out;
 }
 
-auto arc_usable_for_class(
+auto arc_usable_for_unit(
     const GlobalGraph& graph,
     const Arc& arc,
-    const McfClass cls,
-    const std::size_t unit,
-    const int commodity_snk
+    const std::size_t unit
 ) -> bool {
     if (arc.unit != unit) {
         return false;
     }
-    if (unit < 16) {
-        const auto vp = graph.vp_node_by_unit[unit];
-        const auto vn = graph.vn_node_by_unit[unit];
-        if (vp >= 0 && (arc.u == vp || arc.v == vp)) {
-            return cls == McfClass::P;
-        }
-        if (vn >= 0 && (arc.u == vn || arc.v == vn)) {
-            return cls == McfClass::N;
-        }
-    }
+    (void)graph;
     return true;
 }
 
@@ -1190,7 +1208,7 @@ auto arc_allowed_for_commodity(
     const McfArcBBoxMode mode,
     const McfCommodityBBox& origin_group_bbox
 ) -> bool {
-    if (!arc_usable_for_class(graph, arc, commodity.cls, commodity.cob_unit, commodity.snk)) {
+    if (!arc_usable_for_unit(graph, arc, commodity.cob_unit)) {
         return false;
     }
     const McfBBoxCommodityInput input {
@@ -1231,7 +1249,7 @@ auto commodity_bbox_connected(
             if (arc.u != node) {
                 continue;
             }
-            if (!arc_usable_for_class(graph, arc, commodity.cls, commodity.cob_unit, commodity.snk)) {
+            if (!arc_usable_for_unit(graph, arc, commodity.cob_unit)) {
                 continue;
             }
             if (!arc_allowed_in_mcf_bbox(
@@ -1267,9 +1285,6 @@ auto effective_bbox_for_simple_commodity(
     }
     const auto& commodity = commodities[global_commodity_id];
     const auto& record = records[commodity.record_index];
-    if (record.type == Net_type::PNnet) {
-        return McfCommodityBBox {};
-    }
     const auto group_key = std::make_pair(commodity.cob_unit, simple_origin_group_key(record));
     auto global_ids = std::Vector<std::size_t> {};
     auto record_indices = std::Vector<std::size_t> {};
@@ -1367,7 +1382,9 @@ auto route_one_mcf_warm_path(
     const McfCommodityBBox& effective_bbox,
     const std::Vector<std::Vector<int>>& outgoing_arcs,
     const std::map<std::pair<int, int>, int>& used_edges,
-    const std::map<int, int>& used_nodes
+    const std::map<int, int>& used_nodes,
+    const std::set<std::pair<int, int>>* tree_edges = nullptr,
+    const std::set<int>* tree_nodes = nullptr
 ) -> std::Vector<int> {
     auto prev_node = std::vector<int>(graph.nodes.size(), -1);
     auto q = std::queue<int> {};
@@ -1382,7 +1399,7 @@ auto route_one_mcf_warm_path(
         }
         for (const auto arc_id : outgoing_arcs[static_cast<std::size_t>(node)]) {
             const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
-            if (!arc_usable_for_class(graph, arc, commodity.cls, commodity.cob_unit, commodity.snk)) {
+            if (!arc_usable_for_unit(graph, arc, commodity.cob_unit)) {
                 continue;
             }
             if (!arc_allowed_in_mcf_bbox(
@@ -1398,12 +1415,16 @@ auto route_one_mcf_warm_path(
             }
             if (!arc.is_virtual) {
                 const auto edge_key = normalized_edge_key(arc.u, arc.v);
-                if (const auto it = used_edges.find(edge_key); it != used_edges.end() && it->second >= 1) {
+                if (const auto it = used_edges.find(edge_key);
+                    it != used_edges.end() && it->second >= 1
+                    && (tree_edges == nullptr || !tree_edges->contains(edge_key))) {
                     continue;
                 }
             }
             if (!graph.nodes[static_cast<std::size_t>(arc.v)].is_virtual) {
-                if (const auto it = used_nodes.find(arc.v); it != used_nodes.end() && it->second >= 1) {
+                if (const auto it = used_nodes.find(arc.v);
+                    it != used_nodes.end() && it->second >= 1
+                    && (tree_nodes == nullptr || !tree_nodes->contains(arc.v))) {
                     continue;
                 }
             }
@@ -1458,7 +1479,7 @@ auto route_mcf_warm_path_to_frontier(
         }
         for (const auto arc_id : outgoing_arcs[static_cast<std::size_t>(node)]) {
             const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
-            if (!arc_usable_for_class(graph, arc, commodity.cls, commodity.cob_unit, commodity.snk)) {
+            if (!arc_usable_for_unit(graph, arc, commodity.cob_unit)) {
                 continue;
             }
             if (!arc_allowed_in_mcf_bbox(
@@ -1614,15 +1635,7 @@ auto resolve_origin_hub_node(
         }
         return ref_snk;
     }
-    if (first_rec.type == Net_type::PNnet) {
-        if (group.cob_unit >= 16) {
-            return std::nullopt;
-        }
-        if (first_rec.power_kind == IlpPowerKind::Pose) {
-            return graph.vp_node_by_unit[group.cob_unit];
-        }
-        return graph.vn_node_by_unit[group.cob_unit];
-    }
+    (void)graph;
     return std::nullopt;
 }
 
@@ -1847,6 +1860,8 @@ auto route_simple_mcf_stage_warm_start_by_origin(
 
         const auto hub = resolve_origin_hub_node(graph, group, commodities, simple_ids, local_com, records);
         if (!hub.has_value()) {
+            auto tree_edges = std::set<std::pair<int, int>> {};
+            auto tree_nodes = std::set<int> {};
             std::size_t group_success = 0;
             for (const auto local_k : group.commodity_local_indices) {
                 const auto cid = simple_ids[static_cast<std::size_t>(local_k)];
@@ -1857,7 +1872,9 @@ auto route_simple_mcf_stage_warm_start_by_origin(
                     effective_bbox_for(cid),
                     outgoing_arcs,
                     used_edges,
-                    used_nodes);
+                    used_nodes,
+                    &tree_edges,
+                    &tree_nodes);
                 if (path.empty()) {
                     ++failed;
                     debug::warning_fmt("pre-routing SimpleMCF warm start failed for commodity {}", commodity.label);
@@ -1865,6 +1882,7 @@ auto route_simple_mcf_stage_warm_start_by_origin(
                 }
                 ++routed;
                 ++group_success;
+                add_mcf_warm_path_to_origin_tree(graph, path, tree_edges, tree_nodes);
                 mark_mcf_warm_path_used(graph, path, used_edges, used_nodes);
                 warm.nodes_by_record_id.emplace(commodity.record_id, std::move(path));
             }
@@ -2185,9 +2203,8 @@ auto solve_bus_mcf(
     StageSolveResult out {};
     out.stage_name = stage_name;
     if (bus_ids.empty()) {
-        out.ok = true;
+        apply_stage_solution_class(out, McfSolutionClass::Skipped);
         out.message = "empty stage";
-        out.model_status = GRB_OPTIMAL;
         return finish_stage_solve_result(out, solve_begin);
     }
 
@@ -2209,7 +2226,7 @@ auto solve_bus_mcf(
             McfArcBBoxMode::Bus,
             McfCommodityBBox {});
         if (effective.restricted && !commodity_bbox_connected(graph, commodity, effective)) {
-            out.ok = false;
+            apply_stage_solution_class(out, McfSolutionClass::Failed);
             out.message = std::format(
                 "{}: bbox disconnected for commodity {}",
                 stage_name,
@@ -2244,7 +2261,7 @@ auto solve_bus_mcf(
         }
     }
     if (f_vars.empty()) {
-        out.ok = false;
+        apply_stage_solution_class(out, McfSolutionClass::Failed);
         out.message = std::format("{}: no feasible arc-variable pairs", stage_name);
         out.bus_failure_unlocalized = true;
         return finish_stage_solve_result(out, solve_begin);
@@ -2417,7 +2434,7 @@ auto solve_bus_mcf(
 
     // BusMCF §6 (第五版): sync equal length
     // total_flow_n = Σ_{(i,j)∈E^c} f^{c,n}_{ij},  ∀n∈Bus ∧ c = n 所在 COBUnit
-    // E^c 由 arc_usable_for_class(..., cob_unit) 限定；非虚拟弧求和即 total_flow_n
+    // E^c 由 arc_usable_for_unit(..., cob_unit) 限定；非虚拟弧求和即 total_flow_n
     // total_flow_n = total_flow_m,  ∀n,m ∈ the_same_Bus (bus_key)
     int bus_equal_length_rows = 0;
     auto by_bus = std::map<std::String, std::Vector<int>> {};
@@ -2567,30 +2584,25 @@ auto solve_bus_mcf(
         &row_meta,
         diag);
     out.model_status = solve_res.model_status;
-    if (!solve_res.ok) {
-        out.ok = false;
-        out.message = solve_res.message;
-        out.bus_failure_unlocalized = true;
-        return finish_stage_solve_result(out, solve_begin);
-    }
-    if (solve_res.model_status != GRB_OPTIMAL) {
-        if (warm_start != nullptr) {
+    if (solve_res.solution_class == McfSolutionClass::Failed
+        || solve_res.solution_class == McfSolutionClass::TimeLimit) {
+        if (warm_start != nullptr && !warm_values_by_col.empty()) {
             debug::warning_fmt(
-                "{} warm start led to non-optimal status ({}); retrying without warm start",
+                "{} warm start led to {}; retrying without warm start",
                 stage_name,
-                solve_res.model_status);
+                solution_class_name(solve_res.solution_class));
             auto retry = solve_bus_mcf(graph, commodities, bus_ids, bbox_ctx, nullptr, diag);
             retry.solve_ms += stage_solve_elapsed_ms(solve_begin);
             return retry;
         }
-        out.ok = false;
-        out.message = std::format("{}: model not optimal ({})", stage_name, solve_res.model_status);
+        apply_stage_solution_class(out, solve_res.solution_class);
+        out.message = solve_res.message;
         out.infeasibility_hints = solve_res.iis_rows;
         collect_bus_retry_hints_from_iis(out, out.infeasibility_hints);
         return finish_stage_solve_result(out, solve_begin);
     }
 
-    out.ok = true;
+    apply_stage_solution_class(out, solve_res.solution_class);
     out.message = "ok";
     out.objective = solve_res.objective;
 
@@ -2640,9 +2652,8 @@ auto solve_simple_mcf_unit(
     StageSolveResult out {};
     out.stage_name = stage_name;
     if (simple_ids_for_unit.empty()) {
-        out.ok = true;
+        apply_stage_solution_class(out, McfSolutionClass::Skipped);
         out.message = "empty stage";
-        out.model_status = GRB_OPTIMAL;
         return finish_stage_solve_result(out, solve_begin);
     }
 
@@ -2684,7 +2695,7 @@ auto solve_simple_mcf_unit(
             commodity.bus_key};
         const auto effective = resolve_mcf_bbox(bbox_ctx, global_id, input, mode, origin_bbox);
         if (effective.restricted && !commodity_bbox_connected(graph, commodity, effective)) {
-            out.ok = false;
+            apply_stage_solution_class(out, McfSolutionClass::Failed);
             out.message = std::format(
                 "{}: bbox disconnected for commodity {}",
                 stage_name,
@@ -2722,7 +2733,7 @@ auto solve_simple_mcf_unit(
         }
     }
     if (f_vars.empty()) {
-        out.ok = false;
+        apply_stage_solution_class(out, McfSolutionClass::Failed);
         out.message = std::format("{}: no feasible arc-variable pairs", stage_name);
         return finish_stage_solve_result(out, solve_begin);
     }
@@ -3163,17 +3174,13 @@ auto solve_simple_mcf_unit(
         &row_meta,
         diag);
     out.model_status = solve_res.model_status;
-    if (!solve_res.ok) {
-        out.ok = false;
-        out.message = solve_res.message;
-        return finish_stage_solve_result(out, solve_begin);
-    }
-    if (solve_res.model_status != GRB_OPTIMAL) {
-        if (warm_start != nullptr) {
+    if (solve_res.solution_class == McfSolutionClass::Failed
+        || solve_res.solution_class == McfSolutionClass::TimeLimit) {
+        if (warm_start != nullptr && !warm_values_by_col.empty()) {
             debug::warning_fmt(
-                "{} warm start led to non-optimal status ({}); retrying without warm start",
+                "{} warm start led to {}; retrying without warm start",
                 stage_name,
-                solve_res.model_status);
+                solution_class_name(solve_res.solution_class));
             auto retry = solve_simple_mcf_unit(
                 graph,
                 commodities,
@@ -3189,13 +3196,13 @@ auto solve_simple_mcf_unit(
             retry.solve_ms += stage_solve_elapsed_ms(solve_begin);
             return retry;
         }
-        out.ok = false;
-        out.message = std::format("{}: model not optimal ({})", stage_name, solve_res.model_status);
+        apply_stage_solution_class(out, solve_res.solution_class);
+        out.message = solve_res.message;
         out.infeasibility_hints = solve_res.iis_rows;
         return finish_stage_solve_result(out, solve_begin);
     }
 
-    out.ok = true;
+    apply_stage_solution_class(out, solve_res.solution_class);
     out.message = "ok";
     out.objective = solve_res.objective;
 
@@ -3580,7 +3587,9 @@ auto merge_bus_stage_retry_hints(CobMcfRetryHints& hints, const StageSolveResult
     for (const auto record_index : bus_res.failed_record_indices) {
         append_unique(hints.failed_record_indices, record_index);
     }
-    if (!bus_res.ok && (bus_res.bus_failure_unlocalized || bus_res.failed_bus_keys.empty())) {
+    if ((bus_res.solution_class == McfSolutionClass::Failed
+            || bus_res.solution_class == McfSolutionClass::TimeLimit)
+        && (bus_res.bus_failure_unlocalized || bus_res.failed_bus_keys.empty())) {
         hints.bus_failure_unlocalized = true;
     }
 }
@@ -3789,10 +3798,9 @@ auto run_mcf_global_routing_cob_units(
     const auto solve_t0 = std::chrono::steady_clock::now();
     auto bus_res = StageSolveResult {};
     if (disable_bus_mcf) {
-        bus_res.ok = true;
         bus_res.stage_name = "BusMCF";
         bus_res.message = "skipped (--disable-bus-mcf)";
-        bus_res.model_status = GRB_OPTIMAL;
+        apply_stage_solution_class(bus_res, McfSolutionClass::Skipped);
         if (!bus_ids.empty()) {
             debug::info_fmt(
                 "MCF: BusMCF skipped; {} bus commodities are not routed",
@@ -3808,7 +3816,7 @@ auto run_mcf_global_routing_cob_units(
         merge_bus_stage_retry_hints(out.retry_hints, bus_res);
     }
 
-    if (enable_pre_routing && bus_res.ok) {
+    if (enable_pre_routing && stage_result_ok(bus_res.solution_class)) {
         const auto simple_warm_t0 = std::chrono::steady_clock::now();
         for (std::size_t u = 0; u < 16; ++u) {
             if (simple_ids_by_unit[u].empty()) {
@@ -3836,7 +3844,7 @@ auto run_mcf_global_routing_cob_units(
     out.summary.mcf_warm_start_ms = bus_warm_start_ms + simple_warm_start_ms;
     debug::info_fmt("timing phase=mcf_warm_start ms={}", out.summary.mcf_warm_start_ms);
 
-    if (show_pre_route && bus_res.ok) {
+    if (show_pre_route && stage_result_ok(bus_res.solution_class)) {
         const auto pre_paths = build_pre_route_paths_by_unit(bus_res, simple_warm_start, commodities);
         const auto pre_catalog = build_mcf_resource_catalog(graph);
         const auto pre_arc_index = build_undirected_arc_index(graph);
@@ -3870,7 +3878,7 @@ auto run_mcf_global_routing_cob_units(
 
     for (std::size_t u = 0; u < 16; ++u) {
         if (simple_ids_by_unit[u].empty()) {
-            simple_results[u].ok = true;
+            apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
             simple_results[u].message = "empty stage";
             continue;
         }
@@ -3909,9 +3917,10 @@ auto run_mcf_global_routing_cob_units(
                 simple_warm_start_ptr,
                 diag);
             debug::info_fmt(
-                "SimpleMCF unit {}: ok={} objective={:.0f} paths={} solve_ms={}",
+                "SimpleMCF unit {}: ok={} solution_class={} objective={:.0f} paths={} solve_ms={}",
                 u,
                 simple_results[u].ok,
+                solution_class_name(simple_results[u].solution_class),
                 simple_results[u].objective,
                 simple_results[u].paths.size(),
                 simple_results[u].solve_ms);
@@ -3925,9 +3934,10 @@ auto run_mcf_global_routing_cob_units(
             }
             simple_results[u] = simple_futures[u].get();
             debug::info_fmt(
-                "SimpleMCF unit {}: ok={} objective={:.0f} paths={} solve_ms={}",
+                "SimpleMCF unit {}: ok={} solution_class={} objective={:.0f} paths={} solve_ms={}",
                 u,
                 simple_results[u].ok,
+                solution_class_name(simple_results[u].solution_class),
                 simple_results[u].objective,
                 simple_results[u].paths.size(),
                 simple_results[u].solve_ms);

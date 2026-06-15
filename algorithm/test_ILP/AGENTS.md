@@ -64,8 +64,8 @@ algorithm/test_ILP/
 
 - `mcf/`
   - `cob_mcf_router.*` 构建 track 级全局图，准备 commodity，求解 BusMCF 与 SimpleMCF。
-  - PNnet（`TracksToBumpsNet`）使用 **per-unit** 虚拟 P/N 节点（`vp_node_by_unit` / `vn_node_by_unit`）；0/1 port 经 virtual arc 连到本 unit 的 hub。
-  - `mcf_bbox.*` 根据 SAT 选定路径的 bbox 构造 MCF 可行图；对 track 节点施加 H/V 边界修剪（§第七版 6.2）。
+  - PNnet（`TracksToBumpsNet`）在 SAT 选定的物理 `end_track` 上终止；SimpleMCF 不再创建 per-unit 虚拟 P/N hub。
+  - `mcf_bbox.*` 根据 SAT 选定路径的 bbox 构造 MCF 可行图；对 track 节点施加 H/V 边界修剪（§第七版 6.2）。PNnet 与 TTB 相同：单 child 用 per-record path bbox，多扇出 origin 用 child bbox 的 RectHull；PNnet `snk` 为 SAT 选定的物理 `end_track` 节点。
   - `mcf_hw_map.hh` 封装 TOB/COB/track 坐标映射。
 
 - `ilp_allocation/`
@@ -97,8 +97,8 @@ xmake build test_ILP
 - `--enable-presat-parallel`：并行执行 SAT 前路径预计算（按 `(record, end_track)` 分块，只读 `Interposer`）。
 - 路径预计算会输出 `path precompute progress: [####------] N% (done/total)` 进度条日志（串行/并行均支持）。
 - `--enable-mcf-routing`：SAT 成功后继续执行 MCF。
-- `--enable-mcf-obj`：SimpleMCF 使用 `min Σ x` 目标；不加时 SimpleMCF 只做可行性求解。与 `--enable-pre-routing` 同时开启时，对 warm start 成功路径上的 `x^H_e` 使用 `kSimpleMcfWarmStartUsedEdgeCost`（0.95，见 `cob_mcf_router.cc`）软加权，其余 `x` 为 1.0，用于软破坏对称性；warm start 重试时恢复全 1.0。
-- `--enable-pre-routing`：为 **MCF** Gurobi 提供 warm start 初值（`cob_mcf_router` 内 MCF 图 BFS），不改变硬约束。BusMCF warm start 在 Bus 求解前执行；SimpleMCF warm start 在 Bus 求解成功后、按 COBUnit 以 Bus 实际占用初始化后再 BFS。多扇出 origin（`TrackToBumpsNet` / `TracksToBumpsNet`）采用增量 frontier：TTB 以共享 snk 为 hub、按 `end_bumps()` 顺序；PNnet 以本 unit 的 `vp`/`vn` 为 hub、按 record 顺序；部分 child 失败时成功的仍写入 warm start。与 TOB 阶段无关。
+- `--enable-mcf-obj`：SimpleMCF 使用 `min Σ x` 目标；不加时 SimpleMCF 只做可行性求解。与 `--enable-pre-routing` 同时开启时，对 warm start 成功路径上的 `x^H_e` 使用 `kSimpleMcfWarmStartUsedEdgeCost`（0.95，见 `cob_mcf_router.cc`）软加权，其余 `x` 为 1.0，用于软破坏对称性。
+- `--enable-pre-routing`：为 **MCF** Gurobi 提供 warm start 初值（`cob_mcf_router` 内 MCF 图 BFS），不改变硬约束。BusMCF warm start 在 Bus 求解前执行；SimpleMCF warm start 在 Bus 为 `Optimal`/`Suboptimal`/`Skipped` 时执行，按 COBUnit 以 Bus 实际占用初始化后再 BFS。多扇出 origin（`TrackToBumpsNet` / `TracksToBumpsNet`）采用增量 frontier：TTB 以共享 snk 为 hub、按 `end_bumps()` 顺序；PNnet 以本 unit 的 `vp`/`vn` 为 hub、按 record 顺序；部分 child 失败时成功的仍写入 warm start。与 TOB 阶段无关。
 - `--show-pre-route`：自动开启 pre-routing；在 SimpleMCF warm start 结束后输出 `MCF resource usage (pre-route, ...)` 日志块（BusMCF 路径 + warm start 路径），格式与 post-solve 相同。要求 `--enable-mcf-routing`。
 - `--disable-01-mcf`：跳过顶层 `TracksToBumpsNet`，即不生成 Pnet/Nnet records；SyncNet 内部拆分不受影响。
 - `--disable-multipin-io`：跳过顶层 `TrackToBumpsNet`，即不生成对应多扇出 IO split records。
@@ -110,17 +110,9 @@ MCF 计时日志：
 - `timing phase=mcf_bus_solve ms=...`：单轮 BusMCF 求解时间。
 - `timing phase=simple_mcf_unitN_solve ms=...`：单轮 SimpleMCF unit N 求解时间。
 - `timing phase=mcf_bus_solve_total ms=...` 与 `simple_mcf_unitN_solve_total`：SAT+MCF retry 全部尝试轮的累计时间。
+- BusMCF / SimpleMCF 阶段结束日志含 `model_status=` 与 `solution_class=`（`Optimal`/`Suboptimal`/`TimeLimit`/`Failed`/`Skipped`）；`ok=true` 当且仅当 class 为 `Optimal`、`Suboptimal` 或 `Skipped`。`Suboptimal` 与 `Optimal` 均提取 Gurobi 解。warm start 导致 `Suboptimal` 直接接受不重试；warm start 导致 `Failed`/`TimeLimit` 时无 warm start 重试 Gurobi 一次。
 
-TOB SAT最小验证建议：
-
-```bash
-xmake build test_ILP
-./output/test_ILP test/config/case7
-./output/test_ILP test/config/case8
-./output/test_ILP test/config/case9
-```
-
-涉及 MCF 的改动建议额外运行：
+最小验证建议：
 
 ```bash
 ./output/test_ILP test/config/case7 --enable-mcf-routing  --enable-pre-routing
@@ -129,7 +121,7 @@ xmake build test_ILP
 ./output/test_ILP test/config/case7 --enable-mcf-routing --enable-pre-routing --enable-mcf-obj
 ```
 
-最后一行验证第九版对称性软破坏（日志应含 `objective symmetry-break`）。
+第九版修改3：上述命令日志应含 `solution_class=`。warm start 导致 `Failed`/`TimeLimit` 时可能出现 `warm start led to Failed; retrying without warm start`（仅一次）。最后一行验证对称性软破坏（日志应含 `objective symmetry-break`）。
 
 `algorithm/test_ILP/visualization/` 从 `debug.log` 解析 `MCF resource usage` 块并绘图。`matlab_main.m` 中 `resource_phase` 可选 `post-solve`（默认，Gurobi 求解后）或 `pre-route`（需 `--show-pre-route`）；`visualize_cob_unit_usage(..., 'Phase', ...)` 同理。
 
@@ -148,7 +140,7 @@ xmake build test_ILP
 - SAT UNSAT 当前不做 UNSAT core 归因；按 pipeline 规则扩展相关 `Tnet/PNnet`。
 - BusMCF 失败只扩展可定位 `bus_key` 的 member records；无法定位时应失败并记录原因。
 - SimpleMCF 失败按失败 unit 的 simple records 扩展；多扇出 origin 要扩展同 origin 的所有 child records。
-- PNnet 在 MCF 中继续不裁剪；它的 tier 只影响 SAT 阶段候选 start tracks。
+- PNnet 在 SimpleMCF 中与 TTB 使用相同 path bbox 裁剪（单 child：`SimpleCommodity`；多扇出：`SimpleOriginGroup` + RectHull）；`tier` 仍主要影响 SAT 候选 start tracks。
 - track 只能在所属 COBUnit 内连通；path precompute 不允许跨 COBUnit 搜索。
 - MCF bbox 使用 SAT 选中 path 的 bbox；当前 commodity 的 `src/snk` endpoint node 及其 bbox 内 endpoint 接入边可做局部豁免，避免边界修剪切断 SAT 固定端点。
 - 新日志要包含足够定位信息，例如 `record_id`、`origin_key`、`bit_id`、`tier`、`bus_key`、unit、bbox。

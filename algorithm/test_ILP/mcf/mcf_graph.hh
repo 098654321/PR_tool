@@ -40,8 +40,6 @@ struct McfGlobalGraph {
     int rows{0};
     int cols{0};
     int num_cob{0};
-    std::array<int, 16> vp_node_by_unit {};
-    std::array<int, 16> vn_node_by_unit {};
     std::Vector<McfNodeMeta> nodes;
     std::Vector<McfArc> arcs;
     std::map<McfNodeKey, int> node_id_by_key;
