@@ -1,0 +1,157 @@
+TXT 与 JSON 坐标体系对照
+========================
+
+本文档描述 PR_tool 当前工具（JSON）与旧工具（TXT）之间的坐标编码关系。
+两套格式描述同一套 interposer 物理资源，但表示层次不同：
+
+  - JSON：硬件原生坐标（TOBCoord / TrackCoord）+ bump index
+  - TXT：每端压缩为 5 个整数 [dir, x, y, bump_x, bump_y]
+
+相关实现：
+  - TXT → JSON：source/parse/reader/config/config.cc :: parse_txt_line
+  - JSON → TXT：test/transform_format/json2txt.cc
+
+硬件常量（source/hardware/interposer.hh）：
+  - COB_ARRAY_HEIGHT = 9
+  - COB_ARRAY_WIDTH  = 12
+  - TOB_ARRAY_HEIGHT = 4
+  - TOB_ARRAY_WIDTH  = 4
+
+
+一、TXT 行格式
+--------------
+
+每条连接数据行含 11 个整数：
+
+  input:  dir, x, y, bump_x, bump_y
+  output: dir, x, y, bump_x, bump_y
+  net_tag
+
+段头 "# topdie1 topdie2" 仅标识芯粒类型，不含坐标信息。
+
+
+二、端点类型与 bump_x 判别
+--------------------------
+
+根据 bump_x（第 4 个整数，info[3]）区分三种端点：
+
+  bump_x = -1  →  GND（nege）
+  bump_x = -2  →  VDD（pose）
+  bump_x = -3  →  外部端口（external port）
+  bump_x >= 0  →  芯粒 bump
+
+
+三、芯粒 bump（bump_x >= 0）
+-----------------------------
+
+JSON 表示
+  - 实例位置：TOBCoord { row, col }，TOB 阵列坐标（4×4）
+  - Pin bump：pin_map 中单个整数 bump_index
+
+TXT 表示
+  - 每端 5 元组：[dir, x, y, bump_x, bump_y]
+  - bump_index = bump_x + 8 * bump_y
+
+坐标变换（TXT → JSON，parse_txt_line）：
+
+  tob_row = (COB_ARRAY_HEIGHT - x) / 2      // 整数除法
+  tob_col = y / 3                           // 整数除法
+
+坐标变换（JSON → TXT，json2txt）：
+
+  x = COB_ARRAY_HEIGHT - 2 * tob_row
+  y = 3 * tob_col
+  bump_x = bump_index % 8
+  bump_y = bump_index / 8
+
+注意：TXT 的 x 存在冗余（非一一对应）
+  由于整数除法，相邻的 x 可映射到同一 tob_row，例如：
+    x = 4  →  tob_row = (9 - 4) / 2 = 2
+    x = 5  →  tob_row = (9 - 5) / 2 = 2
+  反向转换 json2txt 固定输出 x = COB_ARRAY_HEIGHT - 2 * tob_row（上例为 5），
+  而原始 TXT 可能使用 x = 4。两者语义等价，数值不一定逐字相同。
+
+列坐标 y 与 tob_col 的变换在 y 为 3 的倍数时是精确互逆的。
+
+
+四、外部端口（bump_x = -3）
+----------------------------
+
+JSON 表示：TrackCoord { row, col, dir, index }
+  - row, col：interposer 上 COB 阵列坐标（12×9）
+  - dir：TrackDirection，"hori" 或 "vert"
+  - index：track 在 COB 内的真实索引（如 0, 9, 45, 120）
+
+TXT 表示：[dir, x, y, -3, slot]
+  - dir：0 = 垂直（vert），1 = 水平（hori）
+  - slot：0–15 的槽位号，通过查表映射到 track index
+
+外部端口 track index 查表（slot → index）：
+
+  slot:  0   1   2   3   4   5   6   7   8    9    10   11   12  13  14  15
+  index: 0   9  18  27  36  45  54  63  120  113  106  99   92  85  78  71
+
+坐标变换（TXT → JSON）：
+
+  json_row  = COB_ARRAY_HEIGHT - x
+  json_col  = y
+  json_dir  = (dir == 0) ? Vertical : Horizontal
+  json_index = externs[slot]
+
+坐标变换（JSON → TXT）：
+
+  dir  = (json_dir == Vertical) ? 0 : 1
+  x    = COB_ARRAY_HEIGHT - json_row
+  y    = json_col
+  slot = externs 的逆查表（由 json_index 反查 slot）
+
+外部端口的 row/col 变换是精确互逆的（无整数除法歧义）。
+
+外部端口合法位置（Interposer::is_external_port_coord）：
+  - 水平 track：col == 0 或 col == COB_ARRAY_WIDTH
+  - 垂直 track：row == 0 或 row == COB_ARRAY_HEIGHT
+
+
+五、电源 / 地（bump_x = -1 / -2）
+----------------------------------
+
+TXT 固定编码：
+  nege（GND）：[0, 0, 0, -1, 0]
+  pose（VDD）：[0, 0, 0, -2, 0]
+
+JSON 表示：
+  ports_01.json 中 pose / nege 各自对应一组 TrackCoord，
+  具体 track 坐标显式给出，而非 magic number。
+
+
+六、变换关系总览
+----------------
+
+  JSON 坐标类型              TXT 5 元组字段              关键变换
+  ─────────────────────────────────────────────────────────────────
+  TOBCoord.row, .col         x, y, bump_x, bump_y       x = 9 - 2·row
+                                                         y = 3·col
+                                                         index = bump_x + 8·bump_y
+
+  TrackCoord.row, .col       x, y                        x = 9 - row
+                                                         y = col
+
+  TrackCoord.dir             dir                         0↔vert, 1↔hori
+
+  TrackCoord.index           slot（bump_x=-3 时）         slot ↔ externs 查表
+
+  ports_01 TrackCoord        bump_x = -1 / -2            固定 magic number
+
+
+七、实践说明
+------------
+
+1. 语义等价 ≠ 字面相同
+   连接关系（11 元组集合）可完全一致，但 TXT 的 x 可能有 ±1 冗余。
+
+2. JSON 贴近运行时模型
+   Reader 按 pin 名查 topdie_insts / external_ports / pin_map，
+   直接使用 TOBCoord / TrackCoord，不再解析 5 元组。
+
+3. json2txt 是编码转换
+   将 JSON 的 TOBCoord / TrackCoord / bump_index 转回旧 TXT 5 元组格式。

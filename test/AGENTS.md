@@ -20,6 +20,7 @@ This document provides an overview of the `test/` directory for AI agents. It de
     *   `test.cc`: Main entry point for regression tests.
 *   **`transform_format/`**: Utility tools.
     *   `txt2json.cc`: Tool to convert legacy text-based configurations into the modern JSON format used by the tool.
+    *   `json2txt.cc`: Reverse converter from JSON config (via `load_config`) back to legacy `.txt` connection format. Pin coordinates are resolved from config tables (`external_ports.coord`, `topdie_insts.coord` + `topdies.pin_map`), not from hardcoded `IO_` / `Topdie_inst_` naming. Build: `xmake build json2txt`; run: `./json2txt <config_folder> -o <output_dir> [-n name.txt]`.
 
 ## Test Case Structure (`config/`)
 

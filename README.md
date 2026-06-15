@@ -1,181 +1,272 @@
 # PR_tool
 
-针对 [PR_toolmore](https://www.PR_toolmoore.com/) 设计的一款 chiplet interposer，所制作的布局布线工具。
+面向 chiplet interposer 的布局布线工具。输入系统配置（topdie / topdieinst / external ports / connections），在 interposer 资源模型上完成放置与布线，输出硬件可用的 controlbits（寄存器配置比特）。
 
+更详细的工程说明见：
 
-## 项目分支
+- [`source/AGENTS.md`](./source/AGENTS.md)：源码架构、数据流、算法与修改指南
+- [`test/AGENTS.md`](./test/AGENTS.md)：测试目录结构与用例格式
 
-- version_before_commands
+---
 
-    不支持增量布线，可以在普通布线场景下支持完整的布局布线流程。最后一次提交是 2025 年过年前
+## 快速开始
 
-- master
-    
-    针对 version_before_commands 调整了 algo 部分的框架，加入命令模式，但是没有加入增量布线算法，也没有修改原有算法。最后一次提交是 2025 年 3 月。
+### 依赖
 
-- dev.incre_no_sharing
+- [xmake](https://xmake.io/mirror/zh-cn/guide/installation.html)
+- 支持 **C++23** 的编译器（`xmake.lua` 中 `set_languages("c++23")`）
+- 构建 `PR_tool` / `view2d` / `view3d` 需要 **Qt**（含 OpenGL）
+- 构建 `regression_test` 需要 **Catch2**（macOS / Windows 由 xmake 自动拉取；Linux 需通过 conda 等方式安装并设置 `CONDA_PREFIX`）
 
-    最新的增量布线版本，在布线失败时不共享
+### 构建与运行
 
-    ```c++
-    cycle = 0
-    load nets, sort nets by reuse frequency（在原有布线优先级的基础上，对于同一种优先级的线网之间用 reuse frequency 排序）
-    while {
-        for net in nets {
-            path = route net with maze(using the new cost function)
-        }
-        
-        if fail {
-            if (cycle == 0) {
-                remove nets not belongs to this mode
-                reroute
-            }
-            else {
-                return success with path from last cycle
-            }
-        }
-            
-        update recorder        
-
-        if (cycle >= MIN_CYCLE_NUMBER)
-            return success with path
-
-        cycle++
-    }
-    ```
-
-- dev.bus_routing
-
-    另一个增量布线版本，在布线失败时允许共享
-
-    ```c++
-    cycle = 0
-    load nets, sort nets by reuse frequency
-    while:
-        for net in nets:
-            path = route net with maze(using the new cost function)
-            if fail:
-                path = allow sharing, reroute net with maze(using the new cost function)
-            endif
-            update recorder
-        endfor
-
-        if (MAX_CYCLE_NUMBER > cycle >= MIN_CYCLE_NUMBER) and (no tobmux is shared):
-            return success
-        else if (cycle >= MAX_CYCLE_NUMBER)
-            return failure
-        endif
-
-        cycle++
-    endwhile
-    ```
-
-
-## 项目结构
-
-- [algorithm](./algorithm/)：算法开发与实验
-- [document](./document/)：项目文档
-- [resource](./resource/): GUI 资源
-- [source](./source/)：项目源码
-- [test](./test/)：项目模块测试
-- [tools](./tools/)：工具程序
-
-
-
-
-## 项目构建
-
-本项目由 [xmake](https://github.com/xmake-io/xmake) 工具构建。
-
-安装xmake：[xmake安装](https://xmake.io/mirror/zh-cn/guide/installation.html)
-
-保证系统安装 xmake 以及支持 C++20 版本的编译器。在根目录调用：
-
-````bash
+```bash
+# 主程序
 xmake build PR_tool
-````
+xmake run PR_tool <config_folder> [OPTIONS]
 
+# 默认 target 为 regression_test
+xmake build regression_test
+xmake run regression_test
+```
 
+产物输出到 `./output/`。
 
-## 命令行参数
+---
 
-````bash
-PR_tool <input folder path> [OPTIONS]
-````
+## 源码结构（`source/`）
 
+`source/` 是工程核心，按“物理模型 → 逻辑模型 → 算法 → 解析/输出 → 应用/GUI”分层组织。
 
-Options：
-- `-o, --output <OUTPUT_PATH>`：指定输出 controlbit 文件路径
-- `-g, --gui`：使用 GUI 模式
-- `-h, --help`：打印帮助信息
-- `-V, --version`：打印版本信息
-- `-v, --verbose`: 输出 Debug 信息
-- `-i, --incremental <mode>`: 进入增量布线，需要跟一个正整数 mode
+### 端到端数据流
 
+```
+config JSON
+  → parse::read_config          # 构建 Interposer + BaseDie
+  → algo::build_nets            # Connection → Net / SyncNet
+  → algo::place (可选)          # 模拟退火布局
+  → algo::route_nets            # Maze / 增量布线
+  → parse::output_from_routing_results
+  → controlbits_<mode>.txt
+```
 
+CLI 主流程在 [`source/app/cli/cli.cc`](./source/app/cli/cli.cc)；入口参数解析在 [`source/app/PR_tool.cc`](./source/app/PR_tool.cc)。
 
-## 工具程序
+### 目录说明
 
-tools 目录下保存一些实用的工具小程序：
+| 目录 | 职责 |
+|------|------|
+| [`app/`](./source/app/) | 程序入口：CLI / GUI 模式切换 |
+| [`hardware/`](./source/hardware/) | 物理模型：`Interposer`、`Track`、`COBConnector`、`TOBConnector`、`Bump` |
+| [`circuit/`](./source/circuit/) | 逻辑模型：`BaseDie`、`TopDie`、`Connection`、`Net` 及各类线网子类型 |
+| [`circuit/path/`](./source/circuit/path/) | `PathPackage`：路由结果与连接器状态机（输出 controlbits 的基石） |
+| [`algo/netbuilder/`](./source/algo/netbuilder/) | 将 `Connection` 按 mode/sync 分类并构建 `Net` |
+| [`algo/placer/`](./source/algo/placer/) | 布局；当前默认策略为模拟退火 `SAPlaceStrategy` |
+| [`algo/router/`](./source/algo/router/) | 布线总入口、命令链框架、Maze 路由与增量路由 |
+| [`parse/`](./source/parse/) | 配置读取、controlbits 解析/写出、结果比较 |
+| [`serde/`](./source/serde/) | JSON 序列化/反序列化宏与解析器 |
+| [`global/`](./source/global/) | 标准库封装、日志、异常、工具函数 |
+| [`widget/`](./source/widget/) | Qt GUI：原理图、布局编辑、2D/3D 布线结果可视化 |
 
-- [cobmap](./tools/cobmap.cc)：计算 COB 端口信息的映射关系
-- [view2d](./tools/view2d.cc)：对指定 config 进行布线，使用 2D 显示布线结果
-- [view3d](./tools/view3d.cc)：对指定 config 进行布线，使用 3D 显示布线结果
+### 布线框架要点
 
-根据 xmake.lua 文件中的命令，执行 `xmake build <tool>` 构建、`xmake run <tool> [args]` 允许相应的工具。除此，还提供了 count_lines.py 来计算源代码总行数。
+`algo::route_nets`（[`source/algo/router/route_nets.cc`](./source/algo/router/route_nets.cc)）通过命令链（`command_mode/`）组织流程：
 
+**非增量（默认）**：`Sort` → `Resources` → `Route`（`MazeRouteStrategy`，BFS 在 track 图上搜索）
 
+**增量（`-i/--incremental`）**：`Set_reuse_type` → `Sort` → `Resources` → `Init_recorder` → `Incre_route`（多 cycle 迭代，带代价模型与失败回退）
 
-## 测试
+### 输入配置
 
-test 目录下保存项目的测试代码，分为 module_test 和 regression_test 两个部分。
+典型 config 目录包含：
+
+| 文件 | 含义 |
+|------|------|
+| `config.json` | 主配置，指向其余 JSON |
+| `interposer.json` | interposer 物理定义 |
+| `topdies.json` | 芯粒类型与 pin_map |
+| `topdie_insts.json` | 芯粒实例及 TOB 坐标 |
+| `external_ports.json` | 外部 I/O 端口 |
+| `connections.json` | 线网连接（按 mode / sync 分组） |
+| `01_ports.json` | VDD/GND（pose/nege）端口 |
+| `controlbits_<mode>.txt` | （可选）已有布线结果，用于跳过布线或增量 warm-start |
+
+Pin 名解析规则、连接器状态机、增量代价模型等细节见 [`source/AGENTS.md`](./source/AGENTS.md)。
+
+---
+
+## 测试（`test/`）
+
+```
+test/
+├── config/            # 回归测试用例（case1 … case22）
+├── module_test/       # 模块级单元测试
+├── regression_test/   # 端到端回归（Catch2）
+└── transform_format/  # 配置格式转换工具（txt ↔ json）
+```
 
 ### module_test
 
-对各个模块进行单独测试。
-
-编译：
+对各模块进行隔离测试，入口为 [`test/module_test/test.cc`](./test/module_test/test.cc)。
 
 ```bash
 xmake build module_test
+cd output
+./module_test <module>    # 或 xmake run module_test <module>
 ```
 
-运行：
+| 模块名 | 测试内容 |
+|--------|----------|
+| `cob` | COB 硬件对象 |
+| `tob` | TOB 硬件对象 |
+| `interposer` | Interposer 资源查询 |
+| `router` | 布线逻辑 |
+| `placer` | 布局策略 |
+| `config` | 配置解析 |
+| `comparator` | controlbits 比较 |
+| `path_length` | 路径长度计算 |
+| `debug` | 日志系统 |
+| `all` | 运行上表全部快速测试 |
+| `placer_iteratively` | 慢速稳定性测试（100 次 P&R，不在 `all` 中） |
 
-````bash
-xmake run module_test [module]
-````
-
-`module` 指定要测试的模块（见 simpletest 目录），`all` 表示全部测试。
+`module_test/test_function/` 与 `module_test/test_writer/` 下还有带独立数据集的专项测试（线长、writer、bbox 等），由对应 `*.cc` 编译进 `module_test` target。
 
 ### regression_test
 
-集成系统各个模块，用于回归测试，目前包含 16 个 case 。
-- case 1-6 测试基本的功能 ：
-    |case|说明|
-    |:---:|:---:|
-    |[case1](./test/config/case1)|仅测试同步线布线功能|
-    |[case2](./test/config/case2)|测试同步线，并对同步线中的一个bump增加一根连到I/O的线，测试已布线bump的复用|
-    |[case3](./test/config/case3)|仅测试非同步线布线功能|
-    |[case4](./test/config/case4)|包含 VDD/GND|
-    |[case5](./test/config/case5)|重复连接|
-    |[case6](./test/config/case6)|更多的连接数量|
-- case 7-16 使用构造的芯粒系统进行测试，系统中包含所有类型的线网与较多的线网数量 ：
-    |case|说明|
-    |:---:|:---:|
-    |case 7-9|一个 cpu-ai-mem 芯粒系统|
-    |case 10-12|一个 cpu 芯粒系统|
-    |case 13-16|一个 AI core 芯粒系统|
-- case 17-18 测试增量布线功能
+使用 Catch2，在 [`test/regression_test/`](./test/regression_test/) 中按场景组织：
 
-编译：
+| 文件 | 标签 | 内容 |
+|------|------|------|
+| `test.cc` | `[basic]` `[CPU_MEM_AI]` `[CPU_MEM]` `[AI_core]` | 读配置 → build_nets → route，校验总线长 ≤ `golden.txt` |
+| `incremental_test.cc` | `[incremental]` | 增量布线统计与循环测试 |
+| `flow_test.cc` | `[flow]` | 放置 + 布线完整流程 |
 
 ```bash
 xmake build regression_test
+cd output
+./regression_test              # 全部场景
+./regression_test "[basic]"    # 仅运行指定标签
 ```
 
-运行：
+Linux 上需确保 `CONDA_PREFIX` 指向已安装 Catch2 的环境。
+
+### 回归用例（`test/config/`）
+
+目前共 **22** 个 case 目录（无 case6）。每个 case 通常含输入 JSON、`golden.txt`（期望总线长上界）及 `description.txt`。
+
+#### case 1–5：基础功能（Muyan 小规模）
+
+| case | 说明 |
+|:----:|------|
+| [case1](./test/config/case1) | 仅同步线（bus）布线 |
+| [case2](./test/config/case2) | 同步线 + 额外非同步线，测试 bump 复用 |
+| [case3](./test/config/case3) | 仅非同步线布线 |
+| [case4](./test/config/case4) | 含 VDD/GND、更多线网（回归中暂未启用） |
+| [case5](./test/config/case5) | 更多连接；也用于 `placer_iteratively` |
+
+#### case 7–9：CPU–AI–MEM 芯粒系统
+
+| case | 规模 |
+|:----:|------|
+| case 7 | 最少 bus 数量 |
+| case 8 | 中等 bus 数量 |
+| case 9 | 最多 bus 数量 |
+
+#### case 10–12：CPU 芯粒系统
+
+| case | 规模 |
+|:----:|------|
+| case 10 | 最少 bus（`flow_test` 放置+布线用例） |
+| case 11 | 中等 bus |
+| case 12 | 最多 bus |
+
+#### case 13–16：AI core 芯粒系统
+
+| case | 规模 |
+|:----:|------|
+| case 13 | 最少 bus |
+| case 14–16 | 逐步增大线网规模 |
+
+#### case 17–22：专项测试
+
+| case | 说明 |
+|:----:|------|
+| case 17 | controlbits 反推路径（`bit_to_path`） |
+| case 18–19 | 增量布线相关配置 |
+| case 20 | 增量回归（`incremental_test` mode 1/2） |
+| case 21–22 | 扩展测试配置 |
+
+部分大规模 case（如 8、9、14–16）在 `test.cc` 中标注为已知失败，仍保留作 benchmark。
+
+---
+
+## 命令行参数
 
 ```bash
-xmake run regression_test
+PR_tool <input folder path> [OPTIONS]
 ```
+
+| 选项 | 说明 |
+|------|------|
+| `-o, --output <PATH>` | controlbits 输出目录 |
+| `-g, --gui` | GUI 模式 |
+| `-p, --placement` | 启用布局（模拟退火） |
+| `-i, --incremental [MODE]` | 增量布线；可跟正整数 mode，省略则尝试所有 mode |
+| `-c, --compare <MODE>` | 与指定 mode 的 controlbits 对比（需配合 `-i`） |
+| `-v, --verbose` | 输出 Debug 日志 |
+| `-h, --help` | 帮助 |
+| `-V, --version` | 版本信息 |
+
+示例：
+
+```bash
+xmake run PR_tool test/config/case1 -v
+xmake run PR_tool test/config/case20 -i 2 -o ./output
+xmake run PR_tool -g
+```
+
+---
+
+## 工具程序
+
+`tools/` 与 `test/transform_format/` 提供辅助程序，通过 xmake target 构建：
+
+| target | 说明 |
+|--------|------|
+| `cobmap` | 计算 COB 端口映射 |
+| `view2d` | 加载配置、执行 P&R、2D 可视化 |
+| `view3d` | 加载配置、执行 P&R、3D 可视化 |
+| `parse_controlbits` | 解析 controlbits 文件 |
+| `txt2json` | 旧版 txt 配置转 JSON |
+| `json2txt` | JSON 配置转旧版 txt 连接格式 |
+
+```bash
+xmake build view2d
+xmake run view2d <config_folder>
+```
+
+---
+
+## 项目结构（其他目录）
+
+| 目录 | 说明 |
+|------|------|
+| [`algorithm/`](./algorithm/) | 算法实验与原型（增量布线、ILP 等），非主程序依赖 |
+| [`document/`](./document/) | 项目文档 |
+| [`resource/`](./resource/) | Qt GUI 资源 |
+| [`tools/`](./tools/) | 独立工具源码 |
+| [`output/`](./output/) | 构建产物与运行日志（`debug.log` 等） |
+
+---
+
+## 分支说明
+
+| 分支 | 说明 |
+|------|------|
+| `master` | 主开发线；algo 部分采用命令模式框架 |
+| `version_before_commands` | 旧版完整布线流程，不支持增量布线 |
+| `dev.incre_no_sharing` | 增量布线：失败时不共享资源 |
+| `dev.algo` / `dev.linux` | 平台与算法开发分支 |
+| `fix.controlbits` | controlbits 相关修复 |
+
+增量布线的高层流程（多 cycle 迭代、按 reuse frequency 排序、失败回退）见 `algorithm/incremental_routing/` 下的实验记录；生产实现位于 `source/algo/router/incremental/`。
