@@ -191,17 +191,11 @@ auto solve_tob_mcf_with_range_iteration(
         }
 
         if (!mcf.summary.all_ok) {
-            debug::info_fmt("tier iteration: attempt={} SAT=SAT MCF=fail max_tier={}", attempt, state.max_tier());
+            debug::info_fmt(
+                "tier iteration: attempt={} SAT=SAT MCF=fail (MCF bbox expand exhausted) max_tier={}",
+                attempt,
+                state.max_tier());
             log_mcf_failure_reason(mcf, state);
-            if (mcf.retry_hints.bus_failure_unlocalized) {
-                out.ok = false;
-                out.message = "SAT+MCF: BusMCF failed but failed bus_key could not be localized";
-                out.tob = std::move(tob);
-                out.mcf = mcf;
-                out.max_tier = state.max_tier();
-                debug::error_fmt("{}", out.message);
-                return out;
-            }
 
             auto fail_set = std::Vector<std::size_t> {};
             if (!mcf.retry_hints.failed_bus_keys.empty()) {

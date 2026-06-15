@@ -4,6 +4,7 @@
 
 #include <hardware/cob/cob.hh>
 
+#include <format>
 #include <stdexcept>
 
 namespace PR_tool {
@@ -258,6 +259,57 @@ auto resolve_mcf_bbox(
         return ctx.per_commodity[commodity_index];
     }
     return McfCommodityBBox {};
+}
+
+auto expand_bus_hulls(McfBBoxContext& ctx, const std::Vector<std::String>& bus_keys) -> McfBBoxExpandResult {
+    auto out = McfBBoxExpandResult {};
+    for (const auto& bus_key : bus_keys) {
+        const auto it = ctx.per_bus_key.find(bus_key);
+        if (it == ctx.per_bus_key.end()) {
+            continue;
+        }
+        auto& box = it->second;
+        if (!expand_bbox_by_one(box)) {
+            out.any_exhausted = true;
+            out.exhausted_key = bus_key;
+        }
+    }
+    return out;
+}
+
+auto lookup_simple_origin_hull(
+    const McfBBoxExpandState& state,
+    const McfSimpleOriginGroupKey& key
+) -> std::optional<IlpBoundingBox> {
+    const auto it = state.simple_origin_hull.find(key);
+    if (it == state.simple_origin_hull.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+auto expand_simple_origin_hulls(
+    McfBBoxExpandState& state,
+    const std::Vector<McfSimpleOriginGroupKey>& origin_groups,
+    const std::function<IlpBoundingBox(const McfSimpleOriginGroupKey&)>& base_hull_for
+) -> McfBBoxExpandResult {
+    auto out = McfBBoxExpandResult {};
+    for (const auto& key : origin_groups) {
+        auto box = IlpBoundingBox {};
+        const auto it = state.simple_origin_hull.find(key);
+        if (it != state.simple_origin_hull.end()) {
+            box = it->second;
+        }
+        else {
+            box = base_hull_for(key);
+        }
+        if (!expand_bbox_by_one(box)) {
+            out.any_exhausted = true;
+            out.exhausted_key = std::format("unit{}:{}", key.first, key.second);
+        }
+        state.simple_origin_hull[key] = box;
+    }
+    return out;
 }
 
 } // namespace PR_tool

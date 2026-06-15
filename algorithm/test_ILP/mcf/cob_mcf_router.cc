@@ -109,6 +109,8 @@ struct McfConstraintMeta {
     std::String detail;
     std::String bus_key {};
     std::size_t record_index{std::numeric_limits<std::size_t>::max()};
+    int simple_unit{-1};
+    std::String simple_origin_key {};
 };
 
 struct StageSolveResult {
@@ -127,6 +129,7 @@ struct StageSolveResult {
     std::Vector<McfConstraintMeta> infeasibility_hints;
     std::Vector<std::String> failed_bus_keys;
     std::Vector<std::size_t> failed_record_indices;
+    std::Vector<McfSimpleOriginGroupKey> failed_simple_origin_groups;
     bool bus_failure_unlocalized{false};
 };
 
@@ -230,6 +233,17 @@ auto append_bus_retry_hint(StageSolveResult& out, const std::String& bus_key, co
     if (record_index != kInvalidRecordIndex) {
         append_unique(out.failed_record_indices, record_index);
     }
+}
+
+auto append_simple_origin_retry_hint(
+    StageSolveResult& out,
+    const std::size_t unit,
+    const std::String& origin_key
+) -> void {
+    if (origin_key.empty()) {
+        return;
+    }
+    append_unique(out.failed_simple_origin_groups, McfSimpleOriginGroupKey {unit, origin_key});
 }
 
 auto collect_bus_retry_hints_from_iis(StageSolveResult& out, const std::Vector<McfConstraintMeta>& hints) -> void {
@@ -1278,7 +1292,8 @@ auto effective_bbox_for_simple_commodity(
     const std::Vector<std::size_t>& simple_ids,
     const std::Vector<PreparedCommodity>& commodities,
     const std::Vector<Net_cost_record>& records,
-    const McfBBoxContext& ctx
+    const McfBBoxContext& ctx,
+    const McfBBoxExpandState* expand_state
 ) -> McfCommodityBBox {
     if (global_commodity_id >= ctx.per_commodity.size()) {
         return McfCommodityBBox {};
@@ -1286,6 +1301,11 @@ auto effective_bbox_for_simple_commodity(
     const auto& commodity = commodities[global_commodity_id];
     const auto& record = records[commodity.record_index];
     const auto group_key = std::make_pair(commodity.cob_unit, simple_origin_group_key(record));
+    if (expand_state != nullptr) {
+        if (const auto overlay = lookup_simple_origin_hull(*expand_state, group_key)) {
+            return McfCommodityBBox {true, *overlay};
+        }
+    }
     auto global_ids = std::Vector<std::size_t> {};
     auto record_indices = std::Vector<std::size_t> {};
     for (const auto sid : simple_ids) {
@@ -1311,6 +1331,28 @@ auto effective_bbox_for_simple_commodity(
         return ctx.per_commodity[global_commodity_id];
     }
     return compute_origin_group_bbox(global_ids, record_indices, records, ctx);
+}
+
+auto base_simple_origin_hull(
+    const McfSimpleOriginGroupKey& key,
+    const std::Vector<std::size_t>& simple_ids,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::Vector<Net_cost_record>& records,
+    const McfBBoxContext& ctx
+) -> IlpBoundingBox {
+    auto global_ids = std::Vector<std::size_t> {};
+    auto record_indices = std::Vector<std::size_t> {};
+    for (const auto sid : simple_ids) {
+        const auto& sc = commodities[sid];
+        const auto& sr = records[sc.record_index];
+        if (std::make_pair(sc.cob_unit, simple_origin_group_key(sr)) != key) {
+            continue;
+        }
+        global_ids.push_back(sid);
+        record_indices.push_back(sc.record_index);
+    }
+    const auto bbox = compute_origin_group_bbox(global_ids, record_indices, records, ctx);
+    return bbox.box;
 }
 
 auto extract_path(
@@ -1983,6 +2025,7 @@ auto run_simple_warm_start_for_unit(
     const std::Vector<std::size_t>& simple_ids_for_unit,
     const std::Vector<Net_cost_record>& records,
     const McfBBoxContext& bbox_ctx,
+    const McfBBoxExpandState* expand_state,
     const StageSolveResult& bus_res,
     const std::size_t unit_c,
     const std::Vector<std::Vector<int>>& outgoing_arcs
@@ -1991,7 +2034,8 @@ auto run_simple_warm_start_for_unit(
     auto warm_used_nodes = std::map<int, int> {};
     seed_warm_used_from_bus_unit(bus_res, unit_c, warm_used_edges, warm_used_nodes);
     const auto simple_effective_bbox = [&](const std::size_t cid) -> McfCommodityBBox {
-        return effective_bbox_for_simple_commodity(cid, simple_ids_for_unit, commodities, records, bbox_ctx);
+        return effective_bbox_for_simple_commodity(
+            cid, simple_ids_for_unit, commodities, records, bbox_ctx, expand_state);
     };
     return route_simple_mcf_stage_warm_start_by_origin(
         graph,
@@ -2641,6 +2685,7 @@ auto solve_simple_mcf_unit(
     const std::Vector<std::size_t>& simple_ids_for_unit,
     const std::Vector<Net_cost_record>& records,
     const McfBBoxContext& bbox_ctx,
+    const McfBBoxExpandState* expand_state,
     const std::map<std::pair<int, int>, int>& edge_capacity_override,
     const std::map<int, int>& node_capacity_override,
     const bool enable_mcf_obj,
@@ -2669,6 +2714,13 @@ auto solve_simple_mcf_unit(
         for (const auto k : group.commodity_local_indices) {
             commodity_origin_h[static_cast<std::size_t>(k)] = group.origin_group_id;
         }
+        const auto group_key = std::make_pair(unit_c, group.origin_key);
+        if (expand_state != nullptr) {
+            if (const auto overlay = lookup_simple_origin_hull(*expand_state, group_key)) {
+                origin_bbox_by_gid[group.origin_group_id] = McfCommodityBBox {true, *overlay};
+                continue;
+            }
+        }
         if (group.is_multi_fanout) {
             auto global_ids = std::Vector<std::size_t> {};
             auto record_indices = std::Vector<std::size_t> {};
@@ -2685,21 +2737,19 @@ auto solve_simple_mcf_unit(
     for (int k = 0; k < K; ++k) {
         const auto global_id = simple_ids_for_unit[static_cast<std::size_t>(k)];
         const auto& commodity = local_com[static_cast<std::size_t>(k)];
-        const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
-        const auto mode = origin_bbox_by_gid.contains(h) ? McfArcBBoxMode::SimpleOriginGroup
-                                                         : McfArcBBoxMode::SimpleCommodity;
-        const auto origin_bbox = origin_bbox_by_gid.contains(h) ? origin_bbox_by_gid.at(h) : McfCommodityBBox {};
-        const McfBBoxCommodityInput input {
-            commodity.record_index,
-            commodity.is_bus,
-            commodity.bus_key};
-        const auto effective = resolve_mcf_bbox(bbox_ctx, global_id, input, mode, origin_bbox);
+        const auto effective = effective_bbox_for_simple_commodity(
+            global_id, simple_ids_for_unit, commodities, records, bbox_ctx, expand_state);
         if (effective.restricted && !commodity_bbox_connected(graph, commodity, effective)) {
             apply_stage_solution_class(out, McfSolutionClass::Failed);
             out.message = std::format(
                 "{}: bbox disconnected for commodity {}",
                 stage_name,
                 commodity.label);
+            append_unique(out.failed_record_indices, commodity.record_index);
+            append_simple_origin_retry_hint(
+                out,
+                unit_c,
+                simple_origin_group_key(records[commodity.record_index]));
             return finish_stage_solve_result(out, solve_begin);
         }
     }
@@ -2749,6 +2799,20 @@ auto solve_simple_mcf_unit(
         const auto it = origin_label_by_h.find(h);
         return it != origin_label_by_h.end() ? it->second : std::format("origin_h{}", h);
     };
+    const auto simple_meta = [&](
+                                 std::String kind,
+                                 std::String detail,
+                                 const int h,
+                                 const std::size_t record_index = kInvalidRecordIndex
+                             ) -> McfConstraintMeta {
+        return McfConstraintMeta {
+            std::move(kind),
+            std::move(detail),
+            {},
+            record_index,
+            static_cast<int>(unit_c),
+            origin_label(h)};
+    };
 
     auto row_lo = std::vector<double> {};
     auto row_up = std::vector<double> {};
@@ -2777,12 +2841,14 @@ auto solve_simple_mcf_unit(
         }
         const auto row = add_eq(
             0.0,
-            McfConstraintMeta {
+            simple_meta(
                 "flow_conservation",
                 std::format(
                     "commodity={} node={} (unset)",
                     local_com[static_cast<std::size_t>(k)].label,
-                    node_text(graph, n))});
+                    node_text(graph, n)),
+                commodity_origin_h[static_cast<std::size_t>(k)],
+                local_com[static_cast<std::size_t>(k)].record_index));
         flow_row[key] = row;
         return row;
     };
@@ -2830,14 +2896,22 @@ auto solve_simple_mcf_unit(
                 "commodity={} node={} rhs=+{} (source)",
                 local_com[static_cast<std::size_t>(k)].label,
                 node_text(graph, s),
-                d)};
+                d),
+            {},
+            local_com[static_cast<std::size_t>(k)].record_index,
+            static_cast<int>(unit_c),
+            origin_label(commodity_origin_h[static_cast<std::size_t>(k)])};
         row_meta[static_cast<std::size_t>(rt)] = McfConstraintMeta {
             "flow_conservation",
             std::format(
                 "commodity={} node={} rhs=-{} (sink)",
                 local_com[static_cast<std::size_t>(k)].label,
                 node_text(graph, t),
-                d)};
+                d),
+            {},
+            local_com[static_cast<std::size_t>(k)].record_index,
+            static_cast<int>(unit_c),
+            origin_label(commodity_origin_h[static_cast<std::size_t>(k)])};
     }
 
     // SimpleMCF v5 §1-2: x^{c,H}_e on undirected physical edges e
@@ -2891,13 +2965,15 @@ auto solve_simple_mcf_unit(
         }
         const auto row = add_le(
             0.0,
-            McfConstraintMeta {
+            simple_meta(
                 "f_le_x_lower",
                 std::format(
                     "origin={} commodity={} {}",
                     origin_label(h),
                     local_com[static_cast<std::size_t>(k)].label,
-                    describe_undirected_edge(graph, arc_index, e.first, e.second, graph.cols))});
+                    describe_undirected_edge(graph, arc_index, e.first, e.second, graph.cols)),
+                h,
+                local_com[static_cast<std::size_t>(k)].record_index));
         ++f_le_x_lower_rows;
         f_entries[j].push_back({row, 1.0});
         origin_x_entries[static_cast<std::size_t>(it->second)].push_back({row, -1.0});
@@ -2913,7 +2989,7 @@ auto solve_simple_mcf_unit(
         }
         const auto row = add_le(
             0.0,
-            McfConstraintMeta {
+            simple_meta(
                 "f_le_x_upper",
                 std::format(
                     "origin={} {}",
@@ -2923,7 +2999,8 @@ auto solve_simple_mcf_unit(
                         arc_index,
                         he_key.second.first,
                         he_key.second.second,
-                        graph.cols))});
+                        graph.cols)),
+                he_key.first));
         ++f_le_x_upper_rows;
         origin_x_entries[static_cast<std::size_t>(x_var)].push_back({row, 1.0});
         for (const auto f_j : f_list) {
@@ -2982,14 +3059,15 @@ auto solve_simple_mcf_unit(
             const auto o_var = origin_o_by_hn.at(hn);
             const auto row_x_le_o = add_le(
                 0.0,
-                McfConstraintMeta {
+                simple_meta(
                     "x_le_o",
                     std::format(
                         "origin={} node={} edge={}-{}",
                         origin_label(h),
                         node_text(graph, n),
                         node_text(graph, e.first),
-                        node_text(graph, e.second))});
+                        node_text(graph, e.second)),
+                    h));
             ++x_le_o_rows;
             origin_x_entries[static_cast<std::size_t>(x_var)].push_back({row_x_le_o, 1.0});
             origin_o_entries[static_cast<std::size_t>(o_var)].push_back({row_x_le_o, -1.0});
@@ -3014,9 +3092,10 @@ auto solve_simple_mcf_unit(
         }
         const auto row_o_le_sum = add_le(
             0.0,
-            McfConstraintMeta {
+            simple_meta(
                 "o_le_sum_x",
-                std::format("origin={} node={}", origin_label(h), node_text(graph, n))});
+                std::format("origin={} node={}", origin_label(h), node_text(graph, n)),
+                h));
         ++o_le_sum_x_rows;
         origin_o_entries[static_cast<std::size_t>(o_var)].push_back({row_o_le_sum, 1.0});
         for (const auto x_idx : x_on_delta) {
@@ -3188,6 +3267,7 @@ auto solve_simple_mcf_unit(
                 simple_ids_for_unit,
                 records,
                 bbox_ctx,
+                expand_state,
                 edge_capacity_override,
                 node_capacity_override,
                 enable_mcf_obj,
@@ -3199,6 +3279,17 @@ auto solve_simple_mcf_unit(
         apply_stage_solution_class(out, solve_res.solution_class);
         out.message = solve_res.message;
         out.infeasibility_hints = solve_res.iis_rows;
+        for (const auto& hint : out.infeasibility_hints) {
+            if (hint.record_index != kInvalidRecordIndex) {
+                append_unique(out.failed_record_indices, hint.record_index);
+            }
+            if (hint.simple_unit >= 0) {
+                append_simple_origin_retry_hint(
+                    out,
+                    static_cast<std::size_t>(hint.simple_unit),
+                    hint.simple_origin_key);
+            }
+        }
         return finish_stage_solve_result(out, solve_begin);
     }
 
@@ -3633,6 +3724,336 @@ auto normalize_retry_hints(CobMcfRetryHints& hints) -> void {
     sort_unique(hints.failed_record_indices);
 }
 
+auto collect_failed_bus_keys_for_expand(
+    const StageSolveResult& bus_res,
+    const McfBBoxContext& bbox_ctx
+) -> std::Vector<std::String> {
+    if (!bus_res.failed_bus_keys.empty()) {
+        return bus_res.failed_bus_keys;
+    }
+    auto keys = std::Vector<std::String> {};
+    keys.reserve(bbox_ctx.per_bus_key.size());
+    for (const auto& [key, _] : bbox_ctx.per_bus_key) {
+        keys.push_back(key);
+    }
+    return keys;
+}
+
+auto collect_all_origin_groups_in_unit(
+    const std::size_t unit_c,
+    const std::Vector<std::size_t>& simple_ids,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::Vector<Net_cost_record>& records
+) -> std::Vector<McfSimpleOriginGroupKey> {
+    auto seen = std::set<McfSimpleOriginGroupKey> {};
+    auto out = std::Vector<McfSimpleOriginGroupKey> {};
+    for (const auto sid : simple_ids) {
+        if (sid >= commodities.size()) {
+            continue;
+        }
+        const auto& commodity = commodities[sid];
+        if (commodity.record_index >= records.size()) {
+            continue;
+        }
+        const auto key = std::make_pair(unit_c, simple_origin_group_key(records[commodity.record_index]));
+        if (seen.insert(key).second) {
+            out.push_back(key);
+        }
+    }
+    return out;
+}
+
+auto collect_failed_simple_origin_groups(
+    const StageSolveResult& simple_res,
+    const std::size_t unit_c,
+    const std::Vector<std::size_t>& simple_ids,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::Vector<Net_cost_record>& records
+) -> std::Vector<McfSimpleOriginGroupKey> {
+    auto seen = std::set<McfSimpleOriginGroupKey> {};
+    auto out = std::Vector<McfSimpleOriginGroupKey> {};
+    for (const auto& key : simple_res.failed_simple_origin_groups) {
+        if (key.first != unit_c) {
+            continue;
+        }
+        if (seen.insert(key).second) {
+            out.push_back(key);
+        }
+    }
+    if (!out.empty()) {
+        return out;
+    }
+    for (const auto record_index : simple_res.failed_record_indices) {
+        if (record_index >= records.size()) {
+            continue;
+        }
+        for (const auto sid : simple_ids) {
+            if (sid >= commodities.size() || commodities[sid].record_index != record_index) {
+                continue;
+            }
+            const auto key = std::make_pair(unit_c, simple_origin_group_key(records[record_index]));
+            if (seen.insert(key).second) {
+                out.push_back(key);
+            }
+            break;
+        }
+    }
+    if (!out.empty()) {
+        return out;
+    }
+    return collect_all_origin_groups_in_unit(unit_c, simple_ids, commodities, records);
+}
+
+struct BusStageOutcome {
+    bool ok{false};
+    bool bbox_exhausted{false};
+    StageSolveResult bus_res {};
+    int warm_start_ms{0};
+    int bbox_expand_attempts{0};
+};
+
+struct UnitStageOutcome {
+    bool ok{false};
+    bool unit_exhausted{false};
+    StageSolveResult simple_res {};
+};
+
+auto log_bus_bbox_expand(
+    const int attempt,
+    const std::Vector<std::String>& bus_keys,
+    const McfBBoxExpandResult& expand_result,
+    const McfBBoxContext& bbox_ctx
+) -> void {
+    auto box_parts = std::Vector<std::String> {};
+    for (const auto& key : bus_keys) {
+        const auto it = bbox_ctx.per_bus_key.find(key);
+        if (it != bbox_ctx.per_bus_key.end()) {
+            box_parts.push_back(std::format("{}:{}", key, format_bbox(it->second)));
+        }
+    }
+    if (expand_result.any_exhausted) {
+        debug::info_fmt(
+            "MCF bbox expand: stage=BusMCF exhausted=true attempt={} reason=bus_key={} at full array",
+            attempt,
+            expand_result.exhausted_key);
+        return;
+    }
+    debug::info_fmt(
+        "MCF bbox expand: stage=BusMCF attempt={} bus_keys={} exhausted=false boxes={{{}}}",
+        attempt,
+        bus_keys.size(),
+        fmt_join_parts(box_parts));
+}
+
+auto log_simple_bbox_expand(
+    const std::size_t unit_c,
+    const int attempt,
+    const std::Vector<McfSimpleOriginGroupKey>& origin_groups,
+    const McfBBoxExpandResult& expand_result,
+    const McfBBoxExpandState& expand_state
+) -> void {
+    if (expand_result.any_exhausted) {
+        debug::info_fmt(
+            "MCF bbox expand: stage=SimpleMCF_unit{} exhausted=true attempt={} reason={}",
+            unit_c,
+            attempt,
+            expand_result.exhausted_key);
+        return;
+    }
+    auto group_parts = std::Vector<std::String> {};
+    for (const auto& key : origin_groups) {
+        const auto it = expand_state.simple_origin_hull.find(key);
+        if (it != expand_state.simple_origin_hull.end()) {
+            group_parts.push_back(std::format("{}:{}", key.second, format_bbox(it->second)));
+        }
+    }
+    debug::info_fmt(
+        "MCF bbox expand: stage=SimpleMCF_unit{} attempt={} origin_groups={} exhausted=false boxes={{{}}}",
+        unit_c,
+        attempt,
+        origin_groups.size(),
+        fmt_join_parts(group_parts));
+}
+
+auto run_bus_mcf_stage_with_bbox_retry(
+    const GlobalGraph& graph,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::Vector<std::size_t>& bus_ids,
+    const bool disable_bus_mcf,
+    const bool enable_pre_routing,
+    const GurobiDiagnosticsOptions& diag,
+    McfBBoxContext& bbox_ctx
+) -> BusStageOutcome {
+    auto out = BusStageOutcome {};
+    if (disable_bus_mcf) {
+        out.bus_res.stage_name = "BusMCF";
+        out.bus_res.message = "skipped (--disable-bus-mcf)";
+        apply_stage_solution_class(out.bus_res, McfSolutionClass::Skipped);
+        out.ok = true;
+        if (!bus_ids.empty()) {
+            debug::info_fmt(
+                "MCF: BusMCF skipped; {} bus commodities are not routed",
+                bus_ids.size());
+        }
+        return out;
+    }
+
+    auto outgoing_arcs = std::Vector<std::Vector<int>> {};
+    if (enable_pre_routing) {
+        outgoing_arcs.resize(graph.nodes.size());
+        for (std::size_t a = 0; a < graph.arcs.size(); ++a) {
+            outgoing_arcs[static_cast<std::size_t>(graph.arcs[a].u)].push_back(static_cast<int>(a));
+        }
+    }
+
+    const auto bus_effective_bbox = [&](const std::size_t cid) -> McfCommodityBBox {
+        const auto& commodity = commodities[cid];
+        const McfBBoxCommodityInput input {
+            commodity.record_index,
+            commodity.is_bus,
+            commodity.bus_key};
+        return resolve_mcf_bbox(bbox_ctx, cid, input, McfArcBBoxMode::Bus, McfCommodityBBox {});
+    };
+
+    int bus_solve_ms_total = 0;
+    for (std::size_t attempt = 0;; ++attempt) {
+        const StageWarmStart* bus_warm_start_ptr = nullptr;
+        auto bus_warm_start = StageWarmStart {};
+        if (enable_pre_routing) {
+            const auto bus_warm_t0 = std::chrono::steady_clock::now();
+            auto warm_used_edges = std::map<std::pair<int, int>, int> {};
+            auto warm_used_nodes = std::map<int, int> {};
+            bus_warm_start = route_mcf_stage_warm_start(
+                "BusMCF",
+                graph,
+                commodities,
+                bus_ids,
+                bus_effective_bbox,
+                outgoing_arcs,
+                warm_used_edges,
+                warm_used_nodes);
+            bus_warm_start_ptr = &bus_warm_start;
+            const auto bus_warm_t1 = std::chrono::steady_clock::now();
+            out.warm_start_ms += static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(bus_warm_t1 - bus_warm_t0).count());
+        }
+
+        out.bus_res = solve_bus_mcf(graph, commodities, bus_ids, bbox_ctx, bus_warm_start_ptr, diag);
+        bus_solve_ms_total += out.bus_res.solve_ms;
+        out.bus_res.solve_ms = bus_solve_ms_total;
+        if (out.bus_res.ok) {
+            out.ok = true;
+            return out;
+        }
+
+        const auto targets = collect_failed_bus_keys_for_expand(out.bus_res, bbox_ctx);
+        if (targets.empty()) {
+            out.bbox_exhausted = true;
+            return out;
+        }
+
+        const auto expand_result = expand_bus_hulls(bbox_ctx, targets);
+        out.bbox_expand_attempts = static_cast<int>(attempt + 1);
+        log_bus_bbox_expand(static_cast<int>(attempt + 1), targets, expand_result, bbox_ctx);
+        if (expand_result.any_exhausted) {
+            if (out.bus_res.failed_bus_keys.empty()) {
+                for (const auto& key : targets) {
+                    append_unique(out.bus_res.failed_bus_keys, key);
+                }
+                out.bus_res.bus_failure_unlocalized = true;
+            }
+            out.bbox_exhausted = true;
+            debug::info_fmt("MCF: BusMCF bbox expand exhausted; skipping SimpleMCF");
+            return out;
+        }
+    }
+}
+
+auto run_simple_mcf_unit_with_bbox_retry(
+    const GlobalGraph& graph,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::size_t unit_c,
+    const std::Vector<std::size_t>& simple_ids_for_unit,
+    const std::Vector<Net_cost_record>& records,
+    McfBBoxContext& bbox_ctx,
+    McfBBoxExpandState& expand_state,
+    const std::map<std::pair<int, int>, int>& edge_cap,
+    const std::map<int, int>& node_cap,
+    const bool enable_pre_routing,
+    const bool enable_mcf_obj,
+    const StageSolveResult& bus_res,
+    const std::Vector<std::Vector<int>>& outgoing_arcs,
+    const GurobiDiagnosticsOptions& diag
+) -> UnitStageOutcome {
+    auto out = UnitStageOutcome {};
+    if (simple_ids_for_unit.empty()) {
+        out.simple_res.stage_name = std::format("SimpleMCF_unit{}", unit_c);
+        out.simple_res.message = "empty stage";
+        apply_stage_solution_class(out.simple_res, McfSolutionClass::Skipped);
+        out.ok = true;
+        return out;
+    }
+
+    const auto base_hull_for = [&](const McfSimpleOriginGroupKey& key) -> IlpBoundingBox {
+        return base_simple_origin_hull(key, simple_ids_for_unit, commodities, records, bbox_ctx);
+    };
+
+    int unit_solve_ms_total = 0;
+    for (std::size_t attempt = 0;; ++attempt) {
+        const StageWarmStart* unit_warm_ptr = nullptr;
+        auto unit_warm = StageWarmStart {};
+        if (enable_pre_routing && stage_result_ok(bus_res.solution_class)) {
+            unit_warm = run_simple_warm_start_for_unit(
+                graph,
+                commodities,
+                simple_ids_for_unit,
+                records,
+                bbox_ctx,
+                &expand_state,
+                bus_res,
+                unit_c,
+                outgoing_arcs);
+            if (!unit_warm.nodes_by_record_id.empty()) {
+                unit_warm_ptr = &unit_warm;
+            }
+        }
+
+        out.simple_res = solve_simple_mcf_unit(
+            graph,
+            commodities,
+            unit_c,
+            simple_ids_for_unit,
+            records,
+            bbox_ctx,
+            &expand_state,
+            edge_cap,
+            node_cap,
+            enable_mcf_obj,
+            unit_warm_ptr,
+            diag);
+        unit_solve_ms_total += out.simple_res.solve_ms;
+        out.simple_res.solve_ms = unit_solve_ms_total;
+        if (out.simple_res.ok) {
+            out.ok = true;
+            return out;
+        }
+
+        const auto origin_groups =
+            collect_failed_simple_origin_groups(out.simple_res, unit_c, simple_ids_for_unit, commodities, records);
+        if (origin_groups.empty()) {
+            out.unit_exhausted = true;
+            return out;
+        }
+
+        const auto expand_result = expand_simple_origin_hulls(expand_state, origin_groups, base_hull_for);
+        log_simple_bbox_expand(unit_c, static_cast<int>(attempt + 1), origin_groups, expand_result, expand_state);
+        if (expand_result.any_exhausted) {
+            out.unit_exhausted = true;
+            return out;
+        }
+    }
+}
+
 auto build_pre_route_paths_by_unit(
     const StageSolveResult& bus_res,
     const StageWarmStart& simple_warm,
@@ -3751,13 +4172,10 @@ auto run_mcf_global_routing_cob_units(
     }
 
     const auto bbox_inputs = to_bbox_inputs(commodities);
-    const auto bbox_ctx = build_mcf_bbox_context(records, bbox_inputs, ilp_result, path_cache);
+    auto bbox_ctx = build_mcf_bbox_context(records, bbox_inputs, ilp_result, path_cache);
     debug::info_fmt("MCF using SAT path bbox max_tier={}", bbox_ctx.max_tier);
 
-    auto bus_warm_start = StageWarmStart {};
-    auto simple_warm_start = StageWarmStart {};
-    const StageWarmStart* bus_warm_start_ptr = nullptr;
-    const StageWarmStart* simple_warm_start_ptr = nullptr;
+    auto expand_states = std::array<McfBBoxExpandState, 16> {};
     auto outgoing_arcs = std::Vector<std::Vector<int>> {};
     if (enable_pre_routing) {
         outgoing_arcs.resize(graph.nodes.size());
@@ -3765,183 +4183,215 @@ auto run_mcf_global_routing_cob_units(
             outgoing_arcs[static_cast<std::size_t>(graph.arcs[a].u)].push_back(static_cast<int>(a));
         }
     }
-    int bus_warm_start_ms = 0;
-    int simple_warm_start_ms = 0;
-    if (enable_pre_routing && !disable_bus_mcf) {
-        const auto bus_warm_t0 = std::chrono::steady_clock::now();
-        auto warm_used_edges = std::map<std::pair<int, int>, int> {};
-        auto warm_used_nodes = std::map<int, int> {};
-        const auto bus_effective_bbox = [&](const std::size_t cid) -> McfCommodityBBox {
-            const auto& commodity = commodities[cid];
-            const McfBBoxCommodityInput input {
-                commodity.record_index,
-                commodity.is_bus,
-                commodity.bus_key};
-            return resolve_mcf_bbox(bbox_ctx, cid, input, McfArcBBoxMode::Bus, McfCommodityBBox {});
-        };
-        bus_warm_start = route_mcf_stage_warm_start(
-            "BusMCF",
-            graph,
-            commodities,
-            bus_ids,
-            bus_effective_bbox,
-            outgoing_arcs,
-            warm_used_edges,
-            warm_used_nodes);
-        bus_warm_start_ptr = &bus_warm_start;
-        const auto bus_warm_t1 = std::chrono::steady_clock::now();
-        bus_warm_start_ms = static_cast<int>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(bus_warm_t1 - bus_warm_t0).count());
-        debug::info_fmt("timing phase=mcf_bus_warm_start ms={}", bus_warm_start_ms);
-    }
 
     const auto solve_t0 = std::chrono::steady_clock::now();
-    auto bus_res = StageSolveResult {};
-    if (disable_bus_mcf) {
-        bus_res.stage_name = "BusMCF";
-        bus_res.message = "skipped (--disable-bus-mcf)";
-        apply_stage_solution_class(bus_res, McfSolutionClass::Skipped);
-        if (!bus_ids.empty()) {
-            debug::info_fmt(
-                "MCF: BusMCF skipped; {} bus commodities are not routed",
-                bus_ids.size());
-        }
-    }
-    else {
-        bus_res = solve_bus_mcf(graph, commodities, bus_ids, bbox_ctx, bus_warm_start_ptr, diag);
-    }
+    const auto bus_outcome = run_bus_mcf_stage_with_bbox_retry(
+        graph,
+        commodities,
+        bus_ids,
+        disable_bus_mcf,
+        enable_pre_routing,
+        diag,
+        bbox_ctx);
+    auto bus_res = bus_outcome.bus_res;
     out.summary.bus_mcf_solve_ms = bus_res.solve_ms;
+    debug::info_fmt("timing phase=mcf_bus_warm_start ms={}", bus_outcome.warm_start_ms);
     debug::info_fmt("timing phase=mcf_bus_solve ms={}", out.summary.bus_mcf_solve_ms);
-    if (!bus_res.ok) {
-        merge_bus_stage_retry_hints(out.retry_hints, bus_res);
-    }
 
-    if (enable_pre_routing && stage_result_ok(bus_res.solution_class)) {
-        const auto simple_warm_t0 = std::chrono::steady_clock::now();
-        for (std::size_t u = 0; u < 16; ++u) {
-            if (simple_ids_by_unit[u].empty()) {
-                continue;
-            }
-            auto unit_warm = run_simple_warm_start_for_unit(
-                graph,
-                commodities,
-                simple_ids_by_unit[u],
-                records,
-                bbox_ctx,
-                bus_res,
-                u,
-                outgoing_arcs);
-            merge_stage_warm_start(simple_warm_start, std::move(unit_warm));
-        }
-        if (!simple_warm_start.nodes_by_record_id.empty()) {
-            simple_warm_start_ptr = &simple_warm_start;
-        }
-        const auto simple_warm_t1 = std::chrono::steady_clock::now();
-        simple_warm_start_ms = static_cast<int>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(simple_warm_t1 - simple_warm_t0).count());
-        debug::info_fmt("timing phase=mcf_simple_warm_start ms={}", simple_warm_start_ms);
-    }
-    out.summary.mcf_warm_start_ms = bus_warm_start_ms + simple_warm_start_ms;
-    debug::info_fmt("timing phase=mcf_warm_start ms={}", out.summary.mcf_warm_start_ms);
-
-    if (show_pre_route && stage_result_ok(bus_res.solution_class)) {
-        const auto pre_paths = build_pre_route_paths_by_unit(bus_res, simple_warm_start, commodities);
-        const auto pre_catalog = build_mcf_resource_catalog(graph);
-        const auto pre_arc_index = build_undirected_arc_index(graph);
-        const auto pre_usage = aggregate_mcf_resource_usage(graph, pre_arc_index, pre_paths);
-        log_mcf_resource_usage(pre_catalog, pre_usage, bus_res.ok, "pre-route");
-    }
-
-    // 得到剩余容量
-    auto build_edge_residual = [&](const std::size_t unit_c) {
-        auto edge_cap = std::map<std::pair<int, int>, int> {};
-        for (const auto& [e, used] : bus_res.unit_used_edges[unit_c]) {
-            edge_cap[e] = std::max(0, 1 - used);
-        }
-        return edge_cap;
-    };
-    auto build_node_residual = [&](const std::size_t unit_c) {
-        auto node_cap = std::map<int, int> {};
-        for (const auto& [n, used] : bus_res.unit_used_nodes[unit_c]) {
-            node_cap[n] = std::max(0, 1 - used);
-        }
-        return node_cap;
-    };
-
-  // solve
+    auto simple_warm_start = StageWarmStart {};
+    int simple_warm_start_ms = 0;
     auto simple_results = std::array<StageSolveResult, 16> {};
-    auto simple_futures = std::array<std::future<StageSolveResult>, 16> {};
     auto has_simple_unit = std::array<bool, 16> {};
     has_simple_unit.fill(false);
     bool all_simple_ok = true;
     double simple_objective = 0.0;
+    bool serial_abort = false;
 
-    for (std::size_t u = 0; u < 16; ++u) {
-        if (simple_ids_by_unit[u].empty()) {
+    if (!bus_outcome.ok) {
+        merge_bus_stage_retry_hints(out.retry_hints, bus_res);
+        for (std::size_t u = 0; u < 16; ++u) {
+            if (simple_ids_by_unit[u].empty()) {
+                apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
+                simple_results[u].message = "empty stage";
+                out.has_simple_commodities[u] = false;
+                out.simple_mcf_ok[u] = true;
+                continue;
+            }
+            has_simple_unit[u] = true;
+            out.has_simple_commodities[u] = true;
             apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
-            simple_results[u].message = "empty stage";
-            continue;
+            simple_results[u].message = "skipped after BusMCF bbox expand exhausted";
+            out.simple_mcf_ok[u] = false;
+            all_simple_ok = false;
         }
-        has_simple_unit[u] = true;
-        const auto edge_cap = build_edge_residual(u);
-        const auto node_cap = build_node_residual(u);
+    }
+    else {
+        auto build_edge_residual = [&](const std::size_t unit_c) {
+            auto edge_cap = std::map<std::pair<int, int>, int> {};
+            for (const auto& [e, used] : bus_res.unit_used_edges[unit_c]) {
+                edge_cap[e] = std::max(0, 1 - used);
+            }
+            return edge_cap;
+        };
+        auto build_node_residual = [&](const std::size_t unit_c) {
+            auto node_cap = std::map<int, int> {};
+            for (const auto& [n, used] : bus_res.unit_used_nodes[unit_c]) {
+                node_cap[n] = std::max(0, 1 - used);
+            }
+            return node_cap;
+        };
+
         if (enable_mcf_parallel) {
-            simple_futures[u] = std::async(
-                std::launch::async,
-                [&graph, &commodities, &records, &bbox_ctx, &simple_ids_by_unit, u, edge_cap, node_cap, enable_mcf_obj, simple_warm_start_ptr, diag]() {
-                    return solve_simple_mcf_unit(
-                        graph,
-                        commodities,
-                        u,
-                        simple_ids_by_unit[u],
-                        records,
-                        bbox_ctx,
-                        edge_cap,
-                        node_cap,
-                        enable_mcf_obj,
-                        simple_warm_start_ptr,
-                        diag);
-                });
+            auto simple_futures = std::array<std::future<UnitStageOutcome>, 16> {};
+            for (std::size_t u = 0; u < 16; ++u) {
+                if (simple_ids_by_unit[u].empty()) {
+                    apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
+                    simple_results[u].message = "empty stage";
+                    continue;
+                }
+                has_simple_unit[u] = true;
+                const auto edge_cap = build_edge_residual(u);
+                const auto node_cap = build_node_residual(u);
+                simple_futures[u] = std::async(
+                    std::launch::async,
+                    [&graph,
+                     &commodities,
+                     &records,
+                     &bbox_ctx,
+                     &expand_states,
+                     &simple_ids_by_unit,
+                     &bus_res,
+                     &outgoing_arcs,
+                     u,
+                     edge_cap,
+                     node_cap,
+                     enable_pre_routing,
+                     enable_mcf_obj,
+                     diag]() {
+                        return run_simple_mcf_unit_with_bbox_retry(
+                            graph,
+                            commodities,
+                            u,
+                            simple_ids_by_unit[u],
+                            records,
+                            bbox_ctx,
+                            expand_states[u],
+                            edge_cap,
+                            node_cap,
+                            enable_pre_routing,
+                            enable_mcf_obj,
+                            bus_res,
+                            outgoing_arcs,
+                            diag);
+                    });
+            }
+            for (std::size_t u = 0; u < 16; ++u) {
+                if (!has_simple_unit[u]) {
+                    continue;
+                }
+                const auto unit_outcome = simple_futures[u].get();
+                simple_results[u] = unit_outcome.simple_res;
+                debug::info_fmt(
+                    "SimpleMCF unit {}: ok={} solution_class={} objective={:.0f} paths={} solve_ms={}",
+                    u,
+                    simple_results[u].ok,
+                    solution_class_name(simple_results[u].solution_class),
+                    simple_results[u].objective,
+                    simple_results[u].paths.size(),
+                    simple_results[u].solve_ms);
+                if (!unit_outcome.ok) {
+                    all_simple_ok = false;
+                }
+            }
         }
         else {
-            simple_results[u] = solve_simple_mcf_unit(
-                graph,
-                commodities,
-                u,
-                simple_ids_by_unit[u],
-                records,
-                bbox_ctx,
-                edge_cap,
-                node_cap,
-                enable_mcf_obj,
-                simple_warm_start_ptr,
-                diag);
-            debug::info_fmt(
-                "SimpleMCF unit {}: ok={} solution_class={} objective={:.0f} paths={} solve_ms={}",
-                u,
-                simple_results[u].ok,
-                solution_class_name(simple_results[u].solution_class),
-                simple_results[u].objective,
-                simple_results[u].paths.size(),
-                simple_results[u].solve_ms);
+            for (std::size_t u = 0; u < 16; ++u) {
+                if (simple_ids_by_unit[u].empty()) {
+                    apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
+                    simple_results[u].message = "empty stage";
+                    continue;
+                }
+                if (serial_abort) {
+                    has_simple_unit[u] = true;
+                    apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
+                    simple_results[u].message = "skipped after prior unit bbox expand exhausted";
+                    all_simple_ok = false;
+                    continue;
+                }
+                has_simple_unit[u] = true;
+                const auto edge_cap = build_edge_residual(u);
+                const auto node_cap = build_node_residual(u);
+                const auto unit_outcome = run_simple_mcf_unit_with_bbox_retry(
+                    graph,
+                    commodities,
+                    u,
+                    simple_ids_by_unit[u],
+                    records,
+                    bbox_ctx,
+                    expand_states[u],
+                    edge_cap,
+                    node_cap,
+                    enable_pre_routing,
+                    enable_mcf_obj,
+                    bus_res,
+                    outgoing_arcs,
+                    diag);
+                simple_results[u] = unit_outcome.simple_res;
+                debug::info_fmt(
+                    "SimpleMCF unit {}: ok={} solution_class={} objective={:.0f} paths={} solve_ms={}",
+                    u,
+                    simple_results[u].ok,
+                    solution_class_name(simple_results[u].solution_class),
+                    simple_results[u].objective,
+                    simple_results[u].paths.size(),
+                    simple_results[u].solve_ms);
+                if (!unit_outcome.ok) {
+                    all_simple_ok = false;
+                    if (unit_outcome.unit_exhausted) {
+                        serial_abort = true;
+                        debug::info_fmt(
+                            "MCF: SimpleMCF unit {} bbox expand exhausted; serial abort units {}..15",
+                            u,
+                            u + 1);
+                    }
+                }
+            }
+        }
+
+        if (enable_pre_routing && stage_result_ok(bus_res.solution_class)) {
+            const auto simple_warm_t0 = std::chrono::steady_clock::now();
+            for (std::size_t u = 0; u < 16; ++u) {
+                if (!has_simple_unit[u] || !simple_results[u].ok) {
+                    continue;
+                }
+                auto unit_warm = run_simple_warm_start_for_unit(
+                    graph,
+                    commodities,
+                    simple_ids_by_unit[u],
+                    records,
+                    bbox_ctx,
+                    &expand_states[u],
+                    bus_res,
+                    u,
+                    outgoing_arcs);
+                merge_stage_warm_start(simple_warm_start, std::move(unit_warm));
+            }
+            const auto simple_warm_t1 = std::chrono::steady_clock::now();
+            simple_warm_start_ms = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(simple_warm_t1 - simple_warm_t0).count());
+            debug::info_fmt("timing phase=mcf_simple_warm_start ms={}", simple_warm_start_ms);
         }
     }
 
-    if (enable_mcf_parallel) {
-        for (std::size_t u = 0; u < 16; ++u) {
-            if (!has_simple_unit[u]) {
-                continue;
-            }
-            simple_results[u] = simple_futures[u].get();
-            debug::info_fmt(
-                "SimpleMCF unit {}: ok={} solution_class={} objective={:.0f} paths={} solve_ms={}",
-                u,
-                simple_results[u].ok,
-                solution_class_name(simple_results[u].solution_class),
-                simple_results[u].objective,
-                simple_results[u].paths.size(),
-                simple_results[u].solve_ms);
-        }
+    out.summary.mcf_warm_start_ms = bus_outcome.warm_start_ms + simple_warm_start_ms;
+    debug::info_fmt("timing phase=mcf_warm_start ms={}", out.summary.mcf_warm_start_ms);
+
+    if (show_pre_route && bus_outcome.ok && stage_result_ok(bus_res.solution_class)) {
+        const auto pre_paths = build_pre_route_paths_by_unit(bus_res, simple_warm_start, commodities);
+        const auto pre_catalog = build_mcf_resource_catalog(graph);
+        const auto pre_arc_index = build_undirected_arc_index(graph);
+        const auto pre_usage = aggregate_mcf_resource_usage(graph, pre_arc_index, pre_paths);
+        log_mcf_resource_usage(pre_catalog, pre_usage, bus_res.ok && all_simple_ok, "pre-route");
     }
 
     for (std::size_t u = 0; u < 16; ++u) {
@@ -3953,7 +4403,6 @@ auto run_mcf_global_routing_cob_units(
         out.simple_mcf_ok[u] = simple_results[u].ok;
         out.summary.simple_mcf_solve_ms_by_unit[u] = simple_results[u].solve_ms;
         if (!simple_results[u].ok) {
-            all_simple_ok = false;
             debug::error_fmt("SimpleMCF unit {} failed: {}", u, simple_results[u].message);
             add_simple_unit_retry_hints(
                 out.retry_hints,
@@ -3977,10 +4426,10 @@ auto run_mcf_global_routing_cob_units(
     }
     debug::info_fmt("timing phase=mcf_solve ms={}", solve_ms);
 
-    if (!bus_res.ok) {
+    if (!bus_outcome.ok) {
         debug::error_fmt("BusMCF failed: {}", bus_res.message);
     }
-    out.summary.all_ok = bus_res.ok && all_simple_ok;
+    out.summary.all_ok = bus_outcome.ok && all_simple_ok;
     normalize_retry_hints(out.retry_hints);
     if (!out.summary.all_ok) {
         debug::info_fmt(

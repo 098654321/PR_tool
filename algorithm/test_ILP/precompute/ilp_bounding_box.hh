@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <std/collection.hh>
+#include <std/string.hh>
 
 namespace PR_tool {
 
@@ -32,5 +33,17 @@ auto rect_hull_boxes(const std::Vector<IlpBoundingBox>& boxes) -> IlpBoundingBox
 auto merge_coord_into_bbox(IlpBoundingBox& box, const hardware::COBCoord& cob) -> void;
 
 auto bbox_area(const IlpBoundingBox& box) -> std::size_t;
+
+auto clamp_bbox_to_cob_array(IlpBoundingBox box) -> IlpBoundingBox;
+
+auto full_cob_array_bbox() -> IlpBoundingBox;
+
+auto is_full_cob_array_bbox(const IlpBoundingBox& box) -> bool;
+
+/// Expand row/col bounds by 1 in each direction, clamped to the COB array.
+/// Returns false if the bbox did not change (already at full array extent).
+auto expand_bbox_by_one(IlpBoundingBox& box) -> bool;
+
+auto format_bbox(const IlpBoundingBox& box) -> std::String;
 
 } // namespace PR_tool

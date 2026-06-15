@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <format>
 
 namespace PR_tool {
 
@@ -91,6 +92,37 @@ auto rect_hull_boxes(const std::Vector<IlpBoundingBox>& boxes) -> IlpBoundingBox
         merged = rect_hull(merged, boxes[i]);
     }
     return merged;
+}
+
+auto clamp_bbox_to_cob_array(IlpBoundingBox box) -> IlpBoundingBox {
+    return clamp_bbox(box);
+}
+
+auto full_cob_array_bbox() -> IlpBoundingBox {
+    const auto max_row = static_cast<std::i64>(hardware::Interposer::COB_ARRAY_HEIGHT) - 1;
+    const auto max_col = static_cast<std::i64>(hardware::Interposer::COB_ARRAY_WIDTH) - 1;
+    return IlpBoundingBox {0, max_row, 0, max_col};
+}
+
+auto is_full_cob_array_bbox(const IlpBoundingBox& box) -> bool {
+    const auto full = full_cob_array_bbox();
+    return box.row_min == full.row_min && box.row_max == full.row_max && box.col_min == full.col_min
+        && box.col_max == full.col_max;
+}
+
+auto expand_bbox_by_one(IlpBoundingBox& box) -> bool {
+    const auto before = box;
+    box.row_min -= 1;
+    box.row_max += 1;
+    box.col_min -= 1;
+    box.col_max += 1;
+    box = clamp_bbox_to_cob_array(box);
+    return box.row_min != before.row_min || box.row_max != before.row_max || box.col_min != before.col_min
+        || box.col_max != before.col_max;
+}
+
+auto format_bbox(const IlpBoundingBox& box) -> std::String {
+    return std::format("({},{},{},{})", box.row_min, box.row_max, box.col_min, box.col_max);
 }
 
 } // namespace PR_tool

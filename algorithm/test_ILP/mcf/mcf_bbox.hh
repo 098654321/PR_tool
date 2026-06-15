@@ -9,6 +9,9 @@
 #include <std/collection.hh>
 #include <std/string.hh>
 
+#include <functional>
+#include <optional>
+
 namespace PR_tool {
 
 struct McfCommodityBBox {
@@ -28,6 +31,17 @@ struct McfBBoxContext {
     std::Vector<McfCommodityBBox> per_commodity;
     std::map<std::String, IlpBoundingBox> per_bus_key;
 };
+
+struct McfBBoxExpandState {
+    std::map<std::pair<std::size_t, std::String>, IlpBoundingBox> simple_origin_hull;
+};
+
+struct McfBBoxExpandResult {
+    bool any_exhausted{false};
+    std::String exhausted_key;
+};
+
+using McfSimpleOriginGroupKey = std::pair<std::size_t, std::String>;
 
 enum class McfArcBBoxMode {
     Bus,
@@ -71,5 +85,18 @@ auto resolve_mcf_bbox(
     McfArcBBoxMode mode,
     const McfCommodityBBox& origin_group_bbox
 ) -> McfCommodityBBox;
+
+auto expand_bus_hulls(McfBBoxContext& ctx, const std::Vector<std::String>& bus_keys) -> McfBBoxExpandResult;
+
+auto expand_simple_origin_hulls(
+    McfBBoxExpandState& state,
+    const std::Vector<McfSimpleOriginGroupKey>& origin_groups,
+    const std::function<IlpBoundingBox(const McfSimpleOriginGroupKey&)>& base_hull_for
+) -> McfBBoxExpandResult;
+
+auto lookup_simple_origin_hull(
+    const McfBBoxExpandState& state,
+    const McfSimpleOriginGroupKey& key
+) -> std::optional<IlpBoundingBox>;
 
 } // namespace PR_tool

@@ -15,9 +15,10 @@
 ## 工作流程中必须要做的事情
 
 - 改代码前先读清相关方法文档、硬件映射和现有实现，不要凭记忆改模型。其中方法文档在`problem_formulation/`，硬件映射在"PR_tool根目录/source/hardware"和"PR_tool根目录/source/circuit"中。不允许修改方法文档。
-- 中到大规模修改后，需要评估是否同步更新本文件（不超过200行），以及是否在项目根目录 `.plan/` 下新增或更新改动记录。同时启动一个新的子agent，让子agent评估需要修改的内容是否完整、正确的完成
+- 修改后，需要评估是否同步更新本文件（不超过200行），以及是否在项目根目录 `.plan/` 下新增或更新改动记录。注意，本文件不应该单纯记录某次修改，而是基于项目内容来写
+- 100行以上的修改完成后，必须启动一个新的子agent，让子agent独立评估修改的内容是否完整、正确
 - 允许改动的范围：优先修改 `algorithm/test_ILP/` 内部文件，除非确实需要，不改 `source/` 主流程接口语义。
-- 关键行为要能够在日志文件中打印展示，便于理解软件内部执行的重要步骤
+- 代码的关键行为要添加日志信息，在日志文件中打印展示，便于理解软件内部执行的重要步骤
 
 ## 目录结构
 
@@ -112,6 +113,14 @@ MCF 计时日志：
 - `timing phase=mcf_bus_solve_total ms=...` 与 `simple_mcf_unitN_solve_total`：SAT+MCF retry 全部尝试轮的累计时间。
 - BusMCF / SimpleMCF 阶段结束日志含 `model_status=` 与 `solution_class=`（`Optimal`/`Suboptimal`/`TimeLimit`/`Failed`/`Skipped`）；`ok=true` 当且仅当 class 为 `Optimal`、`Suboptimal` 或 `Skipped`。`Suboptimal` 与 `Optimal` 均提取 Gurobi 解。warm start 导致 `Suboptimal` 直接接受不重试；warm start 导致 `Failed`/`TimeLimit` 时无 warm start 重试 Gurobi 一次。
 
+MCF 失败重试（第九版修改4，内层 bbox 扩边）：
+
+- Gurobi 在无 warm start 重试后仍 `Failed`/`TimeLimit` 时，先在 **MCF 阶段**扩大失败对象 bbox（四向 ±1，clamp 到全 COB 阵列），再重跑 warm start（若 `--enable-pre-routing`）+ Gurobi；日志含 `MCF bbox expand:`。
+- **BusMCF**：扩 `per_bus_key` hull；多 bus 同时扩；无法定位 `bus_key` 时扩全部 bus；任一失败 bus 已到全阵列则 Bus 阶段彻底失败，**跳过 SimpleMCF**。
+- **SimpleMCF**：按失败 origin group 的 RectHull overlay 扩边（`(unit, origin_key)`）；无法按 origin 定位时扩该 unit 内全部 origin group；任一失败 group 无法扩则 unit 彻底失败。
+- 内层 bbox 耗尽后 `all_ok=false`，pipeline 再 `tier++` 扩 `start_track`（日志 `MCF bbox expand exhausted` → `tier iteration: MCF expand fail_set=`）。
+- 串行 SimpleMCF（默认）：某 unit bbox 耗尽后后续 unit 标 `Skipped`；`--enable-mcf-parallel` 时各 unit 独立扩边互不影响。
+
 最小验证建议：
 
 ```bash
@@ -138,7 +147,7 @@ MCF 计时日志：
 - `tier_by_record[record_index]` 是局部 path-length 层级；`max_tier` 只作为全局摘要，不应作为 MCF 真实范围来源。
 - 默认日志不打印完整 tier 数组；需要定位局部扩展时优先看 `max_tier`、`changed_records`、`fail_set`。
 - SAT UNSAT 当前不做 UNSAT core 归因；按 pipeline 规则扩展相关 `Tnet/PNnet`。
-- BusMCF 失败只扩展可定位 `bus_key` 的 member records；无法定位时应失败并记录原因。
+- BusMCF 内层 bbox 耗尽后 tier++ 扩展失败 `bus_key` 的 member records；无法定位 `bus_key` 时 MCF 内层先扩全部 bus，耗尽后再 tier++。
 - SimpleMCF 失败按失败 unit 的 simple records 扩展；多扇出 origin 要扩展同 origin 的所有 child records。
 - PNnet 在 SimpleMCF 中与 TTB 使用相同 path bbox 裁剪（单 child：`SimpleCommodity`；多扇出：`SimpleOriginGroup` + RectHull）；`tier` 仍主要影响 SAT 候选 start tracks。
 - track 只能在所属 COBUnit 内连通；path precompute 不允许跨 COBUnit 搜索。
