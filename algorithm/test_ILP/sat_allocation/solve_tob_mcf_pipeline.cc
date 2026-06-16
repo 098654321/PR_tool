@@ -112,7 +112,7 @@ auto solve_tob_mcf_with_range_iteration(
     const bool enable_pre_routing,
     const bool enable_mcf_obj,
     const bool disable_bus_mcf,
-    const bool show_pre_route,
+    const bool show_resource_usage,
     const CadicalDiagnosticsOptions& sat_diag,
     const GurobiDiagnosticsOptions& gurobi_diag
 ) -> TobMcfPipelineResult {
@@ -180,7 +180,7 @@ auto solve_tob_mcf_with_range_iteration(
             enable_mcf_obj,
             true,
             disable_bus_mcf,
-            show_pre_route,
+            show_resource_usage,
             gurobi_diag);
 
         out.mcf_warm_start_ms += mcf.summary.mcf_warm_start_ms;

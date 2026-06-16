@@ -1,22 +1,22 @@
-function fig = visualize_cob_unit_usage(log_path, unit, varargin)
+function fig = visualize_cob_unit_usage(unit_file_path, unit, varargin)
 %VISUALIZE_COB_UNIT_USAGE Visualize MCF resource usage for one COBUnit.
 %
-%   fig = visualize_cob_unit_usage(log_path, unit)
-%   fig = visualize_cob_unit_usage(log_path, unit, 'ShowLabels', true)
-%   fig = visualize_cob_unit_usage(log_path, unit, 'Phase', 'pre-route')
-%   fig = visualize_cob_unit_usage(log_path, unit, 'SavePath', 'u8.png')
+%   fig = visualize_cob_unit_usage(unit_file_path, unit)
+%   fig = visualize_cob_unit_usage(unit_file_path, unit, 'ShowLabels', true)
+%   fig = visualize_cob_unit_usage(unit_file_path, unit, 'Phase', 'pre-route')
+%   fig = visualize_cob_unit_usage(unit_file_path, unit, 'SavePath', 'u8.png')
 %
-%   log_path : path to debug.log (or any log containing MCF resource usage)
-%   unit     : COBUnit index 0..15 (matches log "Unit N:")
-%   Phase    : 'post-solve' (default) | 'pre-route'
+%   unit_file_path : path to resource-usage/unitN.txt
+%   unit           : COBUnit index 0..15 (must match file content)
+%   Phase          : 'post-solve' (default) | 'pre-route'
 %
 %   Examples:
-%     visualize_cob_unit_usage('../../output/debug.log', 8);
-%     visualize_cob_unit_usage('../../output/debug.log', 8, 'Phase', 'pre-route');
+%     visualize_cob_unit_usage('../../output/resource-usage/unit8.txt', 8);
+%     visualize_cob_unit_usage('../../output/resource-usage/unit8.txt', 8, 'Phase', 'pre-route');
 
     if nargin < 2
         error('visualize_cob_unit_usage:NotEnoughInputs', ...
-            'Usage: visualize_cob_unit_usage(log_path, unit, ...)');
+            'Usage: visualize_cob_unit_usage(unit_file_path, unit, ...)');
     end
 
     unit = double(unit);
@@ -29,14 +29,14 @@ function fig = visualize_cob_unit_usage(log_path, unit, varargin)
     addParameter(p, 'ShowLabels', false, @islogical);
     addParameter(p, 'SavePath', '', @(x) ischar(x) || isstring(x));
     addParameter(p, 'Phase', 'post-solve', @(x) ischar(x) || isstring(x));
-  addParameter(p, 'Parent', [], @(x) isempty(x) || isgraphics(x, 'axes'));
+    addParameter(p, 'Parent', [], @(x) isempty(x) || isgraphics(x, 'axes'));
     parse(p, varargin{:});
     phase = char(p.Results.Phase);
 
     script_dir = fileparts(mfilename('fullpath'));
     addpath(script_dir);
 
-    data = parse_mcf_resource_usage(log_path, phase);
+    data = parse_mcf_resource_usage(unit_file_path, phase);
     unit_data = data.units(unit + 1);
 
     draw_args = {'ShowLabels', p.Results.ShowLabels, 'SavePath', p.Results.SavePath, ...

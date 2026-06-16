@@ -28,3 +28,5 @@ schedule*
 .venv/
 third_party/cadical/
 local/*
+
+test/module_test/test_writer/*

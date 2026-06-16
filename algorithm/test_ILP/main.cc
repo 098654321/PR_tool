@@ -85,7 +85,7 @@ constexpr auto kTestIlpUsage =
     "[--export-ilp-mps <path>] [--enable-mcf-routing] [--disable-bus-mcf] "
     "[--disable-01-mcf] [--disable-multipin-io] [--disable-2pin-io] "
     "[--enable-presat-parallel] [--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
-    "[--show-pre-route] "
+    "[--show-resource-usage] "
     "[--sat-log] [--gurobi-log] "
     "[--check-golden]";
 
@@ -112,7 +112,7 @@ auto run_main(int argc, char** argv) -> int {
     bool enable_mcf_parallel = false;
     bool enable_mcf_obj = false;
     bool enable_pre_routing = false;
-    bool show_pre_route = false;
+    bool show_resource_usage = false;
     bool enable_gurobi_log = false;
     bool enable_sat_log = false;
     bool disable_01_mcf = false;
@@ -185,7 +185,13 @@ auto run_main(int argc, char** argv) -> int {
             continue;
         }
         if (arg == "--show-pre-route") {
-            show_pre_route = true;
+            debug::error("--show-pre-route was removed; use --show-resource-usage");
+            debug::info(kTestIlpUsage);
+            log_total_runtime();
+            return 1;
+        }
+        if (arg == "--show-resource-usage") {
+            show_resource_usage = true;
             continue;
         }
         if (arg == "--gurobi-log") {
@@ -218,12 +224,12 @@ auto run_main(int argc, char** argv) -> int {
         log_total_runtime();
         return 1;
     }
-    if (show_pre_route && !enable_mcf) {
-        debug::error("--show-pre-route requires --enable-mcf-routing");
+    if (show_resource_usage && !enable_mcf) {
+        debug::error("--show-resource-usage requires --enable-mcf-routing");
         log_total_runtime();
         return 1;
     }
-    if (show_pre_route) {
+    if (show_resource_usage) {
         enable_pre_routing = true;
     }
     if (enable_pre_routing && !enable_mcf) {
@@ -333,7 +339,7 @@ auto run_main(int argc, char** argv) -> int {
             enable_pre_routing,
             enable_mcf_obj,
             disable_bus_mcf,
-            show_pre_route,
+            show_resource_usage,
             sat_diag,
             gurobi_diag);
         tob_sat_solve_ms = pipeline.tob_sat_solve_ms;

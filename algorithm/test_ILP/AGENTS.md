@@ -100,7 +100,7 @@ xmake build test_ILP
 - `--enable-mcf-routing`：SAT 成功后继续执行 MCF。
 - `--enable-mcf-obj`：SimpleMCF 使用 `min Σ x` 目标；不加时 SimpleMCF 只做可行性求解。与 `--enable-pre-routing` 同时开启时，对 warm start 成功路径上的 `x^H_e` 使用 `kSimpleMcfWarmStartUsedEdgeCost`（0.95，见 `cob_mcf_router.cc`）软加权，其余 `x` 为 1.0，用于软破坏对称性。
 - `--enable-pre-routing`：为 **MCF** Gurobi 提供 warm start 初值（`cob_mcf_router` 内 MCF 图 BFS），不改变硬约束。BusMCF warm start 在 Bus 求解前执行；SimpleMCF warm start 在 Bus 为 `Optimal`/`Suboptimal`/`Skipped` 时执行，按 COBUnit 以 Bus 实际占用初始化后再 BFS。多扇出 origin（`TrackToBumpsNet` / `TracksToBumpsNet`）采用增量 frontier：TTB 以共享 snk 为 hub、按 `end_bumps()` 顺序；PNnet 以本 unit 的 `vp`/`vn` 为 hub、按 record 顺序；部分 child 失败时成功的仍写入 warm start。与 TOB 阶段无关。
-- `--show-pre-route`：自动开启 pre-routing；在 SimpleMCF warm start 结束后输出 `MCF resource usage (pre-route, ...)` 日志块（BusMCF 路径 + warm start 路径），格式与 post-solve 相同。要求 `--enable-mcf-routing`。
+- `--show-resource-usage`：自动开启 `--enable-pre-routing`；按 COBUnit 增量写入 `resource-usage/unit{N}.txt`（含 `pre-route` 与 `post-solve` 两段）；`debug.log` 仅写索引行，不输出资源块。要求 `--enable-mcf-routing`。Bus 失败时不写任何 unit 文件；失败/Skipped unit 写空文件。
 - `--disable-01-mcf`：跳过顶层 `TracksToBumpsNet`，即不生成 Pnet/Nnet records；SyncNet 内部拆分不受影响。
 - `--disable-multipin-io`：跳过顶层 `TrackToBumpsNet`，即不生成对应多扇出 IO split records。
 - `--disable-2pin-io`：跳过顶层 `TrackToBumpNet` 与 `BumpToTrackNet`；SyncNet 内部 btt/ttb 不受影响。
@@ -132,7 +132,7 @@ MCF 失败重试（第九版修改4，内层 bbox 扩边）：
 
 第九版修改3：上述命令日志应含 `solution_class=`。warm start 导致 `Failed`/`TimeLimit` 时可能出现 `warm start led to Failed; retrying without warm start`（仅一次）。最后一行验证对称性软破坏（日志应含 `objective symmetry-break`）。
 
-`algorithm/test_ILP/visualization/` 从 `debug.log` 解析 `MCF resource usage` 块并绘图。`matlab_main.m` 中 `resource_phase` 可选 `post-solve`（默认，Gurobi 求解后）或 `pre-route`（需 `--show-pre-route`）；`visualize_cob_unit_usage(..., 'Phase', ...)` 同理。
+`algorithm/test_ILP/visualization/` 从 `resource-usage/unitN.txt` 解析资源使用并绘图。`matlab_main.m` 中 `resource_phase` 可选 `post-solve`（默认）或 `pre-route`（需 `--show-resource-usage`）；`visualize_cob_unit_usage(..., 'Phase', ...)` 同理。
 
 一个排错方法：
 

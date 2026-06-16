@@ -1,6 +1,7 @@
 #include "mcf/cob_mcf_router.hh"
 
 #include "mcf/mcf_bbox.hh"
+#include "mcf/mcf_resource_usage_io.hh"
 #include "precompute/tob_path_precompute.hh"
 #include "mcf/mcf_graph.hh"
 #include "mcf/mcf_hw_map.hh"
@@ -20,8 +21,11 @@
 #include <cctype>
 #include <cstddef>
 #include <format>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <future>
+#include <memory>
 #include <limits>
 #include <map>
 #include <optional>
@@ -208,12 +212,10 @@ struct GurobiMcfSolveResult {
     std::Vector<McfConstraintMeta> iis_rows;
 };
 
-constexpr int kHardwareSwitchesPerCobUnit = 48;
-constexpr int kChannelsPerCobLink = 8;
 constexpr int kMaxIisLogPerKind = 20;
 constexpr std::size_t kInvalidRecordIndex = std::numeric_limits<std::size_t>::max();
 /// SimpleMCF min-Sum-x: cost multiplier for x^H_e on warm-start-used physical edges (ninth-edition symmetry break).
-constexpr double kSimpleMcfWarmStartUsedEdgeCost = 0.95;
+constexpr double kSimpleMcfWarmStartUsedEdgeCost = 1.0;
 
 auto normalized_edge_key(int u, int v) -> std::pair<int, int>;
 auto node_text(const GlobalGraph& g, const int node) -> std::String;
@@ -254,36 +256,6 @@ auto collect_bus_retry_hints_from_iis(StageSolveResult& out, const std::Vector<M
         out.bus_failure_unlocalized = true;
     }
 }
-
-struct HChannelKey {
-    int r{0};
-    int c{0};
-
-    auto operator<=>(const HChannelKey&) const = default;
-};
-
-struct VChannelKey {
-    int r{0};
-    int c{0};
-
-    auto operator<=>(const VChannelKey&) const = default;
-};
-
-struct McfResourceCatalog {
-    int rows{0};
-    int cols{0};
-    std::array<std::array<std::array<int, 32>, 32>, 16> switch_modeled {};
-    std::array<std::map<HChannelKey, int>, 16> h_channel_total {};
-    std::array<std::map<VChannelKey, int>, 16> v_channel_total {};
-};
-
-struct McfResourceUsage {
-    int rows{0};
-    int cols{0};
-    std::array<std::array<std::array<int, 32>, 32>, 16> switches_used {};
-    std::array<std::map<HChannelKey, int>, 16> h_channels_used {};
-    std::array<std::map<VChannelKey, int>, 16> v_channels_used {};
-};
 
 auto gurobi_status_name(const int status) -> std::String {
     switch (status) {
@@ -332,7 +304,7 @@ auto arc_cob_row_col(const Arc& arc, const int cols) -> std::pair<int, int> {
     return {arc.cob / cols, arc.cob % cols};
 }
 
-auto h_channel_key_from_arc(const Arc& arc, const int cols) -> std::optional<HChannelKey> {
+auto h_channel_key_from_arc(const Arc& arc, const int cols) -> std::optional<McfHChannelKey> {
     if (arc.is_turn || arc.is_virtual) {
         return std::nullopt;
     }
@@ -342,10 +314,10 @@ auto h_channel_key_from_arc(const Arc& arc, const int cols) -> std::optional<HCh
     if (!lr) {
         return std::nullopt;
     }
-    return HChannelKey {cob_r, cob_c};
+    return McfHChannelKey {cob_r, cob_c};
 }
 
-auto v_channel_key_from_arc(const Arc& arc, const int cols) -> std::optional<VChannelKey> {
+auto v_channel_key_from_arc(const Arc& arc, const int cols) -> std::optional<McfVChannelKey> {
     if (arc.is_turn || arc.is_virtual) {
         return std::nullopt;
     }
@@ -355,33 +327,7 @@ auto v_channel_key_from_arc(const Arc& arc, const int cols) -> std::optional<VCh
     if (!ud) {
         return std::nullopt;
     }
-    return VChannelKey {cob_r, cob_c};
-}
-
-auto h_channel_key_from_node(
-    const NodeMeta& node,
-    const int cols
-) -> std::optional<HChannelKey> {
-    if (node.is_virtual || node.track_dir != 0) {
-        return std::nullopt;
-    }
-    if (node.track_col <= 0 || node.track_col >= cols) {
-        return std::nullopt;
-    }
-    return HChannelKey {node.track_row, node.track_col - 1};
-}
-
-auto v_channel_key_from_node(
-    const NodeMeta& node,
-    const int rows
-) -> std::optional<VChannelKey> {
-    if (node.is_virtual || node.track_dir != 1) {
-        return std::nullopt;
-    }
-    if (node.track_row <= 0 || node.track_row >= rows) {
-        return std::nullopt;
-    }
-    return VChannelKey {node.track_row - 1, node.track_col};
+    return McfVChannelKey {cob_r, cob_c};
 }
 
 auto describe_arc_resource(
@@ -442,177 +388,6 @@ auto describe_undirected_edge(
         return std::format("{}-{}", node_text(graph, u), node_text(graph, v));
     }
     return describe_arc_resource(graph, graph.arcs[it->second], cols);
-}
-
-auto build_mcf_resource_catalog(const GlobalGraph& graph) -> McfResourceCatalog {
-    McfResourceCatalog catalog {};
-    catalog.rows = graph.rows;
-    catalog.cols = graph.cols;
-    auto switch_seen = std::array<std::array<std::array<std::set<std::pair<int, int>>, 32>, 32>, 16> {};
-
-    for (const auto& arc : graph.arcs) {
-        if (arc.is_virtual) {
-            continue;
-        }
-        const auto u = static_cast<std::size_t>(arc.unit);
-        if (u >= 16) {
-            continue;
-        }
-        const auto [cob_r, cob_c] = arc_cob_row_col(arc, graph.cols);
-        if (cob_r < 0 || cob_c < 0 || cob_r >= catalog.rows || cob_c >= catalog.cols) {
-            continue;
-        }
-        const auto edge_key = normalized_edge_key(arc.u, arc.v);
-        if (!switch_seen[u][static_cast<std::size_t>(cob_r)][static_cast<std::size_t>(cob_c)].contains(edge_key)) {
-            switch_seen[u][static_cast<std::size_t>(cob_r)][static_cast<std::size_t>(cob_c)].insert(edge_key);
-            ++catalog.switch_modeled[u][static_cast<std::size_t>(cob_r)][static_cast<std::size_t>(cob_c)];
-        }
-    }
-    return catalog;
-}
-
-auto aggregate_mcf_resource_usage(
-    const GlobalGraph& graph,
-    const std::map<std::pair<int, int>, std::size_t>& arc_index,
-    const std::array<std::Vector<McfPathInfo>, 16>& paths_by_unit
-) -> McfResourceUsage {
-    McfResourceUsage usage {};
-    usage.rows = graph.rows;
-    usage.cols = graph.cols;
-
-    auto seen_switch_edges = std::array<std::set<std::pair<int, int>>, 16> {};
-    auto seen_channel_nodes = std::array<std::set<int>, 16> {};
-
-    auto absorb_switch_edge = [&](const std::size_t unit, const int a, const int b) {
-        if (unit >= 16) {
-            return;
-        }
-        auto edge = normalized_edge_key(a, b);
-        if (seen_switch_edges[unit].contains(edge)) {
-            return;
-        }
-        const auto it = arc_index.find(edge);
-        if (it == arc_index.end()) {
-            return;
-        }
-        const auto& arc = graph.arcs[it->second];
-        if (arc.unit != unit) {
-            return;
-        }
-        const auto [cob_r, cob_c] = arc_cob_row_col(arc, graph.cols);
-        if (cob_r < 0 || cob_c < 0 || cob_r >= usage.rows || cob_c >= usage.cols) {
-            return;
-        }
-        seen_switch_edges[unit].insert(edge);
-        ++usage.switches_used[unit][static_cast<std::size_t>(cob_r)][static_cast<std::size_t>(cob_c)];
-    };
-
-    auto absorb_channel_node = [&](const std::size_t unit, const int node_id) {
-        if (unit >= 16) {
-            return;
-        }
-        if (node_id < 0 || static_cast<std::size_t>(node_id) >= graph.nodes.size()) {
-            return;
-        }
-        if (seen_channel_nodes[unit].contains(node_id)) {
-            return;
-        }
-        const auto& node = graph.nodes[static_cast<std::size_t>(node_id)];
-        if (node.is_virtual || node.unit != unit) {
-            return;
-        }
-        if (const auto h = h_channel_key_from_node(node, graph.cols)) {
-            seen_channel_nodes[unit].insert(node_id);
-            ++usage.h_channels_used[unit][*h];
-        }
-        else if (const auto v = v_channel_key_from_node(node, graph.rows)) {
-            seen_channel_nodes[unit].insert(node_id);
-            ++usage.v_channels_used[unit][*v];
-        }
-    };
-
-    for (std::size_t u = 0; u < 16; ++u) {
-        for (const auto& info : paths_by_unit[u]) {
-            for (const auto& path : info.unit_paths) {
-                for (const auto node_id : path) {
-                    absorb_channel_node(u, node_id);
-                }
-                for (std::size_t i = 0; i + 1 < path.size(); ++i) {
-                    absorb_switch_edge(u, path[i], path[i + 1]);
-                }
-            }
-        }
-    }
-    return usage;
-}
-
-auto log_mcf_resource_usage(
-    const McfResourceCatalog& catalog,
-    const McfResourceUsage& usage,
-    const bool all_ok,
-    const std::string_view phase_tag
-) -> void {
-    debug::info_fmt("MCF resource usage ({}, all_ok={})", phase_tag, all_ok);
-    for (std::size_t u = 0; u < 16; ++u) {
-        debug::info_fmt("Unit {}:", u);
-        int switch_used_sum = 0;
-        int switch_total_sum = 0;
-        int channel_used_sum = 0;
-        int channel_total_sum = 0;
-        int switch_modeled_sum = 0;
-
-        for (int r = 0; r < catalog.rows; ++r) {
-            for (int c = 0; c < catalog.cols; ++c) {
-                const auto used = usage.switches_used[u][static_cast<std::size_t>(r)][static_cast<std::size_t>(c)];
-                const auto modeled = catalog.switch_modeled[u][static_cast<std::size_t>(r)][static_cast<std::size_t>(c)];
-                debug::info_fmt("  switches COB({},{})={}/{}", r, c, used, kHardwareSwitchesPerCobUnit);
-                switch_used_sum += used;
-                switch_total_sum += kHardwareSwitchesPerCobUnit;
-                switch_modeled_sum += modeled;
-            }
-        }
-        for (int r = 0; r < catalog.rows; ++r) {
-            for (int c = 0; c + 1 < catalog.cols; ++c) {
-                const HChannelKey key {r, c};
-                const auto used = usage.h_channels_used[u].contains(key) ? usage.h_channels_used[u].at(key) : 0;
-                const auto total = kChannelsPerCobLink;
-                debug::info_fmt(
-                    "  channel H COB({},{})-COB({},{})={}/{}",
-                    r,
-                    c,
-                    r,
-                    c + 1,
-                    used,
-                    total);
-                channel_used_sum += used;
-                channel_total_sum += total;
-            }
-        }
-        for (int r = 0; r + 1 < catalog.rows; ++r) {
-            for (int c = 0; c < catalog.cols; ++c) {
-                const VChannelKey key {r, c};
-                const auto used = usage.v_channels_used[u].contains(key) ? usage.v_channels_used[u].at(key) : 0;
-                const auto total = kChannelsPerCobLink;
-                debug::info_fmt(
-                    "  channel V COB({},{})-COB({},{})={}/{}",
-                    r,
-                    c,
-                    r + 1,
-                    c,
-                    used,
-                    total);
-                channel_used_sum += used;
-                channel_total_sum += total;
-            }
-        }
-        debug::info_fmt(
-            "  unit_summary switches={}/{} modeled={} channels={}/{}",
-            switch_used_sum,
-            switch_total_sum,
-            switch_modeled_sum,
-            channel_used_sum,
-            channel_total_sum);
-    }
 }
 
 auto log_mcf_infeasibility_hints(
@@ -3969,6 +3744,19 @@ auto run_bus_mcf_stage_with_bbox_retry(
     }
 }
 
+auto build_unit_pre_route_paths(
+    const StageSolveResult& bus_res,
+    const StageWarmStart& unit_warm,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::size_t unit_c
+) -> std::Vector<McfPathInfo>;
+
+auto build_unit_post_solve_paths(
+    const StageSolveResult& bus_res,
+    const StageSolveResult& simple_res,
+    const std::size_t unit_c
+) -> std::Vector<McfPathInfo>;
+
 auto run_simple_mcf_unit_with_bbox_retry(
     const GlobalGraph& graph,
     const std::Vector<PreparedCommodity>& commodities,
@@ -3983,6 +3771,8 @@ auto run_simple_mcf_unit_with_bbox_retry(
     const bool enable_mcf_obj,
     const StageSolveResult& bus_res,
     const std::Vector<std::Vector<int>>& outgoing_arcs,
+    McfResourceUsageSink* resource_sink,
+    const std::map<std::pair<int, int>, std::size_t>* arc_index,
     const GurobiDiagnosticsOptions& diag
 ) -> UnitStageOutcome {
     auto out = UnitStageOutcome {};
@@ -3999,6 +3789,7 @@ auto run_simple_mcf_unit_with_bbox_retry(
     };
 
     int unit_solve_ms_total = 0;
+    auto last_pre_route_section = std::String {};
     for (std::size_t attempt = 0;; ++attempt) {
         const StageWarmStart* unit_warm_ptr = nullptr;
         auto unit_warm = StageWarmStart {};
@@ -4013,6 +3804,11 @@ auto run_simple_mcf_unit_with_bbox_retry(
                 bus_res,
                 unit_c,
                 outgoing_arcs);
+            if (resource_sink != nullptr && arc_index != nullptr) {
+                const auto paths = build_unit_pre_route_paths(bus_res, unit_warm, commodities, unit_c);
+                const auto usage = aggregate_mcf_resource_usage_for_unit(graph, *arc_index, unit_c, paths);
+                last_pre_route_section = resource_sink->write_pre_route(unit_c, usage, true);
+            }
             if (!unit_warm.nodes_by_record_id.empty()) {
                 unit_warm_ptr = &unit_warm;
             }
@@ -4034,6 +3830,11 @@ auto run_simple_mcf_unit_with_bbox_retry(
         unit_solve_ms_total += out.simple_res.solve_ms;
         out.simple_res.solve_ms = unit_solve_ms_total;
         if (out.simple_res.ok) {
+            if (resource_sink != nullptr && arc_index != nullptr) {
+                const auto paths = build_unit_post_solve_paths(bus_res, out.simple_res, unit_c);
+                const auto usage = aggregate_mcf_resource_usage_for_unit(graph, *arc_index, unit_c, paths);
+                resource_sink->write_complete(unit_c, last_pre_route_section, usage, true);
+            }
             out.ok = true;
             return out;
         }
@@ -4041,6 +3842,9 @@ auto run_simple_mcf_unit_with_bbox_retry(
         const auto origin_groups =
             collect_failed_simple_origin_groups(out.simple_res, unit_c, simple_ids_for_unit, commodities, records);
         if (origin_groups.empty()) {
+            if (resource_sink != nullptr) {
+                resource_sink->write_empty(unit_c);
+            }
             out.unit_exhausted = true;
             return out;
         }
@@ -4048,20 +3852,26 @@ auto run_simple_mcf_unit_with_bbox_retry(
         const auto expand_result = expand_simple_origin_hulls(expand_state, origin_groups, base_hull_for);
         log_simple_bbox_expand(unit_c, static_cast<int>(attempt + 1), origin_groups, expand_result, expand_state);
         if (expand_result.any_exhausted) {
+            if (resource_sink != nullptr) {
+                resource_sink->write_empty(unit_c);
+            }
             out.unit_exhausted = true;
             return out;
         }
     }
 }
 
-auto build_pre_route_paths_by_unit(
+auto build_unit_pre_route_paths(
     const StageSolveResult& bus_res,
-    const StageWarmStart& simple_warm,
-    const std::Vector<PreparedCommodity>& commodities
-) -> std::array<std::Vector<McfPathInfo>, 16> {
-    auto paths_by_unit = std::array<std::Vector<McfPathInfo>, 16> {};
+    const StageWarmStart& unit_warm,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::size_t unit_c
+) -> std::Vector<McfPathInfo> {
+    auto paths = std::Vector<McfPathInfo> {};
     for (const auto& path_info : bus_res.paths) {
-        paths_by_unit[path_info.cob_unit].push_back(path_info);
+        if (path_info.cob_unit == unit_c) {
+            paths.push_back(path_info);
+        }
     }
 
     auto commodity_by_record_id = std::map<std::size_t, const PreparedCommodity*> {};
@@ -4072,12 +3882,15 @@ auto build_pre_route_paths_by_unit(
         commodity_by_record_id.emplace(commodity.record_id, &commodity);
     }
 
-    for (const auto& [record_id, path] : simple_warm.nodes_by_record_id) {
+    for (const auto& [record_id, path] : unit_warm.nodes_by_record_id) {
         const auto it = commodity_by_record_id.find(record_id);
         if (it == commodity_by_record_id.end() || it->second == nullptr) {
             continue;
         }
         const auto& c = *it->second;
+        if (c.cob_unit != unit_c) {
+            continue;
+        }
         McfPathInfo info {};
         info.label = c.label;
         info.origin_name = c.origin_name;
@@ -4095,9 +3908,26 @@ auto build_pre_route_paths_by_unit(
             info.record_indices.push_back(c.record_id);
         }
         info.unit_paths.push_back(path);
-        paths_by_unit[c.cob_unit].push_back(std::move(info));
+        paths.push_back(std::move(info));
     }
-    return paths_by_unit;
+    return paths;
+}
+
+auto build_unit_post_solve_paths(
+    const StageSolveResult& bus_res,
+    const StageSolveResult& simple_res,
+    const std::size_t unit_c
+) -> std::Vector<McfPathInfo> {
+    auto paths = std::Vector<McfPathInfo> {};
+    for (const auto& path_info : bus_res.paths) {
+        if (path_info.cob_unit == unit_c) {
+            paths.push_back(path_info);
+        }
+    }
+    for (const auto& path_info : simple_res.paths) {
+        paths.push_back(path_info);
+    }
+    return paths;
 }
 
 } // namespace
@@ -4114,7 +3944,7 @@ auto run_mcf_global_routing_cob_units(
     const bool enable_mcf_obj,
     const bool defer_interposer_suspend,
     const bool disable_bus_mcf,
-    const bool show_pre_route,
+    const bool show_resource_usage,
     const GurobiDiagnosticsOptions& diag
 ) -> CobMcfFullResult {
 
@@ -4198,8 +4028,18 @@ auto run_mcf_global_routing_cob_units(
     debug::info_fmt("timing phase=mcf_bus_warm_start ms={}", bus_outcome.warm_start_ms);
     debug::info_fmt("timing phase=mcf_bus_solve ms={}", out.summary.bus_mcf_solve_ms);
 
-    auto simple_warm_start = StageWarmStart {};
-    int simple_warm_start_ms = 0;
+    McfResourceUsageSink* resource_sink_ptr = nullptr;
+    std::unique_ptr<McfResourceUsageSink> resource_sink {};
+    std::map<std::pair<int, int>, std::size_t> arc_index {};
+    if (show_resource_usage && bus_outcome.ok) {
+        arc_index = build_undirected_arc_index(graph);
+        resource_sink = std::make_unique<McfResourceUsageSink>(
+            build_mcf_resource_catalog(graph),
+            std::filesystem::path(kMcfResourceUsageDir));
+        resource_sink->prepare_output_dir();
+        resource_sink_ptr = resource_sink.get();
+    }
+
     auto simple_results = std::array<StageSolveResult, 16> {};
     auto has_simple_unit = std::array<bool, 16> {};
     has_simple_unit.fill(false);
@@ -4247,6 +4087,9 @@ auto run_mcf_global_routing_cob_units(
                 if (simple_ids_by_unit[u].empty()) {
                     apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
                     simple_results[u].message = "empty stage";
+                    if (resource_sink_ptr != nullptr) {
+                        resource_sink_ptr->write_empty(u);
+                    }
                     continue;
                 }
                 has_simple_unit[u] = true;
@@ -4262,11 +4105,13 @@ auto run_mcf_global_routing_cob_units(
                      &simple_ids_by_unit,
                      &bus_res,
                      &outgoing_arcs,
+                     &arc_index,
                      u,
                      edge_cap,
                      node_cap,
                      enable_pre_routing,
                      enable_mcf_obj,
+                     resource_sink_ptr,
                      diag]() {
                         return run_simple_mcf_unit_with_bbox_retry(
                             graph,
@@ -4282,6 +4127,8 @@ auto run_mcf_global_routing_cob_units(
                             enable_mcf_obj,
                             bus_res,
                             outgoing_arcs,
+                            resource_sink_ptr,
+                            resource_sink_ptr != nullptr ? &arc_index : nullptr,
                             diag);
                     });
             }
@@ -4309,6 +4156,9 @@ auto run_mcf_global_routing_cob_units(
                 if (simple_ids_by_unit[u].empty()) {
                     apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
                     simple_results[u].message = "empty stage";
+                    if (resource_sink_ptr != nullptr) {
+                        resource_sink_ptr->write_empty(u);
+                    }
                     continue;
                 }
                 if (serial_abort) {
@@ -4316,6 +4166,9 @@ auto run_mcf_global_routing_cob_units(
                     apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
                     simple_results[u].message = "skipped after prior unit bbox expand exhausted";
                     all_simple_ok = false;
+                    if (resource_sink_ptr != nullptr) {
+                        resource_sink_ptr->write_empty(u);
+                    }
                     continue;
                 }
                 has_simple_unit[u] = true;
@@ -4335,6 +4188,8 @@ auto run_mcf_global_routing_cob_units(
                     enable_mcf_obj,
                     bus_res,
                     outgoing_arcs,
+                    resource_sink_ptr,
+                    resource_sink_ptr != nullptr ? &arc_index : nullptr,
                     diag);
                 simple_results[u] = unit_outcome.simple_res;
                 debug::info_fmt(
@@ -4357,42 +4212,10 @@ auto run_mcf_global_routing_cob_units(
                 }
             }
         }
-
-        if (enable_pre_routing && stage_result_ok(bus_res.solution_class)) {
-            const auto simple_warm_t0 = std::chrono::steady_clock::now();
-            for (std::size_t u = 0; u < 16; ++u) {
-                if (!has_simple_unit[u] || !simple_results[u].ok) {
-                    continue;
-                }
-                auto unit_warm = run_simple_warm_start_for_unit(
-                    graph,
-                    commodities,
-                    simple_ids_by_unit[u],
-                    records,
-                    bbox_ctx,
-                    &expand_states[u],
-                    bus_res,
-                    u,
-                    outgoing_arcs);
-                merge_stage_warm_start(simple_warm_start, std::move(unit_warm));
-            }
-            const auto simple_warm_t1 = std::chrono::steady_clock::now();
-            simple_warm_start_ms = static_cast<int>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(simple_warm_t1 - simple_warm_t0).count());
-            debug::info_fmt("timing phase=mcf_simple_warm_start ms={}", simple_warm_start_ms);
-        }
     }
 
-    out.summary.mcf_warm_start_ms = bus_outcome.warm_start_ms + simple_warm_start_ms;
+    out.summary.mcf_warm_start_ms = bus_outcome.warm_start_ms;
     debug::info_fmt("timing phase=mcf_warm_start ms={}", out.summary.mcf_warm_start_ms);
-
-    if (show_pre_route && bus_outcome.ok && stage_result_ok(bus_res.solution_class)) {
-        const auto pre_paths = build_pre_route_paths_by_unit(bus_res, simple_warm_start, commodities);
-        const auto pre_catalog = build_mcf_resource_catalog(graph);
-        const auto pre_arc_index = build_undirected_arc_index(graph);
-        const auto pre_usage = aggregate_mcf_resource_usage(graph, pre_arc_index, pre_paths);
-        log_mcf_resource_usage(pre_catalog, pre_usage, bus_res.ok && all_simple_ok, "pre-route");
-    }
 
     for (std::size_t u = 0; u < 16; ++u) {
         out.has_simple_commodities[u] = has_simple_unit[u];
@@ -4479,10 +4302,6 @@ auto run_mcf_global_routing_cob_units(
     }
     out.summary.total_wire_length = log_mcf_paths_by_origin_net(graph, out.paths_by_unit, records);
 
-    const auto resource_catalog = build_mcf_resource_catalog(graph);
-    const auto arc_index = build_undirected_arc_index(graph);
-    const auto resource_usage = aggregate_mcf_resource_usage(graph, arc_index, out.paths_by_unit);
-    log_mcf_resource_usage(resource_catalog, resource_usage, out.summary.all_ok, "post-solve");
     if (!out.summary.all_ok) {
         log_mcf_infeasibility_summary(bus_res, simple_results);
     }
