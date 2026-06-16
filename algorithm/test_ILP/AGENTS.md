@@ -129,13 +129,18 @@ MCF 失败重试（第九版修改4，内层 bbox 扩边）：
 - 内层 bbox 耗尽后 `all_ok=false`，pipeline 再 `tier++` 扩 `start_track`（日志 `MCF bbox expand exhausted` → `tier iteration: MCF expand fail_set=`）。
 - 串行 SimpleMCF（默认）：某 unit bbox 耗尽后后续 unit 标 `Skipped`；`--enable-mcf-parallel` 时各 unit 独立扩边互不影响。
 
+SimpleMCF LP 松弛强化（第十版修改 2.1–2.3，仅 SimpleMCF）：
+
+- **2.1 `f_le_x_lower`**：由逐有向弧 `f<=x` 改为 per-commodity 无向边 `f^n_ij + f^n_ji <= x^H_e`；`f_le_x_upper` 不变。
+- **2.2 `o_endpoint_eq`**：每个 origin group 的物理 `src`/全部物理 `snk` 加等式 `o^H=1`。
+- **2.3 Bus 残余过滤**：建模前按 Bus 占用过滤弧/边；`edge_capacity` 仅对实际出现 `x` 的边 lazy 创建；当前 origin group 的物理 endpoint `node residual=0` 早退 `endpoint_residual_zero`；transit 节点 residual=0 过滤穿越弧。不同 origin 不能通过彼此 endpoint 绕过 Bus residual node 过滤；`residual_disconnected` / `endpoint_no_o_var` 与 `bbox_disconnected` 同类失败（`Failed` + origin retry hint + gurobi stub）。
+
 最小验证建议：
 
 ```bash
 ./output/test_ILP test/config/case7 --enable-mcf-routing  --enable-pre-routing
 ./output/test_ILP test/config/case8 --enable-mcf-routing  --enable-pre-routing
 ./output/test_ILP test/config/case9 --enable-mcf-routing  --enable-pre-routing
-./output/test_ILP test/config/case7 --enable-mcf-routing --enable-pre-routing --enable-mcf-obj
 ```
 
 第九版修改3：上述命令日志应含 `solution_class=`。warm start 导致 `Failed`/`TimeLimit` 时可能出现 `warm start led to Failed; retrying without warm start`（仅一次）。最后一行验证对称性软破坏（日志应含 `objective symmetry-break`）。

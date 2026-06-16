@@ -2,6 +2,7 @@
 
 #include "mcf/mcf_bbox.hh"
 #include "mcf/mcf_gurobi_log_io.hh"
+#include "mcf/mcf_gurobi_params.hh"
 #include "mcf/mcf_resource_usage_io.hh"
 #include "precompute/tob_path_precompute.hh"
 #include "mcf/mcf_graph.hh"
@@ -561,7 +562,6 @@ auto solve_binary_columns_with_gurobi(
         model.set(GRB_StringAttr_ModelName, stage_name);
         model.set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
         model.set(GRB_IntParam_OutputFlag, 0);
-        model.set(GRB_IntParam_Presolve, 1);
 
         auto vars = std::vector<GRBVar> {};
         vars.reserve(col_cost.size());
@@ -615,6 +615,7 @@ auto solve_binary_columns_with_gurobi(
         timing.matrix_diag_ms = elapsed_ms_between(diag_begin, std::chrono::steady_clock::now());
 
         const auto optimize_begin = std::chrono::steady_clock::now();
+        apply_mcf_gurobi_solve_params(model, default_mcf_gurobi_solve_params());
         if (gurobi_sink != nullptr) {
             log_paths = gurobi_sink->begin_solve(gurobi_meta);
             McfGurobiLogSink::configure_model_log(model, *log_paths);
@@ -2578,6 +2579,147 @@ auto solve_bus_mcf(
     return finish_stage_solve_result(out, solve_begin, timing);
 }
 
+auto residual_edge_cap(
+    const std::map<std::pair<int, int>, int>& edge_capacity_override,
+    const std::pair<int, int>& e
+) -> int {
+    const auto it = edge_capacity_override.find(e);
+    return it != edge_capacity_override.end() ? it->second : 1;
+}
+
+auto residual_node_cap(const std::map<int, int>& node_capacity_override, const int n) -> int {
+    const auto it = node_capacity_override.find(n);
+    return it != node_capacity_override.end() ? it->second : 1;
+}
+
+auto build_origin_group_physical_endpoints(
+    const McfOriginGroup& group,
+    const std::Vector<PreparedCommodity>& local_com,
+    const GlobalGraph& graph
+) -> std::set<int> {
+    auto out = std::set<int> {};
+    for (const auto k : group.commodity_local_indices) {
+        const auto& commodity = local_com[static_cast<std::size_t>(k)];
+        for (const auto n : {commodity.src, commodity.snk}) {
+            if (n < 0 || static_cast<std::size_t>(n) >= graph.nodes.size()) {
+                continue;
+            }
+            if (graph.nodes[static_cast<std::size_t>(n)].is_virtual) {
+                continue;
+            }
+            out.insert(n);
+        }
+    }
+    return out;
+}
+
+auto arc_blocked_by_bus_residual(
+    const Arc& arc,
+    const GlobalGraph& graph,
+    const std::set<int>& allowed_endpoint_nodes,
+    const std::map<std::pair<int, int>, int>& edge_capacity_override,
+    const std::map<int, int>& node_capacity_override
+) -> bool {
+    if (arc.is_virtual) {
+        return false;
+    }
+    const auto e = normalized_edge_key(arc.u, arc.v);
+    if (residual_edge_cap(edge_capacity_override, e) == 0) {
+        return true;
+    }
+    for (const auto n : {arc.u, arc.v}) {
+        if (n < 0 || static_cast<std::size_t>(n) >= graph.nodes.size()) {
+            continue;
+        }
+        if (graph.nodes[static_cast<std::size_t>(n)].is_virtual) {
+            continue;
+        }
+        if (allowed_endpoint_nodes.contains(n)) {
+            continue;
+        }
+        if (residual_node_cap(node_capacity_override, n) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto commodity_residual_connected(
+    const GlobalGraph& graph,
+    const PreparedCommodity& commodity,
+    const McfCommodityBBox& effective_bbox,
+    const std::set<int>& allowed_endpoint_nodes,
+    const std::map<std::pair<int, int>, int>& edge_capacity_override,
+    const std::map<int, int>& node_capacity_override
+) -> bool {
+    auto prev = std::vector<int>(graph.nodes.size(), -1);
+    auto q = std::queue<int> {};
+    q.push(commodity.src);
+    prev[static_cast<std::size_t>(commodity.src)] = commodity.src;
+    while (!q.empty()) {
+        const auto node = q.front();
+        q.pop();
+        if (node == commodity.snk) {
+            return true;
+        }
+        for (const auto& arc : graph.arcs) {
+            if (arc.u != node) {
+                continue;
+            }
+            if (!arc_usable_for_unit(graph, arc, commodity.cob_unit)) {
+                continue;
+            }
+            if (effective_bbox.restricted
+                && !arc_allowed_in_mcf_bbox(
+                    arc,
+                    graph.nodes[static_cast<std::size_t>(arc.u)],
+                    graph.nodes[static_cast<std::size_t>(arc.v)],
+                    true,
+                    effective_bbox.box,
+                    graph.cols,
+                    commodity.src,
+                    commodity.snk)) {
+                continue;
+            }
+            if (arc_blocked_by_bus_residual(
+                    arc, graph, allowed_endpoint_nodes, edge_capacity_override, node_capacity_override)) {
+                continue;
+            }
+            if (prev[static_cast<std::size_t>(arc.v)] != -1) {
+                continue;
+            }
+            prev[static_cast<std::size_t>(arc.v)] = node;
+            q.push(arc.v);
+        }
+    }
+    return false;
+}
+
+auto fail_simple_mcf_early(
+    StageSolveResult& out,
+    const std::chrono::steady_clock::time_point begin,
+    const std::String& stub_reason,
+    const std::String& message,
+    const std::size_t record_index,
+    const Net_cost_record& record,
+    const std::size_t unit_c,
+    McfGurobiLogSink* gurobi_sink,
+    const McfGurobiSolveMeta& gurobi_meta,
+    const std::String& stub_detail = {}
+) -> StageSolveResult {
+    if (gurobi_sink != nullptr) {
+        gurobi_sink->write_stub(
+            gurobi_meta,
+            stub_reason,
+            stub_detail.empty() ? message : stub_detail);
+    }
+    apply_stage_solution_class(out, McfSolutionClass::Failed);
+    out.message = message;
+    append_unique(out.failed_record_indices, record_index);
+    append_simple_origin_retry_hint(out, unit_c, simple_origin_group_key(record));
+    return finish_stage_solve_early(out, begin);
+}
+
 auto solve_simple_mcf_unit(
     const GlobalGraph& graph,
     const std::Vector<PreparedCommodity>& commodities,
@@ -2614,11 +2756,14 @@ auto solve_simple_mcf_unit(
     auto origin_groups = build_origin_groups(local_com, records);
     log_origin_groups(stage_name, origin_groups);
     auto commodity_origin_h = std::Vector<int>(static_cast<std::size_t>(K), -1);
+    auto origin_endpoints_by_h = std::map<int, std::set<int>> {};
     auto origin_bbox_by_gid = std::map<int, McfCommodityBBox> {};
     for (const auto& group : origin_groups) {
         for (const auto k : group.commodity_local_indices) {
             commodity_origin_h[static_cast<std::size_t>(k)] = group.origin_group_id;
         }
+        origin_endpoints_by_h[group.origin_group_id] =
+            build_origin_group_physical_endpoints(group, local_com, graph);
         const auto group_key = std::make_pair(unit_c, group.origin_key);
         if (expand_state != nullptr) {
             if (const auto overlay = lookup_simple_origin_hull(*expand_state, group_key)) {
@@ -2665,6 +2810,42 @@ auto solve_simple_mcf_unit(
         }
     }
 
+    for (int k = 0; k < K; ++k) {
+        const auto& commodity = local_com[static_cast<std::size_t>(k)];
+        const auto& record = records[commodity.record_index];
+        for (const auto n : {commodity.src, commodity.snk}) {
+            if (n < 0 || static_cast<std::size_t>(n) >= graph.nodes.size()) {
+                continue;
+            }
+            if (graph.nodes[static_cast<std::size_t>(n)].is_virtual) {
+                continue;
+            }
+            if (residual_node_cap(node_capacity_override, n) != 0) {
+                continue;
+            }
+            return fail_simple_mcf_early(
+                out,
+                solve_begin,
+                "endpoint_residual_zero",
+                std::format(
+                    "{}: endpoint node bus residual=0 for commodity {} node={} origin={}",
+                    stage_name,
+                    commodity.label,
+                    node_text(graph, n),
+                    commodity.origin_name),
+                commodity.record_index,
+                record,
+                unit_c,
+                gurobi_sink,
+                gurobi_meta,
+                std::format(
+                    "commodity={} node={} origin={} bus_residual=0",
+                    commodity.label,
+                    node_text(graph, n),
+                    commodity.origin_name));
+        }
+    }
+
     // SimpleMCF §1: f^{c,n}_{ij} variables
     auto f_vars = std::Vector<ArcVar> {};
     auto f_by_k = std::Vector<std::Vector<int>>(static_cast<std::size_t>(K));
@@ -2673,12 +2854,13 @@ auto solve_simple_mcf_unit(
         const auto global_id = simple_ids_for_unit[static_cast<std::size_t>(k)];
         const auto& commodity = local_com[static_cast<std::size_t>(k)];
         const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
-        const auto mode = origin_bbox_by_gid.contains(h) ? McfArcBBoxMode::SimpleOriginGroup
-                                                         : McfArcBBoxMode::SimpleCommodity;
-        const auto origin_bbox = origin_bbox_by_gid.contains(h) ? origin_bbox_by_gid.at(h) : McfCommodityBBox {};
-        for (int a = 0; a < A; ++a) {
-            const auto& arc = graph.arcs[static_cast<std::size_t>(a)];
-            if (!arc_allowed_for_commodity(
+            const auto mode = origin_bbox_by_gid.contains(h) ? McfArcBBoxMode::SimpleOriginGroup
+                                                             : McfArcBBoxMode::SimpleCommodity;
+            const auto origin_bbox = origin_bbox_by_gid.contains(h) ? origin_bbox_by_gid.at(h) : McfCommodityBBox {};
+            const auto& allowed_endpoint_nodes = origin_endpoints_by_h.at(h);
+            for (int a = 0; a < A; ++a) {
+                const auto& arc = graph.arcs[static_cast<std::size_t>(a)];
+                if (!arc_allowed_for_commodity(
                     graph,
                     arc,
                     commodity,
@@ -2688,11 +2870,64 @@ auto solve_simple_mcf_unit(
                     origin_bbox)) {
                 continue;
             }
+            if (arc_blocked_by_bus_residual(
+                    arc, graph, allowed_endpoint_nodes, edge_capacity_override, node_capacity_override)) {
+                continue;
+            }
             const auto var_id = static_cast<int>(f_vars.size());
             f_vars.push_back(ArcVar {k, a});
             f_by_k[static_cast<std::size_t>(k)].push_back(var_id);
         }
     }
+
+    for (int k = 0; k < K; ++k) {
+        const auto global_id = simple_ids_for_unit[static_cast<std::size_t>(k)];
+        const auto& commodity = local_com[static_cast<std::size_t>(k)];
+        const auto& record = records[commodity.record_index];
+        if (f_by_k[static_cast<std::size_t>(k)].empty()) {
+            return fail_simple_mcf_early(
+                out,
+                solve_begin,
+                "no_feasible_arc_variable_pairs",
+                std::format(
+                    "{}: no feasible arc-variable pairs for commodity {}",
+                    stage_name,
+                    commodity.label),
+                commodity.record_index,
+                record,
+                unit_c,
+                gurobi_sink,
+                gurobi_meta,
+                std::format("commodity={}", commodity.label));
+        }
+        const auto effective = effective_bbox_for_simple_commodity(
+            global_id, simple_ids_for_unit, commodities, records, bbox_ctx, expand_state);
+        const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
+        const auto& allowed_endpoint_nodes = origin_endpoints_by_h.at(h);
+        if (!commodity_residual_connected(
+                graph,
+                commodity,
+                effective,
+                allowed_endpoint_nodes,
+                edge_capacity_override,
+                node_capacity_override)) {
+            return fail_simple_mcf_early(
+                out,
+                solve_begin,
+                "residual_disconnected",
+                std::format(
+                    "{}: bus residual disconnected for commodity {}",
+                    stage_name,
+                    commodity.label),
+                commodity.record_index,
+                record,
+                unit_c,
+                gurobi_sink,
+                gurobi_meta,
+                std::format("commodity={}", commodity.label));
+        }
+    }
+
     if (f_vars.empty()) {
         if (gurobi_sink != nullptr) {
             gurobi_sink->write_stub(gurobi_meta, "no_feasible_arc_variable_pairs");
@@ -2767,14 +3002,17 @@ auto solve_simple_mcf_unit(
         return row;
     };
 
-    // SimpleMCF v5 §5: Σ_H x^H_e <= capacity^c_e - used^{Bus,c}_e on undirected physical edge e ∈ E^c
+    // SimpleMCF v5 §5: Σ_H x^H_e <= capacity^c_e - used^{Bus,c}_e (lazy per used edge)
     auto edge_row = std::map<std::pair<int, int>, int> {};
-    for (const auto& key : collect_undirected_physical_edge_keys(graph, unit_c)) {
-        auto cap = 1;
-        if (edge_capacity_override.contains(key)) {
-            cap = edge_capacity_override.at(key);
+    const auto ensure_edge_row = [&](const std::pair<int, int>& e) -> std::optional<int> {
+        if (edge_row.contains(e)) {
+            return edge_row.at(e);
         }
-        edge_row[key] = add_le(
+        const auto cap = residual_edge_cap(edge_capacity_override, e);
+        if (cap == 0) {
+            return std::nullopt;
+        }
+        edge_row[e] = add_le(
             static_cast<double>(cap),
             McfConstraintMeta {
                 "edge_capacity",
@@ -2782,8 +3020,9 @@ auto solve_simple_mcf_unit(
                     "rhs={} bus_residual={} {}",
                     cap,
                     cap,
-                    describe_undirected_edge(graph, arc_index, key.first, key.second, graph.cols))});
-    }
+                    describe_undirected_edge(graph, arc_index, e.first, e.second, graph.cols))});
+        return edge_row[e];
+    };
 
     auto f_entries = std::Vector<std::Vector<std::pair<int, double>>>(f_vars.size());
     for (std::size_t j = 0; j < f_vars.size(); ++j) {
@@ -2834,7 +3073,6 @@ auto solve_simple_mcf_unit(
     auto origin_x_vars = std::Vector<OriginEdgeVar> {};
     auto origin_x_entries = std::Vector<std::Vector<std::pair<int, double>>> {};
     auto origin_x_by_he = std::map<OriginEdgeKey, int> {};
-    auto f_indices_by_he = std::map<OriginEdgeKey, std::Vector<int>> {};
     for (const auto& group : origin_groups) {
         const int h = group.origin_group_id;
         auto edge_keys = std::set<UndirectedEdgeKey> {};
@@ -2852,19 +3090,22 @@ auto solve_simple_mcf_unit(
             if (origin_x_by_he.contains(he_key)) {
                 continue;
             }
-            if (!edge_row.contains(e)) {
+            const auto edge_row_id = ensure_edge_row(e);
+            if (!edge_row_id.has_value()) {
                 continue;
             }
             const auto var_id = static_cast<int>(origin_x_vars.size());
             origin_x_vars.push_back(OriginEdgeVar {h, e.first, e.second});
             origin_x_by_he[he_key] = var_id;
             origin_x_entries.emplace_back();
-            origin_x_entries[static_cast<std::size_t>(var_id)].push_back({edge_row.at(e), 1.0});
+            origin_x_entries[static_cast<std::size_t>(var_id)].push_back({*edge_row_id, 1.0});
         }
     }
 
-    // v5 §2 lower: f^{n}_{ij}, f^{n}_{ji} <= x^H_e
-    int f_le_x_lower_rows = 0;
+    // v5 §2 lower: f^{n}_{ij} + f^{n}_{ji} <= x^H_e (per commodity on undirected edge)
+    using CommodityEdgeKey = std::pair<int, UndirectedEdgeKey>;
+    auto f_indices_by_ke = std::map<CommodityEdgeKey, std::Vector<int>> {};
+    auto f_indices_by_he = std::map<OriginEdgeKey, std::Vector<int>> {};
     for (std::size_t j = 0; j < f_vars.size(); ++j) {
         const auto k = f_vars[j].k;
         const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
@@ -2873,8 +3114,17 @@ auto solve_simple_mcf_unit(
             continue;
         }
         const auto e = normalized_edge_key(arc.u, arc.v);
-        const auto it = origin_x_by_he.find({h, e});
-        if (it == origin_x_by_he.end()) {
+        f_indices_by_ke[{k, e}].push_back(static_cast<int>(j));
+        f_indices_by_he[{h, e}].push_back(static_cast<int>(j));
+    }
+
+    int f_le_x_lower_rows = 0;
+    for (const auto& [ke, f_list] : f_indices_by_ke) {
+        const auto k = ke.first;
+        const auto& e = ke.second;
+        const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
+        const auto x_it = origin_x_by_he.find({h, e});
+        if (x_it == origin_x_by_he.end()) {
             continue;
         }
         const auto row = add_le(
@@ -2889,9 +3139,10 @@ auto solve_simple_mcf_unit(
                 h,
                 local_com[static_cast<std::size_t>(k)].record_index));
         ++f_le_x_lower_rows;
-        f_entries[j].push_back({row, 1.0});
-        origin_x_entries[static_cast<std::size_t>(it->second)].push_back({row, -1.0});
-        f_indices_by_he[{h, e}].push_back(static_cast<int>(j));
+        for (const auto f_j : f_list) {
+            f_entries[static_cast<std::size_t>(f_j)].push_back({row, 1.0});
+        }
+        origin_x_entries[static_cast<std::size_t>(x_it->second)].push_back({row, -1.0});
     }
 
     // v5 §2 upper: x^H_e <= Σ_{n∈H.child} (f^n_ij + f^n_ji)
@@ -3017,6 +3268,72 @@ auto solve_simple_mcf_unit(
         }
     }
 
+    int o_endpoint_eq_rows = 0;
+    for (const auto& group : origin_groups) {
+        const int h = group.origin_group_id;
+        const auto endpoints = build_origin_group_physical_endpoints(group, local_com, graph);
+        for (const auto n : endpoints) {
+            const auto hn = std::make_pair(h, n);
+            const auto o_it = origin_o_by_hn.find(hn);
+            if (o_it == origin_o_by_hn.end()) {
+                std::size_t record_index = kInvalidRecordIndex;
+                const Net_cost_record* record_ptr = nullptr;
+                for (const auto k : group.commodity_local_indices) {
+                    const auto& commodity = local_com[static_cast<std::size_t>(k)];
+                    if (commodity.src == n || commodity.snk == n) {
+                        record_index = commodity.record_index;
+                        record_ptr = &records[record_index];
+                        break;
+                    }
+                }
+                if (record_ptr == nullptr && !group.commodity_local_indices.empty()) {
+                    const auto k0 = group.commodity_local_indices.front();
+                    record_index = local_com[static_cast<std::size_t>(k0)].record_index;
+                    record_ptr = &records[record_index];
+                }
+                return fail_simple_mcf_early(
+                    out,
+                    solve_begin,
+                    "endpoint_no_o_var",
+                    std::format(
+                        "{}: endpoint has no o variable after bus residual filter origin={} node={}",
+                        stage_name,
+                        origin_label(h),
+                        node_text(graph, n)),
+                    record_index,
+                    *record_ptr,
+                    unit_c,
+                    gurobi_sink,
+                    gurobi_meta,
+                    std::format("origin={} node={}", origin_label(h), node_text(graph, n)));
+            }
+            auto role = std::String {"endpoint"};
+            for (const auto k : group.commodity_local_indices) {
+                const auto& commodity = local_com[static_cast<std::size_t>(k)];
+                if (commodity.src == n) {
+                    role = "source";
+                    break;
+                }
+                if (commodity.snk == n) {
+                    role = "sink";
+                }
+            }
+            const auto o_var = o_it->second;
+            const auto row = add_eq(
+                1.0,
+                simple_meta(
+                    "o_endpoint_eq",
+                    std::format(
+                        "origin={} node={} ({})",
+                        origin_label(h),
+                        node_text(graph, n),
+                        role),
+                    h));
+            ++o_endpoint_eq_rows;
+            origin_o_entries[static_cast<std::size_t>(o_var)].push_back({row, 1.0});
+        }
+    }
+
     const auto num_f = static_cast<int>(f_vars.size());
     const auto num_origin_x = static_cast<int>(origin_x_vars.size());
     const auto num_origin_o = static_cast<int>(origin_o_vars.size());
@@ -3032,6 +3349,7 @@ auto solve_simple_mcf_unit(
             {"f_le_x_upper", f_le_x_upper_rows},
             {"x_le_o", x_le_o_rows},
             {"o_le_sum_x", o_le_sum_x_rows},
+            {"o_endpoint_eq", o_endpoint_eq_rows},
             {"node_capacity", static_cast<int>(node_row.size())},
         });
     debug::info_fmt(
@@ -4155,6 +4473,7 @@ auto run_mcf_global_routing_cob_units(
     const auto mcf_start = std::chrono::steady_clock::now();
     const auto peak_before = get_peak_rss_mb();
     McfGurobiLogSink gurobi_sink {std::filesystem::path(diag.log_dir)};
+    debug::info_fmt("MCF Gurobi params: {}", format_mcf_gurobi_solve_params(default_mcf_gurobi_solve_params()));
     if (disable_bus_mcf) {
         debug::info_fmt(
             "MCF: SimpleMCF only (--disable-bus-mcf); SimpleMCF objective={}",
