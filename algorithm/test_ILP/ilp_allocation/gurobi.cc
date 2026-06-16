@@ -340,15 +340,13 @@ auto solve_tob_ilp_with_gurobi(
 
     try {
         GRBEnv env {true};
-        configure_gurobi_solver_log(env, "TOB_ILP", diag);
+        env.set(GRB_IntParam_OutputFlag, 0);
         env.start();
 
         GRBModel grb_model {env};
         grb_model.set(GRB_StringAttr_ModelName, "TOB_ALLOC");
         grb_model.set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
-        if (!diag.enable_gurobi_log) {
-            grb_model.set(GRB_IntParam_OutputFlag, 0);
-        }
+        grb_model.set(GRB_IntParam_OutputFlag, 0);
         grb_model.set(GRB_IntParam_Threads, threads);
 
         auto vars = std::vector<GRBVar> {};

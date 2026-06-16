@@ -181,7 +181,8 @@ auto solve_tob_mcf_with_range_iteration(
             true,
             disable_bus_mcf,
             show_resource_usage,
-            gurobi_diag);
+            gurobi_diag,
+            static_cast<int>(attempt));
 
         out.mcf_warm_start_ms += mcf.summary.mcf_warm_start_ms;
         out.mcf_solve_ms += mcf.summary.mcf_solve_ms;

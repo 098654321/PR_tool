@@ -1,6 +1,7 @@
 // SAT TOB allocation + optional MCF routing (Gurobi for MCF only).
 
 #include "mcf/cob_mcf_router.hh"
+#include "mcf/mcf_gurobi_log_io.hh"
 #include "ilp_allocation/gurobi_model_stats.hh"
 #include "common/ilp_types.hh"
 #include "common/tob_allocation_types.hh"
@@ -86,7 +87,7 @@ constexpr auto kTestIlpUsage =
     "[--disable-01-mcf] [--disable-multipin-io] [--disable-2pin-io] "
     "[--enable-presat-parallel] [--enable-mcf-parallel] [--enable-mcf-obj] [--enable-pre-routing] "
     "[--show-resource-usage] "
-    "[--sat-log] [--gurobi-log] "
+    "[--sat-log] "
     "[--check-golden]";
 
 auto run_main(int argc, char** argv) -> int {
@@ -113,7 +114,6 @@ auto run_main(int argc, char** argv) -> int {
     bool enable_mcf_obj = false;
     bool enable_pre_routing = false;
     bool show_resource_usage = false;
-    bool enable_gurobi_log = false;
     bool enable_sat_log = false;
     bool disable_01_mcf = false;
     bool disable_multipin_io = false;
@@ -194,10 +194,6 @@ auto run_main(int argc, char** argv) -> int {
             show_resource_usage = true;
             continue;
         }
-        if (arg == "--gurobi-log") {
-            enable_gurobi_log = true;
-            continue;
-        }
         if (arg == "--check-golden") {
             check_golden = true;
             continue;
@@ -243,13 +239,10 @@ auto run_main(int argc, char** argv) -> int {
     debug::initial_log("./debug.log");
     GurobiDiagnosticsOptions gurobi_diag {};
     gurobi_diag.log_dir = std::format("./{}", kGurobiLogSubdir);
-    init_gurobi_modelinfo_log(gurobi_diag.log_dir);
-    if (enable_gurobi_log) {
-        gurobi_diag.enable_gurobi_log = true;
-        log_gurobi_modelinfo(
-            gurobi_diag.log_dir,
-            std::format("Gurobi solver logs enabled: directory={}", gurobi_diag.log_dir));
+    if (enable_mcf) {
+        McfGurobiLogSink::prepare_output_dir(gurobi_diag.log_dir);
     }
+    init_gurobi_modelinfo_log(gurobi_diag.log_dir);
     if (verbose_v_count > 0) {
         debug::set_debug_level(debug::DebugLevel::Debug);
         debug::info_fmt("verbose mode enabled: -v count={}", verbose_v_count);

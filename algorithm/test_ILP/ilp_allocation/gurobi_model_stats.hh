@@ -12,7 +12,6 @@ inline constexpr std::StringView kGurobiLogSubdir {"gurobi-log"};
 inline constexpr std::StringView kGurobiModelInfoFilename {"modelinfo.log"};
 
 struct GurobiDiagnosticsOptions {
-    bool enable_gurobi_log{false};
     std::String log_dir {"./gurobi-log"};
     int heavy_row_min_nnz{10};
     double heavy_row_factor{5.0};
@@ -49,12 +48,6 @@ auto gurobi_modelinfo_log_path(const std::String& log_dir) -> std::String;
 
 auto log_gurobi_modelinfo(const std::String& log_dir, const std::String& line) -> void;
 
-auto configure_gurobi_solver_log(
-    GRBEnv& env,
-    const std::String& stage_name,
-    const GurobiDiagnosticsOptions& opts
-) -> std::String;
-
 auto compute_gurobi_matrix_sparsity(
     GRBModel& model,
     const GurobiDiagnosticsOptions& opts,
@@ -67,10 +60,5 @@ auto log_gurobi_matrix_diagnostics(
     const GurobiDiagnosticsOptions& opts,
     const std::Vector<GurobiRowMeta>* row_meta = nullptr
 ) -> void;
-
-auto make_gurobi_log_path(
-    const std::String& log_dir,
-    const std::String& stage_name
-) -> std::String;
 
 } // namespace PR_tool

@@ -1,6 +1,7 @@
 #include "mcf/cob_mcf_router.hh"
 
 #include "mcf/mcf_bbox.hh"
+#include "mcf/mcf_gurobi_log_io.hh"
 #include "mcf/mcf_resource_usage_io.hh"
 #include "precompute/tob_path_precompute.hh"
 #include "mcf/mcf_graph.hh"
@@ -117,6 +118,15 @@ struct McfConstraintMeta {
     std::String simple_origin_key {};
 };
 
+struct StageSolveTiming {
+    int model_build_ms{0};
+    int matrix_diag_ms{0};
+    int gurobi_optimize_ms{0};
+    int compute_iis_ms{0};
+    int extract_path_ms{0};
+    int solve_ms{0};
+};
+
 struct StageSolveResult {
     bool ok{false};
     McfSolutionClass solution_class{McfSolutionClass::Failed};
@@ -124,6 +134,7 @@ struct StageSolveResult {
     std::String stage_name;
     double objective{0.0};
     int solve_ms{0};
+    StageSolveTiming timing;
     int model_status{0};
     std::map<std::pair<int, int>, int> used_edges;
     std::map<int, int> used_nodes;
@@ -143,6 +154,23 @@ auto stage_solve_elapsed_ms(const std::chrono::steady_clock::time_point begin) -
         std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 }
 
+auto elapsed_ms_between(
+    const std::chrono::steady_clock::time_point begin,
+    const std::chrono::steady_clock::time_point end
+) -> int {
+    return static_cast<int>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
+}
+
+auto merge_gurobi_stage_timing(const int cpp_model_build_ms, const StageSolveTiming& grb) -> StageSolveTiming {
+    auto timing = StageSolveTiming {};
+    timing.model_build_ms = cpp_model_build_ms + grb.model_build_ms;
+    timing.matrix_diag_ms = grb.matrix_diag_ms;
+    timing.gurobi_optimize_ms = grb.gurobi_optimize_ms;
+    timing.compute_iis_ms = grb.compute_iis_ms;
+    return timing;
+}
+
 auto gurobi_status_name(int status) -> std::String;
 
 auto apply_stage_solution_class(StageSolveResult& out, const McfSolutionClass cls) -> void {
@@ -152,21 +180,43 @@ auto apply_stage_solution_class(StageSolveResult& out, const McfSolutionClass cl
 
 auto finish_stage_solve_result(
     StageSolveResult& out,
-    const std::chrono::steady_clock::time_point begin
+    const std::chrono::steady_clock::time_point begin,
+    StageSolveTiming timing
 ) -> StageSolveResult {
-    out.solve_ms = stage_solve_elapsed_ms(begin);
+    timing.solve_ms = stage_solve_elapsed_ms(begin);
+    out.solve_ms = timing.solve_ms;
+    out.timing = timing;
     if (!out.stage_name.empty()) {
         debug::info_fmt(
-            "{}: model_status={}({}) solution_class={} ok={} objective={:.0f} solve_ms={}",
+            "{}: model_status={}({}) solution_class={} ok={} objective={:.0f} solve_ms={} "
+            "model_build_ms={} matrix_diag_ms={} gurobi_optimize_ms={} compute_iis_ms={} extract_path_ms={}",
             out.stage_name,
             gurobi_status_name(out.model_status),
             out.model_status,
             solution_class_name(out.solution_class),
             out.ok,
             out.objective,
-            out.solve_ms);
+            out.timing.solve_ms,
+            out.timing.model_build_ms,
+            out.timing.matrix_diag_ms,
+            out.timing.gurobi_optimize_ms,
+            out.timing.compute_iis_ms,
+            out.timing.extract_path_ms);
     }
     return out;
+}
+
+auto finish_stage_solve_early(
+    StageSolveResult& out,
+    const std::chrono::steady_clock::time_point begin
+) -> StageSolveResult {
+    return finish_stage_solve_result(out, begin, StageSolveTiming {});
+}
+
+auto log_skipped_simple_unit_stage(StageSolveResult& out, const std::size_t unit) -> void {
+    out.stage_name = std::format("SimpleMCF_unit{}", unit);
+    const auto begin = std::chrono::steady_clock::now();
+    finish_stage_solve_early(out, begin);
 }
 
 struct StageWarmStart {
@@ -210,6 +260,7 @@ struct GurobiMcfSolveResult {
     double objective{0.0};
     std::vector<double> col_value;
     std::Vector<McfConstraintMeta> iis_rows;
+    StageSolveTiming gurobi_timing;
 };
 
 constexpr int kMaxIisLogPerKind = 20;
@@ -493,20 +544,23 @@ auto solve_binary_columns_with_gurobi(
     const std::Vector<std::Vector<std::pair<int, double>>>& col_entries,
     const std::map<int, double>& warm_values_by_col,
     const std::Vector<McfConstraintMeta>* row_meta,
-    const GurobiDiagnosticsOptions& diag
+    const GurobiDiagnosticsOptions& diag,
+    McfGurobiLogSink* gurobi_sink,
+    const McfGurobiSolveMeta& gurobi_meta
 ) -> GurobiMcfSolveResult {
     auto out = GurobiMcfSolveResult {};
+    std::optional<McfGurobiSolvePaths> log_paths;
+    const auto gurobi_begin = std::chrono::steady_clock::now();
+    auto timing = StageSolveTiming {};
     try {
         GRBEnv env {true};
-        configure_gurobi_solver_log(env, stage_name, diag);
+        env.set(GRB_IntParam_OutputFlag, 0);
         env.start();
 
         GRBModel model {env};
         model.set(GRB_StringAttr_ModelName, stage_name);
         model.set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
-        if (!diag.enable_gurobi_log) {
-            model.set(GRB_IntParam_OutputFlag, 0);
-        }
+        model.set(GRB_IntParam_OutputFlag, 0);
         model.set(GRB_IntParam_Presolve, 1);
 
         auto vars = std::vector<GRBVar> {};
@@ -545,6 +599,7 @@ auto solve_binary_columns_with_gurobi(
             }
             vars[static_cast<std::size_t>(col)].set(GRB_DoubleAttr_Start, value);
         }
+        timing.model_build_ms = elapsed_ms_between(gurobi_begin, std::chrono::steady_clock::now());
 
         auto gurobi_row_meta = std::Vector<GurobiRowMeta> {};
         const std::Vector<GurobiRowMeta>* gurobi_row_meta_ptr = nullptr;
@@ -555,7 +610,16 @@ auto solve_binary_columns_with_gurobi(
             }
             gurobi_row_meta_ptr = &gurobi_row_meta;
         }
+        const auto diag_begin = std::chrono::steady_clock::now();
         log_gurobi_matrix_diagnostics(model, stage_name, diag, gurobi_row_meta_ptr);
+        timing.matrix_diag_ms = elapsed_ms_between(diag_begin, std::chrono::steady_clock::now());
+
+        const auto optimize_begin = std::chrono::steady_clock::now();
+        if (gurobi_sink != nullptr) {
+            log_paths = gurobi_sink->begin_solve(gurobi_meta);
+            McfGurobiLogSink::configure_model_log(model, *log_paths);
+            McfGurobiLogSink::write_settings_prm(model, log_paths->prm_path);
+        }
 
         model.optimize();
         out.model_status = model.get(GRB_IntAttr_Status);
@@ -573,7 +637,13 @@ auto solve_binary_columns_with_gurobi(
                 out.col_value[c] = vars[c].get(GRB_DoubleAttr_X);
             }
         }
-        else if (out.model_status == GRB_INFEASIBLE && row_meta != nullptr && row_meta->size() == row_lo.size()) {
+        timing.gurobi_optimize_ms = elapsed_ms_between(optimize_begin, std::chrono::steady_clock::now());
+
+        if (!stage_result_usable(out.solution_class)
+            && out.model_status == GRB_INFEASIBLE
+            && row_meta != nullptr
+            && row_meta->size() == row_lo.size()) {
+            const auto iis_begin = std::chrono::steady_clock::now();
             model.computeIIS();
             const auto num_constrs = model.get(GRB_IntAttr_NumConstrs);   // get the number of constraints
             const auto constrs = model.getConstrs();                    // get the constraints
@@ -596,6 +666,7 @@ auto solve_binary_columns_with_gurobi(
                     out.iis_rows.push_back(row_meta->at(row));
                 }
             }
+            timing.compute_iis_ms = elapsed_ms_between(iis_begin, std::chrono::steady_clock::now());
         }
         out.ok = stage_result_usable(out.solution_class);
         out.message = out.ok ? std::String("ok")
@@ -603,18 +674,34 @@ auto solve_binary_columns_with_gurobi(
                                    "{}: {}",
                                    stage_name,
                                    solution_class_name(out.solution_class));
+        if (gurobi_sink != nullptr && log_paths.has_value()) {
+            gurobi_sink->end_solve(gurobi_meta, *log_paths, model, out.solution_class);
+        }
+        out.gurobi_timing = timing;
         return out;
     }
     catch (const GRBException& e) {
+        out.gurobi_timing = timing;
         out.solution_class = McfSolutionClass::Failed;
         out.ok = false;
         out.message = std::format("{}: Gurobi exception {}: {}", stage_name, e.getErrorCode(), e.getMessage());
+        if (gurobi_sink != nullptr && log_paths.has_value()) {
+            gurobi_sink->end_solve_exception(
+                gurobi_meta,
+                *log_paths,
+                McfSolutionClass::Failed,
+                e.getMessage());
+        }
         return out;
     }
     catch (const std::exception& e) {
+        out.gurobi_timing = timing;
         out.solution_class = McfSolutionClass::Failed;
         out.ok = false;
         out.message = std::format("{}: Gurobi solve failed: {}", stage_name, e.what());
+        if (gurobi_sink != nullptr && log_paths.has_value()) {
+            gurobi_sink->end_solve_exception(gurobi_meta, *log_paths, McfSolutionClass::Failed, e.what());
+        }
         return out;
     }
 }
@@ -2015,16 +2102,21 @@ auto solve_bus_mcf(
     const std::Vector<std::size_t>& bus_ids,
     const McfBBoxContext& bbox_ctx,
     const StageWarmStart* warm_start,
-    const GurobiDiagnosticsOptions& diag
+    const GurobiDiagnosticsOptions& diag,
+    McfGurobiLogSink* gurobi_sink,
+    const McfGurobiSolveMeta& gurobi_meta
 ) -> StageSolveResult {
     constexpr auto stage_name = "BusMCF";
     const auto solve_begin = std::chrono::steady_clock::now();
     StageSolveResult out {};
     out.stage_name = stage_name;
     if (bus_ids.empty()) {
+        if (gurobi_sink != nullptr) {
+            gurobi_sink->write_skipped(McfGurobiLogStage::bus(), "empty_stage");
+        }
         apply_stage_solution_class(out, McfSolutionClass::Skipped);
         out.message = "empty stage";
-        return finish_stage_solve_result(out, solve_begin);
+        return finish_stage_solve_early(out, solve_begin);
     }
 
     const auto K = static_cast<int>(bus_ids.size());
@@ -2045,13 +2137,19 @@ auto solve_bus_mcf(
             McfArcBBoxMode::Bus,
             McfCommodityBBox {});
         if (effective.restricted && !commodity_bbox_connected(graph, commodity, effective)) {
+            if (gurobi_sink != nullptr) {
+                gurobi_sink->write_stub(
+                    gurobi_meta,
+                    "bbox_disconnected",
+                    std::format("commodity={}", commodity.label));
+            }
             apply_stage_solution_class(out, McfSolutionClass::Failed);
             out.message = std::format(
                 "{}: bbox disconnected for commodity {}",
                 stage_name,
                 commodity.label);
             append_bus_retry_hint(out, commodity.bus_key, commodity.record_index);
-            return finish_stage_solve_result(out, solve_begin);
+            return finish_stage_solve_early(out, solve_begin);
         }
     }
 
@@ -2080,10 +2178,13 @@ auto solve_bus_mcf(
         }
     }
     if (f_vars.empty()) {
+        if (gurobi_sink != nullptr) {
+            gurobi_sink->write_stub(gurobi_meta, "no_feasible_arc_variable_pairs");
+        }
         apply_stage_solution_class(out, McfSolutionClass::Failed);
         out.message = std::format("{}: no feasible arc-variable pairs", stage_name);
         out.bus_failure_unlocalized = true;
-        return finish_stage_solve_result(out, solve_begin);
+        return finish_stage_solve_early(out, solve_begin);
     }
 
     log_mcf_model_graph(stage_name, graph, K);
@@ -2391,6 +2492,7 @@ auto solve_bus_mcf(
         }
     }
 
+    const auto cpp_model_build_ms = stage_solve_elapsed_ms(solve_begin);
     const auto solve_res = solve_binary_columns_with_gurobi(
         stage_name,
         col_cost,
@@ -2401,8 +2503,11 @@ auto solve_bus_mcf(
         col_entries,
         warm_values_by_col,
         &row_meta,
-        diag);
+        diag,
+        gurobi_sink,
+        gurobi_meta);
     out.model_status = solve_res.model_status;
+    auto timing = merge_gurobi_stage_timing(cpp_model_build_ms, solve_res.gurobi_timing);
     if (solve_res.solution_class == McfSolutionClass::Failed
         || solve_res.solution_class == McfSolutionClass::TimeLimit) {
         if (warm_start != nullptr && !warm_values_by_col.empty()) {
@@ -2410,21 +2515,40 @@ auto solve_bus_mcf(
                 "{} warm start led to {}; retrying without warm start",
                 stage_name,
                 solution_class_name(solve_res.solution_class));
-            auto retry = solve_bus_mcf(graph, commodities, bus_ids, bbox_ctx, nullptr, diag);
-            retry.solve_ms += stage_solve_elapsed_ms(solve_begin);
+            auto first_log = out;
+            apply_stage_solution_class(first_log, solve_res.solution_class);
+            first_log.model_status = solve_res.model_status;
+            first_log.message = solve_res.message;
+            first_log.infeasibility_hints = solve_res.iis_rows;
+            collect_bus_retry_hints_from_iis(first_log, first_log.infeasibility_hints);
+            first_log = finish_stage_solve_result(first_log, solve_begin, timing);
+            auto retry_meta = gurobi_meta;
+            retry_meta.warm_start = false;
+            retry_meta.retry_kind = McfGurobiRetryKind::NoWarmStart;
+            auto retry = solve_bus_mcf(
+                graph,
+                commodities,
+                bus_ids,
+                bbox_ctx,
+                nullptr,
+                diag,
+                gurobi_sink,
+                retry_meta);
+            retry.solve_ms += first_log.solve_ms;
             return retry;
         }
         apply_stage_solution_class(out, solve_res.solution_class);
         out.message = solve_res.message;
         out.infeasibility_hints = solve_res.iis_rows;
         collect_bus_retry_hints_from_iis(out, out.infeasibility_hints);
-        return finish_stage_solve_result(out, solve_begin);
+        return finish_stage_solve_result(out, solve_begin, timing);
     }
 
     apply_stage_solution_class(out, solve_res.solution_class);
     out.message = "ok";
     out.objective = solve_res.objective;
 
+    const auto extract_begin = std::chrono::steady_clock::now();
     auto f_values = std::Vector<int>(f_vars.size(), 0);
     for (std::size_t j = 0; j < f_vars.size(); ++j) {
         f_values[j] = static_cast<int>(std::lround(solve_res.col_value[j]));
@@ -2450,7 +2574,8 @@ auto solve_bus_mcf(
     }
 
     append_paths_from_f_solution(stage_name, graph, local_com, f_vars, f_values, out);
-    return finish_stage_solve_result(out, solve_begin);
+    timing.extract_path_ms = elapsed_ms_between(extract_begin, std::chrono::steady_clock::now());
+    return finish_stage_solve_result(out, solve_begin, timing);
 }
 
 auto solve_simple_mcf_unit(
@@ -2465,16 +2590,21 @@ auto solve_simple_mcf_unit(
     const std::map<int, int>& node_capacity_override,
     const bool enable_mcf_obj,
     const StageWarmStart* warm_start,
-    const GurobiDiagnosticsOptions& diag
+    const GurobiDiagnosticsOptions& diag,
+    McfGurobiLogSink* gurobi_sink,
+    const McfGurobiSolveMeta& gurobi_meta
 ) -> StageSolveResult {
     const auto stage_name = std::format("SimpleMCF_unit{}", unit_c);
     const auto solve_begin = std::chrono::steady_clock::now();
     StageSolveResult out {};
     out.stage_name = stage_name;
     if (simple_ids_for_unit.empty()) {
+        if (gurobi_sink != nullptr) {
+            gurobi_sink->write_skipped(McfGurobiLogStage::simple_unit(unit_c), "empty_stage");
+        }
         apply_stage_solution_class(out, McfSolutionClass::Skipped);
         out.message = "empty stage";
-        return finish_stage_solve_result(out, solve_begin);
+        return finish_stage_solve_early(out, solve_begin);
     }
 
     const auto K = static_cast<int>(simple_ids_for_unit.size());
@@ -2515,6 +2645,12 @@ auto solve_simple_mcf_unit(
         const auto effective = effective_bbox_for_simple_commodity(
             global_id, simple_ids_for_unit, commodities, records, bbox_ctx, expand_state);
         if (effective.restricted && !commodity_bbox_connected(graph, commodity, effective)) {
+            if (gurobi_sink != nullptr) {
+                gurobi_sink->write_stub(
+                    gurobi_meta,
+                    "bbox_disconnected",
+                    std::format("commodity={}", commodity.label));
+            }
             apply_stage_solution_class(out, McfSolutionClass::Failed);
             out.message = std::format(
                 "{}: bbox disconnected for commodity {}",
@@ -2525,7 +2661,7 @@ auto solve_simple_mcf_unit(
                 out,
                 unit_c,
                 simple_origin_group_key(records[commodity.record_index]));
-            return finish_stage_solve_result(out, solve_begin);
+            return finish_stage_solve_early(out, solve_begin);
         }
     }
 
@@ -2558,9 +2694,12 @@ auto solve_simple_mcf_unit(
         }
     }
     if (f_vars.empty()) {
+        if (gurobi_sink != nullptr) {
+            gurobi_sink->write_stub(gurobi_meta, "no_feasible_arc_variable_pairs");
+        }
         apply_stage_solution_class(out, McfSolutionClass::Failed);
         out.message = std::format("{}: no feasible arc-variable pairs", stage_name);
-        return finish_stage_solve_result(out, solve_begin);
+        return finish_stage_solve_early(out, solve_begin);
     }
 
     log_mcf_model_graph(stage_name, graph, K, unit_c);
@@ -3016,6 +3155,7 @@ auto solve_simple_mcf_unit(
         }
     }
 
+    const auto cpp_model_build_ms = stage_solve_elapsed_ms(solve_begin);
     const auto solve_res = solve_binary_columns_with_gurobi(
         stage_name,
         col_cost,
@@ -3026,8 +3166,11 @@ auto solve_simple_mcf_unit(
         col_entries,
         warm_values_by_col,
         &row_meta,
-        diag);
+        diag,
+        gurobi_sink,
+        gurobi_meta);
     out.model_status = solve_res.model_status;
+    auto timing = merge_gurobi_stage_timing(cpp_model_build_ms, solve_res.gurobi_timing);
     if (solve_res.solution_class == McfSolutionClass::Failed
         || solve_res.solution_class == McfSolutionClass::TimeLimit) {
         if (warm_start != nullptr && !warm_values_by_col.empty()) {
@@ -3035,6 +3178,26 @@ auto solve_simple_mcf_unit(
                 "{} warm start led to {}; retrying without warm start",
                 stage_name,
                 solution_class_name(solve_res.solution_class));
+            auto first_log = out;
+            apply_stage_solution_class(first_log, solve_res.solution_class);
+            first_log.model_status = solve_res.model_status;
+            first_log.message = solve_res.message;
+            first_log.infeasibility_hints = solve_res.iis_rows;
+            for (const auto& hint : first_log.infeasibility_hints) {
+                if (hint.record_index != kInvalidRecordIndex) {
+                    append_unique(first_log.failed_record_indices, hint.record_index);
+                }
+                if (hint.simple_unit >= 0) {
+                    append_simple_origin_retry_hint(
+                        first_log,
+                        static_cast<std::size_t>(hint.simple_unit),
+                        hint.simple_origin_key);
+                }
+            }
+            first_log = finish_stage_solve_result(first_log, solve_begin, timing);
+            auto retry_meta = gurobi_meta;
+            retry_meta.warm_start = false;
+            retry_meta.retry_kind = McfGurobiRetryKind::NoWarmStart;
             auto retry = solve_simple_mcf_unit(
                 graph,
                 commodities,
@@ -3047,8 +3210,10 @@ auto solve_simple_mcf_unit(
                 node_capacity_override,
                 enable_mcf_obj,
                 nullptr,
-                diag);
-            retry.solve_ms += stage_solve_elapsed_ms(solve_begin);
+                diag,
+                gurobi_sink,
+                retry_meta);
+            retry.solve_ms += first_log.solve_ms;
             return retry;
         }
         apply_stage_solution_class(out, solve_res.solution_class);
@@ -3065,13 +3230,14 @@ auto solve_simple_mcf_unit(
                     hint.simple_origin_key);
             }
         }
-        return finish_stage_solve_result(out, solve_begin);
+        return finish_stage_solve_result(out, solve_begin, timing);
     }
 
     apply_stage_solution_class(out, solve_res.solution_class);
     out.message = "ok";
     out.objective = solve_res.objective;
 
+    const auto extract_begin = std::chrono::steady_clock::now();
     auto f_values = std::Vector<int>(f_vars.size(), 0);
     for (std::size_t j = 0; j < f_vars.size(); ++j) {
         f_values[j] = static_cast<int>(std::lround(solve_res.col_value[j]));
@@ -3093,7 +3259,8 @@ auto solve_simple_mcf_unit(
     }
 
     append_paths_from_f_solution(stage_name, graph, local_com, f_vars, f_values, out);
-    return finish_stage_solve_result(out, solve_begin);
+    timing.extract_path_ms = elapsed_ms_between(extract_begin, std::chrono::steady_clock::now());
+    return finish_stage_solve_result(out, solve_begin, timing);
 }
 
 auto path_to_text(const GlobalGraph& graph, const std::Vector<int>& path) -> std::String {
@@ -3657,7 +3824,9 @@ auto run_bus_mcf_stage_with_bbox_retry(
     const bool disable_bus_mcf,
     const bool enable_pre_routing,
     const GurobiDiagnosticsOptions& diag,
-    McfBBoxContext& bbox_ctx
+    McfBBoxContext& bbox_ctx,
+    McfGurobiLogSink* gurobi_sink,
+    const int sat_tier_attempt
 ) -> BusStageOutcome {
     auto out = BusStageOutcome {};
     if (disable_bus_mcf) {
@@ -3665,6 +3834,9 @@ auto run_bus_mcf_stage_with_bbox_retry(
         out.bus_res.message = "skipped (--disable-bus-mcf)";
         apply_stage_solution_class(out.bus_res, McfSolutionClass::Skipped);
         out.ok = true;
+        if (gurobi_sink != nullptr) {
+            gurobi_sink->write_skipped(McfGurobiLogStage::bus(), "disabled");
+        }
         if (!bus_ids.empty()) {
             debug::info_fmt(
                 "MCF: BusMCF skipped; {} bus commodities are not routed",
@@ -3713,7 +3885,23 @@ auto run_bus_mcf_stage_with_bbox_retry(
                 std::chrono::duration_cast<std::chrono::milliseconds>(bus_warm_t1 - bus_warm_t0).count());
         }
 
-        out.bus_res = solve_bus_mcf(graph, commodities, bus_ids, bbox_ctx, bus_warm_start_ptr, diag);
+        McfGurobiSolveMeta bus_meta {
+            McfGurobiLogStage::bus(),
+            static_cast<int>(bbox_ctx.max_tier),
+            sat_tier_attempt,
+            static_cast<int>(attempt),
+            bus_warm_start_ptr != nullptr,
+            McfGurobiRetryKind::None,
+        };
+        out.bus_res = solve_bus_mcf(
+            graph,
+            commodities,
+            bus_ids,
+            bbox_ctx,
+            bus_warm_start_ptr,
+            diag,
+            gurobi_sink,
+            bus_meta);
         bus_solve_ms_total += out.bus_res.solve_ms;
         out.bus_res.solve_ms = bus_solve_ms_total;
         if (out.bus_res.ok) {
@@ -3773,13 +3961,18 @@ auto run_simple_mcf_unit_with_bbox_retry(
     const std::Vector<std::Vector<int>>& outgoing_arcs,
     McfResourceUsageSink* resource_sink,
     const std::map<std::pair<int, int>, std::size_t>* arc_index,
-    const GurobiDiagnosticsOptions& diag
+    const GurobiDiagnosticsOptions& diag,
+    McfGurobiLogSink* gurobi_sink,
+    const int sat_tier_attempt
 ) -> UnitStageOutcome {
     auto out = UnitStageOutcome {};
     if (simple_ids_for_unit.empty()) {
         out.simple_res.stage_name = std::format("SimpleMCF_unit{}", unit_c);
         out.simple_res.message = "empty stage";
         apply_stage_solution_class(out.simple_res, McfSolutionClass::Skipped);
+        if (gurobi_sink != nullptr) {
+            gurobi_sink->write_skipped(McfGurobiLogStage::simple_unit(unit_c), "empty_stage");
+        }
         out.ok = true;
         return out;
     }
@@ -3814,6 +4007,14 @@ auto run_simple_mcf_unit_with_bbox_retry(
             }
         }
 
+        McfGurobiSolveMeta unit_meta {
+            McfGurobiLogStage::simple_unit(unit_c),
+            static_cast<int>(bbox_ctx.max_tier),
+            sat_tier_attempt,
+            static_cast<int>(attempt),
+            unit_warm_ptr != nullptr,
+            McfGurobiRetryKind::None,
+        };
         out.simple_res = solve_simple_mcf_unit(
             graph,
             commodities,
@@ -3826,7 +4027,9 @@ auto run_simple_mcf_unit_with_bbox_retry(
             node_cap,
             enable_mcf_obj,
             unit_warm_ptr,
-            diag);
+            diag,
+            gurobi_sink,
+            unit_meta);
         unit_solve_ms_total += out.simple_res.solve_ms;
         out.simple_res.solve_ms = unit_solve_ms_total;
         if (out.simple_res.ok) {
@@ -3945,11 +4148,13 @@ auto run_mcf_global_routing_cob_units(
     const bool defer_interposer_suspend,
     const bool disable_bus_mcf,
     const bool show_resource_usage,
-    const GurobiDiagnosticsOptions& diag
+    const GurobiDiagnosticsOptions& diag,
+    const int sat_tier_attempt
 ) -> CobMcfFullResult {
 
     const auto mcf_start = std::chrono::steady_clock::now();
     const auto peak_before = get_peak_rss_mb();
+    McfGurobiLogSink gurobi_sink {std::filesystem::path(diag.log_dir)};
     if (disable_bus_mcf) {
         debug::info_fmt(
             "MCF: SimpleMCF only (--disable-bus-mcf); SimpleMCF objective={}",
@@ -4022,7 +4227,9 @@ auto run_mcf_global_routing_cob_units(
         disable_bus_mcf,
         enable_pre_routing,
         diag,
-        bbox_ctx);
+        bbox_ctx,
+        &gurobi_sink,
+        sat_tier_attempt);
     auto bus_res = bus_outcome.bus_res;
     out.summary.bus_mcf_solve_ms = bus_res.solve_ms;
     debug::info_fmt("timing phase=mcf_bus_warm_start ms={}", bus_outcome.warm_start_ms);
@@ -4053,6 +4260,7 @@ auto run_mcf_global_routing_cob_units(
             if (simple_ids_by_unit[u].empty()) {
                 apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
                 simple_results[u].message = "empty stage";
+                gurobi_sink.write_skipped(McfGurobiLogStage::simple_unit(u), "empty_stage");
                 out.has_simple_commodities[u] = false;
                 out.simple_mcf_ok[u] = true;
                 continue;
@@ -4061,6 +4269,9 @@ auto run_mcf_global_routing_cob_units(
             out.has_simple_commodities[u] = true;
             apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
             simple_results[u].message = "skipped after BusMCF bbox expand exhausted";
+            gurobi_sink.write_skipped(
+                McfGurobiLogStage::simple_unit(u),
+                "skipped_after_bus_bbox_exhausted");
             out.simple_mcf_ok[u] = false;
             all_simple_ok = false;
         }
@@ -4087,6 +4298,8 @@ auto run_mcf_global_routing_cob_units(
                 if (simple_ids_by_unit[u].empty()) {
                     apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
                     simple_results[u].message = "empty stage";
+                    gurobi_sink.write_skipped(McfGurobiLogStage::simple_unit(u), "empty_stage");
+                    log_skipped_simple_unit_stage(simple_results[u], u);
                     if (resource_sink_ptr != nullptr) {
                         resource_sink_ptr->write_empty(u);
                     }
@@ -4106,12 +4319,14 @@ auto run_mcf_global_routing_cob_units(
                      &bus_res,
                      &outgoing_arcs,
                      &arc_index,
+                     &gurobi_sink,
                      u,
                      edge_cap,
                      node_cap,
                      enable_pre_routing,
                      enable_mcf_obj,
                      resource_sink_ptr,
+                     sat_tier_attempt,
                      diag]() {
                         return run_simple_mcf_unit_with_bbox_retry(
                             graph,
@@ -4129,7 +4344,9 @@ auto run_mcf_global_routing_cob_units(
                             outgoing_arcs,
                             resource_sink_ptr,
                             resource_sink_ptr != nullptr ? &arc_index : nullptr,
-                            diag);
+                            diag,
+                            &gurobi_sink,
+                            sat_tier_attempt);
                     });
             }
             for (std::size_t u = 0; u < 16; ++u) {
@@ -4156,6 +4373,8 @@ auto run_mcf_global_routing_cob_units(
                 if (simple_ids_by_unit[u].empty()) {
                     apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
                     simple_results[u].message = "empty stage";
+                    gurobi_sink.write_skipped(McfGurobiLogStage::simple_unit(u), "empty_stage");
+                    log_skipped_simple_unit_stage(simple_results[u], u);
                     if (resource_sink_ptr != nullptr) {
                         resource_sink_ptr->write_empty(u);
                     }
@@ -4165,6 +4384,10 @@ auto run_mcf_global_routing_cob_units(
                     has_simple_unit[u] = true;
                     apply_stage_solution_class(simple_results[u], McfSolutionClass::Skipped);
                     simple_results[u].message = "skipped after prior unit bbox expand exhausted";
+                    gurobi_sink.write_skipped(
+                        McfGurobiLogStage::simple_unit(u),
+                        "skipped_after_prior_unit_bbox_exhausted");
+                    log_skipped_simple_unit_stage(simple_results[u], u);
                     all_simple_ok = false;
                     if (resource_sink_ptr != nullptr) {
                         resource_sink_ptr->write_empty(u);
@@ -4190,7 +4413,9 @@ auto run_mcf_global_routing_cob_units(
                     outgoing_arcs,
                     resource_sink_ptr,
                     resource_sink_ptr != nullptr ? &arc_index : nullptr,
-                    diag);
+                    diag,
+                    &gurobi_sink,
+                    sat_tier_attempt);
                 simple_results[u] = unit_outcome.simple_res;
                 debug::info_fmt(
                     "SimpleMCF unit {}: ok={} solution_class={} objective={:.0f} paths={} solve_ms={}",

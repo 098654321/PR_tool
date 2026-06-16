@@ -106,7 +106,8 @@ auto run_mcf_global_routing_cob_units(
     bool defer_interposer_suspend = false,
     bool disable_bus_mcf = false,
     bool show_resource_usage = false,
-    const GurobiDiagnosticsOptions& diag = {}
+    const GurobiDiagnosticsOptions& diag = {},
+    int sat_tier_attempt = 0
 ) -> CobMcfFullResult;
 
 } // namespace PR_tool

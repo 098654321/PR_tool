@@ -104,13 +104,21 @@ xmake build test_ILP
 - `--disable-01-mcf`：跳过顶层 `TracksToBumpsNet`，即不生成 Pnet/Nnet records；SyncNet 内部拆分不受影响。
 - `--disable-multipin-io`：跳过顶层 `TrackToBumpsNet`，即不生成对应多扇出 IO split records。
 - `--disable-2pin-io`：跳过顶层 `TrackToBumpNet` 与 `BumpToTrackNet`；SyncNet 内部 btt/ttb 不受影响。
-- `--sat-log` / `--gurobi-log`：分别输出 SAT 与 MCF Gurobi 日志。
+- `--sat-log`：输出 SAT 求解日志。
+- MCF Gurobi 日志（第十版修改0）：`--enable-mcf-routing` 时自动写入 `gurobi-log/`：`bus.log`、`simple-unit{N}.log`（0–15）、`prm/{stage}_solve{K}.prm`；每次 Gurobi 调用追加一段（含 `timestamp`、`solve_id`、`tier`、`sat_tier_attempt`、`bbox_attempt`、`warm_start`、`retry_kind`）；失败尝试保留；未进 Gurobi 的失败写 stub；Skipped/empty 写 skipped 段。每次 test_ILP 运行清空 `gurobi-log/`。`modelinfo.log` 仍为矩阵诊断（rows/cols/nnz/heavy rows），与上述文件分工不变。
 
 MCF 计时日志：
 
-- `timing phase=mcf_bus_solve ms=...`：单轮 BusMCF 求解时间。
-- `timing phase=simple_mcf_unitN_solve ms=...`：单轮 SimpleMCF unit N 求解时间。
+- `timing phase=mcf_bus_solve ms=...`：单轮 BusMCF 求解时间（累计 `solve_ms`，不含 breakdown）。
+- `timing phase=simple_mcf_unitN_solve ms=...`：单轮 SimpleMCF unit N 求解时间（累计 `solve_ms`）。
 - `timing phase=mcf_bus_solve_total ms=...` 与 `simple_mcf_unitN_solve_total`：SAT+MCF retry 全部尝试轮的累计时间。
+- BusMCF / SimpleMCF **每次 stage 尝试**结束日志含 `model_status=`、`solution_class=` 及耗时细分（第十版修改1）；warm-start 重试、bbox expand 每轮各打一行。汇总行（`timing phase=*`、`SimpleMCF unit N: ok=...`）仍只有 `solve_ms`。
+- `solve_ms`：该次 stage 调用的 wall-clock 总耗时，为汇总权威值；与下列五段之和可能差几毫秒。
+- `model_build_ms`：C++ 约束/变量组装 + Gurobi `addVar`/`addConstr`/`model.update` + MIP start 赋值。
+- `matrix_diag_ms`：约束矩阵稀疏度诊断（写入 `modelinfo.log`）。
+- `gurobi_optimize_ms`：Gurobi 日志配置、`optimize()`、读取 incumbent 解（`ObjVal`/`X`）。
+- `compute_iis_ms`：不可行时 `computeIIS()` 与 IIS 行号解析（否则为 0）。
+- `extract_path_ms`：解提取（`used_edges`/`used_nodes` + `append_paths_from_f_solution`）；失败/早退/skipped 为 0。
 - BusMCF / SimpleMCF 阶段结束日志含 `model_status=` 与 `solution_class=`（`Optimal`/`Suboptimal`/`TimeLimit`/`Failed`/`Skipped`）；`ok=true` 当且仅当 class 为 `Optimal`、`Suboptimal` 或 `Skipped`。`Suboptimal` 与 `Optimal` 均提取 Gurobi 解。warm start 导致 `Suboptimal` 直接接受不重试；warm start 导致 `Failed`/`TimeLimit` 时无 warm start 重试 Gurobi 一次。
 
 MCF 失败重试（第九版修改4，内层 bbox 扩边）：
