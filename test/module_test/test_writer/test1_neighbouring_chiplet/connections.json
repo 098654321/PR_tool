@@ -1,5 +1,7 @@
 {
     "-1": [
+      ["muyan_0.interrupt_0", "muyan_1.interrupt_0"],
+      ["muyan_2.interrupt_1", "muyan_3.interrupt_1"],
       ["muyan_4.interrupt_0", "muyan_5.interrupt_0"],
       ["muyan_6.interrupt_0", "muyan_7.interrupt_0"],
       ["muyan_8.interrupt_0", "muyan_9.interrupt_0"],

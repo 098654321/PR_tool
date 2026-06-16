@@ -54,24 +54,15 @@ TXT 表示
 
 坐标变换（TXT → JSON，parse_txt_line）：
 
-  tob_row = (COB_ARRAY_HEIGHT - x) / 2      // 整数除法
-  tob_col = y / 3                           // 整数除法
+  tob_row = (COB_ARRAY_HEIGHT - x) / 2      // 向下取整的整数除法
+  tob_col = y / 3                           // 向下取整的整数除法
 
 坐标变换（JSON → TXT，json2txt）：
 
-  x = COB_ARRAY_HEIGHT - 2 * tob_row
+  x = COB_ARRAY_HEIGHT - 2 * tob_row - 1    // 注意这里还要再-1
   y = 3 * tob_col
   bump_x = bump_index % 8
   bump_y = bump_index / 8
-
-注意：TXT 的 x 存在冗余（非一一对应）
-  由于整数除法，相邻的 x 可映射到同一 tob_row，例如：
-    x = 4  →  tob_row = (9 - 4) / 2 = 2
-    x = 5  →  tob_row = (9 - 5) / 2 = 2
-  反向转换 json2txt 固定输出 x = COB_ARRAY_HEIGHT - 2 * tob_row（上例为 5），
-  而原始 TXT 可能使用 x = 4。两者语义等价，数值不一定逐字相同。
-
-列坐标 y 与 tob_col 的变换在 y 为 3 的倍数时是精确互逆的。
 
 
 四、外部端口（bump_x = -3）
@@ -129,7 +120,7 @@ JSON 表示：
 
   JSON 坐标类型              TXT 5 元组字段              关键变换
   ─────────────────────────────────────────────────────────────────
-  TOBCoord.row, .col         x, y, bump_x, bump_y       x = 9 - 2·row
+  TOBCoord.row, .col         x, y, bump_x, bump_y       x = 9 - 2·row - 1
                                                          y = 3·col
                                                          index = bump_x + 8·bump_y
 
@@ -146,12 +137,9 @@ JSON 表示：
 七、实践说明
 ------------
 
-1. 语义等价 ≠ 字面相同
-   连接关系（11 元组集合）可完全一致，但 TXT 的 x 可能有 ±1 冗余。
-
-2. JSON 贴近运行时模型
+1. JSON 贴近运行时模型
    Reader 按 pin 名查 topdie_insts / external_ports / pin_map，
    直接使用 TOBCoord / TrackCoord，不再解析 5 元组。
 
-3. json2txt 是编码转换
+2. json2txt 是编码转换
    将 JSON 的 TOBCoord / TrackCoord / bump_index 转回旧 TXT 5 元组格式。

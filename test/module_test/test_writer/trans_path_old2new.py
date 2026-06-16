@@ -61,11 +61,22 @@ def format_track_coord(row: int, col: int, dir_value: int, index: int) -> str:
 
 
 def convert_chip_bump(coord: dict[str, int]) -> str:
-    tob_row = (COB_ARRAY_HEIGHT - coord["TOB_x"]) // 2
+    tob_row = (COB_ARRAY_HEIGHT - coord["TOB_x"] - 1) // 2
     tob_col = coord["TOB_y"] // 3
     row = 1 + 2 * tob_row
     col = 3 * tob_col
     index = coord["bumpgrid_x"] + 8 * coord["bumpgrid_y"]
+    # #region agent log
+    import json as _json, time as _time
+    _log_path = Path(__file__).resolve().parents[3] / ".cursor" / "debug-8edc9c.log"
+    with _log_path.open("a", encoding="utf-8") as _lf:
+        _lf.write(_json.dumps({"sessionId": "8edc9c", "runId": "trans_path", "hypothesisId": "A",
+            "location": "trans_path_old2new.py:convert_chip_bump",
+            "message": "chip bump coord conversion",
+            "data": {"TOB_x": coord["TOB_x"], "TOB_y": coord["TOB_y"],
+                     "tob_row": tob_row, "tob_col": tob_col, "row": row, "col": col, "index": index},
+            "timestamp": int(_time.time() * 1000)}) + "\n")
+    # #endregion
     return format_bump_coord(row, col, index)
 
 
