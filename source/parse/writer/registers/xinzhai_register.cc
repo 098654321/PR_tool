@@ -22,46 +22,44 @@ namespace PR_tool::parse
     }
 
     auto XinzhaiRegister::fetch_padctrl_right(std::Bits<128>& bits) -> void {
-        this->fetch_padctrl_template(bits, 2, 11, hardware::COBDirection::Up);
+        // internal [2,11].up_sel -> PR cob_6_11 right
+        this->fetch_padctrl_template(bits, 6, 11, hardware::COBDirection::Right);
     }
 
     auto XinzhaiRegister::fetch_padctrl_left(std::Bits<128>& bits) -> void {
-        this->fetch_padctrl_template(bits, 8, 2, hardware::COBDirection::Right);
+        // internal [8,2].right_sel -> PR cob_0_2 down
+        this->fetch_padctrl_template(bits, 0, 2, hardware::COBDirection::Down);
     }
 
     auto XinzhaiRegister::fetch_padctrl_up(std::Bits<128>& bits) -> void {
-        this->fetch_padctrl_template(bits, 0, 1, hardware::COBDirection::Left);
+        // internal [0,1].left_sel -> PR cob_8_1 up
+        this->fetch_padctrl_template(bits, 8, 1, hardware::COBDirection::Up);
     }
 
     auto XinzhaiRegister::fetch_padctrl_down(std::Bits<128>& bits) -> void {
-        this->fetch_padctrl_template(bits, 8, 10, hardware::COBDirection::Right);
+        // internal [8,10].right_sel -> PR cob_0_10 down
+        this->fetch_padctrl_template(bits, 0, 10, hardware::COBDirection::Down);
     }
 
     auto XinzhaiRegister::fetch_SiPpadctrl_right(std::Bits<128>& bits) -> void {
-        this->fetch_SiPpadctrl_template(bits, 0, 8, hardware::COBDirection::Left);
+        // internal [0,8].left_sel -> PR cob_8_8 up
+        this->fetch_SiPpadctrl_template(bits, 8, 8, hardware::COBDirection::Up);
     }
 
     auto XinzhaiRegister::fetch_SiPpadctrl_left(std::Bits<128>& bits) -> void {
-        this->fetch_SiPpadctrl_template(bits, 4, 0, hardware::COBDirection::Down);
+        // internal [4,0].down_sel -> PR cob_4_0 left
+        this->fetch_SiPpadctrl_template(bits, 4, 0, hardware::COBDirection::Left);
     }
 
     auto XinzhaiRegister::fetch_SiPpadctrl_up(std::Bits<128>& bits) -> void {
-        this->fetch_SiPpadctrl_template(bits, 0, 5, hardware::COBDirection::Left);
-        auto pcob = _pinterposer->get_cob(0, 4);
-        if (!pcob.has_value())
-        {
-            throw std::logic_error("cob at (0, 4) does not exist");
-        }
-        auto cob = pcob.value();
-
-        bits[0] = cob->get_sel_resgiter_value(hardware::COBDirection::Left, 0) == hardware::COBSignalDirection::TrackToCOB ? 1 : 0;
-        bits[8] = cob->get_sel_resgiter_value(hardware::COBDirection::Left, 8) == hardware::COBSignalDirection::TrackToCOB ? 1 : 0;
-        bits[16] = cob->get_sel_resgiter_value(hardware::COBDirection::Left, 16) == hardware::COBSignalDirection::TrackToCOB ? 1 : 0;
-        bits[24] = cob->get_sel_resgiter_value(hardware::COBDirection::Left, 24) == hardware::COBSignalDirection::TrackToCOB ? 1 : 0;
+        // internal [0,5].left_sel base; golden also overrides [0,4] at 0/8/16/24 but
+        // only port indices in cob_ext_port_index affect IE field output.
+        this->fetch_SiPpadctrl_template(bits, 8, 5, hardware::COBDirection::Up);
     }
 
     auto XinzhaiRegister::fetch_SiPpadctrl_down(std::Bits<128>& bits) -> void {
-        this->fetch_SiPpadctrl_template(bits, 8, 6, hardware::COBDirection::Right);
+        // internal [8,6].right_sel -> PR cob_0_6 down
+        this->fetch_SiPpadctrl_template(bits, 0, 6, hardware::COBDirection::Down);
     }
 
     auto XinzhaiRegister::fetch_padctrl_template(std::Bits<128>& bits, std::i64 row, std::i64 col, hardware::COBDirection dir) -> void

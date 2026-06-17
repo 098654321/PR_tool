@@ -1,0 +1,52 @@
+{
+    "5": [
+        [
+            "xinzhai_spi_s_sck_1",
+            "muyan_0.spi_s_sck_1"
+        ],
+        [
+            "xinzhai_spi_s_csn_1",
+            "muyan_0.spi_s_csn_1"
+        ],
+        [
+            "xinzhai_spi_s_dout_1",
+            "muyan_0.spi_s_din_1"
+        ],
+        [
+            "muyan_0.spi_s_dout_1",
+            "xinzhai_spi_s_din_1"
+        ]
+    ],
+    "1": [
+        [
+            "xinzhai_jtag_trstn",
+            "muyan_0.jtag_trstn"
+        ],
+        [
+            "xinzhai_jtag_tdi",
+            "muyan_0.jtag_tdi"
+        ],
+        [
+            "xinzhai_jtag_tck",
+            "muyan_0.jtag_tck"
+        ],
+        [
+            "xinzhai_jtag_tms",
+            "muyan_0.jtag_tms"
+        ],
+        [
+            "muyan_0.jtag_tdo",
+            "xinzhai_jtag_tdo"
+        ]
+    ],
+    "3": [
+        [
+            "xinzhai_uart_txd",
+            "muyan_0.uart_rxd"
+        ],
+        [
+            "muyan_0.uart_txd",
+            "xinzhai_uart_rxd"
+        ]
+    ]
+}

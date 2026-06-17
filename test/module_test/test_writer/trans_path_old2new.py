@@ -46,18 +46,96 @@ def classify_endpoint(coord: dict[str, int]) -> EndpointKind:
     return "unknown"
 
 
-def old_dir_to_new(dir_value: int) -> str:
-    return "Vertical" if dir_value == 0 else "Horizontal"
+# Kiwi COB side constants (printControlBit.h)
+KIWI_UP, KIWI_DOWN, KIWI_LEFT, KIWI_RIGHT = 0, 1, 2, 3
+
+
+def kiwi_cob_index(cur: dict[str, int], father: dict[str, int]) -> tuple[int, int]:
+    """Replicate printControlBit.cpp cobIndex. cur=downstream, father=upstream."""
+    candidates: list[list[tuple[int, int]]] = []
+    for track in (cur, father):
+        cx, cy, d = track["TOB_x"], track["TOB_y"], track["dir"]
+        opts: list[tuple[int, int]] = []
+        for _ in range(2):
+            opts.append((cx, cy))
+            if d and cy > 0:
+                cy -= 1
+            elif cx > 0:
+                cx -= 1
+        candidates.append(opts)
+    for a in candidates[0]:
+        for b in candidates[1]:
+            if a == b:
+                return b
+    raise ValueError(
+        f"cannot find shared COB for tracks {cur} and {father}"
+    )
+
+
+def kiwi_cob_side(channel_dir: int, cx: int, cy: int, cob_x: int, cob_y: int) -> int:
+    """Replicate printControlBit.cpp cobDirection (channel_dir: 0=vert, 1=horiz)."""
+    if channel_dir:
+        return KIWI_DOWN if cy == cob_y else KIWI_UP
+    return KIWI_LEFT if cx == cob_x else KIWI_RIGHT
+
+
+def rotate_kiwi_side_cw(side: int) -> int:
+    """90° clockwise rotation of COB side (routing.cpp right-rotate comment)."""
+    return {
+        KIWI_UP: KIWI_RIGHT,
+        KIWI_RIGHT: KIWI_DOWN,
+        KIWI_DOWN: KIWI_LEFT,
+        KIWI_LEFT: KIWI_UP,
+    }[side]
+
+
+def pr_track_from_cob_side(
+    cob_x: int, cob_y: int, kiwi_side: int, index: int
+) -> tuple[int, int, str, int]:
+    """Map kiwi COB + side to PR_TOOL TrackCoord (row, col, dir, index)."""
+    pr_row = COB_ARRAY_HEIGHT - 1 - cob_x
+    pr_col = cob_y
+    pr_side = rotate_kiwi_side_cw(kiwi_side)
+    if pr_side == KIWI_DOWN:
+        return pr_row, pr_col, "Vertical", index
+    if pr_side == KIWI_UP:
+        return pr_row + 1, pr_col, "Vertical", index
+    if pr_side == KIWI_LEFT:
+        return pr_row, pr_col, "Horizontal", index
+    return pr_row, pr_col + 1, "Horizontal", index
+
+
+def format_pr_track(row: int, col: int, dir_name: str, index: int) -> str:
+    return f"{{ row: {row}, col: {col}, dir: {dir_name}, index: {index} }}"
+
+
+def convert_track_at_cob(track: dict[str, int], cob_x: int, cob_y: int) -> str:
+    side = kiwi_cob_side(track["dir"], track["TOB_x"], track["TOB_y"], cob_x, cob_y)
+    row, col, dir_name, index = pr_track_from_cob_side(cob_x, cob_y, side, track["index"])
+    return format_pr_track(row, col, dir_name, index)
+
+
+def convert_path_tracks(tracks: list[dict[str, int]]) -> list[str]:
+    """Convert a forward-ordered track list using pairwise cobIndex."""
+    if not tracks:
+        return []
+    lines: list[str] = []
+    for i, track in enumerate(tracks):
+        if i + 1 < len(tracks):
+            cob_x, cob_y = kiwi_cob_index(tracks[i + 1], track)
+        else:
+            cob_x, cob_y = kiwi_cob_index(track, tracks[i - 1])
+        lines.append(convert_track_at_cob(track, cob_x, cob_y) + "\n")
+    return lines
+
+
+def convert_track(coord: dict[str, int]) -> str:
+    """Fallback for isolated track lines: assume COB at channel position."""
+    return convert_track_at_cob(coord, coord["TOB_x"], coord["TOB_y"])
 
 
 def format_bump_coord(row: int, col: int, index: int) -> str:
     return f"{{ row: {row}, col: {col}, index: {index} }}"
-
-
-def format_track_coord(row: int, col: int, dir_value: int, index: int) -> str:
-    return (
-        f"{{ row: {row}, col: {col}, dir: {old_dir_to_new(dir_value)}, index: {index} }}"
-    )
 
 
 def convert_chip_bump(coord: dict[str, int]) -> str:
@@ -66,34 +144,19 @@ def convert_chip_bump(coord: dict[str, int]) -> str:
     row = 1 + 2 * tob_row
     col = 3 * tob_col
     index = coord["bumpgrid_x"] + 8 * coord["bumpgrid_y"]
-    # #region agent log
-    import json as _json, time as _time
-    _log_path = Path(__file__).resolve().parents[3] / ".cursor" / "debug-8edc9c.log"
-    with _log_path.open("a", encoding="utf-8") as _lf:
-        _lf.write(_json.dumps({"sessionId": "8edc9c", "runId": "trans_path", "hypothesisId": "A",
-            "location": "trans_path_old2new.py:convert_chip_bump",
-            "message": "chip bump coord conversion",
-            "data": {"TOB_x": coord["TOB_x"], "TOB_y": coord["TOB_y"],
-                     "tob_row": tob_row, "tob_col": tob_col, "row": row, "col": col, "index": index},
-            "timestamp": int(_time.time() * 1000)}) + "\n")
-    # #endregion
     return format_bump_coord(row, col, index)
-
-
-def convert_track(coord: dict[str, int]) -> str:
-    row = COB_ARRAY_HEIGHT - coord["TOB_x"]
-    col = coord["TOB_y"]
-    return format_track_coord(row, col, coord["dir"], coord["index"])
 
 
 def convert_extio(coord: dict[str, int]) -> str:
     slot = coord["bumpgrid_y"]
     if slot < 0 or slot >= len(EXTERN_INDICES):
         raise ValueError(f"invalid external IO slot: {slot}")
+    # External port TXT→JSON: row = COB_ARRAY_HEIGHT - x (section 4 of coord doc)
     row = COB_ARRAY_HEIGHT - coord["TOB_x"]
     col = coord["TOB_y"]
     index = EXTERN_INDICES[slot]
-    return format_track_coord(row, col, coord["dir"], index)
+    dir_name = "Vertical" if coord["dir"] == 0 else "Horizontal"
+    return format_pr_track(row, col, dir_name, index)
 
 
 def convert_metadata_coord_line(line: str) -> str:
@@ -194,8 +257,7 @@ def convert_path_block(lines: list[str]) -> list[str]:
     if begin_coord is not None:
         output.append(convert_endpoint_line("Begin_bump:", begin_coord, track_coords, True))
 
-    for track in track_coords:
-        output.append(convert_track(track) + "\n")
+    output.extend(convert_path_tracks(track_coords))
 
     if failed:
         output.append("Routing failed for this sink\n")

@@ -2,9 +2,40 @@
 #include "./writer.hh"
 #include "debug/debug.hh"
 #include <circuit/basedie.hh>
+#include <hardware/cob/cob.hh>
 #include <hardware/interposer.hh>
 
 namespace PR_tool::parse {
+
+    namespace {
+
+    // Golden printControlBit.cpp::resetintr01 — default TX ext-port COB sel before output.
+    auto apply_ext_io_sel_defaults(hardware::Interposer* interposer) -> void {
+        constexpr std::usize kTxPortIndices[] = {71, 78, 85, 92};
+        struct CobDefault {
+            std::i64 row;
+            std::i64 col;
+            hardware::COBDirection dir;
+        };
+        constexpr CobDefault kDefaults[] = {
+            {6, 11, hardware::COBDirection::Right},
+            {8, 1, hardware::COBDirection::Up},
+            {0, 10, hardware::COBDirection::Down},
+            {0, 2, hardware::COBDirection::Down},
+        };
+
+        for (const auto& def : kDefaults) {
+            auto cob = interposer->get_cob(hardware::COBCoord{def.row, def.col});
+            if (!cob.has_value()) {
+                continue;
+            }
+            for (const auto port_index : kTxPortIndices) {
+                cob.value()->sel_register(def.dir, port_index)->set_cob_to_track();
+            }
+        }
+    }
+
+    }  // namespace
 
     auto output_from_routing_results(hardware::Interposer* interposer, const std::FilePath& output_path, circuit::BaseDie* basedie, int mode, bool try_all_modes) -> void {
         if (!try_all_modes) {
@@ -54,6 +85,7 @@ namespace PR_tool::parse {
             //     net->pathpackage().reset_all();
             // }
         }
+        apply_ext_io_sel_defaults(interposer);
     }
 
 }

@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
-import re
 import sys
 from pathlib import Path
 
@@ -15,8 +13,6 @@ GOLDEN_TO_SPLIT = {
     "topleft_controlbit.txt": "topleft_REG2.txt",
     "topright_controlbit.txt": "topright_REG3.txt",
 }
-
-LOG_PATH = Path(__file__).resolve().parents[3] / ".cursor" / "debug-8edc9c.log"
 
 
 def normalize_hex(value: str) -> str:
@@ -57,22 +53,6 @@ def load_split(path: Path) -> dict[str, str]:
     return regs
 
 
-def agent_log(hypothesis_id: str, message: str, data: dict) -> None:
-    # #region agent log
-    payload = {
-        "sessionId": "8edc9c",
-        "runId": "compare",
-        "hypothesisId": hypothesis_id,
-        "location": "compare_controlbits.py",
-        "message": message,
-        "data": data,
-        "timestamp": int(__import__("time").time() * 1000),
-    }
-    with LOG_PATH.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    # #endregion
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compare golden and split controlbit files.")
     parser.add_argument("--golden-dir", required=True, type=Path)
@@ -80,7 +60,6 @@ def main() -> int:
     args = parser.parse_args()
 
     total_diff = 0
-    first_diff = None
 
     for golden_name, split_name in GOLDEN_TO_SPLIT.items():
         golden_path = args.golden_dir / golden_name
@@ -108,23 +87,9 @@ def main() -> int:
             elif g != s:
                 print(f"[DIFF] {name}: golden={g} split={s}")
                 file_diff += 1
-                if first_diff is None:
-                    first_diff = {
-                        "reg_name": name,
-                        "golden": g,
-                        "split": s,
-                        "golden_file": golden_name,
-                        "split_file": split_name,
-                    }
 
         print(f"{golden_name} vs {split_name}: {file_diff} difference(s)")
         total_diff += file_diff
-
-    agent_log(
-        "COMPARE",
-        "comparison finished",
-        {"total_diff": total_diff, "first_diff": first_diff},
-    )
 
     if total_diff == 0:
         print("OK: all register values match.")

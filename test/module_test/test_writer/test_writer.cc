@@ -4,9 +4,11 @@
 #include <circuit/net/net.hh>
 #include <circuit/net/types/bbnet.hh>
 #include <circuit/net/types/bbsnet.hh>
+#include <circuit/net/types/btnet.hh>
+#include <circuit/net/types/tbnet.hh>
+#include <circuit/net/types/syncnet.hh>
 #include <circuit/path/pathpackage.hh>
 #include <debug/debug.hh>
-#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <hardware/bump/bumpcoord.hh>
@@ -23,32 +25,16 @@ using namespace PR_tool;
 
 namespace {
 
-constexpr auto kLogPath =
-    "/Users/jiaheng/FDU_files/Tao_group/PR_tool/PR_tool/.cursor/debug-8edc9c.log";
-
-// #region agent log
-auto agent_log(const char* hypothesis_id, const char* location, const char* message,
-               const std::String& data_json) -> void {
-    std::ofstream log{kLogPath, std::ios::app};
-    if (!log.is_open()) {
-        return;
-    }
-    auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(
-                  std::chrono::system_clock::now().time_since_epoch())
-                  .count();
-    log << std::format(
-        R"({{"sessionId":"8edc9c","runId":"test_writer","hypothesisId":"{}","location":"{}","message":"{}","data":{},"timestamp":{}}})",
-        hypothesis_id, location, message, data_json, ts)
-        << '\n';
-}
-// #endregion
-
 struct ParsedPathBlock {
     int net_index {-1};
     std::Option<hardware::BumpCoord> source_bump {};
+    std::Option<hardware::TrackCoord> source_track {};
     std::Vector<hardware::BumpCoord> sink_bumps {};
+    std::Vector<hardware::TrackCoord> sink_tracks {};
     std::Option<hardware::BumpCoord> begin_bump {};
+    std::Option<hardware::TrackCoord> begin_track {};
     std::Option<hardware::BumpCoord> end_bump {};
+    std::Option<hardware::TrackCoord> end_track {};
     std::Vector<hardware::TrackCoord> tracks {};
 };
 
@@ -121,19 +107,35 @@ auto parse_path_file(const std::FilePath& path) -> std::Vector<ParsedPathBlock> 
             continue;
         }
         if (line.find("Source:") != std::String::npos) {
-            current.source_bump = parse_bump_coord(line);
+            if (is_track_line(line)) {
+                current.source_track = parse_track_coord(line);
+            } else {
+                current.source_bump = parse_bump_coord(line);
+            }
             continue;
         }
         if (line.find("Sink") != std::String::npos && line.find('{') != std::String::npos) {
-            current.sink_bumps.emplace_back(parse_bump_coord(line));
+            if (is_track_line(line)) {
+                current.sink_tracks.emplace_back(parse_track_coord(line));
+            } else {
+                current.sink_bumps.emplace_back(parse_bump_coord(line));
+            }
             continue;
         }
         if (line.find("Begin_bump:") != std::String::npos) {
             current.begin_bump = parse_bump_coord(line);
             continue;
         }
+        if (line.find("Begin_track:") != std::String::npos) {
+            current.begin_track = parse_track_coord(line);
+            continue;
+        }
         if (line.find("End_bump:") != std::String::npos) {
             current.end_bump = parse_bump_coord(line);
+            continue;
+        }
+        if (line.find("End_track:") != std::String::npos) {
+            current.end_track = parse_track_coord(line);
             continue;
         }
         if (line.find('{') != std::String::npos) {
@@ -214,21 +216,6 @@ auto build_history_package(hardware::Interposer* interposer, const ParsedPathBlo
             connector_info =
                 find_cob_info(interposer, track_ptrs[i], track_ptrs[i + 1]);
             if (!connector_info.has_value()) {
-                // #region agent log
-                std::String adj_json = "[";
-                bool first = true;
-                for (auto& [adj_track, _connector] : interposer->adjacent_tracks(track_ptrs[i])) {
-                    if (!first) adj_json += ",";
-                    first = false;
-                    adj_json += std::format(R"("{}")", adj_track->coord().to_string());
-                }
-                adj_json += "]";
-                agent_log("E", "test_writer.cc:cob", "missing COB connector",
-                          std::format(
-                              R"({{"net_index":{},"from":"{}","to":"{}","adjacent":{}}})",
-                              block.net_index, track_ptrs[i]->coord().to_string(),
-                              track_ptrs[i + 1]->coord().to_string(), adj_json));
-                // #endregion
                 throw std::runtime_error(std::format(
                     "missing COB connector between {} and {}",
                     track_ptrs[i]->coord().to_string(), track_ptrs[i + 1]->coord().to_string()));
@@ -270,33 +257,71 @@ auto build_history_package(hardware::Interposer* interposer, const ParsedPathBlo
     return history;
 }
 
-auto net_endpoint_bumps(circuit::Net* net)
-    -> std::Pair<hardware::BumpCoord, std::Vector<hardware::BumpCoord>> {
-    if (auto* bb = dynamic_cast<circuit::BumpToBumpNet*>(net)) {
-        return {
-            bb->begin_bump()->coord(),
-            std::Vector<hardware::BumpCoord>{bb->end_bump()->coord()},
-        };
-    }
-    if (auto* bbs = dynamic_cast<circuit::BumpToBumpsNet*>(net)) {
-        std::Vector<hardware::BumpCoord> sinks {};
-        for (auto* bump : bbs->end_bumps()) {
-            sinks.emplace_back(bump->coord());
+auto append_leaf_nets(circuit::Net* net, std::Vector<circuit::Net*>& out) -> void {
+    if (auto* sync = dynamic_cast<circuit::SyncNet*>(net)) {
+        for (auto& sub : sync->btbnets()) {
+            out.emplace_back(sub.get());
         }
-        return {bbs->begin_bump()->coord(), sinks};
+        for (auto& sub : sync->bttnets()) {
+            out.emplace_back(sub.get());
+        }
+        for (auto& sub : sync->ttbnets()) {
+            out.emplace_back(sub.get());
+        }
+        return;
     }
-    throw std::runtime_error(std::format("unsupported net type for writer test: {}", net->name()));
+    out.emplace_back(net);
+}
+
+auto flatten_connection_nets(const std::Vector<std::Rc<circuit::Net>>& nets)
+    -> std::Vector<circuit::Net*> {
+    std::Vector<circuit::Net*> flat {};
+    for (auto& net_rc : nets) {
+        append_leaf_nets(net_rc.get(), flat);
+    }
+    return flat;
 }
 
 auto match_block_to_net(const ParsedPathBlock& block, circuit::Net* net) -> bool {
-    auto [begin, sinks] = net_endpoint_bumps(net);
-    if (sinks.empty()) {
-        return false;
+    if (auto* bb = dynamic_cast<circuit::BumpToBumpNet*>(net)) {
+        if (!block.source_bump.has_value() || block.sink_bumps.empty()) {
+            return false;
+        }
+        return bb->begin_bump()->coord() == block.source_bump.value()
+               && bb->end_bump()->coord() == block.sink_bumps.front();
     }
-    if (!block.source_bump.has_value() || block.sink_bumps.empty()) {
-        return false;
+    if (auto* bbs = dynamic_cast<circuit::BumpToBumpsNet*>(net)) {
+        if (!block.source_bump.has_value() || block.sink_bumps.empty()) {
+            return false;
+        }
+        if (bbs->begin_bump()->coord() != block.source_bump.value()) {
+            return false;
+        }
+        if (bbs->end_bumps().size() != block.sink_bumps.size()) {
+            return false;
+        }
+        for (std::usize i = 0; i < block.sink_bumps.size(); ++i) {
+            if (bbs->end_bumps()[i]->coord() != block.sink_bumps[i]) {
+                return false;
+            }
+        }
+        return true;
     }
-    return begin == block.source_bump.value() && sinks.front() == block.sink_bumps.front();
+    if (auto* ttb = dynamic_cast<circuit::TrackToBumpNet*>(net)) {
+        if (!block.source_track.has_value() || block.sink_bumps.empty()) {
+            return false;
+        }
+        return ttb->begin_track()->coord() == block.source_track.value()
+               && ttb->end_bump()->coord() == block.sink_bumps.front();
+    }
+    if (auto* btt = dynamic_cast<circuit::BumpToTrackNet*>(net)) {
+        if (!block.source_bump.has_value() || block.sink_tracks.empty()) {
+            return false;
+        }
+        return btt->begin_bump()->coord() == block.source_bump.value()
+               && btt->end_track()->coord() == block.sink_tracks.front();
+    }
+    throw std::runtime_error(std::format("unsupported net type for writer test: {}", net->name()));
 }
 
 auto usage() -> void {
@@ -321,8 +346,6 @@ void test_writer_main(int argc, char** argv) {
                     config_folder.string(), path_file.string(), output_dir.string(), mode);
 
     auto blocks = parse_path_file(path_file);
-    agent_log("D", "test_writer.cc:parse", "parsed path blocks",
-              std::format(R"({{"block_count":{}}})", blocks.size()));
 
     auto [interposer_box, basedie_box] = parse::read_config(config_folder, mode, false);
     auto* interposer = interposer_box.get();
@@ -330,18 +353,17 @@ void test_writer_main(int argc, char** argv) {
     algo::build_nets(basedie, interposer);
 
     auto nets = basedie->nets(mode);
-    agent_log("D", "test_writer.cc:nets", "built nets",
-              std::format(R"({{"net_count":{}}})", nets.size()));
+    auto leaf_nets = flatten_connection_nets(nets);
 
-    if (blocks.size() != nets.size()) {
-        debug::warning_fmt("path block count {} != net count {}", blocks.size(), nets.size());
+    if (blocks.size() != leaf_nets.size()) {
+        debug::warning_fmt("path block count {} != leaf net count {}", blocks.size(),
+                           leaf_nets.size());
     }
 
     std::Vector<bool> block_used(blocks.size(), false);
     std::Vector<std::Pair<circuit::Net*, circuit::HistoryPathPackage>> pending {};
 
-    for (auto& net_rc : nets) {
-        auto* net = net_rc.get();
+    for (auto* net : leaf_nets) {
         ParsedPathBlock const* matched = nullptr;
         std::usize matched_index = 0;
         for (std::usize i = 0; i < blocks.size(); ++i) {
@@ -358,12 +380,7 @@ void test_writer_main(int argc, char** argv) {
             throw std::runtime_error(std::format("no path block matched net '{}'", net->name()));
         }
         block_used[matched_index] = true;
-        agent_log("E", "test_writer.cc:match", "matched net to path block",
-                  std::format(R"({{"net":"{}","block_index":{}}})", net->name(), matched_index));
         pending.emplace_back(net, build_history_package(interposer, *matched));
-        agent_log("D", "test_writer.cc:assign", "built history path package",
-                  std::format(R"({{"net":"{}","tracks":{}}})", net->name(),
-                              matched->tracks.size()));
     }
 
     for (auto& [net, history] : pending) {
@@ -372,8 +389,12 @@ void test_writer_main(int argc, char** argv) {
         net->set_pathpackage(package);
     }
 
+    for (auto& net_rc : nets) {
+        if (auto* sync = dynamic_cast<circuit::SyncNet*>(net_rc.get())) {
+            sync->collect_package();
+        }
+    }
+
     std::filesystem::create_directories(output_dir);
     parse::output_from_routing_results(interposer, output_dir, basedie, mode, false);
-    agent_log("D", "test_writer.cc:write", "wrote controlbits",
-              std::format(R"({{"output_dir":"{}"}})", output_dir.string()));
 }
