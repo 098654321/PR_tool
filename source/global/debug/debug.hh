@@ -20,6 +20,18 @@ namespace PR_tool::debug
     auto set_debug_level(DebugLevel level) -> void;
     auto is_debug_level_enough(DebugLevel level) -> bool;
 
+    /// RAII thread-local log prefix (e.g. "[MCF u8]").
+    class ScopedThreadLogPrefix {
+    public:
+        explicit ScopedThreadLogPrefix(std::String prefix);
+        ~ScopedThreadLogPrefix();
+        ScopedThreadLogPrefix(const ScopedThreadLogPrefix&) = delete;
+        ScopedThreadLogPrefix& operator=(const ScopedThreadLogPrefix&) = delete;
+
+    private:
+        bool active_{false};
+    };
+
     auto debug(std::StringView message) -> void;
     auto info(std::StringView message) -> void;
     auto warning(std::StringView message) -> void;

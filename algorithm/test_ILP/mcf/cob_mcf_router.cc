@@ -6,6 +6,7 @@
 #include "mcf/mcf_gurobi_params.hh"
 #include "mcf/mcf_gurobi_thread_budget.hh"
 #include "mcf/mcf_resource_usage_io.hh"
+#include "mcf/mcf_simple_tree_refine.hh"
 #include "precompute/tob_path_precompute.hh"
 #include "mcf/mcf_graph.hh"
 #include "mcf/mcf_hw_map.hh"
@@ -110,6 +111,12 @@ struct PreparedCommodity {
     int demand{1};
     bool is_bus{false};
     std::String bus_key;
+    bool is_refined_segment{false};
+    std::optional<McfCommodityBBox> bbox_override {};
+    std::Vector<int> guide_path {};
+    std::String synthetic_label {};
+    /// Bbox lookup index into bbox_ctx.per_commodity (defaults to prepare order).
+    std::size_t bbox_global_commodity_id{std::numeric_limits<std::size_t>::max()};
 };
 
 struct McfConstraintMeta {
@@ -224,6 +231,15 @@ auto log_skipped_simple_unit_stage(StageSolveResult& out, const std::size_t unit
 
 struct StageWarmStart {
     std::map<std::size_t, std::Vector<int>> nodes_by_record_id;
+};
+
+struct StageIncumbentWarmStart {
+    std::map<int, double> warm_values_by_col;
+};
+
+struct StageRefineIncumbentSeed {
+    std::map<std::pair<int, int>, int> used_edges;
+    std::map<int, int> used_nodes;
 };
 
 struct ArcVar {
@@ -1122,45 +1138,12 @@ auto commodity_bbox_connected(
     const PreparedCommodity& commodity,
     const McfCommodityBBox& effective_bbox
 ) -> bool {
-    if (!effective_bbox.restricted) {
-        return true;
-    }
-    auto prev = std::vector<int>(graph.nodes.size(), -1);
-    auto q = std::queue<int> {};
-    q.push(commodity.src);
-    prev[static_cast<std::size_t>(commodity.src)] = commodity.src;
-    while (!q.empty()) {
-        const auto node = q.front();
-        q.pop();
-        if (node == commodity.snk) {
-            return true;
-        }
-        for (const auto& arc : graph.arcs) {
-            if (arc.u != node) {
-                continue;
-            }
-            if (!arc_usable_for_unit(graph, arc, commodity.cob_unit)) {
-                continue;
-            }
-            if (!arc_allowed_in_mcf_bbox(
-                    arc,
-                    graph.nodes[static_cast<std::size_t>(arc.u)],
-                    graph.nodes[static_cast<std::size_t>(arc.v)],
-                    true,
-                    effective_bbox.box,
-                    graph.cols,
-                    commodity.src,
-                    commodity.snk)) {
-                continue;
-            }
-            if (prev[static_cast<std::size_t>(arc.v)] != -1) {
-                continue;
-            }
-            prev[static_cast<std::size_t>(arc.v)] = node;
-            q.push(arc.v);
-        }
-    }
-    return false;
+    return commodity_bbox_connected(
+        graph,
+        commodity.src,
+        commodity.snk,
+        commodity.cob_unit,
+        effective_bbox);
 }
 
 auto effective_bbox_for_simple_commodity(
@@ -1169,12 +1152,21 @@ auto effective_bbox_for_simple_commodity(
     const std::Vector<PreparedCommodity>& commodities,
     const std::Vector<Net_cost_record>& records,
     const McfBBoxContext& ctx,
-    const McfBBoxExpandState* expand_state
+    const McfBBoxExpandState* expand_state,
+    const PreparedCommodity* commodity_override = nullptr
 ) -> McfCommodityBBox {
-    if (global_commodity_id >= ctx.per_commodity.size()) {
+    if (commodity_override != nullptr && commodity_override->is_refined_segment
+        && commodity_override->bbox_override.has_value() && commodity_override->bbox_override->restricted) {
+        return *commodity_override->bbox_override;
+    }
+    const std::size_t lookup_id =
+        commodity_override != nullptr && commodity_override->bbox_global_commodity_id != std::numeric_limits<std::size_t>::max()
+        ? commodity_override->bbox_global_commodity_id
+        : global_commodity_id;
+    if (lookup_id >= ctx.per_commodity.size()) {
         return McfCommodityBBox {};
     }
-    const auto& commodity = commodities[global_commodity_id];
+    const auto& commodity = commodity_override != nullptr ? *commodity_override : commodities[global_commodity_id];
     const auto& record = records[commodity.record_index];
     const auto group_key = std::make_pair(commodity.cob_unit, simple_origin_group_key(record));
     if (expand_state != nullptr) {
@@ -1190,13 +1182,17 @@ auto effective_bbox_for_simple_commodity(
         if (std::make_pair(sc.cob_unit, simple_origin_group_key(sr)) != group_key) {
             continue;
         }
-        global_ids.push_back(sid);
+        const auto bbox_gid =
+            sc.bbox_global_commodity_id != std::numeric_limits<std::size_t>::max()
+            ? sc.bbox_global_commodity_id
+            : sid;
+        global_ids.push_back(bbox_gid);
         record_indices.push_back(sc.record_index);
     }
     bool is_multi_fanout = false;
     if (global_ids.size() > 1) {
-        for (const auto sid : global_ids) {
-            const auto& sr = records[commodities[sid].record_index];
+        for (const auto rec_idx : record_indices) {
+            const auto& sr = records[rec_idx];
             if (sr.from_track_to_bumps_split || sr.type == Net_type::PNnet) {
                 is_multi_fanout = true;
                 break;
@@ -1204,7 +1200,7 @@ auto effective_bbox_for_simple_commodity(
         }
     }
     if (!is_multi_fanout) {
-        return ctx.per_commodity[global_commodity_id];
+        return ctx.per_commodity[lookup_id];
     }
     return compute_origin_group_bbox(global_ids, record_indices, records, ctx);
 }
@@ -2199,6 +2195,7 @@ auto merge_stage_solve_results(
     out.ok = true;
     out.solution_class = McfSolutionClass::Optimal;
     auto timing = StageSolveTiming {};
+    const auto merge_component_timing = parts.size() > 1;
     for (auto& part : parts) {
         out.objective += part.objective;
         out.paths.insert(out.paths.end(), part.paths.begin(), part.paths.end());
@@ -2216,11 +2213,20 @@ auto merge_stage_solve_results(
                 out.unit_used_nodes[u][n] += used;
             }
         }
-        timing.model_build_ms += part.timing.model_build_ms;
-        timing.matrix_diag_ms += part.timing.matrix_diag_ms;
-        timing.gurobi_optimize_ms += part.timing.gurobi_optimize_ms;
-        timing.compute_iis_ms += part.timing.compute_iis_ms;
-        timing.extract_path_ms += part.timing.extract_path_ms;
+        if (merge_component_timing) {
+            timing.model_build_ms = std::max(timing.model_build_ms, part.timing.model_build_ms);
+            timing.matrix_diag_ms = std::max(timing.matrix_diag_ms, part.timing.matrix_diag_ms);
+            timing.gurobi_optimize_ms = std::max(timing.gurobi_optimize_ms, part.timing.gurobi_optimize_ms);
+            timing.compute_iis_ms = std::max(timing.compute_iis_ms, part.timing.compute_iis_ms);
+            timing.extract_path_ms = std::max(timing.extract_path_ms, part.timing.extract_path_ms);
+        }
+        else {
+            timing.model_build_ms += part.timing.model_build_ms;
+            timing.matrix_diag_ms += part.timing.matrix_diag_ms;
+            timing.gurobi_optimize_ms += part.timing.gurobi_optimize_ms;
+            timing.compute_iis_ms += part.timing.compute_iis_ms;
+            timing.extract_path_ms += part.timing.extract_path_ms;
+        }
         if (!part.ok) {
             out.ok = false;
             if (static_cast<int>(part.solution_class) > static_cast<int>(out.solution_class)) {
@@ -2246,6 +2252,12 @@ auto merge_stage_solve_results(
     }
     if (out.ok) {
         out.message = "ok";
+    }
+    if (merge_component_timing) {
+        debug::info_fmt(
+            "{}: merged {} parallel conflict components (sub-timing fields report max)",
+            stage_name,
+            parts.size());
     }
     return finish_stage_solve_result(out, begin, timing);
 }
@@ -3070,6 +3082,232 @@ auto preview_simple_candidate_resources(
     return {per_vertex, labels};
 }
 
+auto unit_has_multi_fanout_origin(
+    const std::Vector<std::size_t>& simple_ids_for_unit,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::Vector<Net_cost_record>& records
+) -> bool {
+    if (simple_ids_for_unit.size() < 2) {
+        return false;
+    }
+    auto local_com = build_local_commodities(commodities, simple_ids_for_unit);
+    const auto groups = build_origin_groups(local_com, records);
+    for (const auto& group : groups) {
+        if (group.is_multi_fanout) {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto preview_simple_refine_candidate_resources(
+    const GlobalGraph& graph,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::size_t unit_c,
+    const std::Vector<std::size_t>& simple_ids_for_unit,
+    const std::Vector<Net_cost_record>& records,
+    const McfBBoxContext& bbox_ctx,
+    const McfBBoxExpandState* expand_state,
+    const std::map<std::pair<int, int>, int>& edge_capacity_override,
+    const std::map<int, int>& node_capacity_override
+) -> std::pair<std::Vector<McfCandidateResources>, std::Vector<std::String>> {
+    const auto local_com = build_local_commodities(commodities, simple_ids_for_unit);
+    const auto K = static_cast<int>(simple_ids_for_unit.size());
+    const auto A = static_cast<int>(graph.arcs.size());
+    auto origin_groups = build_origin_groups(local_com, records);
+    auto commodity_origin_h = std::Vector<int>(static_cast<std::size_t>(K), -1);
+    auto origin_endpoints_by_h = std::map<int, std::set<int>> {};
+    auto origin_bbox_by_gid = std::map<int, McfCommodityBBox> {};
+    for (const auto& group : origin_groups) {
+        for (const auto k : group.commodity_local_indices) {
+            commodity_origin_h[static_cast<std::size_t>(k)] = group.origin_group_id;
+        }
+        origin_endpoints_by_h[group.origin_group_id] =
+            build_origin_group_physical_endpoints(group, local_com, graph);
+        const auto group_key = std::make_pair(unit_c, group.origin_key);
+        if (expand_state != nullptr) {
+            if (const auto overlay = lookup_simple_origin_hull(*expand_state, group_key)) {
+                origin_bbox_by_gid[group.origin_group_id] = McfCommodityBBox {true, *overlay};
+            }
+        }
+        if (!group.is_multi_fanout || group.commodity_local_indices.empty()) {
+            continue;
+        }
+        bool all_refined = true;
+        for (const auto k : group.commodity_local_indices) {
+            if (!local_com[static_cast<std::size_t>(k)].is_refined_segment) {
+                all_refined = false;
+                break;
+            }
+        }
+        if (!all_refined) {
+            auto global_ids = std::Vector<std::size_t> {};
+            auto record_indices = std::Vector<std::size_t> {};
+            for (const auto k : group.commodity_local_indices) {
+                const auto& sc = local_com[static_cast<std::size_t>(k)];
+                const auto bbox_gid =
+                    sc.bbox_global_commodity_id != std::numeric_limits<std::size_t>::max()
+                    ? sc.bbox_global_commodity_id
+                    : simple_ids_for_unit[static_cast<std::size_t>(k)];
+                global_ids.push_back(bbox_gid);
+                record_indices.push_back(sc.record_index);
+            }
+            origin_bbox_by_gid[group.origin_group_id] =
+                compute_origin_group_bbox(global_ids, record_indices, records, bbox_ctx);
+        }
+    }
+
+    auto per_vertex = std::Vector<McfCandidateResources>(static_cast<std::size_t>(K));
+    auto labels = std::Vector<std::String> {};
+    labels.reserve(static_cast<std::size_t>(K));
+    for (int k = 0; k < K; ++k) {
+        const auto global_id = simple_ids_for_unit[static_cast<std::size_t>(k)];
+        const auto& commodity = local_com[static_cast<std::size_t>(k)];
+        labels.push_back(commodity.synthetic_label.empty() ? commodity.label : commodity.synthetic_label);
+        const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
+        McfArcBBoxMode mode = McfArcBBoxMode::SimpleCommodity;
+        McfCommodityBBox arc_bbox {};
+        if (commodity.is_refined_segment && commodity.bbox_override.has_value() && commodity.bbox_override->restricted) {
+            mode = McfArcBBoxMode::SimpleExplicit;
+            arc_bbox = *commodity.bbox_override;
+        }
+        else if (origin_bbox_by_gid.contains(h)) {
+            mode = McfArcBBoxMode::SimpleOriginGroup;
+            arc_bbox = origin_bbox_by_gid.at(h);
+        }
+        else {
+            mode = McfArcBBoxMode::SimpleExplicit;
+            arc_bbox = effective_bbox_for_simple_commodity(
+                global_id,
+                simple_ids_for_unit,
+                commodities,
+                records,
+                bbox_ctx,
+                expand_state,
+                &commodity);
+        }
+        const auto& allowed_endpoint_nodes = origin_endpoints_by_h.at(h);
+        for (int a = 0; a < A; ++a) {
+            const auto& arc = graph.arcs[static_cast<std::size_t>(a)];
+            if (!arc_allowed_for_commodity(
+                    graph,
+                    arc,
+                    commodity,
+                    bbox_ctx,
+                    global_id,
+                    mode,
+                    arc_bbox)) {
+                continue;
+            }
+            if (arc_blocked_by_bus_residual(
+                    arc, graph, allowed_endpoint_nodes, edge_capacity_override, node_capacity_override)) {
+                continue;
+            }
+            if (arc.is_virtual) {
+                continue;
+            }
+            auto u = arc.u;
+            auto v = arc.v;
+            if (u > v) {
+                std::swap(u, v);
+            }
+            per_vertex[static_cast<std::size_t>(k)].physical_edges.insert({u, v});
+            per_vertex[static_cast<std::size_t>(k)].physical_nodes.insert(arc.u);
+            per_vertex[static_cast<std::size_t>(k)].physical_nodes.insert(arc.v);
+        }
+    }
+    return {per_vertex, labels};
+}
+
+auto build_refined_unit_commodity_list(
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::Vector<std::size_t>& simple_ids_for_unit,
+    const std::Vector<Net_cost_record>& records,
+    const std::size_t unit_c,
+    const UnitTreeCompressSummary& compress_summary
+) -> std::pair<std::Vector<PreparedCommodity>, std::Vector<std::size_t>> {
+    auto refined_origins = std::map<std::String, const OriginTreeCompressResult*> {};
+    for (const auto& origin : compress_summary.per_origin) {
+        if (!origin.fallback) {
+            refined_origins[origin.origin_key] = &origin;
+        }
+    }
+
+    auto local_com = build_local_commodities(commodities, simple_ids_for_unit);
+    auto origin_groups = build_origin_groups(local_com, records);
+    auto out_com = std::Vector<PreparedCommodity> {};
+    auto out_ids = std::Vector<std::size_t> {};
+  out_com.reserve(local_com.size());
+    std::size_t segment_counter = 0;
+    auto handled_origins = std::set<std::String> {};
+
+    for (const auto& group : origin_groups) {
+        const auto refine_it = refined_origins.find(group.origin_key);
+        if (group.is_multi_fanout && refine_it != refined_origins.end() && refine_it->second != nullptr) {
+            if (handled_origins.contains(group.origin_key)) {
+                continue;
+            }
+            handled_origins.insert(group.origin_key);
+            const auto& origin_result = *refine_it->second;
+            for (const auto& seg : origin_result.segments) {
+                const auto& template_com = local_com[static_cast<std::size_t>(group.commodity_local_indices.front())];
+                PreparedCommodity c = template_com;
+                c.is_refined_segment = true;
+                c.src = seg.src;
+                c.snk = seg.snk;
+                c.guide_path = seg.guide_path;
+                c.bbox_override = seg.bbox;
+                c.record_id = mcf_synthetic_record_id(unit_c, segment_counter);
+                c.record_indices = seg.parent_record_indices;
+                c.synthetic_label =
+                    std::format("{}_seg{}_{}_{}", c.origin_uid, segment_counter, seg.src, seg.snk);
+                c.label = c.synthetic_label;
+                ++segment_counter;
+                c.start_track = template_com.start_track;
+                c.end_track = template_com.end_track;
+                c.bbox_global_commodity_id =
+                    simple_ids_for_unit[static_cast<std::size_t>(group.commodity_local_indices.front())];
+                out_com.push_back(std::move(c));
+                out_ids.push_back(out_com.size() - 1);
+            }
+            continue;
+        }
+        for (const auto k : group.commodity_local_indices) {
+            auto c = local_com[static_cast<std::size_t>(k)];
+            c.bbox_global_commodity_id = simple_ids_for_unit[static_cast<std::size_t>(k)];
+            out_com.push_back(std::move(c));
+            out_ids.push_back(out_com.size() - 1);
+        }
+    }
+    return {out_com, out_ids};
+}
+
+auto simple_ids_for_refine_conflict_component(
+    const std::Vector<std::size_t>& simple_ids_for_unit,
+    const std::Vector<PreparedCommodity>& commodities,
+    const std::Vector<std::String>& vertex_labels,
+    const McfConflictComponent& component
+) -> std::Vector<std::size_t> {
+    auto keys = std::set<std::String> {};
+    for (const auto vid : component.vertex_ids) {
+        if (vid >= 0 && static_cast<std::size_t>(vid) < vertex_labels.size()) {
+            keys.insert(vertex_labels[static_cast<std::size_t>(vid)]);
+        }
+    }
+    auto out = std::Vector<std::size_t> {};
+    for (const auto gid : simple_ids_for_unit) {
+        if (gid >= commodities.size()) {
+            continue;
+        }
+        const auto& com = commodities[gid];
+        const auto label = com.synthetic_label.empty() ? com.label : com.synthetic_label;
+        if (keys.contains(label)) {
+            out.push_back(gid);
+        }
+    }
+    return out;
+}
+
 auto simple_ids_for_conflict_component(
     const std::Vector<std::size_t>& simple_ids_for_unit,
     const std::Vector<PreparedCommodity>& commodities,
@@ -3112,7 +3350,9 @@ auto solve_simple_mcf_component(
     McfGurobiLogSink* gurobi_sink,
     McfGurobiSolveMeta gurobi_meta,
     const std::String& stage_name,
-    const McfGurobiSolveParams& gurobi_params
+    const McfGurobiSolveParams& gurobi_params,
+    const StageRefineIncumbentSeed* refine_incumbent_seed = nullptr,
+    const bool refine_pass = false
 ) -> StageSolveResult {
     const auto solve_begin = std::chrono::steady_clock::now();
     StageSolveResult out {};
@@ -3149,12 +3389,26 @@ auto solve_simple_mcf_component(
             }
         }
         if (group.is_multi_fanout) {
+            bool all_refined = true;
+            for (const auto k : group.commodity_local_indices) {
+                if (!local_com[static_cast<std::size_t>(k)].is_refined_segment) {
+                    all_refined = false;
+                    break;
+                }
+            }
+            if (all_refined) {
+                continue;
+            }
             auto global_ids = std::Vector<std::size_t> {};
             auto record_indices = std::Vector<std::size_t> {};
             for (const auto k : group.commodity_local_indices) {
-                const auto global_id = simple_ids_for_unit[static_cast<std::size_t>(k)];
-                global_ids.push_back(global_id);
-                record_indices.push_back(local_com[static_cast<std::size_t>(k)].record_index);
+                const auto& sc = local_com[static_cast<std::size_t>(k)];
+                const auto bbox_gid =
+                    sc.bbox_global_commodity_id != std::numeric_limits<std::size_t>::max()
+                    ? sc.bbox_global_commodity_id
+                    : simple_ids_for_unit[static_cast<std::size_t>(k)];
+                global_ids.push_back(bbox_gid);
+                record_indices.push_back(sc.record_index);
             }
             origin_bbox_by_gid[group.origin_group_id] =
                 compute_origin_group_bbox(global_ids, record_indices, records, bbox_ctx);
@@ -3165,7 +3419,7 @@ auto solve_simple_mcf_component(
         const auto global_id = simple_ids_for_unit[static_cast<std::size_t>(k)];
         const auto& commodity = local_com[static_cast<std::size_t>(k)];
         const auto effective = effective_bbox_for_simple_commodity(
-            global_id, simple_ids_for_unit, commodities, records, bbox_ctx, expand_state);
+            global_id, simple_ids_for_unit, commodities, records, bbox_ctx, expand_state, &commodity);
         if (effective.restricted && !commodity_bbox_connected(graph, commodity, effective)) {
             if (gurobi_sink != nullptr) {
                 gurobi_sink->write_stub(
@@ -3231,20 +3485,32 @@ auto solve_simple_mcf_component(
         const auto global_id = simple_ids_for_unit[static_cast<std::size_t>(k)];
         const auto& commodity = local_com[static_cast<std::size_t>(k)];
         const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
-            const auto mode = origin_bbox_by_gid.contains(h) ? McfArcBBoxMode::SimpleOriginGroup
-                                                             : McfArcBBoxMode::SimpleCommodity;
-            const auto origin_bbox = origin_bbox_by_gid.contains(h) ? origin_bbox_by_gid.at(h) : McfCommodityBBox {};
-            const auto& allowed_endpoint_nodes = origin_endpoints_by_h.at(h);
-            for (int a = 0; a < A; ++a) {
-                const auto& arc = graph.arcs[static_cast<std::size_t>(a)];
-                if (!arc_allowed_for_commodity(
+        McfArcBBoxMode mode = McfArcBBoxMode::SimpleCommodity;
+        McfCommodityBBox arc_bbox {};
+        if (commodity.is_refined_segment && commodity.bbox_override.has_value() && commodity.bbox_override->restricted) {
+            mode = McfArcBBoxMode::SimpleExplicit;
+            arc_bbox = *commodity.bbox_override;
+        }
+        else if (origin_bbox_by_gid.contains(h)) {
+            mode = McfArcBBoxMode::SimpleOriginGroup;
+            arc_bbox = origin_bbox_by_gid.at(h);
+        }
+        else {
+            mode = McfArcBBoxMode::SimpleExplicit;
+            arc_bbox = effective_bbox_for_simple_commodity(
+                global_id, simple_ids_for_unit, commodities, records, bbox_ctx, expand_state, &commodity);
+        }
+        const auto& allowed_endpoint_nodes = origin_endpoints_by_h.at(h);
+        for (int a = 0; a < A; ++a) {
+            const auto& arc = graph.arcs[static_cast<std::size_t>(a)];
+            if (!arc_allowed_for_commodity(
                     graph,
                     arc,
                     commodity,
                     bbox_ctx,
                     global_id,
                     mode,
-                    origin_bbox)) {
+                    arc_bbox)) {
                 continue;
             }
             if (arc_blocked_by_bus_residual(
@@ -3278,7 +3544,7 @@ auto solve_simple_mcf_component(
                 std::format("commodity={}", commodity.label));
         }
         const auto effective = effective_bbox_for_simple_commodity(
-            global_id, simple_ids_for_unit, commodities, records, bbox_ctx, expand_state);
+            global_id, simple_ids_for_unit, commodities, records, bbox_ctx, expand_state, &commodity);
         const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
         const auto& allowed_endpoint_nodes = origin_endpoints_by_h.at(h);
         if (!commodity_residual_connected(
@@ -3663,6 +3929,40 @@ auto solve_simple_mcf_component(
         }
     }
 
+    for (const auto& group : origin_groups) {
+        const int h = group.origin_group_id;
+        const auto endpoints = build_origin_group_physical_endpoints(group, local_com, graph);
+        for (const auto n : endpoints) {
+            if (graph.nodes[static_cast<std::size_t>(n)].is_virtual) {
+                continue;
+            }
+            const auto hn = std::make_pair(h, n);
+            if (origin_o_by_hn.contains(hn)) {
+                continue;
+            }
+            if (!node_row.contains(n)) {
+                auto cap = 1;
+                if (node_capacity_override.contains(n)) {
+                    cap = node_capacity_override.at(n);
+                }
+                node_row[n] = add_le(
+                    static_cast<double>(cap),
+                    McfConstraintMeta {
+                        "node_capacity",
+                        std::format(
+                            "node={} rhs={} bus_used={}",
+                            node_text(graph, n),
+                            cap,
+                            1 - cap)});
+            }
+            const auto o_var = static_cast<int>(origin_o_vars.size());
+            origin_o_by_hn[hn] = o_var;
+            origin_o_vars.push_back(OriginOVar {h, n});
+            origin_o_entries.emplace_back();
+            origin_o_entries[static_cast<std::size_t>(o_var)].push_back({node_row.at(n), 1.0});
+        }
+    }
+
     int o_endpoint_eq_rows = 0;
     for (const auto& group : origin_groups) {
         const int h = group.origin_group_id;
@@ -3810,6 +4110,32 @@ auto solve_simple_mcf_component(
     }
 
     auto warm_values_by_col = std::map<int, double> {};
+    if (refine_incumbent_seed != nullptr) {
+        std::size_t x_count = 0;
+        std::size_t o_count = 0;
+        for (std::size_t j = 0; j < origin_x_vars.size(); ++j) {
+            const auto& xv = origin_x_vars[j];
+            const auto e = normalized_edge_key(xv.u, xv.v);
+            const auto it = refine_incumbent_seed->used_edges.find(e);
+            if (it != refine_incumbent_seed->used_edges.end() && it->second >= 1) {
+                warm_values_by_col[static_cast<int>(num_f + static_cast<int>(j))] = 1.0;
+                ++x_count;
+            }
+        }
+        for (std::size_t j = 0; j < origin_o_vars.size(); ++j) {
+            const auto& ov = origin_o_vars[j];
+            const auto it = refine_incumbent_seed->used_nodes.find(ov.node);
+            if (it != refine_incumbent_seed->used_nodes.end() && it->second >= 1) {
+                warm_values_by_col[num_f + num_origin_x + static_cast<int>(j)] = 1.0;
+                ++o_count;
+            }
+        }
+        debug::info_fmt(
+            "{} refine incumbent warm start: x={} o={}",
+            stage_name,
+            x_count,
+            o_count);
+    }
     if (warm_start != nullptr && !warm_start->nodes_by_record_id.empty()) {
         auto origin_o_col_by_h_node = std::map<std::pair<int, int>, int> {};
         for (std::size_t oi = 0; oi < origin_o_vars.size(); ++oi) {
@@ -3888,7 +4214,7 @@ auto solve_simple_mcf_component(
     auto timing = merge_gurobi_stage_timing(cpp_model_build_ms, solve_res.gurobi_timing);
     if (solve_res.solution_class == McfSolutionClass::Failed
         || solve_res.solution_class == McfSolutionClass::TimeLimit) {
-        if (warm_start != nullptr && !warm_values_by_col.empty()) {
+        if (!refine_pass && warm_start != nullptr && !warm_values_by_col.empty()) {
             debug::warning_fmt(
                 "{} warm start led to {}; retrying without warm start",
                 stage_name,
@@ -3929,7 +4255,9 @@ auto solve_simple_mcf_component(
                 gurobi_sink,
                 retry_meta,
                 stage_name,
-                gurobi_params);
+                gurobi_params,
+                nullptr,
+                refine_pass);
             retry.solve_ms += first_log.solve_ms;
             return retry;
         }
@@ -3980,6 +4308,20 @@ auto solve_simple_mcf_component(
     return finish_stage_solve_result(out, solve_begin, timing);
 }
 
+auto build_refine_incumbent_seed_from_stage1(const StageSolveResult& stage1) -> StageRefineIncumbentSeed {
+    return StageRefineIncumbentSeed {stage1.used_edges, stage1.used_nodes};
+}
+
+auto build_guide_path_warm_start(const std::Vector<PreparedCommodity>& local_com) -> StageWarmStart {
+    auto warm = StageWarmStart {};
+    for (const auto& commodity : local_com) {
+        if (commodity.guide_path.size() >= 2) {
+            warm.nodes_by_record_id.emplace(commodity.record_id, commodity.guide_path);
+        }
+    }
+    return warm;
+}
+
 auto solve_simple_mcf_unit(
     const GlobalGraph& graph,
     const std::Vector<PreparedCommodity>& commodities,
@@ -3994,9 +4336,19 @@ auto solve_simple_mcf_unit(
     const StageWarmStart* warm_start,
     const GurobiDiagnosticsOptions& diag,
     McfGurobiLogSink* gurobi_sink,
-    const McfGurobiSolveMeta& gurobi_meta
+    McfGurobiSolveMeta gurobi_meta,
+    McfGurobiSolveParams gurobi_params,
+    const SimpleMcfSolvePass pass,
+    const StageRefineIncumbentSeed* refine_incumbent_seed
 ) -> StageSolveResult {
-    const auto stage_name = std::format("SimpleMCF_unit{}", unit_c);
+    auto stage_name = std::format("SimpleMCF_unit{}", unit_c);
+    if (pass == SimpleMcfSolvePass::TreeSeed) {
+        stage_name += "_tree_seed";
+    }
+    else if (pass == SimpleMcfSolvePass::Refine) {
+        stage_name += "_refine";
+    }
+    const auto refine_pass = pass == SimpleMcfSolvePass::Refine;
     const auto solve_begin = std::chrono::steady_clock::now();
     if (simple_ids_for_unit.empty()) {
         StageSolveResult out {};
@@ -4009,26 +4361,44 @@ auto solve_simple_mcf_unit(
         return finish_stage_solve_early(out, solve_begin);
     }
 
-    const auto [per_vertex, vertex_labels] = preview_simple_candidate_resources(
-        graph,
-        commodities,
-        unit_c,
-        simple_ids_for_unit,
-        records,
-        bbox_ctx,
-        expand_state,
-        edge_capacity_override,
-        node_capacity_override);
+    if (pass == SimpleMcfSolvePass::TreeSeed && gurobi_params.mip_gap <= 0.0) {
+        gurobi_params.mip_gap = kSimpleMcfTreeSeedMipGap;
+    }
+    if (gurobi_params.threads <= 0) {
+        gurobi_params.threads = 2;
+    }
+    gurobi_meta.pass = pass;
+
+    const auto [per_vertex, vertex_labels] = refine_pass
+        ? preview_simple_refine_candidate_resources(
+            graph,
+            commodities,
+            unit_c,
+            simple_ids_for_unit,
+            records,
+            bbox_ctx,
+            expand_state,
+            edge_capacity_override,
+            node_capacity_override)
+        : preview_simple_candidate_resources(
+            graph,
+            commodities,
+            unit_c,
+            simple_ids_for_unit,
+            records,
+            bbox_ctx,
+            expand_state,
+            edge_capacity_override,
+            node_capacity_override);
     const auto components = build_edge_node_conflict_components(per_vertex, vertex_labels);
     debug::info_fmt(
-        "{} conflict decomposition: vertices={} components={}",
+        "{} conflict decomposition: vertices={} components={} pass={}",
         stage_name,
         per_vertex.size(),
-        components.size());
+        components.size(),
+        simple_mcf_solve_pass_name(pass));
 
     if (components.size() <= 1) {
-        auto params = default_mcf_gurobi_solve_params();
-        params.threads = 2;
         auto meta = gurobi_meta;
         meta.component_count = 1;
         meta.component_id = 0;
@@ -4054,12 +4424,12 @@ auto solve_simple_mcf_unit(
             gurobi_sink,
             meta,
             stage_name,
-            params);
+            gurobi_params,
+            refine_incumbent_seed,
+            refine_pass);
     }
 
     const auto component_count = static_cast<int>(components.size());
-    auto params = default_mcf_gurobi_solve_params();
-    params.threads = 2;
     auto cancel_flag = std::atomic<bool> {false};
     auto results = std::Vector<StageSolveResult>(components.size());
     auto results_mutex = std::mutex {};
@@ -4071,8 +4441,11 @@ auto solve_simple_mcf_unit(
                 return;
             }
             const auto& component = components[static_cast<std::size_t>(ci)];
-            const auto subset_ids =
-                simple_ids_for_conflict_component(simple_ids_for_unit, commodities, records, vertex_labels, component);
+            const auto subset_ids = refine_pass
+                ? simple_ids_for_refine_conflict_component(
+                    simple_ids_for_unit, commodities, vertex_labels, component)
+                : simple_ids_for_conflict_component(
+                    simple_ids_for_unit, commodities, records, vertex_labels, component);
             auto meta = gurobi_meta;
             meta.component_id = ci;
             meta.component_count = component_count;
@@ -4095,7 +4468,9 @@ auto solve_simple_mcf_unit(
                 gurobi_sink,
                 meta,
                 comp_stage,
-                params);
+                gurobi_params,
+                refine_incumbent_seed,
+                refine_pass);
             {
                 const std::lock_guard lock {results_mutex};
                 results[static_cast<std::size_t>(ci)] = std::move(part);
@@ -4105,7 +4480,7 @@ auto solve_simple_mcf_unit(
             }
         });
     }
-    run_mcf_parallel_waves(mcf_gurobi_thread_budget_instance(), params.threads, tasks, &cancel_flag);
+    run_mcf_parallel_waves(mcf_gurobi_thread_budget_instance(), gurobi_params.threads, tasks, &cancel_flag);
     return merge_stage_solve_results(stage_name, std::move(results), solve_begin);
 }
 
@@ -4603,7 +4978,51 @@ struct BusStageOutcome {
 struct UnitStageOutcome {
     bool ok{false};
     bool unit_exhausted{false};
+    bool refine_modeling_error{false};
     StageSolveResult simple_res {};
+};
+
+auto simple_mcf_unit_log_mode(const bool tree_refine) -> std::String {
+    return tree_refine ? std::String {"tree-refine"} : std::String {"standard"};
+}
+
+auto simple_mcf_unit_log_prefix(const std::size_t unit_c, const bool tree_refine) -> std::String {
+    return std::format("[MCF u{}/{}]", unit_c, simple_mcf_unit_log_mode(tree_refine));
+}
+
+class SimpleMcfUnitLogScope {
+public:
+    SimpleMcfUnitLogScope(
+        const std::size_t unit_c,
+        const bool tree_refine,
+        const UnitStageOutcome* outcome
+    )
+        : unit_c_ {unit_c}
+        , outcome_ {outcome}
+        , prefix_ {simple_mcf_unit_log_prefix(unit_c, tree_refine)} {
+        debug::info_fmt(
+            "======== SimpleMCF unit {} BEGIN ({}) ========",
+            unit_c_,
+            simple_mcf_unit_log_mode(tree_refine));
+    }
+
+    ~SimpleMcfUnitLogScope() {
+        if (outcome_ == nullptr) {
+            return;
+        }
+        debug::info_fmt(
+            "======== SimpleMCF unit {} END ok={} class={} solve_ms={} paths={} ========",
+            unit_c_,
+            outcome_->ok,
+            solution_class_name(outcome_->simple_res.solution_class),
+            outcome_->simple_res.solve_ms,
+            outcome_->simple_res.paths.size());
+    }
+
+private:
+    std::size_t unit_c_;
+    const UnitStageOutcome* outcome_;
+    debug::ScopedThreadLogPrefix prefix_;
 };
 
 auto log_bus_bbox_expand(
@@ -4823,13 +5242,108 @@ auto run_simple_mcf_unit_with_bbox_retry(
         return out;
     }
 
+    const auto use_tree_refine =
+        enable_mcf_obj && unit_has_multi_fanout_origin(simple_ids_for_unit, commodities, records);
+    const SimpleMcfUnitLogScope unit_log {unit_c, use_tree_refine, &out};
+
     const auto base_hull_for = [&](const McfSimpleOriginGroupKey& key) -> IlpBoundingBox {
         return base_simple_origin_hull(key, simple_ids_for_unit, commodities, records, bbox_ctx);
     };
 
+    if (use_tree_refine) {
+        debug::info_fmt(
+            "SimpleMCF unit {} tree-refine: enabled=true",
+            unit_c);
+    }
+
     int unit_solve_ms_total = 0;
     auto last_pre_route_section = std::String {};
     for (std::size_t attempt = 0;; ++attempt) {
+        if (!use_tree_refine) {
+            const StageWarmStart* unit_warm_ptr = nullptr;
+            auto unit_warm = StageWarmStart {};
+            if (enable_pre_routing && stage_result_ok(bus_res.solution_class)) {
+                unit_warm = run_simple_warm_start_for_unit(
+                    graph,
+                    commodities,
+                    simple_ids_for_unit,
+                    records,
+                    bbox_ctx,
+                    &expand_state,
+                    bus_res,
+                    unit_c,
+                    outgoing_arcs);
+                if (resource_sink != nullptr && arc_index != nullptr) {
+                    const auto paths = build_unit_pre_route_paths(bus_res, unit_warm, commodities, unit_c);
+                    const auto usage = aggregate_mcf_resource_usage_for_unit(graph, *arc_index, unit_c, paths);
+                    last_pre_route_section = resource_sink->write_pre_route(unit_c, usage, true);
+                }
+                if (!unit_warm.nodes_by_record_id.empty()) {
+                    unit_warm_ptr = &unit_warm;
+                }
+            }
+
+            McfGurobiSolveMeta unit_meta {
+                McfGurobiLogStage::simple_unit(unit_c),
+                static_cast<int>(bbox_ctx.max_tier),
+                sat_tier_attempt,
+                static_cast<int>(attempt),
+                unit_warm_ptr != nullptr,
+                McfGurobiRetryKind::None,
+            };
+            out.simple_res = solve_simple_mcf_unit(
+                graph,
+                commodities,
+                unit_c,
+                simple_ids_for_unit,
+                records,
+                bbox_ctx,
+                &expand_state,
+                edge_cap,
+                node_cap,
+                enable_mcf_obj,
+                unit_warm_ptr,
+                diag,
+                gurobi_sink,
+                unit_meta,
+                default_mcf_gurobi_solve_params(),
+                SimpleMcfSolvePass::Standard,
+                nullptr);
+            unit_solve_ms_total += out.simple_res.solve_ms;
+            out.simple_res.solve_ms = unit_solve_ms_total;
+            if (out.simple_res.ok) {
+                if (resource_sink != nullptr && arc_index != nullptr) {
+                    const auto paths = build_unit_post_solve_paths(bus_res, out.simple_res, unit_c);
+                    const auto usage = aggregate_mcf_resource_usage_for_unit(graph, *arc_index, unit_c, paths);
+                    resource_sink->write_complete(unit_c, last_pre_route_section, usage, true);
+                }
+                out.ok = true;
+                return out;
+            }
+
+            const auto origin_groups = collect_failed_simple_origin_groups(
+                out.simple_res, unit_c, simple_ids_for_unit, commodities, records);
+            if (origin_groups.empty()) {
+                if (resource_sink != nullptr) {
+                    resource_sink->write_empty(unit_c);
+                }
+                out.unit_exhausted = true;
+                return out;
+            }
+
+            const auto expand_result = expand_simple_origin_hulls(expand_state, origin_groups, base_hull_for);
+            log_simple_bbox_expand(unit_c, static_cast<int>(attempt + 1), origin_groups, expand_result, expand_state);
+            if (expand_result.any_exhausted) {
+                if (resource_sink != nullptr) {
+                    resource_sink->write_empty(unit_c);
+                }
+                out.unit_exhausted = true;
+                return out;
+            }
+            continue;
+        }
+
+        // Tree-refine path (twelfth edition): stage1 tree-seed -> compress -> stage2 refine.
         const StageWarmStart* unit_warm_ptr = nullptr;
         auto unit_warm = StageWarmStart {};
         if (enable_pre_routing && stage_result_ok(bus_res.solution_class)) {
@@ -4853,7 +5367,7 @@ auto run_simple_mcf_unit_with_bbox_retry(
             }
         }
 
-        McfGurobiSolveMeta unit_meta {
+        McfGurobiSolveMeta seed_meta {
             McfGurobiLogStage::simple_unit(unit_c),
             static_cast<int>(bbox_ctx.max_tier),
             sat_tier_attempt,
@@ -4861,7 +5375,12 @@ auto run_simple_mcf_unit_with_bbox_retry(
             unit_warm_ptr != nullptr,
             McfGurobiRetryKind::None,
         };
-        out.simple_res = solve_simple_mcf_unit(
+        seed_meta.pass = SimpleMcfSolvePass::TreeSeed;
+        auto seed_params = default_mcf_gurobi_solve_params();
+        seed_params.mip_gap = kSimpleMcfTreeSeedMipGap;
+        seed_params.threads = 2;
+
+        const auto stage1 = solve_simple_mcf_unit(
             graph,
             commodities,
             unit_c,
@@ -4875,38 +5394,139 @@ auto run_simple_mcf_unit_with_bbox_retry(
             unit_warm_ptr,
             diag,
             gurobi_sink,
-            unit_meta);
-        unit_solve_ms_total += out.simple_res.solve_ms;
-        out.simple_res.solve_ms = unit_solve_ms_total;
-        if (out.simple_res.ok) {
-            if (resource_sink != nullptr && arc_index != nullptr) {
-                const auto paths = build_unit_post_solve_paths(bus_res, out.simple_res, unit_c);
-                const auto usage = aggregate_mcf_resource_usage_for_unit(graph, *arc_index, unit_c, paths);
-                resource_sink->write_complete(unit_c, last_pre_route_section, usage, true);
+            seed_meta,
+            seed_params,
+            SimpleMcfSolvePass::TreeSeed,
+            nullptr);
+
+        debug::info_fmt(
+            "SimpleMCF unit {} tree-seed pass: mip_gap={:.2f} status={} solve_ms={}",
+            unit_c,
+            kSimpleMcfTreeSeedMipGap,
+            solution_class_name(stage1.solution_class),
+            stage1.solve_ms);
+
+        if (!stage1.ok) {
+            out.simple_res = stage1;
+            unit_solve_ms_total += stage1.solve_ms;
+            out.simple_res.solve_ms = unit_solve_ms_total;
+
+            const auto origin_groups = collect_failed_simple_origin_groups(
+                out.simple_res, unit_c, simple_ids_for_unit, commodities, records);
+            if (origin_groups.empty()) {
+                if (resource_sink != nullptr) {
+                    resource_sink->write_empty(unit_c);
+                }
+                out.unit_exhausted = true;
+                return out;
             }
-            out.ok = true;
-            return out;
+
+            const auto expand_result = expand_simple_origin_hulls(expand_state, origin_groups, base_hull_for);
+            log_simple_bbox_expand(unit_c, static_cast<int>(attempt + 1), origin_groups, expand_result, expand_state);
+            if (expand_result.any_exhausted) {
+                if (resource_sink != nullptr) {
+                    resource_sink->write_empty(unit_c);
+                }
+                out.unit_exhausted = true;
+                return out;
+            }
+            continue;
         }
 
-        const auto origin_groups =
-            collect_failed_simple_origin_groups(out.simple_res, unit_c, simple_ids_for_unit, commodities, records);
-        if (origin_groups.empty()) {
+        const auto compress_summary = compress_unit_multi_fanout_origins(
+            graph,
+            stage1.paths,
+            records,
+            unit_c,
+            simple_origin_group_key);
+        debug::info_fmt(
+            "SimpleMCF unit {} tree-compress: refined_segments={} fallback_origins={}",
+            unit_c,
+            compress_summary.refined_segment_count,
+            compress_summary.fallback_origin_count);
+
+        auto [refined_com, refined_ids] =
+            build_refined_unit_commodity_list(commodities, simple_ids_for_unit, records, unit_c, compress_summary);
+        debug::info_fmt(
+            "SimpleMCF unit {} refine model: commodities={}",
+            unit_c,
+            refined_com.size());
+
+        auto refine_warm = build_guide_path_warm_start(refined_com);
+        const StageWarmStart* refine_warm_ptr =
+            refine_warm.nodes_by_record_id.empty() ? nullptr : &refine_warm;
+
+        McfGurobiSolveMeta refine_meta {
+            McfGurobiLogStage::simple_unit(unit_c),
+            static_cast<int>(bbox_ctx.max_tier),
+            sat_tier_attempt,
+            static_cast<int>(attempt),
+            refine_warm_ptr != nullptr,
+            McfGurobiRetryKind::None,
+        };
+        refine_meta.pass = SimpleMcfSolvePass::Refine;
+        auto refine_params = default_mcf_gurobi_solve_params();
+        refine_params.threads = 2;
+
+        auto refine_incumbent = build_refine_incumbent_seed_from_stage1(stage1);
+
+        auto stage2 = solve_simple_mcf_unit(
+            graph,
+            refined_com,
+            unit_c,
+            refined_ids,
+            records,
+            bbox_ctx,
+            &expand_state,
+            edge_cap,
+            node_cap,
+            enable_mcf_obj,
+            refine_warm_ptr,
+            diag,
+            gurobi_sink,
+            refine_meta,
+            refine_params,
+            SimpleMcfSolvePass::Refine,
+            &refine_incumbent);
+
+        unit_solve_ms_total += stage1.solve_ms + stage2.solve_ms;
+        debug::info_fmt(
+            "SimpleMCF unit {} refine pass: status={} solve_ms={}",
+            unit_c,
+            solution_class_name(stage2.solution_class),
+            stage2.solve_ms);
+
+        if (!stage2.ok) {
+            debug::error_fmt(
+                "SimpleMCF unit {} tree-refine failed: stage1 feasible but refine pass failed ({}); modeling error",
+                unit_c,
+                stage2.message);
+            out.simple_res = stage2;
+            out.simple_res.solve_ms = unit_solve_ms_total;
+            out.refine_modeling_error = true;
+            out.ok = false;
             if (resource_sink != nullptr) {
                 resource_sink->write_empty(unit_c);
             }
-            out.unit_exhausted = true;
             return out;
         }
 
-        const auto expand_result = expand_simple_origin_hulls(expand_state, origin_groups, base_hull_for);
-        log_simple_bbox_expand(unit_c, static_cast<int>(attempt + 1), origin_groups, expand_result, expand_state);
-        if (expand_result.any_exhausted) {
-            if (resource_sink != nullptr) {
-                resource_sink->write_empty(unit_c);
-            }
-            out.unit_exhausted = true;
-            return out;
+        stage2.paths =
+            merge_refined_paths_for_output(graph, stage1.paths, stage2.paths, compress_summary, records);
+        stage2.solve_ms = unit_solve_ms_total;
+        out.simple_res = std::move(stage2);
+        debug::info_fmt(
+            "SimpleMCF unit {} tree-refine result: used=refine total_solve_ms={}",
+            unit_c,
+            unit_solve_ms_total);
+
+        if (resource_sink != nullptr && arc_index != nullptr) {
+            const auto paths = build_unit_post_solve_paths(bus_res, out.simple_res, unit_c);
+            const auto usage = aggregate_mcf_resource_usage_for_unit(graph, *arc_index, unit_c, paths);
+            resource_sink->write_complete(unit_c, last_pre_route_section, usage, true);
         }
+        out.ok = true;
+        return out;
     }
 }
 
@@ -5095,6 +5715,8 @@ auto run_mcf_global_routing_cob_units(
     }
 
     auto simple_results = std::array<StageSolveResult, 16> {};
+    auto refine_modeling_error_by_unit = std::array<bool, 16> {};
+    refine_modeling_error_by_unit.fill(false);
     auto has_simple_unit = std::array<bool, 16> {};
     has_simple_unit.fill(false);
     bool all_simple_ok = true;
@@ -5219,6 +5841,7 @@ auto run_mcf_global_routing_cob_units(
                     const auto u = pending_units[wave_begin + fi];
                     const auto unit_outcome = futures[fi].get();
                     simple_results[u] = unit_outcome.simple_res;
+                    refine_modeling_error_by_unit[u] = unit_outcome.refine_modeling_error;
                     debug::info_fmt(
                         "SimpleMCF unit {}: ok={} solution_class={} objective={:.0f} paths={} solve_ms={}",
                         u,
@@ -5282,6 +5905,7 @@ auto run_mcf_global_routing_cob_units(
                     &gurobi_sink,
                     sat_tier_attempt);
                 simple_results[u] = unit_outcome.simple_res;
+                refine_modeling_error_by_unit[u] = unit_outcome.refine_modeling_error;
                 debug::info_fmt(
                     "SimpleMCF unit {}: ok={} solution_class={} objective={:.0f} paths={} solve_ms={}",
                     u,
@@ -5315,7 +5939,7 @@ auto run_mcf_global_routing_cob_units(
         }
         out.simple_mcf_ok[u] = simple_results[u].ok;
         out.summary.simple_mcf_solve_ms_by_unit[u] = simple_results[u].solve_ms;
-        if (!simple_results[u].ok) {
+        if (!simple_results[u].ok && !refine_modeling_error_by_unit[u]) {
             debug::error_fmt("SimpleMCF unit {} failed: {}", u, simple_results[u].message);
             add_simple_unit_retry_hints(
                 out.retry_hints,
@@ -5323,6 +5947,12 @@ auto run_mcf_global_routing_cob_units(
                 simple_ids_by_unit,
                 commodities,
                 records);
+        }
+        else if (!simple_results[u].ok) {
+            debug::error_fmt(
+                "SimpleMCF unit {} refine modeling error (no tier retry): {}",
+                u,
+                simple_results[u].message);
         }
         simple_objective += simple_results[u].objective;
     }

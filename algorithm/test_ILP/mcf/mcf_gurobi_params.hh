@@ -16,6 +16,8 @@ struct McfGurobiSolveParams {
     int mip_focus{2};      // GRB_IntParam_MIPFocus: 0 balance, 1 feasible, 2 optimal, 3 bound
     int cuts{-1};          // GRB_IntParam_Cuts: -1 auto, 0 off, 1 conservative, 2 aggressive, 3 very aggressive
     int threads{0};        // GRB_IntParam_Threads; set per solve (Bus 8/4, Simple 2)
+    /// GRB_DoubleParam_MIPGap; <= 0 means do not set (Gurobi default).
+    double mip_gap{-1.0};
 };
 
 inline auto default_mcf_gurobi_solve_params() -> McfGurobiSolveParams {
@@ -31,17 +33,21 @@ inline auto apply_mcf_gurobi_solve_params(GRBModel& model, const McfGurobiSolveP
     if (params.threads > 0) {
         model.set(GRB_IntParam_Threads, params.threads);
     }
+    if (params.mip_gap > 0.0) {
+        model.set(GRB_DoubleParam_MIPGap, params.mip_gap);
+    }
 }
 
 inline auto format_mcf_gurobi_solve_params(const McfGurobiSolveParams& params) -> std::String {
     return std::format(
-        "Presolve={} PreSparsify={} Symmetry={} MIPFocus={} Cuts={} Threads={}",
+        "Presolve={} PreSparsify={} Symmetry={} MIPFocus={} Cuts={} Threads={} MIPGap={}",
         params.presolve,
         params.pre_sparsify,
         params.symmetry,
         params.mip_focus,
         params.cuts,
-        params.threads);
+        params.threads,
+        params.mip_gap > 0.0 ? std::format("{:.4f}", params.mip_gap) : std::String("default"));
 }
 
 } // namespace PR_tool

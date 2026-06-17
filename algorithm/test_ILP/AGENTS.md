@@ -151,11 +151,22 @@ MCF Gurobi 线程与并行（第十版修改 9）：
 - **全局预算**：活跃 Gurobi 线程和 ≤ 64（`McfGurobiThreadBudget`）；分量超限时按 wave 分批。
 - **`--enable-mcf-parallel`**：仅控制 16 个 COBUnit 是否并行（unit 0→15）；在 64 预算内按 wave 限制同时活跃 unit 数（默认 hint 每 unit 2 线程）。未开时 unit 串行，但 unit 内分量仍并行。
 
+SimpleMCF tree-refine（第十二版，仅 `--enable-mcf-obj`）：
+
+- **启用**：`enable_mcf_obj && unit` 含 `is_multi_fanout` origin；否则单次 SimpleMCF（与第十版相同）。
+- **流程**（嵌套在 bbox retry 每次 attempt）：`tree-seed`（`MIPGap=0.30`）→ 压缩多扇出树为 segment → `refine`（默认 Gurobi 参数）；`solve_ms` 为两阶段之和。
+- **stage1**：origin 级 conflict 分解；可用 `--enable-pre-routing` BFS warm start。
+- **stage2**：segment 级 conflict 分解；`guide_path` warm start（不用 pre-routing）；共享 parent `x^H/o^H`。
+- **stage2 失败**：`ERROR`，unit `ok=false`，不 fallback，不 tier++（stage1 已可行则视为建模错误）。
+- **paths**：refine 成功后合并为 parent-origin 的 `McfPathInfo` 再写 post-solve。
+- **日志**：`debug.log` 含 `tree-refine`/`tree-seed`/`refine`；`gurobi-log` 每段含 `pass=tree_seed|refine|standard`。
+
 最小验证建议：
 
 ```bash
 xmake build test_ILP
 ./output/test_ILP test/config/case7 --enable-mcf-routing  --enable-pre-routing --enable-presat-parallel
+./output/test_ILP test/config/case7 --enable-mcf-routing  --enable-pre-routing --enable-presat-parallel --enable-mcf-obj
 ./output/test_ILP test/config/case8 --enable-mcf-routing  --enable-pre-routing --enable-presat-parallel
 ./output/test_ILP test/config/case9 --enable-mcf-routing  --enable-pre-routing --enable-presat-parallel
 ```

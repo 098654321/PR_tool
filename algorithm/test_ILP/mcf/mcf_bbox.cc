@@ -5,6 +5,7 @@
 #include <hardware/cob/cob.hh>
 
 #include <format>
+#include <queue>
 #include <stdexcept>
 
 namespace PR_tool {
@@ -255,6 +256,9 @@ auto resolve_mcf_bbox(
     if (mode == McfArcBBoxMode::SimpleOriginGroup) {
         return origin_group_bbox;
     }
+    if (mode == McfArcBBoxMode::SimpleExplicit) {
+        return origin_group_bbox;
+    }
     if (commodity_index < ctx.per_commodity.size()) {
         return ctx.per_commodity[commodity_index];
     }
@@ -275,6 +279,217 @@ auto expand_bus_hulls(McfBBoxContext& ctx, const std::Vector<std::String>& bus_k
         }
     }
     return out;
+}
+
+auto undirected_edge_key(const int u, const int v) -> std::pair<int, int> {
+    if (u <= v) {
+        return {u, v};
+    }
+    return {v, u};
+}
+
+auto append_arc_cob_coords(
+    const McfArc& arc,
+    const int cols,
+    std::Vector<hardware::COBCoord>& out
+) -> void {
+    if (arc.is_virtual || arc.cob < 0) {
+        return;
+    }
+    const auto cob = cob_from_linear(arc.cob, cols);
+    out.push_back(cob);
+    if (arc.is_turn) {
+        return;
+    }
+    if (is_straight_through(arc.from_dir, arc.to_dir)) {
+        using D = hardware::COBDirection;
+        const bool lr = (arc.from_dir == D::Left && arc.to_dir == D::Right)
+            || (arc.from_dir == D::Right && arc.to_dir == D::Left);
+        if (lr) {
+            out.push_back(hardware::COBCoord {cob.row, cob.col + 1});
+        }
+        else {
+            out.push_back(hardware::COBCoord {cob.row + 1, cob.col});
+        }
+    }
+}
+
+auto bbox_hull_from_cob_coords(const std::Vector<hardware::COBCoord>& coords) -> IlpBoundingBox {
+    if (coords.empty()) {
+        return {};
+    }
+    auto box = IlpBoundingBox {
+        coords.front().row,
+        coords.front().col,
+        coords.front().row,
+        coords.front().col};
+    for (std::size_t i = 1; i < coords.size(); ++i) {
+        box.row_min = std::min(box.row_min, coords[i].row);
+        box.row_max = std::max(box.row_max, coords[i].row);
+        box.col_min = std::min(box.col_min, coords[i].col);
+        box.col_max = std::max(box.col_max, coords[i].col);
+    }
+    return box;
+}
+
+auto find_undirected_arc(
+    const McfGlobalGraph& graph,
+    const int u,
+    const int v
+) -> const McfArc* {
+    for (const auto& arc : graph.arcs) {
+        if (arc.is_virtual) {
+            continue;
+        }
+        if ((arc.u == u && arc.v == v) || (arc.u == v && arc.v == u)) {
+            return &arc;
+        }
+    }
+    return nullptr;
+}
+
+auto bbox_from_physical_guide_path(
+    const McfGlobalGraph& graph,
+    const std::Vector<int>& guide_path
+) -> McfCommodityBBox {
+    auto coords = std::Vector<hardware::COBCoord> {};
+    for (const auto node : guide_path) {
+        if (node < 0 || static_cast<std::size_t>(node) >= graph.nodes.size()) {
+            continue;
+        }
+        const auto& meta = graph.nodes[static_cast<std::size_t>(node)];
+        if (meta.is_virtual) {
+            continue;
+        }
+        coords.push_back(hardware::COBCoord {
+            static_cast<std::i64>(meta.track_row),
+            static_cast<std::i64>(meta.track_col)});
+    }
+    for (std::size_t i = 0; i + 1 < guide_path.size(); ++i) {
+        const auto u = guide_path[i];
+        const auto v = guide_path[i + 1];
+        const auto* arc = find_undirected_arc(graph, u, v);
+        if (arc != nullptr) {
+            append_arc_cob_coords(*arc, graph.cols, coords);
+        }
+    }
+    if (coords.empty()) {
+        return McfCommodityBBox {};
+    }
+    return McfCommodityBBox {true, bbox_hull_from_cob_coords(coords)};
+}
+
+auto commodity_bbox_connected(
+    const McfGlobalGraph& graph,
+    const int src,
+    const int snk,
+    const std::size_t cob_unit,
+    const McfCommodityBBox& effective_bbox
+) -> bool {
+    if (!effective_bbox.restricted) {
+        return true;
+    }
+    auto adj = std::map<int, std::Vector<std::pair<int, int>>> {};
+    for (std::size_t a = 0; a < graph.arcs.size(); ++a) {
+        const auto& arc = graph.arcs[a];
+        if (arc.unit != cob_unit) {
+            continue;
+        }
+        adj[arc.u].push_back({arc.v, static_cast<int>(a)});
+        adj[arc.v].push_back({arc.u, static_cast<int>(a)});
+    }
+    auto prev = std::vector<int>(graph.nodes.size(), -1);
+    auto q = std::queue<int> {};
+    q.push(src);
+    prev[static_cast<std::size_t>(src)] = src;
+    while (!q.empty()) {
+        const auto node = q.front();
+        q.pop();
+        if (node == snk) {
+            return true;
+        }
+        const auto it = adj.find(node);
+        if (it == adj.end()) {
+            continue;
+        }
+        for (const auto [next, arc_id] : it->second) {
+            if (prev[static_cast<std::size_t>(next)] != -1) {
+                continue;
+            }
+            const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
+            const auto from = arc.u == node ? arc.u : arc.v;
+            const auto to = arc.u == node ? arc.v : arc.u;
+            if (!arc_allowed_in_mcf_bbox(
+                    arc,
+                    graph.nodes[static_cast<std::size_t>(from)],
+                    graph.nodes[static_cast<std::size_t>(to)],
+                    true,
+                    effective_bbox.box,
+                    graph.cols,
+                    src,
+                    snk)) {
+                continue;
+            }
+            prev[static_cast<std::size_t>(next)] = node;
+            q.push(next);
+        }
+    }
+    return false;
+}
+
+auto guide_path_bbox_connected(
+    const McfGlobalGraph& graph,
+    const std::Vector<int>& guide_path,
+    const std::size_t cob_unit,
+    const McfCommodityBBox& effective_bbox
+) -> bool {
+    if (!effective_bbox.restricted || guide_path.size() < 2) {
+        return guide_path.size() >= 2;
+    }
+    const auto src = guide_path.front();
+    const auto snk = guide_path.back();
+    for (std::size_t i = 0; i + 1 < guide_path.size(); ++i) {
+        const auto u = guide_path[i];
+        const auto v = guide_path[i + 1];
+        const auto* arc = find_undirected_arc(graph, u, v);
+        if (arc == nullptr) {
+            return false;
+        }
+        if (arc->unit != cob_unit) {
+            return false;
+        }
+        const auto from = arc->u == u ? arc->u : arc->v;
+        const auto to = arc->u == u ? arc->v : arc->u;
+        if (!arc_allowed_in_mcf_bbox(
+                *arc,
+                graph.nodes[static_cast<std::size_t>(from)],
+                graph.nodes[static_cast<std::size_t>(to)],
+                true,
+                effective_bbox.box,
+                graph.cols,
+                src,
+                snk)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+auto segment_bbox_from_guide_path(
+    const McfGlobalGraph& graph,
+    const std::Vector<int>& guide_path,
+    const std::size_t cob_unit
+) -> McfCommodityBBox {
+    auto bbox = bbox_from_physical_guide_path(graph, guide_path);
+    if (!bbox.restricted || guide_path.size() < 2) {
+        return bbox;
+    }
+    while (!guide_path_bbox_connected(graph, guide_path, cob_unit, bbox)) {
+        if (!expand_bbox_by_one(bbox.box)) {
+            break;
+        }
+    }
+    return bbox;
 }
 
 auto lookup_simple_origin_hull(

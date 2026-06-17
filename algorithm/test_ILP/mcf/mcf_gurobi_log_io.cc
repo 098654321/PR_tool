@@ -130,6 +130,7 @@ auto McfGurobiLogSink::begin_solve(const McfGurobiSolveMeta& meta) -> McfGurobiS
         "bbox_attempt={}\n"
         "warm_start={}\n"
         "retry_kind={}\n"
+        "pass={}\n"
         "{}"
         "settings_prm={}\n",
         format_timestamp(),
@@ -140,6 +141,7 @@ auto McfGurobiLogSink::begin_solve(const McfGurobiSolveMeta& meta) -> McfGurobiS
         meta.bbox_attempt,
         meta.warm_start ? "yes" : "no",
         retry_kind_name(meta.retry_kind),
+        simple_mcf_solve_pass_name(meta.pass),
         format_component_meta_lines(meta),
         out.prm_path);
     append_lines(out.log_path, header);

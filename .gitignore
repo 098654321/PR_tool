@@ -13,6 +13,7 @@ build/
 compile_commands.json
 
 *.log
+gurobi-log/
 
 output
 

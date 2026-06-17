@@ -180,6 +180,7 @@ target("test_ILP")
         "algorithm/test_ILP/mcf/mcf_gurobi_thread_budget.cc",
         "algorithm/test_ILP/mcf/mcf_conflict_graph.cc",
         "algorithm/test_ILP/mcf/mcf_bbox.cc",
+        "algorithm/test_ILP/mcf/mcf_simple_tree_refine.cc",
         "algorithm/test_ILP/sat_allocation/tob_sat_encoder.cc",
         "algorithm/test_ILP/sat_allocation/cadical_solver.cc",
         "algorithm/test_ILP/sat_allocation/tob_allocation_result.cc",

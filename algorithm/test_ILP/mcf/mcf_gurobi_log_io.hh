@@ -33,6 +33,17 @@ struct McfGurobiLogStage {
 
 enum class McfGurobiRetryKind { None, NoWarmStart };
 
+enum class SimpleMcfSolvePass { Standard, TreeSeed, Refine };
+
+inline auto simple_mcf_solve_pass_name(const SimpleMcfSolvePass pass) -> std::string_view {
+    switch (pass) {
+        case SimpleMcfSolvePass::TreeSeed: return "tree_seed";
+        case SimpleMcfSolvePass::Refine:   return "refine";
+        case SimpleMcfSolvePass::Standard:
+        default:                           return "standard";
+    }
+}
+
 struct McfGurobiSolveMeta {
     McfGurobiLogStage stage {McfGurobiLogStage::bus()};
     int tier{0};
@@ -40,6 +51,7 @@ struct McfGurobiSolveMeta {
     int bbox_attempt{0};
     bool warm_start{false};
     McfGurobiRetryKind retry_kind{McfGurobiRetryKind::None};
+    SimpleMcfSolvePass pass{SimpleMcfSolvePass::Standard};
     int component_id{-1};
     int component_count{0};
     std::String component_summary;

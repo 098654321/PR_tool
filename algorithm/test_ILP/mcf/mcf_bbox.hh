@@ -47,6 +47,8 @@ enum class McfArcBBoxMode {
     Bus,
     SimpleCommodity,
     SimpleOriginGroup,
+    /// Caller-supplied bbox in origin_group_bbox (e.g. refined segment override).
+    SimpleExplicit,
 };
 
 auto physical_arc_in_bbox(const McfArc& arc, const IlpBoundingBox& bbox, int cols) -> bool;
@@ -98,5 +100,33 @@ auto lookup_simple_origin_hull(
     const McfBBoxExpandState& state,
     const McfSimpleOriginGroupKey& key
 ) -> std::optional<IlpBoundingBox>;
+
+auto bbox_from_physical_guide_path(
+    const McfGlobalGraph& graph,
+    const std::Vector<int>& guide_path
+) -> McfCommodityBBox;
+
+/// Tight hull from guide_path, then expand until guide_path_bbox_connected or array limit.
+auto segment_bbox_from_guide_path(
+    const McfGlobalGraph& graph,
+    const std::Vector<int>& guide_path,
+    std::size_t cob_unit
+) -> McfCommodityBBox;
+
+auto commodity_bbox_connected(
+    const McfGlobalGraph& graph,
+    int src,
+    int snk,
+    std::size_t cob_unit,
+    const McfCommodityBBox& effective_bbox
+) -> bool;
+
+/// True when every hop on guide_path is allowed in bbox (preferred segment validation).
+auto guide_path_bbox_connected(
+    const McfGlobalGraph& graph,
+    const std::Vector<int>& guide_path,
+    std::size_t cob_unit,
+    const McfCommodityBBox& effective_bbox
+) -> bool;
 
 } // namespace PR_tool
