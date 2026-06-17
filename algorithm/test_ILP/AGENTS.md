@@ -105,7 +105,7 @@ xmake build test_ILP
 - `--disable-multipin-io`：跳过顶层 `TrackToBumpsNet`，即不生成对应多扇出 IO split records。
 - `--disable-2pin-io`：跳过顶层 `TrackToBumpNet` 与 `BumpToTrackNet`；SyncNet 内部 btt/ttb 不受影响。
 - `--sat-log`：输出 SAT 求解日志。
-- MCF Gurobi 日志（第十版修改0）：`--enable-mcf-routing` 时自动写入 `gurobi-log/`：`bus.log`、`simple-unit{N}.log`（0–15）、`prm/{stage}_solve{K}.prm`；每次 Gurobi 调用追加一段（含 `timestamp`、`solve_id`、`tier`、`sat_tier_attempt`、`bbox_attempt`、`warm_start`、`retry_kind`）；失败尝试保留；未进 Gurobi 的失败写 stub；Skipped/empty 写 skipped 段。每次 test_ILP 运行清空 `gurobi-log/`。`modelinfo.log` 仍为矩阵诊断（rows/cols/nnz/heavy rows），与上述文件分工不变。
+- MCF Gurobi 日志（第十版修改0）：`--enable-mcf-routing` 时自动写入 `gurobi-log/`：`bus.log`、`simple-unit{N}.log`（0–15）、`prm/{stage}_solve{K}.prm`；每次 Gurobi 调用追加一段（含 `timestamp`、`solve_id`、`tier`、`sat_tier_attempt`、`bbox_attempt`、`warm_start`、`retry_kind`、分解时 `component_id`/`component_count`/`component_summary`）；失败尝试保留；未进 Gurobi 的失败写 stub；Skipped/empty 写 skipped 段。每次 test_ILP 运行清空 `gurobi-log/`。`modelinfo.log` 仍为矩阵诊断（rows/cols/nnz/heavy rows），与上述文件分工不变。
 
 MCF 计时日志：
 
@@ -136,6 +136,21 @@ SimpleMCF LP 松弛强化（第十版修改 2.1–2.3、3，仅 SimpleMCF）：
 - **2.3 Bus 残余过滤**：建模前按 Bus 占用过滤弧/边；`edge_capacity` 仅对实际出现 `x` 的边 lazy 创建；当前 origin group 的物理 endpoint `node residual=0` 早退 `endpoint_residual_zero`；transit 节点 residual=0 过滤穿越弧。不同 origin 不能通过彼此 endpoint 绕过 Bus residual node 过滤；`residual_disconnected` / `endpoint_no_o_var` 与 `bbox_disconnected` 同类失败（`Failed` + origin retry hint + gurobi stub）。
 - **3.1 `x_le_o` 保留；`o_le_sum_x` 删除**。
 - **3.2 `x_ge_degree_nonterminal` / `x_ge_degree_terminal`**：非 terminal 节点 `sum_{e∈δ(i)} x^H_e >= 2·o^H_i`；terminal（同 2.2 的物理 src/snk）`sum x >= o^H_i`。与 `o_endpoint_eq` 联立后 terminal 等价于 `sum incident x >= 1`。不改变整数可行解；无新早退路径。
+- **6 `f_le_o_link`（仅 SimpleMCF）**：per-commodity 节点 `Σf^n + (-2)·o^H <= 0`；有 f 无 o 跳过该行。
+
+MCF conflict graph 分解（第十版修改 7，BusMCF + SimpleMCF）：
+
+- **顶点**：BusMCF 为 `bus_key` 组；SimpleMCF 为 origin group `(unit, origin_key)`。
+- **候选集**：bbox（+ SimpleMCF 的 Bus residual）过滤后实际会建 `f`/`x`/`o` 的物理边/节点并集；边/节点交集连边，连通分量为独立 Gurobi 子模型（exact decomposition）。
+- **多分量**：分量间并行；`bus.log` / `simple-unitN.log` 一文件多段（`component_id`/`component_count`/`component_summary`）；`solve_ms` 为整 stage/unit 墙钟。
+- **失败**：任一分量失败则停该 stage/unit 其余分量；扩失败 net bbox 后重划分并整 stage/unit 重解。
+- **单分量**：行为与未分解相同（仅 Threads 显式设置）。
+
+MCF Gurobi 线程与并行（第十版修改 9）：
+
+- **Threads**：BusMCF 未分解 `8`、已分解每分量 `4`；SimpleMCF 每分量/单模 `2`（`McfGurobiSolveParams.threads`）。
+- **全局预算**：活跃 Gurobi 线程和 ≤ 64（`McfGurobiThreadBudget`）；分量超限时按 wave 分批。
+- **`--enable-mcf-parallel`**：仅控制 16 个 COBUnit 是否并行（unit 0→15）；在 64 预算内按 wave 限制同时活跃 unit 数（默认 hint 每 unit 2 线程）。未开时 unit 串行，但 unit 内分量仍并行。
 
 最小验证建议：
 

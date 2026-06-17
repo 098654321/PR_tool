@@ -40,6 +40,9 @@ struct McfGurobiSolveMeta {
     int bbox_attempt{0};
     bool warm_start{false};
     McfGurobiRetryKind retry_kind{McfGurobiRetryKind::None};
+    int component_id{-1};
+    int component_count{0};
+    std::String component_summary;
 };
 
 struct McfGurobiSolvePaths {

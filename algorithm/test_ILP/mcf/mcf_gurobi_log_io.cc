@@ -28,6 +28,21 @@ auto stage_index(const McfGurobiLogStage& stage) -> std::size_t {
     return 1 + stage.unit;
 }
 
+auto format_component_meta_lines(const McfGurobiSolveMeta& meta) -> std::String {
+    if (meta.component_count <= 1 && meta.component_id < 0) {
+        return std::String {};
+    }
+    auto out = std::format(
+        "component_id={}\n"
+        "component_count={}\n",
+        meta.component_id,
+        meta.component_count > 0 ? meta.component_count : 1);
+    if (!meta.component_summary.empty()) {
+        out += std::format("component_summary={}\n", meta.component_summary);
+    }
+    return out;
+}
+
 } // namespace
 
 McfGurobiLogSink::McfGurobiLogSink(const std::filesystem::path output_dir) : output_dir_ {output_dir} {}
@@ -115,6 +130,7 @@ auto McfGurobiLogSink::begin_solve(const McfGurobiSolveMeta& meta) -> McfGurobiS
         "bbox_attempt={}\n"
         "warm_start={}\n"
         "retry_kind={}\n"
+        "{}"
         "settings_prm={}\n",
         format_timestamp(),
         stage_label(meta.stage),
@@ -124,6 +140,7 @@ auto McfGurobiLogSink::begin_solve(const McfGurobiSolveMeta& meta) -> McfGurobiS
         meta.bbox_attempt,
         meta.warm_start ? "yes" : "no",
         retry_kind_name(meta.retry_kind),
+        format_component_meta_lines(meta),
         out.prm_path);
     append_lines(out.log_path, header);
     return out;
@@ -242,6 +259,7 @@ auto McfGurobiLogSink::write_stub(
         "bbox_attempt={}\n"
         "warm_start={}\n"
         "retry_kind={}\n"
+        "{}"
         "reason={}\n",
         format_timestamp(),
         stage_label(meta.stage),
@@ -251,6 +269,7 @@ auto McfGurobiLogSink::write_stub(
         meta.bbox_attempt,
         meta.warm_start ? "yes" : "no",
         retry_kind_name(meta.retry_kind),
+        format_component_meta_lines(meta),
         reason);
     if (!detail.empty()) {
         content += std::format("detail={}\n", detail);

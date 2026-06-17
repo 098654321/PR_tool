@@ -177,6 +177,8 @@ target("test_ILP")
         "algorithm/test_ILP/mcf/cob_mcf_router.cc",
         "algorithm/test_ILP/mcf/mcf_resource_usage_io.cc",
         "algorithm/test_ILP/mcf/mcf_gurobi_log_io.cc",
+        "algorithm/test_ILP/mcf/mcf_gurobi_thread_budget.cc",
+        "algorithm/test_ILP/mcf/mcf_conflict_graph.cc",
         "algorithm/test_ILP/mcf/mcf_bbox.cc",
         "algorithm/test_ILP/sat_allocation/tob_sat_encoder.cc",
         "algorithm/test_ILP/sat_allocation/cadical_solver.cc",
