@@ -3729,50 +3729,6 @@ auto solve_simple_mcf_component(
         }
     }
 
-    int f_le_o_link_rows = 0;
-    auto incident_f_by_kn = std::map<std::pair<int, int>, std::Vector<int>> {};
-    for (std::size_t j = 0; j < f_vars.size(); ++j) {
-        const auto k = f_vars[j].k;
-        const auto& arc = graph.arcs[static_cast<std::size_t>(f_vars[j].a)];
-        if (arc.is_virtual) {
-            continue;
-        }
-        for (const auto n : {arc.u, arc.v}) {
-            if (n < 0 || static_cast<std::size_t>(n) >= graph.nodes.size()) {
-                continue;
-            }
-            if (graph.nodes[static_cast<std::size_t>(n)].is_virtual) {
-                continue;
-            }
-            incident_f_by_kn[{k, n}].push_back(static_cast<int>(j));
-        }
-    }
-    for (const auto& [kn, f_list] : incident_f_by_kn) {
-        const auto k = kn.first;
-        const auto n = kn.second;
-        const auto h = commodity_origin_h[static_cast<std::size_t>(k)];
-        const auto o_it = origin_o_by_hn.find({h, n});
-        if (o_it == origin_o_by_hn.end()) {
-            continue;
-        }
-        const auto row = add_le(
-            0.0,
-            simple_meta(
-                "f_le_o_link",
-                std::format(
-                    "origin={} commodity={} node={}",
-                    origin_label(h),
-                    local_com[static_cast<std::size_t>(k)].label,
-                    node_text(graph, n)),
-                h,
-                local_com[static_cast<std::size_t>(k)].record_index));
-        ++f_le_o_link_rows;
-        for (const auto f_j : f_list) {
-            f_entries[static_cast<std::size_t>(f_j)].push_back({row, 1.0});
-        }
-        origin_o_entries[static_cast<std::size_t>(o_it->second)].push_back({row, -2.0});
-    }
-
     const auto num_f = static_cast<int>(f_vars.size());
     const auto num_origin_x = static_cast<int>(origin_x_vars.size());
     const auto num_origin_o = static_cast<int>(origin_o_vars.size());
@@ -3790,7 +3746,6 @@ auto solve_simple_mcf_component(
             {"x_ge_degree_nonterminal", x_ge_degree_nonterminal_rows},
             {"x_ge_degree_terminal", x_ge_degree_terminal_rows},
             {"o_endpoint_eq", o_endpoint_eq_rows},
-            {"f_le_o_link", f_le_o_link_rows},
             {"node_capacity", static_cast<int>(node_row.size())},
         });
     debug::info_fmt(

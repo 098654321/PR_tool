@@ -136,7 +136,6 @@ SimpleMCF LP 松弛强化（第十版修改 2.1–2.3、3，仅 SimpleMCF）：
 - **2.3 Bus 残余过滤**：建模前按 Bus 占用过滤弧/边；`edge_capacity` 仅对实际出现 `x` 的边 lazy 创建；当前 origin group 的物理 endpoint `node residual=0` 早退 `endpoint_residual_zero`；transit 节点 residual=0 过滤穿越弧。不同 origin 不能通过彼此 endpoint 绕过 Bus residual node 过滤；`residual_disconnected` / `endpoint_no_o_var` 与 `bbox_disconnected` 同类失败（`Failed` + origin retry hint + gurobi stub）。
 - **3.1 `x_le_o` 保留；`o_le_sum_x` 删除**。
 - **3.2 `x_ge_degree_nonterminal` / `x_ge_degree_terminal`**：非 terminal 节点 `sum_{e∈δ(i)} x^H_e >= 2·o^H_i`；terminal（同 2.2 的物理 src/snk）`sum x >= o^H_i`。与 `o_endpoint_eq` 联立后 terminal 等价于 `sum incident x >= 1`。不改变整数可行解；无新早退路径。
-- **6 `f_le_o_link`（仅 SimpleMCF）**：per-commodity 节点 `Σf^n + (-2)·o^H <= 0`；有 f 无 o 跳过该行。
 
 MCF conflict graph 分解（第十版修改 7，BusMCF + SimpleMCF）：
 
