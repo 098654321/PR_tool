@@ -1,9 +1,7 @@
 #include "ilp_allocation/gurobi_model_stats.hh"
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
-#include <cctype>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -29,19 +27,6 @@ auto ensure_gurobi_log_dir(const std::String& log_dir) -> std::String {
     std::error_code ec {};
     std::filesystem::create_directories(dir, ec);
     return dir;
-}
-
-auto sanitize_stage_name(const std::String& stage) -> std::String {
-    auto out = std::String {};
-    for (const char c : stage) {
-        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
-            out += c;
-        }
-        else {
-            out += '_';
-        }
-    }
-    return out;
 }
 
 struct RowNnzEntry {
@@ -89,11 +74,6 @@ auto row_meta_detail(
     return std::format(" kind={} detail={}", meta.kind, meta.detail);
 }
 
-auto next_gurobi_log_seq() -> int {
-    static std::atomic<int> seq {0};
-    return ++seq;
-}
-
 auto modelinfo_mutex() -> std::mutex& {
     static std::mutex mutex {};
     return mutex;
@@ -121,16 +101,6 @@ auto log_gurobi_modelinfo(const std::String& log_dir, const std::String& line) -
         return;
     }
     out << line << '\n';
-}
-
-auto make_gurobi_log_path(
-    const std::String& log_dir,
-    const std::String& stage_name
-) -> std::String {
-    const auto base = sanitize_stage_name(stage_name);
-    const auto seq = next_gurobi_log_seq();
-    const auto dir = ensure_gurobi_log_dir(log_dir);
-    return std::format("{}/gurobi_{}_{}.log", dir, base, seq);
 }
 
 auto compute_gurobi_matrix_sparsity(
@@ -212,23 +182,6 @@ auto compute_gurobi_matrix_sparsity(
     });
 
     return out;
-}
-
-auto configure_gurobi_solver_log(
-    GRBEnv& env,
-    const std::String& stage_name,
-    const GurobiDiagnosticsOptions& opts
-) -> std::String {
-    if (!opts.enable_gurobi_log) {
-        env.set(GRB_IntParam_OutputFlag, 0);
-        return {};
-    }
-    const auto log_path = make_gurobi_log_path(opts.log_dir, stage_name);
-    env.set(GRB_IntParam_OutputFlag, 1);
-    env.set(GRB_IntParam_LogToConsole, 0);
-    env.set(GRB_StringParam_LogFile, log_path);
-    log_gurobi_modelinfo(opts.log_dir, std::format("{} Gurobi log file: {}", stage_name, log_path));
-    return log_path;
 }
 
 auto log_gurobi_matrix_diagnostics(

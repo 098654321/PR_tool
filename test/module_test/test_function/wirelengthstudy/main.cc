@@ -4,7 +4,8 @@
 #include "mcf/mcf_graph.hh"
 #include "ilp_allocation/gurobi.hh"
 #include "common/ilp_types.hh"
-#include "precompute/ilp_reach_precompute.hh"
+#include "common/tob_bbox_expansion.hh"
+#include "precompute/tob_path_precompute.hh"
 
 #include <algo/netbuilder/netbuilder.hh>
 #include <circuit/net/types/bbnet.hh>
@@ -206,15 +207,15 @@ auto run_wirelength_study_main(int argc, char** argv) -> int {
     auto built = build_records(nets);
     auto records = std::move(built.records);
 
-    const auto reach_stats = precompute_reach_for_records(records);
+    auto path_cache = precompute_all_path_caches(records, interposer.get());
+    const auto tier_state = TobTierState::initial(records.size());
+    const auto start_edges = apply_tier_to_starttracks(records, path_cache, tier_state);
     debug::info_fmt(
-        "reach precompute: records={} (B={}, T={}, PN={})",
-        reach_stats.total_records,
-        reach_stats.bnet_records,
-        reach_stats.tnet_records,
-        reach_stats.pnnet_records);
+        "path precompute: records={} starttrack_edges={}",
+        path_cache.by_record.size(),
+        start_edges);
 
-    const auto ilp_result = solve_tob_ilp_with_gurobi(records, false, nullptr);
+    const auto ilp_result = solve_tob_ilp_with_gurobi(records, false);
     if (!ilp_result.ok) {
         debug::error_fmt("ILP failed: {}", ilp_result.message);
         return 1;

@@ -1,70 +1,85 @@
-function data = parse_mcf_resource_usage(log_path)
-%PARSE_MCF_RESOURCE_USAGE Parse MCF post-solve resource usage from debug.log.
+function data = parse_mcf_resource_usage(unit_file_path, phase)
+%PARSE_MCF_RESOURCE_USAGE Parse MCF resource usage from a per-unit file.
 %
-%   data = parse_mcf_resource_usage(log_path)
+%   data = parse_mcf_resource_usage(unit_file_path)
+%   data = parse_mcf_resource_usage(unit_file_path, phase)
 %
-%   Reads the last "MCF resource usage (post-solve, ...)" block and returns
-%   per-COBUnit switch and channel utilization for all 16 units.
+%   unit_file_path : path to resource-usage/unitN.txt
+%   phase          : 'post-solve' (default) | 'pre-route'
+%
+%   Returns a struct compatible with visualize_cob_unit_usage; data.units
+%   is a 16-element cell with parsed data in the matching unit slot.
 
-    if nargin < 1 || strlength(string(log_path)) == 0
+    if nargin < 1 || strlength(string(unit_file_path)) == 0
         error('parse_mcf_resource_usage:InvalidInput', ...
-            'log_path must be a non-empty path to a debug.log file.');
+            'unit_file_path must be a non-empty path to resource-usage/unitN.txt.');
+    end
+    if nargin < 2 || strlength(string(phase)) == 0
+        phase = 'post-solve';
+    end
+    phase = char(phase);
+    if ~strcmp(phase, 'post-solve') && ~strcmp(phase, 'pre-route')
+        error('parse_mcf_resource_usage:BadPhase', ...
+            'phase must be ''post-solve'' or ''pre-route'', got ''%s''.', phase);
     end
 
-    if ~isfile(log_path)
+    if ~isfile(unit_file_path)
         error('parse_mcf_resource_usage:FileNotFound', ...
-            'Log file not found: %s', log_path);
+            'Unit resource file not found: %s', unit_file_path);
     end
 
-    raw = fileread(log_path);
-    marker = 'MCF resource usage (post-solve, all_ok=';
-    idx = strfind(raw, marker);
+    raw = fileread(unit_file_path);
+    if strlength(strtrim(raw)) == 0
+        error('parse_mcf_resource_usage:EmptyFile', ...
+            ['Unit resource file is empty: %s. ', ...
+             'Run test_ILP with --enable-mcf-routing --show-resource-usage.'], ...
+            unit_file_path);
+    end
+
+    section_marker = sprintf('=== %s ===', phase);
+    idx = strfind(raw, section_marker);
     if isempty(idx)
-        error('parse_mcf_resource_usage:NoResourceBlock', ...
-            ['No MCF resource usage block found. Run test_ILP with ', ...
-             '--enable-mcf-routing and ensure MCF completed.']);
+        hint = ['Run test_ILP with --enable-mcf-routing --show-resource-usage ', ...
+                'and ensure this unit completed successfully for the requested phase.'];
+        error('parse_mcf_resource_usage:NoResourceSection', ...
+            'No ''%s'' section in %s. %s', section_marker, unit_file_path, hint);
     end
 
     tail = raw(idx(end):end);
-    all_ok_match = regexp(tail, ...
-        'MCF resource usage \(post-solve, all_ok=(true|false)\)', ...
-        'tokens', 'once');
-    if isempty(all_ok_match)
+    next_idx = regexp(tail, '\n=== ', 'once');
+    if isempty(next_idx)
+        section_text = tail;
+    else
+        section_text = tail(1:next_idx(1) - 1);
+    end
+
+    header_pat = sprintf('MCF resource usage \\(%s, unit=(\\d+), ok=(true|false)\\)', phase);
+    header_match = regexp(section_text, header_pat, 'tokens', 'once');
+    if isempty(header_match)
         error('parse_mcf_resource_usage:BadHeader', ...
-            'Could not parse all_ok flag from MCF resource usage header.');
+            'Could not parse header for phase ''%s'' in %s.', phase, unit_file_path);
+    end
+
+    unit_id = str2double(header_match{1});
+    if unit_id < 0 || unit_id > 15
+        error('parse_mcf_resource_usage:BadUnitId', ...
+            'Invalid unit id %d in %s.', unit_id, unit_file_path);
+    end
+
+    unit_pat = sprintf('Unit\\s+%d:', unit_id);
+    unit_start = regexp(section_text, unit_pat, 'once');
+    if isempty(unit_start)
+        error('parse_mcf_resource_usage:NoUnitBlock', ...
+            'Missing Unit %d block in phase ''%s'' (%s).', unit_id, phase, unit_file_path);
     end
 
     data = struct();
-    data.all_ok = strcmp(all_ok_match{1}, 'true');
+    data.phase = phase;
+    data.all_ok = strcmp(header_match{2}, 'true');
     data.rows = 9;
     data.cols = 12;
     data.units = repmat(empty_unit(data.rows, data.cols), 1, 16);
-
-    unit_pat = 'Unit\s+(\d+):';
-    unit_starts = regexp(tail, unit_pat, 'start');
-    unit_ids = regexp(tail, unit_pat, 'tokens');
-    if numel(unit_starts) < 16
-        error('parse_mcf_resource_usage:IncompleteUnits', ...
-            'Expected 16 Unit blocks, found %d.', numel(unit_starts));
-    end
-
-    for k = 1:16
-        block_start = unit_starts(k);
-        if k < numel(unit_starts)
-            block_end = unit_starts(k + 1) - 1;
-        else
-            block_end = numel(tail);
-        end
-        block = tail(block_start:block_end);
-        unit_id = str2double(unit_ids{k}{1});
-        if unit_id < 0 || unit_id > 15
-            error('parse_mcf_resource_usage:BadUnitId', ...
-                'Invalid unit id %d in log.', unit_id);
-        end
-
-        unit = parse_unit_block(block, data.rows, data.cols);
-        data.units(unit_id + 1) = unit;
-    end
+    data.units(unit_id + 1) = parse_unit_block(section_text(unit_start:end), data.rows, data.cols);
 end
 
 function unit = empty_unit(rows, cols)

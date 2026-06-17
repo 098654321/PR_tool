@@ -3,6 +3,8 @@
 #include "ilp_allocation/gurobi.hh"
 #include "ilp_allocation/gurobi_model_stats.hh"
 #include "common/ilp_types.hh"
+#include "common/tob_allocation_types.hh"
+#include "precompute/tob_path_precompute.hh"
 
 #include <hardware/interposer.hh>
 #include <std/collection.hh>
@@ -14,6 +16,16 @@ class BaseDie;
 } // namespace PR_tool::circuit
 
 namespace PR_tool {
+
+/// Ninth-edition MCF stage outcome (BusMCF / SimpleMCF Gurobi or presolve).
+enum class McfSolutionClass { Optimal, Suboptimal, TimeLimit, Failed, Skipped };
+
+auto classify_gurobi_status(int status) -> McfSolutionClass;
+auto solution_class_name(McfSolutionClass c) -> std::String;
+/// Optimal, Suboptimal, or Skipped.
+auto stage_result_ok(McfSolutionClass c) -> bool;
+/// Optimal or Suboptimal (extracted Gurobi solution).
+auto stage_result_usable(McfSolutionClass c) -> bool;
 
 /// COB tile grid size for MCF graph construction (must match `hardware::Interposer::COB_ARRAY_*` when passed from CLI).
 struct CobMcfGridDims {
@@ -37,6 +49,10 @@ struct CobMcfRunSummary {
     int mcf_warm_start_ms{0};
     /// Wall time for BusMCF + SimpleMCF Gurobi solves only.
     int mcf_solve_ms{0};
+    /// Wall time for the BusMCF stage only.
+    int bus_mcf_solve_ms{0};
+    /// Wall time for each SimpleMCF unit solve; 0 for empty units.
+    std::array<int, 16> simple_mcf_solve_ms_by_unit {};
     /// Sum of per-origin-group wire lengths (track + bump count); 0 if not computed.
     std::size_t total_wire_length{0};
 };
@@ -56,6 +72,13 @@ struct McfPathInfo {
     std::Vector<std::Vector<std::size_t>> track_paths;
 };
 
+struct CobMcfRetryHints {
+    std::Vector<std::String> failed_bus_keys;
+    std::Vector<std::size_t> failed_simple_units;
+    std::Vector<std::size_t> failed_record_indices;
+    bool bus_failure_unlocalized{false};
+};
+
 struct CobMcfFullResult {
     CobMcfRunSummary summary;
     std::array<std::Vector<McfPathInfo>, 16> paths_by_unit {};
@@ -63,6 +86,7 @@ struct CobMcfFullResult {
     std::array<bool, 16> simple_mcf_ok {};
     /// Unit has at least one non-Bus SimpleMCF commodity.
     std::array<bool, 16> has_simple_commodities {};
+    CobMcfRetryHints retry_hints;
 };
 
 /// Per-cobunit MCF: getNetinCOBUnit → merge → build_commodities → BusMCF (global) + SimpleMCF (per unit).
@@ -72,6 +96,7 @@ struct CobMcfFullResult {
 auto run_mcf_global_routing_cob_units(
     const std::Vector<Net_cost_record>& records,
     const TobIlpResult& ilp_result,
+    const TobPathPrecomputeCache& path_cache,
     hardware::Interposer* interposer,
     const circuit::BaseDie& basedie,
     CobMcfGridDims cob_grid,
@@ -80,7 +105,9 @@ auto run_mcf_global_routing_cob_units(
     bool enable_mcf_obj = false,
     bool defer_interposer_suspend = false,
     bool disable_bus_mcf = false,
-    const GurobiDiagnosticsOptions& diag = {}
+    bool show_resource_usage = false,
+    const GurobiDiagnosticsOptions& diag = {},
+    int sat_tier_attempt = 0
 ) -> CobMcfFullResult;
 
 } // namespace PR_tool

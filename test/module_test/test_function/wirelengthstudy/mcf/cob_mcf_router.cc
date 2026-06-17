@@ -64,7 +64,6 @@ struct PreparedCommodity {
     McfClass cls{McfClass::Plain};
     bool is_bus{false};
     std::String bus_key;
-    std::Vector<IlpReachStep> reach_steps;
     std::Vector<int> bbox_cobs;
 };
 
@@ -699,10 +698,10 @@ auto node_text(const GlobalGraph& g, const int node) -> std::String {
     const auto& meta = g.nodes[static_cast<std::size_t>(node)];
     if (meta.is_virtual) {
         if (meta.virtual_kind == 1) {
-            return std::String("V_P");
+            return std::format("V_P_U{}", meta.unit);
         }
         if (meta.virtual_kind == 2) {
-            return std::String("V_N");
+            return std::format("V_N_U{}", meta.unit);
         }
     }
     const auto dir_str = meta.track_dir == 0 ? "H" : "V";
@@ -810,8 +809,12 @@ auto build_track_graph(const CobMcfGridDims& grid) -> GlobalGraph {
             }
         }
     }
-    g.vp_node = add_node(g, NodeMeta {true, 1, 0, 0, 0, 0, 0});
-    g.vn_node = add_node(g, NodeMeta {true, 2, 0, 0, 0, 0, 0});
+    g.vp_node_by_unit.fill(-1);
+    g.vn_node_by_unit.fill(-1);
+    for (std::size_t unit = 0; unit < 16; ++unit) {
+        g.vp_node_by_unit[unit] = add_node(g, NodeMeta {true, 1, unit, 0, 0, 0, 0});
+        g.vn_node_by_unit[unit] = add_node(g, NodeMeta {true, 2, unit, 0, 0, 0, 0});
+    }
 
     constexpr auto dirs = std::array {
         hardware::COBDirection::Left,
@@ -977,13 +980,16 @@ auto prepare_commodities(
         bbox_start = tob_anchor_cob(record.start_bumps.front().TOB);
 
         if (record.type == Net_type::PNnet) {
+            if (c.cob_unit >= 16) {
+                continue;
+            }
             if (record.power_kind == IlpPowerKind::Pose) {
                 c.cls = McfClass::P;
-                c.snk = graph.vp_node;
+                c.snk = graph.vp_node_by_unit[c.cob_unit];
             }
             else {
                 c.cls = McfClass::N;
-                c.snk = graph.vn_node;
+                c.snk = graph.vn_node_by_unit[c.cob_unit];
             }
 
             auto virtual_edges_added = 0;
@@ -1065,15 +1071,6 @@ auto prepare_commodities(
         }
 
         c.bbox_cobs = bbox_cob_indices(grid, bbox_start, bbox_end);
-        if (endpoint.has_end_track) {
-            const auto it_end = record.reach_by_end_start.find(endpoint.end_track);
-            if (it_end != record.reach_by_end_start.end()) {
-                const auto it_start = it_end->second.find(endpoint.start_track);
-                if (it_start != it_end->second.end()) {
-                    c.reach_steps = it_start->second;
-                }
-            }
-        }
         out.push_back(std::move(c));
     }
     return out;
@@ -1089,11 +1086,15 @@ auto arc_usable_for_class(
     if (arc.unit != unit) {
         return false;
     }
-    if (arc.u == graph.vp_node || arc.v == graph.vp_node) {
-        return cls == McfClass::P;
-    }
-    if (arc.u == graph.vn_node || arc.v == graph.vn_node) {
-        return cls == McfClass::N;
+    if (unit < 16) {
+        const auto vp = graph.vp_node_by_unit[unit];
+        const auto vn = graph.vn_node_by_unit[unit];
+        if (vp >= 0 && (arc.u == vp || arc.v == vp)) {
+            return cls == McfClass::P;
+        }
+        if (vn >= 0 && (arc.u == vn || arc.v == vn)) {
+            return cls == McfClass::N;
+        }
     }
     return true;
 }

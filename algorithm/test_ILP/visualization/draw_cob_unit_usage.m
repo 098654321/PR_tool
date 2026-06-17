@@ -3,14 +3,17 @@ function fig = draw_cob_unit_usage(unit_data, unit_id, all_ok, varargin)
 %
 %   fig = draw_cob_unit_usage(unit_data, unit_id, all_ok)
 %   fig = draw_cob_unit_usage(..., 'Parent', ax, 'ShowLabels', true, 'SavePath', path)
+%   fig = draw_cob_unit_usage(..., 'Phase', 'pre-route')
 
     %#ok<NASGU> all_ok kept for API compatibility
     p = inputParser;
     addParameter(p, 'Parent', [], @(x) isempty(x) || isgraphics(x, 'axes'));
     addParameter(p, 'ShowLabels', false, @islogical);
     addParameter(p, 'SavePath', '', @(x) ischar(x) || isstring(x));
+    addParameter(p, 'Phase', 'post-solve', @(x) ischar(x) || isstring(x));
     parse(p, varargin{:});
     opts = p.Results;
+    phase_label = char(opts.Phase);
 
     tile_size = 0.52;
     gap = 0.58;
@@ -25,7 +28,7 @@ function fig = draw_cob_unit_usage(unit_data, unit_id, all_ok, varargin)
         'band_half', band_half);
 
     if isempty(opts.Parent)
-        fig = figure('Color', 'w', 'Name', sprintf('COBUnit U%d', unit_id));
+        fig = figure('Color', 'w', 'Name', sprintf('COBUnit U%d (%s)', unit_id, phase_label));
         ax = axes('Parent', fig);
     else
         ax = opts.Parent;
@@ -47,7 +50,7 @@ function fig = draw_cob_unit_usage(unit_data, unit_id, all_ok, varargin)
     box(ax, 'on');
     xlabel(ax, 'COB column');
     ylabel(ax, 'COB row');
-    title(ax, sprintf('COBUnit U%d MCF Resource Usage', unit_id));
+    title(ax, sprintf('COBUnit U%d MCF Resource Usage (%s)', unit_id, phase_label));
 
     colormap(ax, build_usage_colorbar_colormap());
     c = colorbar(ax);

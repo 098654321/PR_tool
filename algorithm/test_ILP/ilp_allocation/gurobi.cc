@@ -297,7 +297,6 @@ auto build_tob_ilp_row_meta(
 auto solve_tob_ilp_with_gurobi(
     const std::Vector<Net_cost_record>& records,
     const bool enable_parallel,
-    const TobIlpWarmStart* warm_start,
     const GurobiDiagnosticsOptions& diag
 )
     -> TobIlpResult {
@@ -341,15 +340,13 @@ auto solve_tob_ilp_with_gurobi(
 
     try {
         GRBEnv env {true};
-        configure_gurobi_solver_log(env, "TOB_ILP", diag);
+        env.set(GRB_IntParam_OutputFlag, 0);
         env.start();
 
         GRBModel grb_model {env};
         grb_model.set(GRB_StringAttr_ModelName, "TOB_ALLOC");
         grb_model.set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
-        if (!diag.enable_gurobi_log) {
-            grb_model.set(GRB_IntParam_OutputFlag, 0);
-        }
+        grb_model.set(GRB_IntParam_OutputFlag, 0);
         grb_model.set(GRB_IntParam_Threads, threads);
 
         auto vars = std::vector<GRBVar> {};
@@ -376,29 +373,6 @@ auto solve_tob_ilp_with_gurobi(
             grb_model.addConstr(row_expr[r], sense, data.rows[r].rhs, data.rows[r].name);
         }
 
-        if (warm_start != nullptr && !warm_start->values.empty()) {
-            std::size_t matched_values = 0;
-            for (const auto& [name, value] : warm_start->values) {
-                const auto it = col_index.find(name);
-                if (it == col_index.end()) {
-                    continue;
-                }
-                vars[it->second].set(GRB_DoubleAttr_Start, value);
-                ++matched_values;
-            }
-            if (matched_values == 0) {
-                debug::warning_fmt("Gurobi ILP warm start had no matching variables (requested_values={})", warm_start->values.size());
-            }
-            else {
-                debug::info_fmt(
-                    "Gurobi ILP warm start loaded: requested_values={}, matched_values={}, routed_nets={}, failed_nets={}",
-                    warm_start->values.size(),
-                    matched_values,
-                    warm_start->routed_nets,
-                    warm_start->failed_nets);
-            }
-        }
-
         log_gurobi_modelinfo(
             diag.log_dir,
             std::format(
@@ -417,12 +391,6 @@ auto solve_tob_ilp_with_gurobi(
         grb_model.optimize();
         out.model_status = grb_model.get(GRB_IntAttr_Status);
         if (out.model_status != GRB_OPTIMAL) {
-            if (warm_start != nullptr) {
-                debug::warning_fmt(
-                    "Gurobi ILP warm start led to non-optimal status ({}); retrying without warm start",
-                    out.model_status);
-                return solve_tob_ilp_with_gurobi(records, enable_parallel, nullptr, diag);
-            }
             out.ok = false;
             out.message = std::format("Gurobi model not optimal (status={})", out.model_status);
             if (out.model_status == GRB_INFEASIBLE && row_meta.size() == data.rows.size()) {
