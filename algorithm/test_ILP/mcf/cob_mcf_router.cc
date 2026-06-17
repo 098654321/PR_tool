@@ -3173,7 +3173,7 @@ auto solve_simple_mcf_unit(
         }
     }
 
-    // v5 §5: x_e <= o_i, o_i <= Σ_{e∈δ(i)} x_e, Σ_H o^H_i <= 1 - used^{Bus,c}_i
+    // v5 §5 + v10 mod3: x_e <= o_i; Σ_{e∈δ(i)} x^H_e >= 2·o^H_i (transit) or >= o^H_i (terminal); Σ_H o^H_i <= cap_i
     const auto undirected_incidence = build_undirected_incidence(edge_row);
     auto origin_o_entries = std::Vector<std::Vector<std::pair<int, double>>> {};
     auto origin_o_vars = std::Vector<OriginOVar> {};
@@ -3203,7 +3203,8 @@ auto solve_simple_mcf_unit(
     }
 
     int x_le_o_rows = 0;
-    int o_le_sum_x_rows = 0;
+    int x_ge_degree_nonterminal_rows = 0;
+    int x_ge_degree_terminal_rows = 0;
     auto origin_o_by_hn = std::map<std::pair<int, int>, int> {};
     for (const auto& xv : origin_x_vars) {
         const auto h = xv.h;
@@ -3238,6 +3239,11 @@ auto solve_simple_mcf_unit(
             origin_o_entries[static_cast<std::size_t>(o_var)].push_back({row_x_le_o, -1.0});
         }
     }
+    auto terminal_nodes_by_h = std::map<int, std::set<int>> {};
+    for (const auto& group : origin_groups) {
+        terminal_nodes_by_h[group.origin_group_id] =
+            build_origin_group_physical_endpoints(group, local_com, graph);
+    }
     for (const auto& [hn, o_var] : origin_o_by_hn) {
         const auto h = hn.first;
         const auto n = hn.second;
@@ -3255,16 +3261,28 @@ auto solve_simple_mcf_unit(
         if (x_on_delta.empty()) {
             continue;
         }
-        const auto row_o_le_sum = add_le(
+        const auto terminal_it = terminal_nodes_by_h.find(h);
+        const bool is_terminal =
+            terminal_it != terminal_nodes_by_h.end() && terminal_it->second.contains(n);
+        const auto row_degree = add_le(
             0.0,
             simple_meta(
-                "o_le_sum_x",
-                std::format("origin={} node={}", origin_label(h), node_text(graph, n)),
+                is_terminal ? "x_ge_degree_terminal" : "x_ge_degree_nonterminal",
+                std::format(
+                    "origin={} node={} role={}",
+                    origin_label(h),
+                    node_text(graph, n),
+                    is_terminal ? "terminal" : "transit"),
                 h));
-        ++o_le_sum_x_rows;
-        origin_o_entries[static_cast<std::size_t>(o_var)].push_back({row_o_le_sum, 1.0});
+        if (is_terminal) {
+            ++x_ge_degree_terminal_rows;
+            origin_o_entries[static_cast<std::size_t>(o_var)].push_back({row_degree, 1.0});
+        } else {
+            ++x_ge_degree_nonterminal_rows;
+            origin_o_entries[static_cast<std::size_t>(o_var)].push_back({row_degree, 2.0});
+        }
         for (const auto x_idx : x_on_delta) {
-            origin_x_entries[static_cast<std::size_t>(x_idx)].push_back({row_o_le_sum, -1.0});
+            origin_x_entries[static_cast<std::size_t>(x_idx)].push_back({row_degree, -1.0});
         }
     }
 
@@ -3348,7 +3366,8 @@ auto solve_simple_mcf_unit(
             {"f_le_x_lower", f_le_x_lower_rows},
             {"f_le_x_upper", f_le_x_upper_rows},
             {"x_le_o", x_le_o_rows},
-            {"o_le_sum_x", o_le_sum_x_rows},
+            {"x_ge_degree_nonterminal", x_ge_degree_nonterminal_rows},
+            {"x_ge_degree_terminal", x_ge_degree_terminal_rows},
             {"o_endpoint_eq", o_endpoint_eq_rows},
             {"node_capacity", static_cast<int>(node_row.size())},
         });
