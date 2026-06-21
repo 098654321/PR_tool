@@ -16,15 +16,19 @@ PR_tool 是面向 chiplet interposer 的布局布线工具：输入一份系统�
 - `view2d` / `view3d`：加载配置并执行 P&R，然后用 2D/3D 视图展示结果
 - `module_test` / `regression_test`：测试目标（用例与说明见仓库根目录 README）
 
-典型命令（在仓库根目录）：
+典型命令（在仓库根目录；可执行文件输出到 `./output/`）：
 
 ```bash
 xmake build PR_tool
+./output/PR_tool <config_folder> [OPTIONS]
+# 或
 xmake run PR_tool <config_folder> [OPTIONS]
 
 xmake build regression_test
 xmake run regression_test
 ```
+
+常用 CLI 选项（完整列表见 `source/app/PR_tool.cc` 的 `print_help()`）：`-p/--placement` 启用放置；`-i/--incremental [mode]` 增量布线（省略 mode 时 `try_all_modes`）；`-c/--compare <mode>` 与指定 mode 的 controlbits 比对（需与 `-i` 联用）。
 
 语言标准：`xmake.lua` 将 C++ 语言设置为 `c++23`（Linux 平台额外设置 `-std=c++2b`）。
 
@@ -440,7 +444,7 @@ GUI 入口在 `source/app/gui/gui.cc`，创建 `QApplication` 后启动 `widget:
    - `View2DWidget::reload()`（2D 结果重绘）
    - `View3DWidget::displayRoutingResult()`（3D 结果渲染）
 
-3) `generateControlBitAs()`：通过 `parse::write_control_bits(...)` 导出 `.ctb`
+3) `generateControlBitAs()`：通过 `parse::write_control_bits(...)` 导出 `.ctb`（默认建议路径 `output.ctb`）
 
 状态约束（改 GUI 行为时必须保持）：
 

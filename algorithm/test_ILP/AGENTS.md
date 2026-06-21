@@ -10,7 +10,7 @@
 - 路径预计算阶段：为每个 record 的 `(end_track, start_track)` 预计算同 COBUnit 内受限最短路、path bbox 和 path-length 分层。
 - MCF 阶段：可选启用 Gurobi，在 track 级图上求解 BusMCF 和 SimpleMCF。
 
-该子工程的硬件和电路基础来自项目根目录下的 `source/hardware` 与 `source/circuit`。算法依据优先参考 `algorithm/test_ILP/problem_formulation/` 中的方法文档，尤其是当前实现对应的“第七版方法与分析（SAT1）”。
+该子工程的硬件和电路基础来自项目根目录下的 `source/hardware` 与 `source/circuit`。算法依据优先参考 `algorithm/test_ILP/problem_formulation/当前实现方法整理.md`；历史版本见同目录下各版方法与分析文档（MCF/tree-refine 等见第十二版）。
 
 ## 工作流程中必须要做的事情
 
@@ -33,7 +33,6 @@ algorithm/test_ILP/
 ├── mcf/                    # track 级 BusMCF / SimpleMCF、bbox 可行图、硬件映射
 ├── ilp_allocation/         # legacy TOB ILP、MPS 导出
 ├── visualization/          # MCF 资源使用可视化辅助脚本
-├── case1/、case2/           # 历史样例
 └── problem_formulation/    # 方法定义与分析文档
 ```
 
@@ -65,18 +64,21 @@ algorithm/test_ILP/
 
 - `mcf/`
   - `cob_mcf_router.*` 构建 track 级全局图，准备 commodity，求解 BusMCF 与 SimpleMCF。
+  - `mcf_simple_tree_refine.*`：`--enable-mcf-obj` 时多扇出 origin 的两阶段 tree-seed/refine。
+  - `mcf_conflict_graph.*`、`mcf_gurobi_thread_budget.*`、`mcf_gurobi_log_io.*`：conflict 分解、线程预算与 Gurobi 分段日志。
   - PNnet（`TracksToBumpsNet`）在 SAT 选定的物理 `end_track` 上终止；SimpleMCF 不再创建 per-unit 虚拟 P/N hub。
   - `mcf_bbox.*` 根据 SAT 选定路径的 bbox 构造 MCF 可行图；对 track 节点施加 H/V 边界修剪（§第七版 6.2）。PNnet 与 TTB 相同：单 child 用 per-record path bbox，多扇出 origin 用 child bbox 的 RectHull；PNnet `snk` 为 SAT 选定的物理 `end_track` 节点。
   - `mcf_hw_map.hh` 封装 TOB/COB/track 坐标映射。
 
 - `ilp_allocation/`
-  - `tob_ilp_model.*` 与 `gurobi.*` 保留 legacy TOB ILP 求解（`wirelength_study`）与 `--export-ilp-mps` 对照能力。
+  - `tob_ilp_model.*` 与 `gurobi.*` 保留 legacy TOB ILP 与 `--export-ilp-mps` 对照能力；独立线长实验入口为 xmake 目标 `wirelength_study`（`test/module_test/test_function/wirelengthstudy/`）。
 
 ## 构建、运行、测试方法
 
-在项目根目录运行：
+在项目根目录运行（SAT 阶段依赖 CaDiCal，需 `xmake f --cadical=y` 并编译 `third_party/cadical`；MCF 阶段依赖 Gurobi，默认查找 `GUROBI_HOME` 或 xmake 内建路径）：
 
 ```bash
+xmake f --cadical=y
 xmake build test_ILP
 ```
 
@@ -84,6 +86,8 @@ xmake build test_ILP
 
 ```bash
 ./output/test_ILP <config_path>
+# 或
+xmake run test_ILP <config_path> [OPTIONS]
 ./output/test_ILP <config_path> -v
 ./output/test_ILP <config_path> --enable-mcf-routing --enable-mcf-obj
 ./output/test_ILP <config_path> --enable-mcf-routing --enable-pre-routing
@@ -98,13 +102,15 @@ xmake build test_ILP
 - `--enable-presat-parallel`：并行执行 SAT 前路径预计算（按 `(record, end_track)` 分块，只读 `Interposer`）。
 - 路径预计算会输出 `path precompute progress: [####------] N% (done/total)` 进度条日志（串行/并行均支持）。
 - `--enable-mcf-routing`：SAT 成功后继续执行 MCF。
-- `--enable-mcf-obj`：SimpleMCF 使用 `min Σ x` 目标；不加时 SimpleMCF 只做可行性求解。与 `--enable-pre-routing` 同时开启时，对 warm start 成功路径上的 `x^H_e` 使用 `kSimpleMcfWarmStartUsedEdgeCost`（0.95，见 `cob_mcf_router.cc`）软加权，其余 `x` 为 1.0，用于软破坏对称性。
+- `--disable-bus-mcf`：跳过 BusMCF，仅跑 SimpleMCF（需 `--enable-mcf-routing`）。
+- `--enable-mcf-obj`：SimpleMCF 使用 `min Σ x` 目标；不加时 SimpleMCF 只做可行性求解。与 `--enable-pre-routing` 同时开启时，对 warm start 成功路径上的 `x^H_e` 使用 `kSimpleMcfWarmStartUsedEdgeCost`（当前为 1.0，见 `cob_mcf_router.cc`）软加权，其余 `x` 为 1.0，用于软破坏对称性。
 - `--enable-pre-routing`：为 **MCF** Gurobi 提供 warm start 初值（`cob_mcf_router` 内 MCF 图 BFS），不改变硬约束。BusMCF warm start 在 Bus 求解前执行；SimpleMCF warm start 在 Bus 为 `Optimal`/`Suboptimal`/`Skipped` 时执行，按 COBUnit 以 Bus 实际占用初始化后再 BFS。多扇出 origin（`TrackToBumpsNet` / `TracksToBumpsNet`）采用增量 frontier：TTB 以共享 snk 为 hub、按 `end_bumps()` 顺序；PNnet 以本 unit 的 `vp`/`vn` 为 hub、按 record 顺序；部分 child 失败时成功的仍写入 warm start。与 TOB 阶段无关。
 - `--show-resource-usage`：自动开启 `--enable-pre-routing`；按 COBUnit 增量写入 `resource-usage/unit{N}.txt`（含 `pre-route` 与 `post-solve` 两段）；`debug.log` 仅写索引行，不输出资源块。要求 `--enable-mcf-routing`。Bus 失败时不写任何 unit 文件；失败/Skipped unit 写空文件。
 - `--disable-01-mcf`：跳过顶层 `TracksToBumpsNet`，即不生成 Pnet/Nnet records；SyncNet 内部拆分不受影响。
 - `--disable-multipin-io`：跳过顶层 `TrackToBumpsNet`，即不生成对应多扇出 IO split records。
 - `--disable-2pin-io`：跳过顶层 `TrackToBumpNet` 与 `BumpToTrackNet`；SyncNet 内部 btt/ttb 不受影响。
-- `--sat-log`：输出 SAT 求解日志。
+- `--sat-log`：输出 CaDiCal SAT 求解日志到 `cadical-log/`（含 `sat_tier{N}.trace`）。
+- `--check-golden`：MCF 结束后将 `total_wire_length` 与 `<config_path>/golden.txt` 比对（需 `--enable-mcf-routing`）；`testlength/testpn` 等路径允许 mismatch 并打 warning。
 - MCF Gurobi 日志（第十版修改0）：`--enable-mcf-routing` 时自动写入 `gurobi-log/`：`bus.log`、`simple-unit{N}.log`（0–15）、`prm/{stage}_solve{K}.prm`；每次 Gurobi 调用追加一段（含 `timestamp`、`solve_id`、`tier`、`sat_tier_attempt`、`bbox_attempt`、`warm_start`、`retry_kind`、分解时 `component_id`/`component_count`/`component_summary`）；失败尝试保留；未进 Gurobi 的失败写 stub；Skipped/empty 写 skipped 段。每次 test_ILP 运行清空 `gurobi-log/`。`modelinfo.log` 仍为矩阵诊断（rows/cols/nnz/heavy rows），与上述文件分工不变。
 
 MCF 计时日志：
@@ -159,7 +165,7 @@ SimpleMCF tree-refine（第十二版，仅 `--enable-mcf-obj`）：
 - **stage2**：segment 级 conflict 分解；`guide_path` warm start（不用 pre-routing）；共享 parent `x^H/o^H`。
 - **stage2 失败**：`ERROR`，unit `ok=false`，不 fallback，不 tier++（stage1 已可行则视为建模错误）。
 - **paths**：refine 成功后合并为 parent-origin 的 `McfPathInfo` 再写 post-solve。
-- **日志**：`debug.log` 含 `tree-refine`/`tree-seed`/`refine`；`gurobi-log` 每段含 `pass=tree_seed|refine|standard`。
+- **日志**：`debug.log` 含 `tree-refine`/`tree-seed`/`refine`；SimpleMCF unit 行前缀 `[MCF uN/tree-refine]` 或 `[MCF uN/standard]`；`gurobi-log` 每段含 `pass=tree_seed|refine|standard`。
 
 最小验证建议：
 
