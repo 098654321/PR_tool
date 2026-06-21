@@ -8,7 +8,7 @@
 主要分支（以仓库当前状态为准）：
 
 - `master`：主工程布局布线流程（命令模式框架）
-- `dev.algo_ILP_MCF` / `dev.algo_ILP_MCF_steiner` 等：SAT+MCF 算法实验分支（`algorithm/test_ILP/`）
+- `dev.algo_ILP_MCF` / `dev.algo_SAT_MCF_latest` / `dev.algo_ILP_newMCF` ：SAT+MCF 算法实验分支（`algorithm/test_ILP/`）。其中dev.algo_ILP_MCF是算法主分支，分出了dev.algo_SAT_MCF_latest(目前最新的)和dev.algo_ILP_newMCF（调整SimpleMCF变量的建模语义，但是没有拆解多扇出net）
 - `dev.incre_no_sharing` / `version_before_commands`：历史增量布线分支
 
 增量布线逻辑见 `source/algo/router/incremental/`；`test/config/case17`、`case18` 为增量布线配置样例，但当前 `regression_test` 未纳入这两例。

@@ -10,7 +10,7 @@
 - 路径预计算阶段：为每个 record 的 `(end_track, start_track)` 预计算同 COBUnit 内受限最短路、path bbox 和 path-length 分层。
 - MCF 阶段：可选启用 Gurobi，在 track 级图上求解 BusMCF 和 SimpleMCF。
 
-该子工程的硬件和电路基础来自项目根目录下的 `source/hardware` 与 `source/circuit`。算法依据优先参考 `algorithm/test_ILP/problem_formulation/当前实现方法整理.md`；历史版本见同目录下各版方法与分析文档（MCF/tree-refine 等见第十二版）。
+该子工程的硬件和电路基础来自项目根目录下的 `source/hardware` 与 `source/circuit`。算法依据优先参考 `algorithm/test_ILP/problem_formulation/当前实现方法整理.md`；历史版本见同目录下 `第一版方法.md` … `第十二版方法.md`（MCF/tree-refine 等见 `第十二版方法.md`）。
 
 ## 工作流程中必须要做的事情
 
@@ -33,7 +33,7 @@ algorithm/test_ILP/
 ├── mcf/                    # track 级 BusMCF / SimpleMCF、bbox 可行图、硬件映射
 ├── ilp_allocation/         # legacy TOB ILP、MPS 导出
 ├── visualization/          # MCF 资源使用可视化辅助脚本
-└── problem_formulation/    # 方法定义与分析文档
+└── problem_formulation/    # 方法定义文档（`大纲与总定义.md`、各版 `第N版方法.md`）
 ```
 
 ## 关键文件与职责
