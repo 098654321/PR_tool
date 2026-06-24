@@ -18,7 +18,8 @@ extern void test_debug_main();
 extern void test_config_main();
 extern void test_comparator_main();
 extern void test_path_length_main();
-extern void test_placer_iteratively_main();
+extern void test_placer_iteratively_main(int argc, char** argv);
+extern void test_router_iteratively_main(int argc, char** argv);
 extern void test_writer_main(int argc, char** argv);
 
 #define REGISTER_TEST(test_name)\
@@ -56,7 +57,13 @@ try {
 
     if (target == "placer_iteratively") {
         PR_tool::console::println_fmt("Run test 'placer_iteratively'");
-        test_placer_iteratively_main();
+        test_placer_iteratively_main(argc, argv);
+        return 0;
+    }
+
+    if (target == "router_iteratively") {
+        PR_tool::console::println_fmt("Run test 'router_iteratively'");
+        test_router_iteratively_main(argc, argv);
         return 0;
     }
 

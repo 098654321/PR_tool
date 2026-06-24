@@ -127,7 +127,8 @@ cd output
 | `path_length` | 路径长度计算 |
 | `debug` | 日志系统 |
 | `all` | 运行上表全部快速测试 |
-| `placer_iteratively` | 慢速稳定性测试（100 次 P&R，不在 `all` 中） |
+| `placer_iteratively [config]` | 慢速稳定性测试（100 次放置+布线，不在 `all` 中；默认 `../test/config/case1`） |
+| `router_iteratively [config]` | 慢速稳定性测试（100 次仅布线，不在 `all` 中；默认 `../test/config/case1`） |
 
 `module_test/test_function/` 与 `module_test/test_writer/` 下还有带独立数据集的专项测试（线长、writer、bbox 等），由对应 `*.cc` 编译进 `module_test` target。
 
@@ -158,11 +159,11 @@ Linux 上需确保 `CONDA_PREFIX` 指向已安装 Catch2 的环境。
 
 | case | 说明 |
 |:----:|------|
-| [case1](./test/config/case1) | 仅同步线（bus）布线 |
+| [case1](./test/config/case1) | 仅同步线（bus）布线；`placer_iteratively` / `router_iteratively` 默认用例 |
 | [case2](./test/config/case2) | 同步线 + 额外非同步线，测试 bump 复用 |
 | [case3](./test/config/case3) | 仅非同步线布线 |
 | [case4](./test/config/case4) | 含 VDD/GND、更多线网（回归中暂未启用） |
-| [case5](./test/config/case5) | 更多连接；也用于 `placer_iteratively` |
+| [case5](./test/config/case5) | 更多连接 |
 
 #### case 7–9：CPU–AI–MEM 芯粒系统
 
