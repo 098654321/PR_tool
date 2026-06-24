@@ -26,11 +26,12 @@ namespace PR_tool::parse
         fetch_sw_v(rv);
     }
 
-    auto CobRegister::fetch_selection(hardware::COB* pcob, std::Bits<128>& sel_register) -> void
+    auto CobRegister::fetch_selection(hardware::COB* pcob, std::Bits<128>& sel_register,
+                                      hardware::COBDirection dir) -> void
     {
         for (std::usize index = 0; index < 128; ++index)
         {
-            auto value = pcob->get_sel_resgiter_value(hardware::COBDirection::Right, index);
+            auto value = pcob->get_sel_resgiter_value(dir, index);
             if (value == hardware::COBSignalDirection::TrackToCOB)
                 sel_register[index] = 0;
             else
@@ -70,13 +71,13 @@ namespace PR_tool::parse
                     auto cob = opt_cob.value();
 
                     if (method == "right_sel")
-                        fetch_selection(cob, cob_value.right_sel);
+                        fetch_selection(cob, cob_value.right_sel, hardware::COBDirection::Right);
                     else if (method == "left_sel")
-                        fetch_selection(cob, cob_value.left_sel);
+                        fetch_selection(cob, cob_value.left_sel, hardware::COBDirection::Left);
                     else if (method == "up_sel")
-                        fetch_selection(cob, cob_value.up_sel);
+                        fetch_selection(cob, cob_value.up_sel, hardware::COBDirection::Up);
                     else if (method == "down_sel")
-                        fetch_selection(cob, cob_value.down_sel);
+                        fetch_selection(cob, cob_value.down_sel, hardware::COBDirection::Down);
                     else if (method == "sw_ru")
                         fetch_switch(cob, cob_value.sw_ru, hardware::COBDirection::Right, hardware::COBDirection::Up);
                     else if (method == "sw_lu")

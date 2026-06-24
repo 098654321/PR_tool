@@ -55,6 +55,10 @@ A typical test case directory (e.g., `test/config/case4/`) contains:
     *   Build: `xmake build PR_tool module_test`
     *   Run from `output/`: `./module_test <test_name>` (e.g. `./module_test placer`)
     *   Run all fast unit tests: `./module_test all`
-*   **`placer_iteratively` (slow, not in `all`)**: Runs `./PR_tool ../test/config/case5 -p` 100 times via subprocess. After each run, parses `output/debug.log` and fails if `Failed routing nubmer > 0` or any `Routing failed for this net:` appears. `Total Length >= 1100` only emits a warning and does not stop the run. Expect several minutes of runtime.
+*   **`placer_iteratively` (slow, not in `all`)**: Runs `./PR_tool <config> -p` 100 times via subprocess (default config: `../test/config/case1`). After each run, parses `output/debug.log` and fails if `Failed routing nubmer > 0` or any `Routing failed for this net:` appears. `Total Length >= 1100` only emits a warning and does not stop the run. Expect several minutes of runtime.
     *   Run: `cd output && ./module_test placer_iteratively`
+    *   Run with custom case: `cd output && ./module_test placer_iteratively ../test/config/case5`
+*   **`router_iteratively` (slow, not in `all`)**: Same as `placer_iteratively`, but runs `./PR_tool <config>` without `-p` (routing only). Default config: `../test/config/case1`.
+    *   Run: `cd output && ./module_test router_iteratively`
+    *   Run with custom case: `cd output && ./module_test router_iteratively ../test/config/case5`
 *   **Regression**: The `regression_test` target runs the Catch2 suite, which likely iterates over the `config/` cases, runs the tool, and compares the output against `golden.txt`.

@@ -43,7 +43,7 @@ namespace PR_tool::parse
     
     private:
         auto fetch_template(RegisterValue& rv, std::String method) -> void;
-        auto fetch_selection(hardware::COB*, std::Bits<128>&) -> void;
+        auto fetch_selection(hardware::COB*, std::Bits<128>&, hardware::COBDirection dir) -> void;
         auto fetch_switch(hardware::COB*, std::Bits<128>&, hardware::COBDirection from_dir, hardware::COBDirection to_dir) -> void;
     
     private:

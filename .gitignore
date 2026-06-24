@@ -29,3 +29,6 @@ schedule*
 
 local/
 third/
+
+/test/module_test/test_writer/check-controlbits-file/
+/test/module_test/test_writer/*/check_run

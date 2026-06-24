@@ -18,7 +18,9 @@ extern void test_debug_main();
 extern void test_config_main();
 extern void test_comparator_main();
 extern void test_path_length_main();
-extern void test_placer_iteratively_main();
+extern void test_placer_iteratively_main(int argc, char** argv);
+extern void test_router_iteratively_main(int argc, char** argv);
+extern void test_writer_main(int argc, char** argv);
 
 #define REGISTER_TEST(test_name)\
 functions.emplace(#test_name, & test_##test_name##_main);\
@@ -30,10 +32,16 @@ if (target == #test_name) {\
 
 int main(int argc, char** argv) 
 try {
-    assert(argc == 2);
+    assert(argc >= 2);
 
     auto functions = std::HashMap<std::StringView, TestFunction>{};
     auto target = std::StringView{argv[1]};
+
+    if (target == "writer") {
+        PR_tool::console::println_fmt("Run test 'writer'");
+        test_writer_main(argc, argv);
+        return 0;
+    }
     PR_tool::debug::set_debug_level(PR_tool::debug::DebugLevel::Info);
     PR_tool::debug::initial_log("./debug.log");
 
@@ -49,7 +57,13 @@ try {
 
     if (target == "placer_iteratively") {
         PR_tool::console::println_fmt("Run test 'placer_iteratively'");
-        test_placer_iteratively_main();
+        test_placer_iteratively_main(argc, argv);
+        return 0;
+    }
+
+    if (target == "router_iteratively") {
+        PR_tool::console::println_fmt("Run test 'router_iteratively'");
+        test_router_iteratively_main(argc, argv);
         return 0;
     }
 

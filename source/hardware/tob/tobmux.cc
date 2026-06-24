@@ -137,40 +137,24 @@ namespace PR_tool::hardware {
     auto TOBMux::randomly_map_remain_indexes() -> void {
         auto unused_indexes = this->available_output_indexes();
 
-        // show total unused indexes
-        std::String message{"["};
-        for (auto& index : unused_indexes) {
-            message += std::format("{}, ", index);
-        }
-        message += "]";
-        // debug::debug_fmt("randomly_map(): Total unused indexes: {}", message);
-
-        // randomly map remain indexes
-        std::usize index = 0, reg_count = 0;
+        std::usize index = 0;
         for (auto& reg : this->_registers) {
             if (!reg.get().has_value()) {
                 if (reg.is_given_out()) {
-                    const auto& index = reg.given_out_index();
-                    if (!index.has_value()) {
-                        throw std::runtime_error("randomly_map(): reg is given out with empty indexbefore randomly mapping");
-                    }
-                    else {
+                    const auto& out_index = reg.given_out_index();
+                    if (!out_index.has_value()) {
                         throw std::runtime_error(
-                            std::format("randomly_map(): reg is given out with index = {} before randomly mapping", index.value())
-                        );
+                            "randomly_map(): reg is given out with empty index before randomly mapping");
                     }
+                    throw std::runtime_error(std::format(
+                        "randomly_map(): reg is given out with index = {} before randomly mapping",
+                        out_index.value()));
                 }
                 reg.set(unused_indexes.at(index));
                 index += 1;
-
-                // debug::debug_fmt("randomly_map(): reg_{} is set to {}", reg_count, reg.get().value());
-            }
-            else{
+            } else {
                 assert(reg.is_given_out());
-                // debug::debug_fmt("randomly_map(): reg_{} already has a value {}", reg_count, reg.get().value());
             }
-
-            reg_count += 1;
         }
     }
 

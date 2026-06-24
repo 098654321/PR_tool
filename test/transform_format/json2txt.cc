@@ -108,7 +108,7 @@ namespace PR_tool::parse {
             }
 
             const int row = hardware::Interposer::COB_ARRAY_HEIGHT
-                - 2 * static_cast<int>(inst_iter->second.coord.row);
+                - 2 * static_cast<int>(inst_iter->second.coord.row) - 1;
             const int col = 3 * static_cast<int>(inst_iter->second.coord.col);
             return numbers_from_index(row, col, pin_iter->second);
         }

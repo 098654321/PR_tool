@@ -1,0 +1,255 @@
+# PR_TOOL Writer 输出逻辑修复记录
+
+测例：test/module_test/test_writer/test1_neighbouring_chiplet
+验证流程：check-controlbits-file/SKILLs.md（金标准 kiwi → trans_path → test_writer → split → compare）
+验证结果：步骤 8 四个 controlbit 文件与金标准完全一致（含 8 条连接与 100 条连接两次全量跑通）
+
+本文档仅记录 **PR_TOOL 侧** 为对齐金标准 `regnamecontrolbit_4part/` 而对 **输出逻辑（writer / 硬件寄存器写入与读出）** 所做的修复。
+路径转换（trans_path_old2new.py）、json2txt 等前置环节另见 test/transform_format/txt&json_coord_relationship.txt 第八节。
+
+---
+
+## 1. COB sel 寄存器读出方向错误
+
+**文件：** `source/parse/writer/registers/cobregister.cc`（及 `cobregister.hh`）
+
+**现象：**
+- `compare_controlbits` 中大量 `cob_*_right_sel_0`、`left_sel_0`、`up_sel_0`、`down_sel_0` 等与金标准不符。
+- PR 输出四个方向的 sel 寄存器 **数值完全相同**（例如均为 `00000100`），而金标准各方向不同。
+
+**根因：**
+`CobRegister::fetch_selection()` 在读取 `right_sel` / `left_sel` / `up_sel` / `down_sel` 时，
+**始终调用** `pcob->get_sel_resgiter_value(COBDirection::Right, index)`，
+未按寄存器名称传入对应 COB 边方向。
+
+**修复：**
+- 为 `fetch_selection` 增加参数 `hardware::COBDirection dir`。
+- 在 `fetch_template` 中按寄存器类型传入正确方向：
+  - `right_sel` → `COBDirection::Right`
+  - `left_sel`  → `COBDirection::Left`
+  - `up_sel`    → `COBDirection::Up`
+  - `down_sel`  → `COBDirection::Down`
+
+**编码约定（与金标准一致）：**
+- `TrackToCOB` → 位值 `0`
+- `COBToTrack` → 位值 `1`
+
+---
+
+## 2. COB 连接器索引：track_index 误当作 cob_index
+
+**文件：** `source/hardware/cob/cob.cc` — `COB::get_cob_connector()`
+
+**现象：**
+- 即使路径坐标转换正确，`cob_*_sel` 仍出现系统性偏差。
+- 典型对比：`cob_0_0_right_sel_0` 金标准 `00000002`，PR 为 `00000100`（bit 位置错 8 位）。
+
+**根因：**
+`get_cob_connector()` 将 **track_index**（轨道编号，0–127）直接传给
+`sel_register()` / `sw_register()`，而这两个接口期望的是 **cob_index**
+（经 Wilton 重映射后的 COB 端口索引）。
+
+金标准 `printControlBit.cpp::setTrack2Cob()` 对 trackindex 做端口换算后再写入 sel 数组；
+例如 track index `8` 对应 sel 数组 index `1`，而非 `8`。
+
+`adjacent_connectors()` 路径使用 COBUnit 内部寄存器指针，是正确的；
+但 `COBConnectorInfo::create_cobconnector()` 经 `get_cob_connector()` 重建连接器时走了错误索引，
+`test_writer` 回放路径时 `connect_all()` 写入了错误的 sel/sw 位。
+
+**修复：**
+```cpp
+auto from_cob_index = COB::track_index_to_cob_index(from_track_index);
+auto to_cob_index   = COB::track_index_to_cob_index(to_track_index);
+// sw_register / sel_register 使用 from_cob_index / to_cob_index
+```
+
+**说明：** 此 bug 在硬件连接层，但直接决定 writer 读出的 COB 控制位，故纳入 writer 验证修复范围。
+
+---
+
+## 3. 缺少外部 IO 默认 COB sel（金标准 resetintr01）
+
+**文件：** `source/parse/writer/module.cc` — `apply_ext_io_sel_defaults()`
+
+**现象：**
+- 路径相关 COB 寄存器对齐后，仍有个别 `cob_*_*_sel_2` 与金标准不符
+  （金标准 `10204080`，PR 为 `0`）。
+- 同时影响 `xinzhai_C4_noi_*_pad_ctrl_2`（金标准 `ffaa`，PR 为 `ffff`）。
+
+**根因：**
+金标准在 `printControlBit.cpp::initializeControlBit()` 末尾：
+1. `resetDefaultValue(..., 0)` 将未使用 sel 置 0（Track→COB）；
+2. `resetintr01()` 对边界 COB 的 TX 端口（track index 71/78/85/92）强制 `sel=1`（COB→Track）。
+
+PR 在 `connect_all()` 后仅反映实际布线路径，**未**写入上述与布线无关的固定默认值。
+
+**修复：**
+在 `connect_registers()` 完成所有 `path_package.connect_all()` 之后、
+`write_control_bits()` 之前调用 `apply_ext_io_sel_defaults(interposer)`：
+
+| PR COB 坐标 | 方向 | 端口 index |
+|-------------|------|------------|
+| (6, 11) | Right | 71, 78, 85, 92 |
+| (8, 1)  | Up    | 71, 78, 85, 92 |
+| (0, 10) | Down  | 71, 78, 85, 92 |
+| (0, 2)  | Down  | 71, 78, 85, 92 |
+
+对应金标准 internal `cobcontrolbit` 经 90° 旋转变换到 PR 坐标系后的边界 TX 默认配置。
+
+---
+
+## 4. Xinzhai padctrl 读取的 COB 坐标与边方向错误
+
+**文件：** `source/parse/writer/registers/xinzhai_register.cc`
+
+**现象：**
+- COB sel/sw 全部对齐后，仅剩 `xinzhai_C4_noi_*_pad_ctrl_2` 等 pad 控制寄存器差异
+  （典型：`ffaa` vs `ffff`，`SiP_up_pad_ctrl_3` 为 `0` vs `80808080`）。
+
+**根因：**
+`fetch_padctrl_*` / `fetch_SiPpadctrl_*` 使用了金标准 **内部数组下标** `[x][y]` 与 **内部边名**
+（如 `[8,2].right_sel`），直接当作 PR COB 的 `(row,col)` 与 `COBDirection`。
+金标准写文件时注释已说明输出名与 internal 的对应关系，例如：
+- `noi_left` ← internal `[8,2].right_sel` → PR **`cob_0_2` 的 Down 边**
+- `noi_up`   ← internal `[0,1].left_sel`  → PR **`cob_8_1` 的 Up 边**
+
+坐标变换：`PR_row = 8 - internal_x`，`PR_col = internal_y`。
+边变换（90° 顺时针）：internal UP→PR RIGHT，RIGHT→DOWN，DOWN→LEFT，LEFT→UP。
+
+**修复（padctrl 读取映射）：**
+
+| 输出寄存器 | 金标准 internal 源 | PR 读取 COB | PR 方向 |
+|-----------|-------------------|------------|---------|
+| noi_right_pad_ctrl | [2,11].up_sel | (6,11) | Right |
+| noi_left_pad_ctrl  | [8,2].right_sel | (0,2) | Down |
+| noi_up_pad_ctrl    | [0,1].left_sel | (8,1) | Up |
+| noi_down_pad_ctrl  | [8,10].right_sel | (0,10) | Down |
+| SiP_right | [0,8].left_sel | (8,8) | Up |
+| SiP_left  | [4,0].down_sel | (4,0) | Left |
+| SiP_up    | [0,5].left_sel（基） | (8,5) | Up |
+| SiP_down  | [8,6].right_sel | (0,6) | Down |
+
+**子问题 — SiP_up 手动覆盖 bits[0,8,16,24]：**
+旧实现仿照金标准对 `[0,4].left_sel` 的覆盖，直接写 `bits[0/8/16/24]`。
+但 `controlbit2stringfor_SiPpadctrl` 的 IE 字段只读取 16 个固定 `cob_ext_port_index`，
+覆盖的 sel[8/16/24] **不参与** padctrl 编码，反而污染 chunk 3（ls3v 区，应为全 0）。
+**处理：** 移除该手动覆盖，仅保留 `(8,5) Up` 的 template 读取。
+
+**padctrl IE 编码（与金标准 controlbit2stringfor_padctrl 一致）：**
+- sel == TrackToCOB (0) → IE bit = 1
+- sel == COBToTrack (1) → IE bit = 0
+
+---
+
+## 5. 修复效果量化（test1，修复后）
+
+| 阶段 | compare 差异数 |
+|------|----------------|
+| 初始（仅路径转换，writer 未修） | 137 |
+| 修复 §1 + §2 | 降至约 9（主要为 padctrl + resetintr01） |
+| 修复 §3 | 降至 5（仅 padctrl） |
+| 修复 §4 | **0** |
+
+100 条连接规模复测：步骤 8 仍为 **0 差异**。
+
+---
+
+## 6. 未改动的相关说明
+
+- **金标准工具（kiwi/xinzhai）：** 未修改。
+- **trans_path_old2new.py：** 路径坐标转换（cobIndex + cobDirection + 90° 边旋转）属步骤 4，
+  不是 writer 本体，但为 test_writer 提供正确输入；公式见 `txt&json_coord_relationship.txt` §8。
+- **test_writer.cc：** 默认 `mode=0`（connections.json 使用 `"-1"` 组但内容为简单一对一格式）；
+  属测试 harness 配置，非 writer 寄存器编码逻辑。
+- **COB 输出寄存器名旋转：** 金标准 `outputfileas4part` 写文件时对 internal 边名做 90° 旋转
+  （如 internal up_sel 写到输出名 right_sel）。PR 硬件已使用旋转后坐标系，writer **直接**
+  按 PR 边名读取即可，**不需要**在 cobregister 中再做一次边名旋转。
+
+---
+
+## 7. 涉及源文件一览
+
+| 文件 | 修改要点 |
+|------|----------|
+| `source/parse/writer/registers/cobregister.cc` | sel 按方向读取 |
+| `source/parse/writer/registers/cobregister.hh` | `fetch_selection` 签名 |
+| `source/hardware/cob/cob.cc` | `get_cob_connector` cob_index 换算 |
+| `source/parse/writer/module.cc` | `apply_ext_io_sel_defaults` |
+| `source/parse/writer/registers/xinzhai_register.cc` | padctrl COB/方向映射，移除错误 SiP_up 覆盖 |
+
+---
+
+## 8. test2_chiplet_IO（100 网，含 IO）验证记录
+
+测例：`test/module_test/test_writer/test2_chiplet_IO`（83 Track→Bump IO + 17 Bump→Bump）
+
+### 8.1 test_writer 扩展（IO 路径回放）
+
+**问题：** 原 `test_writer.cc` 仅支持 `BumpToBumpNet`，IO 网表为 `TrackToBumpNet` 时直接报错。
+
+**修复：** 解析 `Begin_track`/`End_track`、带 `dir` 的 Source/Sink；匹配并回放 `TrackToBumpNet`/`BumpToTrackNet`。
+IO 路径：外部 track → … → chip bump（`track_to_tob`），不经 `tob_to_track` 起点。
+
+### 8.2 步骤 8 对比结果（运行时）
+
+| 寄存器类别 | 差异数 |
+|-----------|--------|
+| COB（`cob_*`） | **0** |
+| Xinzhai padctrl（`xinzhai_*`） | **0** |
+| TOB track 方向（`track2tob`/`tob2track`） | **0** |
+| TOB bump 方向 + mux（`bump2tob`/`tob2bump`/`hctrl`） | **24**（16×`hctrl`，4×`bump2tob`，8×`tob2bump`；`track2tob`/`tob2track` 仍为 0） |
+
+结论：**除 TOB 外全部与金标准一致**；test1 的 COB/padctrl writer 修复对含 IO 的 test2 仍然有效。
+
+### 8.3 TOB 输出逻辑：金标准 vs PR_TOOL（编码一致）
+
+金标准 `printControlBit.cpp` 与 PR `tobregister.cc`/`writer.cc` 的**寄存器名与语义对应**如下：
+
+| 金标准内部字段 | 写出寄存器名 | PR 硬件来源 | PR 写出寄存器名 |
+|---------------|-------------|------------|----------------|
+| `bumpdir[i]` | `tob2bump_*` | `bump_dir_reg`：Bump→TOB→0，TOB→Bump→1 | `tob2bump_*` |
+| `tob2bump_rx[i]` | `bump2tob_*` | 同上：Bump→TOB→1，TOB→Bump→0 | `bump2tob_*` |
+| `hctrl[i]` | `hctrl_*` | `hori_mux_reg_value(i)` | `hctrl_*` |
+| `vctrl[i]`（Xbar 重排） | `vctrl_*` | `vert_mux_reg_value`（含 index 置换） | `vctrl_*` |
+| `tob2track[i]` | `tob2track_*` | `track_dir`：TOB→Track | `tob2track_*` |
+| `tob2track_rx[i]` | `track2tob_*` | `track_dir`：Track→TOB | `track2tob_*` |
+
+**已连接 chip bump 的方向约定（与金标准 `printControlBit` 主循环一致）：**
+
+| 端点角色 | 金标准 bumpdir / tob2bump_rx | PR `TOBBumpDirection` | 写出 tob2bump / bump2tob |
+|---------|------------------------------|----------------------|--------------------------|
+| 路径起点（chip 驱动） | 0 / 1 | BumpToTOB | 0 / 1 |
+| 路径终点（chip 接收） | 1 / 0 | TOBToBump | 1 / 0 |
+| 未连接 | 0 / 0（`resetDefaultValue`） | DisConnected | 0 / 0 |
+
+**IO 网特殊点：** 金标准对 `extio` 起点**不写** TOB bump 寄存器（`!startbump.extio`）；仅 chip 终点走「终点」行。
+PR 的 `TrackToBumpNet` 仅在 sink bump 接 `track_to_tob`，与上一致。外部 IO track 不经 TOB bump 方向寄存器。
+
+**track2tob/tob2track 在 test2 上 0 差异**，说明 track 方向编码与金标准一致。
+
+### 8.4 未连接 mux：`map_empty_mux` 与金标准 `setRedunValue`
+
+| | 金标准 | PR_TOOL |
+|---|--------|---------|
+| 时机 | 布线后、写文件前 | `fetch_controlbits()` 内 `map_empty_mux()` |
+| 算法 | `setRedunValue`：每 8 个 `hctrl`/`vctrl` 为一组，对 `-1` 填最小未占用冗余值 | `TOBMux::randomly_map_remain_indexes()`：对每个 8 输入 mux 用 `available_output_indexes()` 顺序填充 |
+| 目的 | 避免未用 mux 多驱动 | 同左 |
+
+**实验：** 曾尝试将 PR 改为与 `checkRedunNumber` 等价的按组最小冗余赋值，test2 差异反而增加；已恢复原有 `randomly_map_remain_indexes`。
+
+**结论：** 当前 **24** 处 TOB 差异**不是**单纯由「空 mux 填充算法」引起。
+剩余差异集中在**已有连接的 bump** 的 `hctrl`（16 个寄存器字）及少量 `bump2tob`/`tob2bump` 字，
+对应 test2 规模下部分 TOB 象限在**已连接 bump 的 hori mux 索引**上与金标准 `tob_vert % 8` 不完全一致——属路径回放后硬件 mux 状态与金标准内部布线树字段的数值差，而非寄存器位定义错误。
+
+**处理决定：** 不继续改 `map_empty_mux`（按用户要求放弃强行对齐空值）；保留现有 `randomly_map_remain_indexes` 实现。
+
+### 8.5 test2 涉及新增/修改文件
+
+| 文件 | 说明 |
+|------|------|
+| `test/module_test/test_writer/test_writer.cc` | IO 网路径回放（TrackToBump 等） |
+| `test/module_test/test_writer/test2_chiplet_IO/connections.json` | 100 条合并测例 |
+
+---
+
+*test2 记录日期：2026-06-16*

@@ -54,24 +54,15 @@ TXT 表示
 
 坐标变换（TXT → JSON，parse_txt_line）：
 
-  tob_row = (COB_ARRAY_HEIGHT - x) / 2      // 整数除法
-  tob_col = y / 3                           // 整数除法
+  tob_row = (COB_ARRAY_HEIGHT - x) / 2      // 向下取整的整数除法
+  tob_col = y / 3                           // 向下取整的整数除法
 
 坐标变换（JSON → TXT，json2txt）：
 
-  x = COB_ARRAY_HEIGHT - 2 * tob_row
+  x = COB_ARRAY_HEIGHT - 2 * tob_row - 1    // 注意这里还要再-1
   y = 3 * tob_col
   bump_x = bump_index % 8
   bump_y = bump_index / 8
-
-注意：TXT 的 x 存在冗余（非一一对应）
-  由于整数除法，相邻的 x 可映射到同一 tob_row，例如：
-    x = 4  →  tob_row = (9 - 4) / 2 = 2
-    x = 5  →  tob_row = (9 - 5) / 2 = 2
-  反向转换 json2txt 固定输出 x = COB_ARRAY_HEIGHT - 2 * tob_row（上例为 5），
-  而原始 TXT 可能使用 x = 4。两者语义等价，数值不一定逐字相同。
-
-列坐标 y 与 tob_col 的变换在 y 为 3 的倍数时是精确互逆的。
 
 
 四、外部端口（bump_x = -3）
@@ -129,7 +120,7 @@ JSON 表示：
 
   JSON 坐标类型              TXT 5 元组字段              关键变换
   ─────────────────────────────────────────────────────────────────
-  TOBCoord.row, .col         x, y, bump_x, bump_y       x = 9 - 2·row
+  TOBCoord.row, .col         x, y, bump_x, bump_y       x = 9 - 2·row - 1
                                                          y = 3·col
                                                          index = bump_x + 8·bump_y
 
@@ -146,12 +137,80 @@ JSON 表示：
 七、实践说明
 ------------
 
-1. 语义等价 ≠ 字面相同
-   连接关系（11 元组集合）可完全一致，但 TXT 的 x 可能有 ±1 冗余。
-
-2. JSON 贴近运行时模型
+1. JSON 贴近运行时模型
    Reader 按 pin 名查 topdie_insts / external_ports / pin_map，
    直接使用 TOBCoord / TrackCoord，不再解析 5 元组。
 
-3. json2txt 是编码转换
+2. json2txt 是编码转换
    将 JSON 的 TOBCoord / TrackCoord / bump_index 转回旧 TXT 5 元组格式。
+
+
+八、COB坐标体系变化
+------------
+
+COB从旧工具（kiwi/xinzhai）转换到 PR_TOOL 时，经历了一个**向右 90° 的旋转**。由于 COB 是方形，路径经过 COB 时走的边（UP/DOWN/LEFT/RIGHT）在两侧坐标系中不同。
+
+### 8.1 三套坐标及其含义
+
+| 坐标类型 | 旧工具字段 | PR_TOOL 字段 | 说明 |
+|---------|-----------|-------------|------|
+| Bump/TOB | TOB_x, TOB_y, bumpgrid_x/y | TOBCoord.row/col + index | 见第六节 |
+| Channel/Track | channel_x, channel_y（路径中打印为 TOB_x/TOB_y） | TrackCoord.row/col/dir/index | 路径中间 track，非 bump |
+| COB 单元 | cob[x][y]（cobIndex 返回值） | COBCoord.row/col | 开关矩阵所在 COB |
+
+旧工具路径行中 `dir: 0` = 竖直 track（xaxis=true），`dir: 1` = 水平 track。
+
+### 8.2 COB 单元坐标映射
+
+金标准 `printControlBit.cpp::cobIndex` 求出共享 COB 的 (cob_x, cob_y)。
+`routing.cpp` 注释 "right rotate 90° cob coordinate" 对应：
+
+```
+PR_COB.row = COB_ARRAY_HEIGHT - 1 - kiwi_cob_x   (= 8 - cob_x)
+PR_COB.col = kiwi_cob_y
+```
+
+### 8.3 COB 边（side）映射
+
+旧工具边常量（printControlBit.h）：UP=0, DOWN=1, LEFT=2, RIGHT=3。
+`cobDirection(cob_x, cob_y, channel_dir, channel_x, channel_y)` 判断 track 从 COB 哪条边进出。
+
+90° 顺时针旋转后边对应关系：
+
+```
+kiwi UP    → PR RIGHT
+kiwi RIGHT → PR DOWN
+kiwi DOWN  → PR LEFT
+kiwi LEFT  → PR UP
+```
+
+### 8.4 Track 坐标由 COB 边导出
+
+PR_TOOL `COB::to_dir_track_coord` 将 COB 边 + index 映射为 TrackCoord：
+
+```
+PR Down  → { row,     col,     Vertical,   index }
+PR Up    → { row + 1, col,     Vertical,   index }
+PR Left  → { row,     col,     Horizontal, index }
+PR Right → { row,     col + 1, Horizontal, index }
+```
+
+`trans_path_old2new.py` 对路径中相邻 track 对调用 cobIndex + cobDirection，再经上述旋转得到 PR TrackCoord。
+
+### 8.5 Bump 坐标（芯片端口）
+
+```
+tob_row = (COB_ARRAY_HEIGHT - TOB_x - 1) // 2
+tob_col = TOB_y // 3
+row = 1 + 2 * tob_row
+col = 3 * tob_col
+index = bumpgrid_x + 8 * bumpgrid_y
+```
+
+### 8.6 外部 IO 端口
+
+```
+row = COB_ARRAY_HEIGHT - TOB_x    (= 9 - x)
+col = TOB_y
+index = externs[slot]             (EXTERN_INDICES 查表)
+```

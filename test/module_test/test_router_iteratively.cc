@@ -17,11 +17,11 @@ constexpr const char* kDefaultConfigPath = "../test/config/case1";
 constexpr const char* kDebugLogPath = "./debug.log";
 
 auto build_pr_tool_cmd(const std::string& config_path) -> std::string {
-    return "./PR_tool " + config_path + " -p > /dev/null 2>&1";
+    return "./PR_tool " + config_path + " > /dev/null 2>&1";
 }
 
 [[noreturn]] auto fail_iteration(int iteration, const std::string& reason) -> void {
-    std::cout << "placer_iteratively failed at iteration " << iteration << ": " << reason << std::endl;
+    std::cout << "router_iteratively failed at iteration " << iteration << ": " << reason << std::endl;
     std::exit(-1);
 }
 
@@ -101,12 +101,12 @@ auto check_debug_log(int iteration) -> void {
 
 } // namespace
 
-void test_placer_iteratively_main(int argc, char** argv) {
+void test_router_iteratively_main(int argc, char** argv) {
     const std::string config_path =
         (argc >= 3) ? argv[2] : kDefaultConfigPath;
     const std::string pr_tool_cmd = build_pr_tool_cmd(config_path);
 
-    std::cout << "placer_iteratively: config=" << config_path
+    std::cout << "router_iteratively: config=" << config_path
               << ", iterations=" << kIterations << std::endl;
 
     for (int i = 1; i <= kIterations; ++i) {
