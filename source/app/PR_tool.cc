@@ -23,8 +23,7 @@ namespace PR_tool {
     \t██████╔╝██████╔╝           ██║   ██║   ██║██║   ██║██║\n\
     \t██╔═══╝ ██╔══██╗           ██║   ██║   ██║██║   ██║██║\n\
     \t██║     ██║  ██║           ██║   ╚██████╔╝╚██████╔╝███████╗\n\
-    \t╚═╝     ╚═╝  ╚═╝           ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝\n\
-    \t                         _tool\n";
+    \t╚═╝     ╚═╝  ╚═╝           ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝\n";
 
     auto print_help() -> void {
         using console::Color;
@@ -62,7 +61,6 @@ namespace PR_tool {
 
         console::println_fmt("PR_tool v1.0.0 ({} {})\n", __DATE__, __TIME__);
         console::println_with_color(PR_toollogo, Color::Blue);
-        console::println("👉 Source: https://github.com/The-PR_tool-Project/PR_tool.git");
     }
 
     int main(int argc, char** argv) {
