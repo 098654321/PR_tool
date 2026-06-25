@@ -54,6 +54,9 @@ namespace PR_tool {
 
         console::print_with_color("\t-i, --incremental           ", Color::Cyan);
         console::println("Work in incremental routing mode.");
+
+        console::print_with_color("\t-s, --simplify-controlbits-file ", Color::Cyan);
+        console::println("Omit default-valued COB and TOB dly/drv registers from output.");
     }
 
     auto print_verion() -> void {
@@ -128,6 +131,11 @@ namespace PR_tool {
                 placement = true;
             }
 
+            bool simplify_controlbits = false;
+            if (argument_index("-s", "--simplify-controlbits-file").has_value()) {
+                simplify_controlbits = true;
+            }
+
             // command for incremental mode
             auto incre_opt = argument_index("-i", "--incremental");
             auto comp_opt = argument_index("-c", "--compare");
@@ -161,7 +169,7 @@ namespace PR_tool {
                 }
             }
 
-            return cli_main(arguments[0], std::move(output_path), incre_mode, compare, try_all_modes, placement);
+            return cli_main(arguments[0], std::move(output_path), incre_mode, compare, try_all_modes, placement, simplify_controlbits);
         }
 
         return 0;

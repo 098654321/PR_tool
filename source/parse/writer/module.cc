@@ -37,10 +37,10 @@ namespace PR_tool::parse {
 
     }  // namespace
 
-    auto output_from_routing_results(hardware::Interposer* interposer, const std::FilePath& output_path, circuit::BaseDie* basedie, int mode, bool try_all_modes) -> void {
+    auto output_from_routing_results(hardware::Interposer* interposer, const std::FilePath& output_path, circuit::BaseDie* basedie, int mode, bool try_all_modes, bool simplify_controlbits) -> void {
         if (!try_all_modes) {
             connect_registers(interposer, basedie, mode);
-            write_control_bits(interposer, output_path, mode);
+            write_control_bits(interposer, output_path, mode, simplify_controlbits);
             interposer->reset_regs();
         }
         else {
@@ -50,13 +50,13 @@ namespace PR_tool::parse {
             }
             for(const auto& m: modes) {
                 connect_registers(interposer, basedie, m);
-                write_control_bits(interposer, output_path, m);
+                write_control_bits(interposer, output_path, m, simplify_controlbits);
                 interposer->reset_regs();
             }
         }
     }
 
-    auto write_control_bits(hardware::Interposer* interposer, const std::FilePath& output_path, int mode) -> void {
+    auto write_control_bits(hardware::Interposer* interposer, const std::FilePath& output_path, int mode, bool simplify_controlbits) -> void {
         std::FilePath control_bits_path = output_path / ("controlbits_" + std::to_string(mode) + ".txt");
         debug::info_fmt(
             "\n\
@@ -65,7 +65,7 @@ namespace PR_tool::parse {
             **********************************************************************************\
             ", control_bits_path.string()
         );
-        auto writer = parse::Writer{interposer};
+        auto writer = parse::Writer{interposer, simplify_controlbits};
         writer.fetch_and_write(control_bits_path);
 
         debug::info_fmt("END\n\n");

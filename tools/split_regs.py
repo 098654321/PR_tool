@@ -2,7 +2,22 @@
 import json
 import os
 import argparse
+import re
 import sys
+
+DEFAULT_HEX = "00000000"
+TOB_DLY_DRV_RE = re.compile(r"^tob_\d+_\d+_(dly|drv)_\d+$")
+
+
+def should_skip_split_line(reg_name: str, value: str, simplify: bool) -> bool:
+    if not simplify:
+        return False
+    if value != DEFAULT_HEX:
+        return False
+    if reg_name.startswith("cob_"):
+        return True
+    return TOB_DLY_DRV_RE.match(reg_name) is not None
+
 
 def parse_controlbits(controlbits_path):
     """Parses the controlbits file into a dictionary of {name: value}."""
@@ -48,9 +63,16 @@ def main():
     parser.add_argument("--controlbits", "-c", required=True, help="Path to the input controlbits file (e.g., controlbits_0.txt)")
     parser.add_argument("--json_map", "-j", required=True, help="Path to the register map JSON file")
     parser.add_argument("--output_dir", "-o", help="Directory to save the output files. Defaults to the same directory as controlbits file.")
-    
+    parser.add_argument(
+        "-s",
+        "--simplify-controlbits-file",
+        action="store_true",
+        help="Omit default-valued COB and TOB dly/drv lines from split output",
+    )
+
     args = parser.parse_args()
-    
+
+    simplify = args.simplify_controlbits_file
     controlbits_path = args.controlbits
     json_path = args.json_map
     output_dir = args.output_dir if args.output_dir else os.path.dirname(controlbits_path)
@@ -88,6 +110,8 @@ def main():
     reg_map = load_register_map(json_path)
     
     print(f"Loading controlbits from {controlbits_path}...")
+    if simplify:
+        print("Simplify mode: enabled (-s)")
     control_data = parse_controlbits(controlbits_path)
     
     # Track used registers in controlbits
@@ -107,16 +131,12 @@ def main():
                 for reg_name, address in regs.items():
                     if reg_name in control_data:
                         value = control_data[reg_name]
-                        # Write format: value address name
-                        out_f.write(f"{value} {address} {reg_name}\n")
                         used_control_regs.add(reg_name)
+                        if should_skip_split_line(reg_name, value, simplify):
+                            continue
+                        out_f.write(f"{value} {address} {reg_name}\n")
                     else:
                         missing_in_controlbits.append((filename, reg_name))
-                        # Optional: write a placeholder or comment? 
-                        # For now, let's just log it and skip writing to keep the file valid/clean?
-                        # Or maybe write with a default value? The prompt implies "拆解", so we expect them to be there.
-                        # If missing, we can't write a valid line.
-                        pass
         except Exception as e:
             print(f"Error writing to {output_file_path}: {e}")
 
@@ -127,9 +147,16 @@ def main():
 
     # 1. Registers in JSON but missing in controlbits
     if missing_in_controlbits:
-        print(f"\n[WARNING] The following registers are defined in JSON but MISSING in {os.path.basename(controlbits_path)}:")
-        for fname, rname in missing_in_controlbits:
-            print(f"  - {rname} (expected in {fname})")
+        if simplify:
+            print(
+                f"\n[NOTE] {len(missing_in_controlbits)} register(s) in the JSON map were not found in "
+                f"{os.path.basename(controlbits_path)}. This is expected when using simplified "
+                f"(-s) non-full controlbits output; individual missing registers are not listed."
+            )
+        else:
+            print(f"\n[WARNING] The following registers are defined in JSON but MISSING in {os.path.basename(controlbits_path)}:")
+            for fname, rname in missing_in_controlbits:
+                print(f"  - {rname} (expected in {fname})")
     else:
         print(f"\n[OK] All registers in JSON were found in {os.path.basename(controlbits_path)}.")
 

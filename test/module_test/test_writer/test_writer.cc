@@ -326,7 +326,7 @@ auto match_block_to_net(const ParsedPathBlock& block, circuit::Net* net) -> bool
 
 auto usage() -> void {
     debug::info(
-        "usage: module_test writer <config_folder> <net_path_info_new.txt> <output_dir> [mode]");
+        "usage: module_test writer <config_folder> <net_path_info_new.txt> <output_dir> [mode] [-s|--simplify-controlbits-file]");
 }
 
 }  // namespace
@@ -337,10 +337,26 @@ void test_writer_main(int argc, char** argv) {
         throw std::runtime_error("writer test requires config_folder, path file, output_dir");
     }
 
-    auto config_folder = std::FilePath{argv[2]};
-    auto path_file = std::FilePath{argv[3]};
-    auto output_dir = std::FilePath{argv[4]};
-    int mode = (argc >= 6) ? std::stoi(argv[5]) : 0;
+    bool simplify_controlbits = false;
+    std::Vector<std::StringView> positional {};
+    for (int i = 2; i < argc; ++i) {
+        auto arg = std::StringView{argv[i]};
+        if (arg == "-s" || arg == "--simplify-controlbits-file") {
+            simplify_controlbits = true;
+            continue;
+        }
+        positional.emplace_back(arg);
+    }
+
+    if (positional.size() < 3) {
+        usage();
+        throw std::runtime_error("writer test requires config_folder, path file, output_dir");
+    }
+
+    auto config_folder = std::FilePath{positional[0]};
+    auto path_file = std::FilePath{positional[1]};
+    auto output_dir = std::FilePath{positional[2]};
+    int mode = (positional.size() >= 4) ? std::stoi(std::String{positional[3]}) : 0;
 
     debug::info_fmt("test_writer: config='{}' path='{}' out='{}' mode={}",
                     config_folder.string(), path_file.string(), output_dir.string(), mode);
@@ -396,5 +412,5 @@ void test_writer_main(int argc, char** argv) {
     }
 
     std::filesystem::create_directories(output_dir);
-    parse::output_from_routing_results(interposer, output_dir, basedie, mode, false);
+    parse::output_from_routing_results(interposer, output_dir, basedie, mode, false, simplify_controlbits);
 }

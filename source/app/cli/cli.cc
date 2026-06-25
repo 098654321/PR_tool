@@ -25,7 +25,8 @@ namespace PR_tool {
 
     auto cli_main(
         std::StringView config_path, std::Option<std::StringView> output_path, 
-        int mode, std::optional<int> compare, bool try_all_modes, bool placement
+        int mode, std::optional<int> compare, bool try_all_modes, bool placement,
+        bool simplify_controlbits
     ) -> int {
     try {
         debug::initial_log("./debug.log");
@@ -48,7 +49,7 @@ namespace PR_tool {
         
         bool has_route = route(interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes);
         if (has_route) {
-            parse::output_from_routing_results(interposer.get(), output_file, basedie.get(), mode, try_all_modes);
+            parse::output_from_routing_results(interposer.get(), output_file, basedie.get(), mode, try_all_modes, simplify_controlbits);
         }
 
         return 0;

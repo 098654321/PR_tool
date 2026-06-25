@@ -21,7 +21,8 @@ namespace PR_tool {
 
     auto cli_main(
         std::StringView config_path, std::Option<std::StringView> output_path, 
-        int mode, std::optional<int> compare, bool try_all_modes, bool placement
+        int mode, std::optional<int> compare, bool try_all_modes, bool placement,
+        bool simplify_controlbits = false
     ) -> int;
 
     auto place(PR_tool::hardware::Interposer*, PR_tool::circuit::BaseDie*, std::vector<PR_tool::circuit::TopDieInstance*>&) -> void;

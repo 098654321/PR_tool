@@ -174,9 +174,16 @@ Pin 名的解析规则（`Reader::parse_connection_pin`）：
 - `connect_registers(interposer, basedie, mode)`：
   - 遍历 `basedie->nets_to_vector()`
   - 对属于该 mode 的 net 调用 `net->pathpackage().connect_all()`
-- `write_control_bits(interposer, output_path, mode)`：
+- `write_control_bits(interposer, output_path, mode, simplify_controlbits)`：
   - `parse::Writer::fetch_and_write(...)`（`source/parse/writer/writer.hh`）
   - Writer 会从 interposer 的寄存器对象抓取 bit，并写成文本格式
+
+CLI 可选开关 `-s/--simplify-controlbits-file`（默认关闭）：
+
+- 在 **write 阶段**省略默认值为 `00000000` 的寄存器行（hex 与寄存器名均不输出）
+- 当前省略范围：全部 COB 寄存器；TOB 的 `dly`/`drv` 寄存器
+- 其它 TOB 寄存器与 `xinzhai` 寄存器始终完整输出
+- `fetch` 逻辑不变；`load_controlbits` 不自动补全缺失行（简化格式不作为 PR_tool 读回输入）
 
 ---
 
@@ -528,8 +535,10 @@ GUI 入口在 `source/app/gui/gui.cc`，创建 `QApplication` 后启动 `widget:
 需要同时改：
 
 - `parse/writer/writer.*`：写出格式
-- `parse/reader/controlbits/*`：解析格式 + bits_to_paths 反推逻辑
-- 回归测试：确保 `read_controlbits → bits_to_paths → connect_all → write_control_bits` 能闭环
+- `parse/reader/controlbits/*`：解析格式 + bits_to_paths 反推逻辑（若简化格式需被 PR_tool 读回）
+- 回归测试：确保 `read_controlbits → bits_to_paths → connect_all → write_control_bits` 能闭环（完整格式）
+
+`-s/--simplify-controlbits-file` 仅影响 Writer 的 write 阶段；默认关闭时输出应与改动前逐行一致。简化输出可用 `test/module_test/test_writer/verify_simplify_controlbits.py` 对照完整输出校验。
 
 ---
 

@@ -33,7 +33,7 @@ namespace PR_tool::parse {
     class Writer
     {
     public:
-        Writer(hardware::Interposer* pinterposer);
+        Writer(hardware::Interposer* pinterposer, bool simplify = false);
 
     public:
         auto fetch_and_write(const std::FilePath& file) -> void;
@@ -42,6 +42,7 @@ namespace PR_tool::parse {
         auto fetch() -> void;
         auto write(const std::FilePath& filepath) -> void;
         auto build_regs() -> void;
+        auto maybe_write_line(std::ofstream& file, const std::String& hex, const std::String& name, bool eligible) -> void;
     
     private:
         auto write_cob(std::ofstream& file) -> void;
@@ -59,9 +60,12 @@ namespace PR_tool::parse {
         auto to_hex(const std::Bits<32>& bits) -> std::String;
 
     private:
+        static constexpr auto k_default_chunk_hex = "00000000";
+
         RegisterValue _rv;
         std::Vector<BaseRegister*> _regs;
         hardware::Interposer* _pinterposer;
+        bool _simplify;
     };
 
 }

@@ -14,11 +14,20 @@
 namespace PR_tool::parse
 {
 
-    Writer::Writer(hardware::Interposer* pinterposer):
+    Writer::Writer(hardware::Interposer* pinterposer, bool simplify):
             _rv{},
             _regs{},
-            _pinterposer{pinterposer}
+            _pinterposer{pinterposer},
+            _simplify{simplify}
         {}
+
+    auto Writer::maybe_write_line(std::ofstream& file, const std::String& hex, const std::String& name, bool eligible) -> void
+    {
+        if (_simplify && eligible && hex == k_default_chunk_hex) {
+            return;
+        }
+        file << hex << " " << name << std::endl;
+    }
 
     auto Writer::fetch_and_write(const std::FilePath& file) -> void
     {
@@ -100,7 +109,7 @@ namespace PR_tool::parse
 
                     only_this_one_looks_f__king_different_from_others(file, tob_value.tob2bump, "tob2bump", row, col);
                     write_tob_template64(file, tob_value.dly, "dly", row, col);
-                    write_tob_template64(file, tob_value.dly, "drv", row, col);
+                    write_tob_template64(file, tob_value.drv, "drv", row, col);
                     write_tob_template_mux(file, tob_value.hctrl, "hctrl", row, col);
                     write_tob_template_mux(file, tob_value.vctrl, "vctrl", row, col);
                     write_tob_template64(file, tob_value.bank_mux, "bank_sel", row, col);
@@ -185,18 +194,19 @@ namespace PR_tool::parse
         for (std::usize i = 0; i < 4; i++)
         {
             std::String name = std::format("cob_{}_{}_{}_{}", row, col, reg_name, i);
-            file << to_hex(splitted_bits[i]) << " " << name << std::endl;
+            maybe_write_line(file, to_hex(splitted_bits[i]), name, true);
         }
     }
 
     auto Writer::write_tob_template64(std::ofstream& file, const std::Bits<64>& bits, \
                                     std::String reg_name, std::usize row, std::usize col) -> void
     {
+        const bool eligible = (reg_name == "dly" || reg_name == "drv");
         auto splitted_bits = split_bits<64, 2>(bits);
         for (std::usize i = 0; i < 2; i++)
         {
             std::String name = std::format("tob_{}_{}_{}_{}", row, col, reg_name, i);
-            file << to_hex(splitted_bits[i]) << " " << name << std::endl;
+            maybe_write_line(file, to_hex(splitted_bits[i]), name, eligible);
         }
     }
 
