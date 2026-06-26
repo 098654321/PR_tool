@@ -8,6 +8,7 @@
 #include <functional>
 #include "./registers/registervalues.hh"
 #include "./registers/baseregister.hh"
+#include "./register_defaults.hh"
 
 
 
@@ -37,12 +38,13 @@ namespace PR_tool::parse {
 
     public:
         auto fetch_and_write(const std::FilePath& file) -> void;
+        auto fetch_and_write_pair(const std::FilePath& full_file, const std::FilePath& simplified_file) -> void;
     
     private:
         auto fetch() -> void;
-        auto write(const std::FilePath& filepath) -> void;
+        auto write(std::ofstream& file) -> void;
         auto build_regs() -> void;
-        auto maybe_write_line(std::ofstream& file, const std::String& hex, const std::String& name, bool eligible) -> void;
+        auto maybe_write_line(std::ofstream& file, const std::String& hex, const std::String& name) -> void;
     
     private:
         auto write_cob(std::ofstream& file) -> void;
@@ -60,8 +62,6 @@ namespace PR_tool::parse {
         auto to_hex(const std::Bits<32>& bits) -> std::String;
 
     private:
-        static constexpr auto k_default_chunk_hex = "00000000";
-
         RegisterValue _rv;
         std::Vector<BaseRegister*> _regs;
         hardware::Interposer* _pinterposer;

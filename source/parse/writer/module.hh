@@ -14,6 +14,7 @@ namespace PR_tool::parse {
 
     auto output_from_routing_results(hardware::Interposer* interposer, const std::FilePath& output_path, circuit::BaseDie* basedie, int mode, bool try_all_modes, bool simplify_controlbits = false) -> void;
     auto write_control_bits(hardware::Interposer* interposer, const std::FilePath& output_path, int mode, bool simplify_controlbits = false) -> void;
+    auto write_control_bits_pair(hardware::Interposer* interposer, const std::FilePath& full_output_path, const std::FilePath& simplified_output_path, int mode) -> void;
     auto connect_registers(hardware::Interposer* interposer, circuit::BaseDie* basedie, int mode) -> void;
 
 }

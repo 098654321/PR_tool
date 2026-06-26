@@ -21,9 +21,9 @@ namespace PR_tool::parse
             _simplify{simplify}
         {}
 
-    auto Writer::maybe_write_line(std::ofstream& file, const std::String& hex, const std::String& name, bool eligible) -> void
+    auto Writer::maybe_write_line(std::ofstream& file, const std::String& hex, const std::String& name) -> void
     {
-        if (_simplify && eligible && hex == k_default_chunk_hex) {
+        if (_simplify && should_omit_simplified_line(hex, name)) {
             return;
         }
         file << hex << " " << name << std::endl;
@@ -33,7 +33,37 @@ namespace PR_tool::parse
     {
         build_regs();
         fetch();                
-        write(file);            // MSB on the left
+        std::ofstream out(file);
+        if (!out.is_open()) {
+            throw std::runtime_error(std::format("cannon open file {}", file.string()));
+        }
+        write(out);
+    }
+
+    auto Writer::fetch_and_write_pair(const std::FilePath& full_file, const std::FilePath& simplified_file) -> void
+    {
+        build_regs();
+        fetch();
+        std::ofstream full_out(full_file);
+        if (!full_out.is_open()) {
+            throw std::runtime_error(std::format("cannon open file {}", full_file.string()));
+        }
+        _simplify = false;
+        write(full_out);
+
+        std::ofstream simplified_out(simplified_file);
+        if (!simplified_out.is_open()) {
+            throw std::runtime_error(std::format("cannon open file {}", simplified_file.string()));
+        }
+        _simplify = true;
+        write(simplified_out);
+    }
+
+    auto Writer::write(std::ofstream& file) -> void
+    {
+        write_cob(file);
+        write_tob(file);
+        write_xinzhai(file);
     }
 
     auto Writer::build_regs() -> void
@@ -52,18 +82,6 @@ namespace PR_tool::parse
         {
             p_r->fetch_controlbits(_rv);    
         }
-    }
-
-    auto Writer::write(const std::FilePath& filepath) -> void
-    {
-        std::ofstream file(filepath);
-        if (!file.is_open()) {
-            throw std::runtime_error(std::format("cannon open file {}", filepath.string()));
-        }
-
-        write_cob(file);
-        write_tob(file);
-        write_xinzhai(file);
     }
 
     auto Writer::write_cob(std::ofstream& file) -> void
@@ -149,7 +167,7 @@ namespace PR_tool::parse
         for (std::usize i = 0; i < 4; i++)
         {
             std::String output_name = name + "_" + std::to_string(i);
-            file << to_hex(splitted_bits[i]) << " " << output_name << std::endl;    // MSB is on the left
+            maybe_write_line(file, to_hex(splitted_bits[i]), output_name);
         }
     }
 
@@ -194,19 +212,18 @@ namespace PR_tool::parse
         for (std::usize i = 0; i < 4; i++)
         {
             std::String name = std::format("cob_{}_{}_{}_{}", row, col, reg_name, i);
-            maybe_write_line(file, to_hex(splitted_bits[i]), name, true);
+            maybe_write_line(file, to_hex(splitted_bits[i]), name);
         }
     }
 
     auto Writer::write_tob_template64(std::ofstream& file, const std::Bits<64>& bits, \
                                     std::String reg_name, std::usize row, std::usize col) -> void
     {
-        const bool eligible = (reg_name == "dly" || reg_name == "drv");
         auto splitted_bits = split_bits<64, 2>(bits);
         for (std::usize i = 0; i < 2; i++)
         {
             std::String name = std::format("tob_{}_{}_{}_{}", row, col, reg_name, i);
-            maybe_write_line(file, to_hex(splitted_bits[i]), name, eligible);
+            maybe_write_line(file, to_hex(splitted_bits[i]), name);
         }
     }
 
@@ -217,7 +234,7 @@ namespace PR_tool::parse
         for (std::usize i = 0; i < 4; i++)
         {
             std::String name = std::format("tob_{}_{}_{}_{}", row, col, reg_name, i);
-            file << to_hex(splitted_bits[i]) << " " << name << std::endl;
+            maybe_write_line(file, to_hex(splitted_bits[i]), name);
         }
     }
 
@@ -242,7 +259,7 @@ namespace PR_tool::parse
         {
             std::usize bank{i/8}, bank_index{i%8};
             std::String name = std::format("tob_{}_{}_{}_bank{}_{}", row, col, reg_name, bank, bank_index);
-            file << to_hex(result[i]) << " " << name << std::endl;  
+            maybe_write_line(file, to_hex(result[i]), name);
         }
     }
 
@@ -254,7 +271,7 @@ namespace PR_tool::parse
         {
             std::usize bank{i/2}, bank_index{i%2};
             std::String name = std::format("tob_{}_{}_{}_bank{}_en_{}", row, col, reg_name, bank, bank_index);
-            file << to_hex(splitted_bits[i]) << " " << name << std::endl;
+            maybe_write_line(file, to_hex(splitted_bits[i]), name);
         }
     }
 

@@ -11,6 +11,7 @@
 #include <debug/debug.hh>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <hardware/bump/bumpcoord.hh>
 #include <hardware/interposer.hh>
 #include <hardware/track/trackcoord.hh>
@@ -326,7 +327,8 @@ auto match_block_to_net(const ParsedPathBlock& block, circuit::Net* net) -> bool
 
 auto usage() -> void {
     debug::info(
-        "usage: module_test writer <config_folder> <net_path_info_new.txt> <output_dir> [mode] [-s|--simplify-controlbits-file]");
+        "usage: module_test writer <config_folder> <net_path_info_new.txt> <output_dir> [mode] "
+        "[-s|--simplify-controlbits-file] [--simplified-output-dir <dir>]");
 }
 
 }  // namespace
@@ -338,11 +340,19 @@ void test_writer_main(int argc, char** argv) {
     }
 
     bool simplify_controlbits = false;
+    std::optional<std::FilePath> simplified_output_dir {};
     std::Vector<std::StringView> positional {};
     for (int i = 2; i < argc; ++i) {
         auto arg = std::StringView{argv[i]};
         if (arg == "-s" || arg == "--simplify-controlbits-file") {
             simplify_controlbits = true;
+            continue;
+        }
+        if (arg == "--simplified-output-dir") {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("missing path after --simplified-output-dir");
+            }
+            simplified_output_dir = std::FilePath{argv[++i]};
             continue;
         }
         positional.emplace_back(arg);
@@ -412,5 +422,11 @@ void test_writer_main(int argc, char** argv) {
     }
 
     std::filesystem::create_directories(output_dir);
-    parse::output_from_routing_results(interposer, output_dir, basedie, mode, false, simplify_controlbits);
+    if (simplified_output_dir.has_value()) {
+        std::filesystem::create_directories(*simplified_output_dir);
+        parse::connect_registers(interposer, basedie, mode);
+        parse::write_control_bits_pair(interposer, output_dir, *simplified_output_dir, mode);
+    } else {
+        parse::output_from_routing_results(interposer, output_dir, basedie, mode, false, simplify_controlbits);
+    }
 }

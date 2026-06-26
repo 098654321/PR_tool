@@ -180,10 +180,12 @@ Pin 名的解析规则（`Reader::parse_connection_pin`）：
 
 CLI 可选开关 `-s/--simplify-controlbits-file`（默认关闭）：
 
-- 在 **write 阶段**省略默认值为 `00000000` 的寄存器行（hex 与寄存器名均不输出）
-- 当前省略范围：全部 COB 寄存器；TOB 的 `dly`/`drv` 寄存器
-- 其它 TOB 寄存器与 `xinzhai` 寄存器始终完整输出
+- 在 **write 阶段**省略「实际 hex 等于该寄存器默认值」的行（hex 与寄存器名均不输出）
+- 默认值规则（内置于 `parse/writer/register_defaults.hh`，不读外部文件）：
+  - `tob_{r}_{c}_track2tob_{0..3}` 与 `tob_{r}_{c}_tob2bump_bank{0,1}_en_{0,1}`（共 128 个）：默认 `ffffffff`
+  - 其余全部寄存器（COB、TOB dly/drv/mux、tob2track、bump2tob、xinzhai 等）：默认 `00000000`
 - `fetch` 逻辑不变；`load_controlbits` 不自动补全缺失行（简化格式不作为 PR_tool 读回输入）
+- **推荐工作流**：PR_tool 默认写出全量 `controlbits_<mode>.txt`；对下游 split 文件做简化时，使用 `tools/split_regs.py -s` 读取全量 controlbits，在 split 输出阶段按相同默认规则省略（不修改 PR_tool 输入文件）
 
 ---
 
@@ -538,7 +540,7 @@ GUI 入口在 `source/app/gui/gui.cc`，创建 `QApplication` 后启动 `widget:
 - `parse/reader/controlbits/*`：解析格式 + bits_to_paths 反推逻辑（若简化格式需被 PR_tool 读回）
 - 回归测试：确保 `read_controlbits → bits_to_paths → connect_all → write_control_bits` 能闭环（完整格式）
 
-`-s/--simplify-controlbits-file` 仅影响 Writer 的 write 阶段；默认关闭时输出应与改动前逐行一致。简化输出可用 `test/module_test/test_writer/verify_simplify_controlbits.py` 对照完整输出校验。
+`-s/--simplify-controlbits-file` 仅影响 Writer 的 write 阶段；默认关闭时输出应与改动前逐行一致。简化规则见 §4.3（按寄存器名查默认 hex）。对全量 controlbits 做 split 输出简化时，使用 `tools/split_regs.py -s`（规则与 `register_defaults.hh` 一致）。
 
 ---
 

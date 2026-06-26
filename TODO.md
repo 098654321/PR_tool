@@ -46,13 +46,13 @@ write_split_registers(register_map, reg_values, output/regnamecontrolbit_4part/,
   └─ 每行：maybe_write_line(hex, address, name)  # -s 时跳过默认 COB/dly/drv
 ```
 
-**`-s` 省略规则（与现有 Writer 一致）**
+**`-s` 省略规则（与 `register_defaults.hh` / `tools/split_regs.py -s` 一致）**
 
-| 寄存器范围 | 默认 hex | 可省略 |
-|-----------|---------|--------|
-| 全部 COB | `00000000` | 是 |
-| TOB `dly` / `drv` | `00000000` | 是 |
-| 其它 TOB、`xinzhai` | — | 否（始终输出） |
+| 寄存器范围 | 默认 hex | 可省略（当实际值等于默认） |
+|-----------|---------|--------------------------|
+| `tob_{r}_{c}_track2tob_{0..3}`（16×4=64） | `ffffffff` | 是 |
+| `tob_{r}_{c}_tob2bump_bank{0,1}_en_{0,1}`（16×4=64） | `ffffffff` | 是 |
+| 其余全部（COB、TOB dly/drv/mux、tob2track、bump2tob、xinzhai 等） | `00000000` | 是 |
 
 ---
 
@@ -190,11 +190,10 @@ if len(split_regs) != len(golden_regs):
 - Golden 对比必须在**未启用 `-s`** 的全量输出上进行。
 - 仍按寄存器名对齐比 hex；golden 2 列，PR 输出 3 列（address 列忽略）。
 
-#### 5.2 `verify_simplify_controlbits.py`
+#### 5.2 split 输出简化（`split_regs.py -s`）
 
-- 改为目录级对比：`--full-dir` / `--simplified-dir`，各含 4 个 `*_REG*.txt`。
-- `load_split_dir()`：合并 4 文件为 `dict[name, hex]`（reg 名取第 3 列）。
-- 逻辑不变：子集关系、可省略项、禁止误删、应省略项完整性。
+- 对 PR_tool **全量** `controlbits_0.txt` 运行 `split_regs.py -s`，在 split 写出阶段省略默认 hex 行。
+- 与 PR_tool `-s` 使用相同默认规则（见 `register_defaults.hh`）；推荐 workflow 为 PR_tool 全量输出 + `split_regs.py -s`。
 
 #### 5.3 `check-controlbits-file/SKILLs.md`
 
@@ -209,7 +208,7 @@ if len(split_regs) != len(golden_regs):
 补充注意：
 
 - 金标准对比前依赖 `compare_controlbits.py` 的 count 检查。
-- 简化专项：单独用 `-s` + `verify_simplify_controlbits.py`，不与 golden 混用。
+- 简化 split 输出：PR_tool 全量输出后使用 `split_regs.py -s`，不与 golden 全量比 hex 混用。
 
 #### 5.4 测例目录 `check_run/`
 
@@ -223,7 +222,7 @@ if len(split_regs) != len(golden_regs):
 |------|------|
 | test_writer 两次全量输出 | 4 文件合并后应完全一致 |
 | SKILLs test2 + compare（无 `-s`） | 主正确性验证 |
-| verify_simplify（有 `-s`） | 简化专项 |
+| split_regs.py -s（全量 controlbits 输入） | split 输出简化专项 |
 | `placer_iteratively` / `router_iteratively` case1 | 冒烟；不检查 controlbits |
 
 ---
@@ -243,7 +242,7 @@ if len(split_regs) != len(golden_regs):
 1. `Config` + `load_register_map_config`；各 case 补齐 `reigster_adder.json`。
 2. `read_config` 返回 `register_map`（方案 C）；调用方传参。
 3. Writer 内存收集 + `write_split_files`；去掉单文件输出。
-4. 更新 `compare_controlbits.py` count 检查；`verify_simplify_controlbits.py` 目录模式。
+4. 更新 `compare_controlbits.py` count 检查；`split_regs.py -s` 简化 split 输出。
 5. 更新 SKILLs.md；跑 test2 金标准流程。
 6. 失效路径加 `TODO` 注释；README / AGENTS.md。
 7. （可选）`report.log` 与 `split_regs.py` 行为对齐。
@@ -264,10 +263,9 @@ if len(split_regs) != len(golden_regs):
 | 文件 | 作用 |
 |------|------|
 | `tools/register_map.json` | map 格式金样；复制到各 case |
-| `tools/split_regs.py` | 当前后处理逻辑（待废弃） |
+| `tools/split_regs.py` | 全量 controlbits → 4 文件；`-s` 在 split 阶段省略默认 hex |
 | `source/parse/writer/writer.cc` | 现有 fetch / `maybe_write_line` |
 | `source/parse/writer/module.cc` | `write_control_bits` 入口 |
 | `source/parse/reader/config/config.cc` | `load_config` |
 | `test/module_test/test_writer/compare_controlbits.py` | golden 对比 |
-| `test/module_test/test_writer/verify_simplify_controlbits.py` | 简化专项 |
 | `test/module_test/test_writer/check-controlbits-file/SKILLs.md` | writer 调试流程 |

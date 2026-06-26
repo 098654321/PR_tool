@@ -71,6 +71,26 @@ namespace PR_tool::parse {
         debug::info_fmt("END\n\n");
     }
 
+    auto write_control_bits_pair(
+        hardware::Interposer* interposer,
+        const std::FilePath& full_output_path,
+        const std::FilePath& simplified_output_path,
+        int mode
+    ) -> void {
+        std::FilePath full_path = full_output_path / ("controlbits_" + std::to_string(mode) + ".txt");
+        std::FilePath simplified_path = simplified_output_path / ("controlbits_" + std::to_string(mode) + ".txt");
+        debug::info_fmt(
+            "\n\
+            **********************************************************************************\n\
+                            Write full and simplified control bits into '{}' and '{}'\n\
+            **********************************************************************************\
+            ", full_path.string(), simplified_path.string()
+        );
+        auto writer = parse::Writer{interposer, false};
+        writer.fetch_and_write_pair(full_path, simplified_path);
+        debug::info_fmt("END\n\n");
+    }
+
     auto connect_registers(hardware::Interposer* interposer, circuit::BaseDie* basedie, int mode) -> void {
         debug::info("Connecting paths ...");
         auto nets = basedie->nets_to_vector();
