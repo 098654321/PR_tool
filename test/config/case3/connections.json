@@ -50,10 +50,6 @@
         ],
         [
             "muyan_0.m_tx_flit_b0",
-            "xinzhai_jtag_tdo"
-        ],
-        [
-            "muyan_0.m_tx_flit_b0",
             "muyan_1.s_rx_flit_b0"
         ],
         [

@@ -1,5 +1,6 @@
 #include "common/hw_map.hh"
 #include "graph/unified_routing_graph.hh"
+#include "sat/routing_path_log.hh"
 #include "sat/sat_constraint_kits.hh"
 #include "sat/sat_solution_extract.hh"
 #include "sat/unified_sat_encoder.hh"
@@ -1369,6 +1370,112 @@ auto test_extraction_error_branches() -> void {
         "extraction must reject a revisited node");
 }
 
+auto test_format_path_node_track_bump_hline_vline() -> void {
+    auto graph = UnifiedGraph {};
+    graph.nodes.resize(4);
+
+    graph.nodes[0].kind = UnifiedNodeKind::Track;
+    graph.nodes[0].track_row = 4;
+    graph.nodes[0].track_col = 6;
+    graph.nodes[0].track_dir = 1;
+    graph.nodes[0].track_index = 12;
+
+    graph.nodes[1].kind = UnifiedNodeKind::Bump;
+    graph.nodes[1].bump = Bump_coord {0, 1, 2, 3};
+
+    graph.nodes[2].kind = UnifiedNodeKind::HLine;
+    graph.nodes[2].tob = 0;
+    graph.nodes[2].bank = 1;
+    graph.nodes[2].group = 2;
+    graph.nodes[2].line_index = 4;
+
+    graph.nodes[3].kind = UnifiedNodeKind::VLine;
+    graph.nodes[3].tob = 0;
+    graph.nodes[3].bank = 1;
+    graph.nodes[3].line_index = 17;
+
+    require(
+        format_path_node(graph, 0) == "{r4, c6, V, i12}",
+        "track path node must use compact TrackCoord text");
+    require(
+        format_path_node(graph, 1) == "TOB(0,0) B1 G2 I3",
+        "bump path node must use TOB/bank/group/index");
+    require(
+        format_path_node(graph, 2) == "TOB(0,0) B1 G2 J4",
+        "hline path node must use J index");
+    require(
+        format_path_node(graph, 3) == "TOB(0,0) B1 V17",
+        "vline path node must use V index");
+}
+
+auto test_infer_net_display_kind() -> void {
+    auto two_pin = RoutingNet {};
+    two_pin.kind = RoutingNetKind::Bnet;
+    two_pin.demands.emplace_back(RoutingDemand {0, bump_ref(1), {0}, true});
+    require(
+        infer_net_display_kind(two_pin) == NetDisplayKind::TwoPin,
+        "single-demand Bnet must be TwoPin");
+
+    auto ttb = RoutingNet {};
+    ttb.kind = RoutingNetKind::Tnet;
+    ttb.demands.push_back(fixed_demand(0, bump_ref(1)));
+    ttb.demands.push_back(fixed_demand(1, bump_ref(2)));
+    require(
+        infer_net_display_kind(ttb) == NetDisplayKind::TrackToBumps,
+        "multi-demand Tnet must be TrackToBumps");
+
+    auto tsbs = RoutingNet {};
+    tsbs.kind = RoutingNetKind::PNnet;
+    tsbs.demands.push_back(RoutingDemand {0, bump_ref(1), {0, 1}, false});
+    require(
+        infer_net_display_kind(tsbs) == NetDisplayKind::TracksToBumps,
+        "PNnet must be TracksToBumps");
+
+    auto sync = RoutingNet {};
+    sync.kind = RoutingNetKind::Bnet;
+    sync.is_sync_bus = true;
+    sync.demands.push_back(fixed_demand(0, bump_ref(1)));
+    sync.demands.push_back(fixed_demand(1, bump_ref(2)));
+    require(
+        infer_net_display_kind(sync) == NetDisplayKind::SyncBus,
+        "sync bus must be SyncBus");
+}
+
+auto test_format_bbox_corners() -> void {
+    const auto text = format_bbox_corners(IlpBoundingBox {1, 3, 2, 5});
+    require(
+        text == "corners: (1,2) (1,5) (3,2) (3,5) bounds=(1,3,2,5)",
+        "bbox corners must list all four rectangle corners");
+}
+
+auto test_format_path_hops_and_graph_node_ref() -> void {
+    auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    const auto hops = format_path_hops(graph, std::Vector<int> {0, 1, 2});
+    require(
+        hops.find("TOB(0,0) B0 G0 I0") != std::string::npos,
+        "path hops must format bump nodes in the chain");
+
+    GraphNodeRef track {};
+    track.kind = GraphNodeRef::Kind::Track;
+    track.track_coord = hardware::TrackCoord {
+        6, 3, hardware::TrackDirection::Vertical, 4};
+    require(
+        format_graph_node_ref(track) == "{r6, c3, V, i4}",
+        "track endpoint ref must use compact TrackCoord text");
+}
+
+auto test_log_routing_paths_two_pin() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
+    auto session = CadicalSession {};
+    const auto model = build_unified_sat_model(session, graph, nets);
+    const auto solved = session.solve_once();
+    require(solved.ok, "two-pin fixture must be SAT");
+    const auto result = extract_sat_solution(graph, nets, model, session, solved);
+    require(result.ok, "two-pin extraction must succeed");
+    log_routing_paths(graph, nets, result);
+}
+
 } // namespace
 
 auto main() -> int {
@@ -1408,6 +1515,11 @@ auto main() -> int {
         test_forward_and_reverse_switch_use_extract_same_y();
         test_extraction_rejects_multiple_next_arcs();
         test_extraction_error_branches();
+        test_format_path_node_track_bump_hline_vline();
+        test_infer_net_display_kind();
+        test_format_bbox_corners();
+        test_format_path_hops_and_graph_node_ref();
+        test_log_routing_paths_two_pin();
         std::cout << "test_ILP_unit: all tests passed\n";
         return 0;
     }

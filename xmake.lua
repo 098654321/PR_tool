@@ -178,6 +178,7 @@ target("test_ILP")
         "algorithm/test_ILP/sat/unified_sat_encoder.cc",
         "algorithm/test_ILP/sat/solve_unified_sat.cc",
         "algorithm/test_ILP/sat/sat_solution_extract.cc",
+        "algorithm/test_ILP/sat/routing_path_log.cc",
         "algorithm/test_ILP/sat_allocation/cadical_solver.cc"
     )
     add_files(
@@ -213,6 +214,7 @@ target("test_ILP_unit")
         "algorithm/test_ILP/sat/unified_sat_encoder.cc",
         "algorithm/test_ILP/sat/solve_unified_sat.cc",
         "algorithm/test_ILP/sat/sat_solution_extract.cc",
+        "algorithm/test_ILP/sat/routing_path_log.cc",
         "algorithm/test_ILP/sat_allocation/cadical_solver.cc"
     )
     add_files(
@@ -238,18 +240,9 @@ target("wirelength_study")
     set_targetdir("./output")
     set_default(false)
     add_includedirs(
-        "test/module_test/test_function/wirelengthtest",
         "algorithm/test_ILP",
         "source",
         "source/global")
-    add_files(
-        "test/module_test/test_function/wirelengthtest/main.cc",
-        "test/module_test/test_function/wirelengthtest/mcf/cob_mcf_router.cc",
-        "algorithm/test_ILP/ilp_allocation/tob_ilp_model.cc",
-        "algorithm/test_ILP/ilp_allocation/gurobi.cc",
-        "algorithm/test_ILP/ilp_allocation/gurobi_model_stats.cc",
-        "algorithm/test_ILP/precompute/tob_path_precompute.cc",
-        "algorithm/test_ILP/precompute/ilp_bounding_box.cc")
     add_files(
         "source/algo/**.cc",
         "source/circuit/**.cc",

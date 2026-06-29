@@ -34,7 +34,7 @@ algorithm/test_ILP/
 ├── common/                      # Bump_coord、RoutingNet、SatRoutingResult、hw_map
 ├── scope/                       # build_routing_nets、scope_bbox
 ├── graph/                       # unified_routing_graph（track + TOB 子图）
-├── sat/                         # sat_cnf、constraint_kits、unified_sat_encoder、solve/extract
+├── sat/                         # constraint_kits、unified_sat_encoder、solve/extract、routing_path_log
 ├── sat_allocation/              # cadical_solver（通用 CNF 求解封装）
 ├── problem_formulation/         # 方法定义文档
 │
@@ -86,6 +86,10 @@ algorithm/test_ILP/
 - `sat/sat_solution_extract.cc`
   - 从 live CaDiCal 数值赋值沿每个 active demand pair 的 `x` 提取完整 `SourceSinkPairPath`，同时提取全部 `M` 与已用 `Y`。
 
+- `sat/routing_path_log.cc`
+  - 成功求解后默认打印按原始 `RoutingNet` 分组的源→汇 hop 路径（track 用紧凑格式 `{r7, c6, H, i56}` / `V` 表方向，TOB 节点用 `TOB(tr,tc)+编号`）。
+  - `-v` 打印每个 net 合并 `scope_bbox` 四角；`-vv` 额外打印 `compute_scope_child_bboxes` 子 bbox 四角。
+
 - `sat_allocation/cadical_solver.cc`
   - `CadicalSession`：边编码边写 CaDiCal；启用内存上限时按至多 4096 次全局编码操作采样，超长子句每 4096 个 literal 额外采样；`--sat-log` 时写入 `cadical-log/`。`solve_sat_cnf` 只为旧单元测试保留。
 
@@ -103,22 +107,46 @@ xmake build test_ILP
 
 CLI 参数：
 
-- `-v` / `-vv`：`-v` 打印每条 `RoutingNet` 的 kind、scope、源汇数量；编码/求解阶段日志更详细。
+- `-v` / `-vv`：`-v` 在 scope 计算后打印每个原始 net 的 bbox 四角；`-vv` 额外打印子 bbox 四角。编码/求解阶段日志更详细。
 - `--sat-log`：CaDiCal 轨迹写入 `cadical-log/`。
 
 典型日志阶段：
 
 ```text
+scope net="..." id=... kind=... display=... corners: (r0,c0) (r0,c1) (r1,c0) (r1,c1) bounds=(...)
+  scope child net="..." id=... index=0 corners: ...    # 仅 -vv
 unified graph: nodes=... arcs=... track_nodes=... tob_nodes=...
 streaming unified numeric SAT model into CaDiCal...
-unified numeric SAT model: scopes=... pairs=... sources=... vars=... clauses=...
 unified SAT model built: vars=... clauses=...
 solving unified SAT with CaDiCal...
+route net="..." id=... kind=... display=TwoPin|SyncBus|TrackToBumps|TracksToBumps demands=...
+  member demand=0 src=... snk=...
+    path: <hop0> -> <hop1> -> ...
 unified SAT ok: paths=... vars=... clauses=... ms=...
 Process peak RSS: ... MB
 ```
 
+单元测试：
+
+```bash
+xmake build test_ILP_unit
+./output/test_ILP_unit
+```
+
 最小验证建议：
+
+首先修改 source/hardware/interposer.hh当中的COB_ARRAY_WIDTH为12
+
+```bash
+xmake build test_ILP
+./output/test_ILP algorithm/test_ILP/test/case
+./output/test_ILP test/config/case1
+./output/test_ILP test/config/case5
+```
+
+进阶验证建议：
+
+首先修改 source/hardware/interposer.hh当中的COB_ARRAY_WIDTH为13
 
 ```bash
 xmake build test_ILP

@@ -1,5 +1,6 @@
 #include "sat/solve_unified_sat.hh"
 
+#include "sat/routing_path_log.hh"
 #include "sat/sat_solution_extract.hh"
 #include "sat/unified_sat_encoder.hh"
 #include "scope/build_routing_nets.hh"
@@ -22,20 +23,7 @@ auto solve_unified_sat(
 
     auto nets = build_routing_nets(basedie.nets_to_vector());
     assign_scope_bboxes(nets);
-
-    if (options.verbose_level > 0) {
-        for (const auto& net : nets) {
-            debug::info_fmt(
-                "routing net id={} name=\"{}\" kind={} scope={} sync_bus={} sources={} demands={}",
-                net.net_id,
-                net.name,
-                static_cast<int>(net.kind),
-                format_bbox(net.scope_bbox),
-                net.is_sync_bus,
-                net.sources.size(),
-                net.demands.size());
-        }
-    }
+    log_scope_bboxes(nets, options.verbose_level);
 
     const auto graph = build_unified_graph(interposer, nets);
     debug::info_fmt(
@@ -77,6 +65,7 @@ auto solve_unified_sat(
 
     out.solve_ms = solve_ms;
     if (out.ok) {
+        log_routing_paths(graph, nets, out);
         debug::info_fmt(
             "unified SAT ok: paths={} vars={} clauses={} ms={}",
             out.paths.size(),
