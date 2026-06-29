@@ -170,24 +170,15 @@ target("test_ILP")
     add_includedirs("source", "source/global", "algorithm/test_ILP")
     add_files(
         "algorithm/test_ILP/main.cc",
-        "algorithm/test_ILP/ilp_allocation/tob_ilp_model.cc",
-        "algorithm/test_ILP/ilp_allocation/gurobi.cc",
-        "algorithm/test_ILP/ilp_allocation/gurobi_model_stats.cc",
-        "algorithm/test_ILP/precompute/tob_path_precompute.cc",
-        "algorithm/test_ILP/mcf/cob_mcf_router.cc",
-        "algorithm/test_ILP/mcf/mcf_resource_usage_io.cc",
-        "algorithm/test_ILP/mcf/mcf_gurobi_log_io.cc",
-        "algorithm/test_ILP/mcf/mcf_gurobi_thread_budget.cc",
-        "algorithm/test_ILP/mcf/mcf_conflict_graph.cc",
-        "algorithm/test_ILP/mcf/mcf_bbox.cc",
-        "algorithm/test_ILP/mcf/mcf_simple_tree_refine.cc",
-        "algorithm/test_ILP/sat_allocation/tob_sat_encoder.cc",
-        "algorithm/test_ILP/sat_allocation/cadical_solver.cc",
-        "algorithm/test_ILP/sat_allocation/tob_allocation_result.cc",
-        "algorithm/test_ILP/sat_allocation/solve_tob_sat.cc",
-        "algorithm/test_ILP/sat_allocation/solve_tob_mcf_pipeline.cc",
-        "algorithm/test_ILP/precompute/ilp_bounding_box.cc",
-        "algorithm/test_ILP/precompute/tob_reach_with_range.cc"
+        "algorithm/test_ILP/test_ilp_cli.cc",
+        "algorithm/test_ILP/scope/build_routing_nets.cc",
+        "algorithm/test_ILP/scope/scope_bbox.cc",
+        "algorithm/test_ILP/graph/unified_routing_graph.cc",
+        "algorithm/test_ILP/sat/sat_constraint_kits.cc",
+        "algorithm/test_ILP/sat/unified_sat_encoder.cc",
+        "algorithm/test_ILP/sat/solve_unified_sat.cc",
+        "algorithm/test_ILP/sat/sat_solution_extract.cc",
+        "algorithm/test_ILP/sat_allocation/cadical_solver.cc"
     )
     add_files(
         "source/algo/**.cc",
@@ -197,22 +188,42 @@ target("test_ILP")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
-    local gurobi_home = os.getenv("GUROBI_HOME")    -- Gurobi home directory
-    if not gurobi_home or gurobi_home == "" then
-      if is_plat("linux") then
-        gurobi_home = "/opt/gurobi1302/linux64"
-      else
-        gurobi_home = "/Library/gurobi1302/macos_universal2"
-      end
+    if has_config("cadical") then
+        add_defines("USE_CADICAL")
+        add_includedirs("third_party/cadical/src")
+        add_linkdirs("third_party/cadical/build")
+        add_links("cadical")
+        if is_plat("linux") then
+            add_syslinks("pthread")
+        end
     end
-    add_includedirs(gurobi_home .. "/include")
-    add_linkdirs(gurobi_home .. "/lib")
-    add_rpathdirs(gurobi_home .. "/lib")
-    if is_plat("linux") then
-      add_links("pthread", "dl", "m")
-    end
-    add_links("gurobi_c++", "gurobi130")
-    if has_config("cadical") then   -- Use CaDiCaL SAT solver
+
+target("test_ILP_unit")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_includedirs("source", "source/global", "algorithm/test_ILP")
+    add_files(
+        "algorithm/test_ILP/test/unit_main.cc",
+        "algorithm/test_ILP/test_ilp_cli.cc",
+        "algorithm/test_ILP/scope/build_routing_nets.cc",
+        "algorithm/test_ILP/scope/scope_bbox.cc",
+        "algorithm/test_ILP/graph/unified_routing_graph.cc",
+        "algorithm/test_ILP/sat/sat_constraint_kits.cc",
+        "algorithm/test_ILP/sat/unified_sat_encoder.cc",
+        "algorithm/test_ILP/sat/solve_unified_sat.cc",
+        "algorithm/test_ILP/sat/sat_solution_extract.cc",
+        "algorithm/test_ILP/sat_allocation/cadical_solver.cc"
+    )
+    add_files(
+        "source/algo/**.cc",
+        "source/circuit/**.cc",
+        "source/global/**.cc",
+        "source/hardware/**.cc",
+        "source/parse/**.cc",
+        "source/serde/**.cc"
+    )
+    if has_config("cadical") then
         add_defines("USE_CADICAL")
         add_includedirs("third_party/cadical/src")
         add_linkdirs("third_party/cadical/build")
