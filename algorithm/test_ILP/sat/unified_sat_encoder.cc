@@ -1,6 +1,7 @@
 #include "sat/unified_sat_encoder.hh"
 
 #include "sat/sat_constraint_kits.hh"
+#include "sat/sat_encoding_stats.hh"
 
 #include <algorithm>
 #include <bit>
@@ -101,25 +102,51 @@ auto scoped_incident_vars(
     return out;
 }
 
+auto add_unit_clause(
+    CadicalSession& session,
+    SatEncodingStats* stats,
+    const SatClauseCategory cat,
+    const int literal
+) -> void {
+    session.add_clause({literal});
+    if (stats != nullptr) {
+        stats->add_clauses(cat, 1);
+    }
+}
+
 auto add_sum_equals_activation(
     CadicalSession& session,
     const std::Vector<int>& literals,
-    const int activation
+    const int activation,
+    SatEncodingStats* stats
 ) -> void {
     auto clause = literals;
     clause.push_back(-activation);
     session.add_clause(clause);
-    for (const int literal : literals) {
-        add_implies(session, literal, activation);
+    if (stats != nullptr) {
+        stats->add_clauses(SatClauseCategory::Connectivity, 1);
     }
-    add_pairwise_at_most_one(session, literals);
+    for (const int literal : literals) {
+        add_implies(
+            session,
+            literal,
+            activation,
+            stats,
+            SatClauseCategory::Connectivity);
+    }
+    add_pairwise_at_most_one(
+        session,
+        literals,
+        stats,
+        SatClauseCategory::Connectivity);
 }
 
-auto encode_pair_flow(
+auto encode_pair_variable_relations(
     CadicalSession& session,
     const UnifiedGraph& graph,
     const UnifiedSatNetScope& scope,
-    const UnifiedSatPairVars& pair
+    const UnifiedSatPairVars& pair,
+    SatEncodingStats* stats
 ) -> void {
     const int source_offset = scope.node_offset[static_cast<std::size_t>(pair.source_node)];
     const int sink_offset = scope.node_offset[static_cast<std::size_t>(pair.sink_node)];
@@ -132,8 +159,8 @@ auto encode_pair_flow(
 
     const int p_source = pair.p_vars[static_cast<std::size_t>(source_offset)];
     const int p_sink = pair.p_vars[static_cast<std::size_t>(sink_offset)];
-    add_equiv(session, p_source, pair.activation);
-    add_equiv(session, p_sink, pair.activation);
+    add_equiv(session, p_source, pair.activation, stats, SatClauseCategory::VariableRelation);
+    add_equiv(session, p_sink, pair.activation, stats, SatClauseCategory::VariableRelation);
 
     for (std::size_t offset = 0; offset < scope.arc_ids.size(); ++offset) {
         const auto& arc = graph.arcs[static_cast<std::size_t>(scope.arc_ids[offset])];
@@ -142,24 +169,36 @@ auto encode_pair_flow(
             session,
             x,
             pair.p_vars[static_cast<std::size_t>(
-                scope.node_offset[static_cast<std::size_t>(arc.u)])]);
+                scope.node_offset[static_cast<std::size_t>(arc.u)])],
+            stats,
+            SatClauseCategory::VariableRelation);
         add_implies(
             session,
             x,
             pair.p_vars[static_cast<std::size_t>(
-                scope.node_offset[static_cast<std::size_t>(arc.v)])]);
+                scope.node_offset[static_cast<std::size_t>(arc.v)])],
+            stats,
+            SatClauseCategory::VariableRelation);
     }
+}
 
+auto encode_pair_connectivity(
+    CadicalSession& session,
+    const UnifiedGraph& graph,
+    const UnifiedSatNetScope& scope,
+    const UnifiedSatPairVars& pair,
+    SatEncodingStats* stats
+) -> void {
     const auto source_out = scoped_incident_vars(graph, scope, pair, pair.source_node, false);
-    add_sum_equals_activation(session, source_out, pair.activation);
+    add_sum_equals_activation(session, source_out, pair.activation, stats);
     for (const int literal : scoped_incident_vars(graph, scope, pair, pair.source_node, true)) {
-        session.add_clause({-literal});
+        add_unit_clause(session, stats, SatClauseCategory::Connectivity, -literal);
     }
 
     const auto sink_in = scoped_incident_vars(graph, scope, pair, pair.sink_node, true);
-    add_sum_equals_activation(session, sink_in, pair.activation);
+    add_sum_equals_activation(session, sink_in, pair.activation, stats);
     for (const int literal : scoped_incident_vars(graph, scope, pair, pair.sink_node, false)) {
-        session.add_clause({-literal});
+        add_unit_clause(session, stats, SatClauseCategory::Connectivity, -literal);
     }
 
     for (std::size_t node_offset = 0; node_offset < scope.node_ids.size(); ++node_offset) {
@@ -170,25 +209,35 @@ auto encode_pair_flow(
         const int p = pair.p_vars[node_offset];
         const auto incoming = scoped_incident_vars(graph, scope, pair, node, true);
         const auto outgoing = scoped_incident_vars(graph, scope, pair, node, false);
-        add_or_equiv(session, p, incoming);
-        add_or_equiv(session, p, outgoing);
-        add_pairwise_at_most_one(session, incoming);
-        add_pairwise_at_most_one(session, outgoing);
-        add_implies(session, p, pair.activation);
+        add_or_equiv(session, p, incoming, stats, SatClauseCategory::Connectivity);
+        add_or_equiv(session, p, outgoing, stats, SatClauseCategory::Connectivity);
+        add_pairwise_at_most_one(
+            session,
+            incoming,
+            stats,
+            SatClauseCategory::Connectivity);
+        add_pairwise_at_most_one(
+            session,
+            outgoing,
+            stats,
+            SatClauseCategory::Connectivity);
+        add_implies(session, p, pair.activation, stats, SatClauseCategory::Connectivity);
     }
 }
 
-auto add_mode_and_switch_constraints(
+auto add_vline_track_mode_constraints(
     CadicalSession& session,
     const UnifiedGraph& graph,
-    UnifiedSatModel& model
+    UnifiedSatModel& model,
+    SatEncodingStats* stats
 ) -> void {
     for (int group_id = 0; group_id < kGlobalVlineModeGroupCount; ++group_id) {
         model.mode_var_by_group.emplace(group_id, session.new_var());
+        if (stats != nullptr) {
+            ++stats->mode_vars;
+        }
     }
 
-    auto switch_uses = std::map<int, std::Vector<int>> {};
-    auto switch_endpoints = std::map<int, std::pair<int, int>> {};
     for (const auto& pair : model.pairs) {
         const auto& scope = model.scopes[pair.scope_index];
         for (std::size_t offset = 0; offset < scope.arc_ids.size(); ++offset) {
@@ -204,12 +253,39 @@ auto add_mode_and_switch_constraints(
                         kGlobalVlineModeGroupCount - 1));
                 }
                 if (arc.is_vline_track_straight) {
-                    add_implies(session, x, mode_it->second);
+                    add_implies(
+                        session,
+                        x,
+                        mode_it->second,
+                        stats,
+                        SatClauseCategory::VlineTrackMode);
                 }
                 if (arc.is_vline_track_swap) {
-                    add_implies(session, x, -mode_it->second);
+                    add_implies(
+                        session,
+                        x,
+                        -mode_it->second,
+                        stats,
+                        SatClauseCategory::VlineTrackMode);
                 }
             }
+        }
+    }
+}
+
+auto add_tob_switch_constraints(
+    CadicalSession& session,
+    const UnifiedGraph& graph,
+    UnifiedSatModel& model,
+    SatEncodingStats* stats
+) -> void {
+    auto switch_uses = std::map<int, std::Vector<int>> {};
+    auto switch_endpoints = std::map<int, std::pair<int, int>> {};
+    for (const auto& pair : model.pairs) {
+        const auto& scope = model.scopes[pair.scope_index];
+        for (std::size_t offset = 0; offset < scope.arc_ids.size(); ++offset) {
+            const auto& arc = graph.arcs[static_cast<std::size_t>(scope.arc_ids[offset])];
+            const int x = pair.x_vars[offset];
             if (arc.physical_switch_id >= 0
                 && (arc.physical_switch_kind == PhysicalSwitchKind::BumpH
                     || arc.physical_switch_kind == PhysicalSwitchKind::HLineVLine)) {
@@ -221,14 +297,17 @@ auto add_mode_and_switch_constraints(
     }
 
     for (auto& [switch_id, uses] : switch_uses) {
+        (void)switch_id;
         std::sort(uses.begin(), uses.end());
         uses.erase(std::unique(uses.begin(), uses.end()), uses.end());
         const int y = session.new_var();
         model.switch_var_by_id.emplace(switch_id, y);
-        add_or_equiv(session, y, uses);
+        if (stats != nullptr) {
+            ++stats->switch_vars;
+        }
+        add_or_equiv(session, y, uses, stats, SatClauseCategory::TobSwitchUniqueness);
     }
 
-    // Four independent partial matchings: bump->h, h->b, h->v, v->h.
     auto matching = std::map<std::pair<int, int>, std::Vector<int>> {};
     for (const auto& [switch_id, y] : model.switch_var_by_id) {
         const auto endpoint_it = switch_endpoints.find(switch_id);
@@ -259,7 +338,11 @@ auto add_mode_and_switch_constraints(
         (void)key;
         std::sort(ys.begin(), ys.end());
         ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
-        add_pairwise_at_most_one(session, ys);
+        add_pairwise_at_most_one(
+            session,
+            ys,
+            stats,
+            SatClauseCategory::TobSwitchUniqueness);
     }
 }
 
@@ -267,7 +350,8 @@ auto add_sync_bus_constraints(
     CadicalSession& session,
     const UnifiedGraph& graph,
     const std::Vector<RoutingNet>& nets,
-    UnifiedSatModel& model
+    UnifiedSatModel& model,
+    SatEncodingStats* stats
 ) -> void {
     for (const auto& net : nets) {
         if (!net.is_sync_bus) {
@@ -303,19 +387,29 @@ auto add_sync_bus_constraints(
                 scope.node_ids.size(), std::Vector<int>(width));
             for (auto& bits : distance) {
                 bits = vars(session, width);
+                if (stats != nullptr) {
+                    stats->bus_distance_vars += width;
+                }
             }
             auto successor = std::Vector<BinarySuccessorVars> {};
             successor.reserve(scope.node_ids.size());
             for (const auto& bits : distance) {
-                successor.push_back(add_binary_successor(session, bits));
+                successor.push_back(add_binary_successor(
+                    session,
+                    bits,
+                    stats,
+                    SatClauseCategory::SyncBusLoopElimination));
             }
             const int source_offset =
                 scope.node_offset[static_cast<std::size_t>(pair->source_node)];
             for (std::size_t bit = 0; bit < width; ++bit) {
-                session.add_clause({
+                add_unit_clause(
+                    session,
+                    stats,
+                    SatClauseCategory::SyncBusLoopElimination,
                     bit == 0
                         ? distance[static_cast<std::size_t>(source_offset)][bit]
-                        : -distance[static_cast<std::size_t>(source_offset)][bit]});
+                        : -distance[static_cast<std::size_t>(source_offset)][bit]);
             }
             for (std::size_t offset = 0; offset < scope.arc_ids.size(); ++offset) {
                 const auto& arc =
@@ -328,7 +422,9 @@ auto add_sync_bus_constraints(
                     session,
                     pair->x_vars[offset],
                     successor[u_offset],
-                    distance[v_offset]);
+                    distance[v_offset],
+                    stats,
+                    SatClauseCategory::SyncBusLoopElimination);
             }
             pair->sink_distance_bits = distance[static_cast<std::size_t>(
                 scope.node_offset[static_cast<std::size_t>(pair->sink_node)])];
@@ -344,7 +440,12 @@ auto add_sync_bus_constraints(
                         net.net_id));
                 }
                 for (std::size_t bit = 0; bit < bits.size(); ++bit) {
-                    add_equiv(session, bits[bit], reference[bit]);
+                    add_equiv(
+                        session,
+                        bits[bit],
+                        reference[bit],
+                        stats,
+                        SatClauseCategory::SyncBusEqualLength);
                 }
             }
         }
@@ -356,7 +457,8 @@ auto add_sync_bus_constraints(
 auto build_unified_sat_model(
     CadicalSession& session,
     const UnifiedGraph& graph,
-    const std::Vector<RoutingNet>& nets
+    const std::Vector<RoutingNet>& nets,
+    SatEncodingStats* stats
 ) -> UnifiedSatModel {
     auto model = UnifiedSatModel {};
     auto source_nodes_by_net = std::Vector<std::Vector<int>> {};
@@ -420,6 +522,9 @@ auto build_unified_sat_model(
                 source_nodes_by_net[net_index][source_index],
                 net_index,
                 vars(session, scope.node_ids.size())};
+            if (stats != nullptr) {
+                stats->p_logical_vars += source.p_vars.size();
+            }
             ++logical_source_node_count[static_cast<std::size_t>(source.source_node)];
             for (std::size_t node_offset = 0; node_offset < scope.node_ids.size(); ++node_offset) {
                 p_occupancy_by_node[static_cast<std::size_t>(scope.node_ids[node_offset])]
@@ -441,6 +546,11 @@ auto build_unified_sat_model(
                 pair.activation = session.new_var();
                 pair.p_vars = vars(session, scope.node_ids.size());
                 pair.x_vars = vars(session, scope.arc_ids.size());
+                if (stats != nullptr) {
+                    ++stats->activation_vars;
+                    stats->pair_p_vars += pair.p_vars.size();
+                    stats->x_vars += pair.x_vars.size();
+                }
                 pair.p_sink = pair.p_vars[static_cast<std::size_t>(
                     scope.node_offset[static_cast<std::size_t>(pair.sink_node)])];
                 sink_choices.push_back(pair.p_sink);
@@ -448,25 +558,47 @@ auto build_unified_sat_model(
                     model.pairs.size());
                 model.pairs.push_back(std::move(pair));
             }
-            add_exactly_one(session, sink_choices);
+            add_exactly_one(
+                session,
+                sink_choices,
+                stats,
+                SatClauseCategory::Constant);
         }
     }
 
     for (const auto& pair : model.pairs) {
-        encode_pair_flow(session, graph, model.scopes[pair.scope_index], pair);
+        encode_pair_variable_relations(
+            session,
+            graph,
+            model.scopes[pair.scope_index],
+            pair,
+            stats);
+        encode_pair_connectivity(
+            session,
+            graph,
+            model.scopes[pair.scope_index],
+            pair,
+            stats);
     }
 
-    // Build each logical P(source,node) equivalence exactly once.
     for (auto& source : model.logical_sources) {
         const auto& scope = model.scopes[source.scope_index];
         for (std::size_t node_offset = 0; node_offset < scope.node_ids.size(); ++node_offset) {
             const int node = scope.node_ids[node_offset];
             if (node == source.source_node) {
-                session.add_clause({source.p_vars[node_offset]});
+                add_unit_clause(
+                    session,
+                    stats,
+                    SatClauseCategory::Constant,
+                    source.p_vars[node_offset]);
                 continue;
             }
             if (logical_source_node_count[static_cast<std::size_t>(node)] != 0) {
-                session.add_clause({-source.p_vars[node_offset]});
+                add_unit_clause(
+                    session,
+                    stats,
+                    SatClauseCategory::Constant,
+                    -source.p_vars[node_offset]);
             }
             auto pair_p = std::Vector<int> {};
             const auto& pair_indices =
@@ -475,17 +607,27 @@ auto build_unified_sat_model(
             for (const auto pair_index : pair_indices) {
                 pair_p.push_back(model.pairs[pair_index].p_vars[node_offset]);
             }
-            add_or_equiv(session, source.p_vars[node_offset], pair_p);
+            add_or_equiv(
+                session,
+                source.p_vars[node_offset],
+                pair_p,
+                stats,
+                SatClauseCategory::VariableRelation);
         }
     }
 
-    // Linear-size P exclusivity across every distinct logical source, including nets.
     for (const auto& occupancy : p_occupancy_by_node) {
-        add_sequential_at_most_one(session, occupancy);
+        add_sequential_at_most_one(
+            session,
+            occupancy,
+            stats,
+            SatClauseCategory::Exclusivity);
     }
 
-    add_mode_and_switch_constraints(session, graph, model);
-    add_sync_bus_constraints(session, graph, nets, model);
+    add_vline_track_mode_constraints(session, graph, model, stats);
+    add_tob_switch_constraints(session, graph, model, stats);
+    add_sync_bus_constraints(session, graph, nets, model, stats);
+
     debug::info_fmt(
         "unified numeric SAT model: scopes={} pairs={} sources={} vars={} clauses={}",
         model.scopes.size(),

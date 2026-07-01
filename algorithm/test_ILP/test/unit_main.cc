@@ -2,6 +2,7 @@
 #include "graph/unified_routing_graph.hh"
 #include "sat/routing_path_log.hh"
 #include "sat/sat_constraint_kits.hh"
+#include "sat/sat_encoding_stats.hh"
 #include "sat/sat_solution_extract.hh"
 #include "sat/unified_sat_encoder.hh"
 #include "sat_allocation/cadical_solver.hh"
@@ -968,6 +969,33 @@ auto test_logical_source_owns_its_source_node() -> void {
         "forcing logical P(source, source-node)=false must be UNSAT");
 }
 
+auto test_sat_encoding_stats_reconcile() -> void {
+    const auto nets = std::Vector<RoutingNet> {
+        synthetic_net(0, {0}, {{2, {0}}})};
+
+    const auto source_in_graph = synthetic_graph(3, {{0, 2}, {1, 0}});
+    auto source_in_session = CadicalSession {};
+    SatEncodingStats source_in_stats {};
+    (void)build_unified_sat_model(
+        source_in_session, source_in_graph, nets, &source_in_stats);
+    require(
+        source_in_session.num_clauses() == 23,
+        "source-incoming fixture must include its explicit zero unit clause");
+    require(
+        source_in_stats.total_clauses() == source_in_session.num_clauses(),
+        "encoding stats must reconcile clause categories with session total");
+    require(
+        source_in_stats.clause_counts[static_cast<std::size_t>(
+            SatClauseCategory::SyncBusEqualLength)]
+            == 0,
+        "non-sync fixture must have zero sync bus equal-length clauses");
+    require(
+        source_in_stats.clause_counts[static_cast<std::size_t>(
+            SatClauseCategory::SyncBusLoopElimination)]
+            == 0,
+        "non-sync fixture must have zero sync bus loop-elimination clauses");
+}
+
 auto test_source_incoming_and_sink_outgoing_are_zero() -> void {
     const auto nets = std::Vector<RoutingNet> {
         synthetic_net(0, {0}, {{2, {0}}})};
@@ -1503,6 +1531,7 @@ auto main() -> int {
         test_candidate_pairs_and_forced_flow_amo();
         test_logical_source_exclusivity();
         test_logical_source_owns_its_source_node();
+        test_sat_encoding_stats_reconcile();
         test_source_incoming_and_sink_outgoing_are_zero();
         test_mode_group_zero_conflict();
         test_all_mode_groups_and_group_zero_extraction();

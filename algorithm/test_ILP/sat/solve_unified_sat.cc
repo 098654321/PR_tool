@@ -1,6 +1,7 @@
 #include "sat/solve_unified_sat.hh"
 
 #include "sat/routing_path_log.hh"
+#include "sat/sat_encoding_stats.hh"
 #include "sat/sat_solution_extract.hh"
 #include "sat/unified_sat_encoder.hh"
 #include "scope/build_routing_nets.hh"
@@ -36,11 +37,20 @@ auto solve_unified_sat(
     auto session = CadicalSession {options.cadical};
     try {
         debug::info("streaming unified numeric SAT model into CaDiCal...");
-        const auto model = build_unified_sat_model(session, graph, nets);
+        SatEncodingStats encoding_stats {};
+        SatEncodingStats* stats_ptr = options.verbose_level >= 1 ? &encoding_stats : nullptr;
+        const auto model = build_unified_sat_model(session, graph, nets, stats_ptr);
         debug::info_fmt(
             "unified SAT model built: vars={} clauses={}",
             session.num_vars(),
             session.num_clauses());
+        if (stats_ptr != nullptr) {
+            encoding_stats.finalize_variables(session.num_vars());
+            log_sat_encoding_stats(
+                encoding_stats,
+                session.num_vars(),
+                session.num_clauses());
+        }
         debug::info("solving unified SAT with CaDiCal...");
         const auto solve_begin = std::chrono::steady_clock::now();
         const auto solve_result = session.solve_once();

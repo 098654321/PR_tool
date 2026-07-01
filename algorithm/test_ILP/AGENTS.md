@@ -18,10 +18,10 @@
 
 ## 工作流程中必须要做的事情
 
-- 改代码前先读清 `第十三版方法.md`、硬件映射和现有实现，不要凭记忆改模型。方法文档在 `problem_formulation/`；硬件映射在 `source/hardware` 与 `source/circuit`。不允许修改方法文档。
+- 改代码前先读清方法文档与硬件映射的资料。方法文档在 `problem_formulation/`；硬件映射在 `source/hardware` 与 `source/circuit`。不允许修改方法文档。允许改动范围：优先修改 `algorithm/test_ILP/` 内部；除非必要，不改 `source/` 主流程接口语义。
 - 修改后评估是否同步更新本文件（不超过 200 行），以及是否在项目根目录 `.plan/` 下新增改动记录。本文件描述当前工程状态，不记录单次修改流水账。
 - 100 行以上的修改完成后，应启动子 agent 独立评估实现是否完整、正确。
-- 允许改动范围：优先修改 `algorithm/test_ILP/` 内部；除非必要，不改 `source/` 主流程接口语义。
+- 每一个文件应当简化职责，其中的内容职责紧凑，实现功能语义清晰。任何文件都不应该超过1500行，否则需要对文件内容做重构，拆解为多个功能职责更加紧凑的小文件，必要时可以建立新目录来管理多个小文件。
 - 关键步骤应打日志（`debug::info` / `debug::info_fmt`），便于从 `output/debug.log` 追踪。
 
 ## 目录结构
@@ -78,6 +78,9 @@ algorithm/test_ILP/
 - `graph/unified_routing_graph.cc`
   - 构建固定的完整硬件图：track 级 mesh（Wilton 开关）与全部 16 个 TOB 的 bump/hline/vline 子图；弧属性使用带 `-1` 哨兵的 `mode_group_id`、`physical_switch_id` 及物理开关类型。
 
+- `sat/sat_encoding_stats.hh` / `sat_encoding_stats.cc`
+  - `-v` 编码统计：`SatEncodingStats` 与 `log_sat_encoding_stats`（变量区 + 8 类 CNF 子句对账）。
+
 - `sat/unified_sat_encoder.cc`
   - 每个原始 net 一个紧凑 scope；每个逻辑 `(net, source)` 的 `P`；仅为 demand 明确列出的候选 source 分配 pair `p`/`x`。
   - 使用全局节点/弧 ID 的扁平 offset 表，不创建变量名或 pair 级嵌套 map；逻辑 source 节点和候选 pair 预先索引，多源争用节点使用线性规模 Sinz `P` 互斥。
@@ -107,7 +110,7 @@ xmake build test_ILP
 
 CLI 参数：
 
-- `-v` / `-vv`：`-v` 在 scope 计算后打印每个原始 net 的 bbox 四角；`-vv` 额外打印子 bbox 四角。编码/求解阶段日志更详细。
+- `-v` / `-vv`：`-v` 在 scope 计算后打印每个原始 net 的 bbox 四角，并在建模完成后打印 SAT 编码统计（变量数与 8 类 CNF 子句数）；`-vv` 额外打印子 bbox 四角。
 - `--sat-log`：CaDiCal 轨迹写入 `cadical-log/`。
 
 典型日志阶段：
@@ -118,6 +121,14 @@ scope net="..." id=... kind=... display=... corners: (r0,c0) (r0,c1) (r1,c0) (r1
 unified graph: nodes=... arcs=... track_nodes=... tob_nodes=...
 streaming unified numeric SAT model into CaDiCal...
 unified SAT model built: vars=... clauses=...
+========== unified SAT encoding stats (-v) ==========    # 仅 -v
+Variables:
+  P   (logical-source occupancy) : ...
+  ...
+Clauses by category (CNF):
+  [1] constant constraints              : ...
+  ...
+=====================================================
 solving unified SAT with CaDiCal...
 route net="..." id=... kind=... display=TwoPin|SyncBus|TrackToBumps|TracksToBumps demands=...
   member demand=0 src=... snk=...
@@ -139,7 +150,7 @@ xmake build test_ILP_unit
 
 ```bash
 xmake build test_ILP
-./output/test_ILP algorithm/test_ILP/test/case
+使用一下case进行验证：algorithm/test_ILP/test/*
 ./output/test_ILP test/config/case1
 ./output/test_ILP test/config/case5
 ```

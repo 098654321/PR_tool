@@ -5,8 +5,8 @@
             "muyan_0.m_rx_flit_b0"
         ],
         [
-            "xinzhai_spi_s_sck_1",
-            "muyan_2.spi_s_sck_1"
+            "muyan_1.s_tx_flit_b1",
+            "muyan_0.m_rx_flit_b1"
         ]
     ]
 }

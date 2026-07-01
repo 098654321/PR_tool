@@ -2,6 +2,7 @@
 
 #include "common/routing_types.hh"
 #include "graph/unified_routing_graph.hh"
+#include "sat/sat_encoding_stats.hh"
 #include "sat_allocation/cadical_solver.hh"
 
 namespace PR_tool {
@@ -49,7 +50,8 @@ struct UnifiedSatModel {
 auto build_unified_sat_model(
     CadicalSession& session,
     const UnifiedGraph& graph,
-    const std::Vector<RoutingNet>& nets
+    const std::Vector<RoutingNet>& nets,
+    SatEncodingStats* stats = nullptr
 ) -> UnifiedSatModel;
 
 } // namespace PR_tool
