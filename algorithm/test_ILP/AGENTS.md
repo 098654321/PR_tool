@@ -8,12 +8,18 @@
 
 1. **Net 聚合**：`build_routing_nets` → `validate_v14_routing_nets`（非 PNnet 每 demand 恰好一个 candidate source；**PNnet 允许多候选 track**）。
 2. **Pair 状态初始化**：`init_routing_problem_state` 为每个 `(net, demand)` 建立 `PairRoutingState`（`delays` 集合、`pair_bbox`）；PNnet 逻辑源 `source_index=0`（虚拟 \(r_n\)）；`apply_state_to_nets` 写回 `net.scope_bbox`。
-3. **统一图**：`build_unified_graph`（track mesh + 16 TOB 子图）→ **`augment_graph_for_pnnet`**（每 PNnet 追加 `VirtualSource` 节点 \(r_n\) 及 \(r_n\to s_j\) 虚拟弧）。
+3. **统一图**：`build_unified_graph`（track mesh + 16 TOB 子图）→ **`augment_graph_for_pnnet`**（每 PNnet 追加 `VirtualSource` 节点 \(r_n\) 及 \(r_n\to s_j\) 虚拟弧）→ **可选首轮扩展** `apply_initial_search_padding`（CLI `-s`/`-d`，见下）。
 4. **反馈环**（`solve_with_feedback`）：每轮 `apply_state_to_nets` → `build_all_scopes` → `compute_pair_delays(state)` → `build_unified_sat_model`（连通性仅由 `α_{s,t}⇒⋁D` 门控）→ `assume(α)` → CaDiCal `solve()`。
    - **SAT**：`extract_sat_solution` 从 sink 按 delay 递减回溯；PNnet 经虚拟弧回到 \(r_n\)，路径展示从**选中 track** 起算（扣 1 虚拟跳）。
    - **UNSAT**：`failed(α)` 收集 critical pairs → `apply_feedback_expansion` 返回 `Expanded/Exhausted` → 扩 `delays`（`max+1,max+2`）与 `pair_bbox`（四边 ±1）→ fanout/bus/**PNnet 同 net 多汇**同步 → 全量重建 session/model；刚扩到全片仍重建求解一次，只有全片状态已求解仍 UNSAT 才 `Exhausted`；`MEMORY_LIMIT` 不扩边。
-5. **Delay 预计算**：scope 内 BFS；初始 `delays(s,t)={d_min}`，反馈后可多元素；bus 取 `bus_d_min=max(member最短)`；**PNnet** 从 \(r_n\) BFS，初值 \(d_{\min}(r_n,t_i)=1+\min_j d_{\min}(s_j,t_i)\)。
-6. **SAT 编码**：`D_{s,n,d}`、`A_{s,u→v,d}`、`α⇒⋁D`、`Y`、`M_g`、bus `∀d` 等长；`delays` 中不存在的 sink D 按 false 跳过，整个析取为空时编码 `¬α`；PNnet 一块逻辑源（`source_index=0`），对物理 track 强制 \(D_{r_n,s_j,d}=0\ (d\neq1)\)，**无** `ExactlyOne` 选轨（多源可并存、路径可汇合）。
+5. **首轮搜索扩展**（`apply_initial_search_padding`，图构建后、反馈环前执行一次；`UnifiedSatSolveOptions.initial_scope_pad` / `initial_delay_pad`；CLI `-s S` / `-d D`；默认均为 0）：
+   - `-s S`：每个 `pair_bbox` 四边各外扩 S 格（重复 `expand_pair_bbox_one_cell` S 次）→ `apply_state_to_nets` 更新 `net.scope_bbox`。
+   - `-d D`：在**当前** scope（若已 `-s` 则为扩后 scope）上 `build_all_scopes` + `compute_pair_delays` 得 `d_min`，再设 `delays={d_min,…,d_min+D}`。
+   - 普通 2-pin、单源多汇与 PNnet 每个 pair 按自己的 `d_min` 独立扩展，不跨 demand 合并；bus 先由 `compute_pair_delays` 对齐到统一 `bus_d_min`，再为各 member 添加相同区间。
+   - `-d` 不修改任何 `pair_bbox`；首轮 padding 不调用反馈阶段使用的 fanout/bus 同步函数。
+   - 反馈 round 0 的 `compute_pair_delays(state)` **保留**已填充的 `delays`；仅 scope 扩展、未设 `-d` 时 round 0 才首次写入 `{d_min}`。
+6. **Delay 预计算**：scope 内 BFS；初始 `delays(s,t)={d_min}`，反馈后可多元素；bus 取 `bus_d_min=max(member最短)`；**PNnet** 从 \(r_n\) BFS，初值 \(d_{\min}(r_n,t_i)=1+\min_j d_{\min}(s_j,t_i)\)。
+7. **SAT 编码**：`D_{s,n,d}`、`A_{s,u→v,d}`、`α⇒⋁D`、`Y`、`M_g`、bus `∀d` 等长；`delays` 中不存在的 sink D 按 false 跳过，整个析取为空时编码 `¬α`；PNnet 一块逻辑源（`source_index=0`），对物理 track 强制 \(D_{r_n,s_j,d}=0\ (d\neq1)\)，**无** `ExactlyOne` 选轨（多源可并存、路径可汇合）。
 
 **不包含**：SAT+MCF 分阶段、Gurobi MCF、结果写回 interposer。
 
@@ -48,7 +54,7 @@ algorithm/test_ILP/
 |------|------|
 | `graph/unified_routing_graph` | `VirtualSource` 节点；`is_virtual_source_arc`；`augment_graph_for_pnnet` |
 | `scope/scope_bbox` | PNnet：`compute_pnnet_demand_pair_bbox`（按 demand 合并各 \((s_j,t_i)\) Tnet bbox） |
-| `scope/pair_routing_state` | per-pair `delays`/`pair_bbox`；fanout/bus/PNnet 同步；全片扩 |
+| `scope/pair_routing_state` | per-pair `delays`/`pair_bbox`；`apply_initial_search_padding`（CLI 首轮 scope/delay 预扩展）；fanout/bus/PNnet 同步；全片扩 |
 | `delay/pair_delay_precompute` | BFS 可达性；PNnet 从 \(r_n\)；读取 state 中可增长 `delays`；`d_max=max(delays)` |
 | `sat/routing_feedback` | UNSAT core 驱动 scope/delay 扩展；显式 `Expanded/Exhausted` 状态；每轮新建 `CadicalSession` |
 | `sat/unified_sat_scope` | per-net 紧凑 scope；PNnet 强制含 \(r_n\)、全部候选 track、虚拟弧 |
@@ -81,11 +87,15 @@ xmake build test_ILP
 xmake build test_ILP_unit
 ./output/test_ILP_unit
 ./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192
+./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192 -s 0 -d 1
+./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192 -s 1 -d 1
 ```
 
-集成 case：`case_2btb`、`case_2btt`、`case_2fanout`、`case_bus2btb`、`case_bus2btt`、`test/config/case5`（PNnet / `TracksToBumpsNet`）；建议 `--max-rss-mb 8192`（`main.cc` 打印 `Process peak RSS`）。
+**首轮扩展**（可选，与反馈扩边独立）：`-s S` 外扩 pair bbox；`-d D` 初始 delay 集合 `{d_min,…,d_min+D}`。`-v` 时 `main.cc` 打印 `initial search padding: scope_pad=… delay_pad=…`；初始 scope 与 `scope after initial search padding` 分别展示扩展前后范围，round 0 的 `delay net=… delays=[…]` 展示最终 pair delay。
 
-`-v` 日志含 scope、delay、`feedback round=`、`feedback critical`、`unified SAT encoding stats`（`d_vars`/`a_vars`/`alpha_vars`/7 类 CNF）、路径（PNnet 含选中 track）。
+集成 case：`case_2btb`、`case_2btt`、`case_2fanout`、`case_bus2btb`、`case_bus2btt`（各验证基线、`-s 0 -d 1`、`-s 1 -d 1` 三组）；`test/config/case5`（PNnet）；建议 `--max-rss-mb 8192`。
+
+`-v` 日志含 scope、delay、`feedback round=`、`feedback critical`、`unified SAT encoding stats`（`d_vars`/`a_vars`/`alpha_vars`/7 类 CNF）、路径（PNnet 含选中 track）；`round_solve_ms` 是当前轮 CaDiCal 时间，`total_solve_ms` 是所有反馈轮累计 CaDiCal 时间，`run_main total elapsed` 是完整端到端时间。
 
 反馈扩边示例：`feedback round=2 critical net=3 demand=1 delays=10->10,11,12 bbox=(2,5,0,6)->(1,6,0,7)`。
 
@@ -94,6 +104,7 @@ xmake build test_ILP_unit
 - **反馈环**：每轮全量重建 CNF；`max_feedback_rounds`（默认 64）防止无限循环；只有全片 bbox 状态已经完成一次求解且仍 UNSAT 才终止。
 - **CaDiCal core**：`failed()` 不保证最小；空 core 时回退到 max-delay pair。
 - **规模**：全图 1024 `M_g` 变量；大 scope 下 D/A 仍随可达 triple 增长；**case5** 等大实例可能触达 8GB RSS 上限（`MEMORY_LIMIT`）。
+- **首轮扩展**：`-s`/`-d` 无配置上界；过大值会膨胀首轮 CNF/RSS。实现会拒绝 `d_min+d` 的整数溢出；fanout、bus、PNnet 的 padding 语义均有单测覆盖。
 
 ## 工程风格
 

@@ -13,6 +13,8 @@ struct TestIlpCliOptions {
     int verbose_level{0};
     bool enable_sat_log{false};
     std::size_t max_rss_mb{0};
+    int initial_scope_pad{0};
+    int initial_delay_pad{0};
 };
 
 auto parse_test_ilp_cli(std::span<const std::string_view> args) -> TestIlpCliOptions;

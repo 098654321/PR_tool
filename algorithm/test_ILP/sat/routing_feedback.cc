@@ -136,6 +136,19 @@ auto solve_with_feedback(
         graph.track_node_count,
         graph.tob_node_count);
 
+    if (options.initial_scope_pad > 0 || options.initial_delay_pad > 0) {
+        apply_initial_search_padding(
+            problem_state,
+            nets,
+            graph,
+            options.initial_scope_pad,
+            options.initial_delay_pad);
+        if (options.verbose_level >= 1) {
+            debug::info("scope after initial search padding:");
+            log_scope_bboxes(nets, options.verbose_level);
+        }
+    }
+
     for (std::size_t round = 0; round < options.max_feedback_rounds; ++round) {
         if (options.verbose_level >= 1) {
             debug::info_fmt("feedback round={} begin", round);
@@ -201,17 +214,19 @@ auto solve_with_feedback(
             }
 
             if (solve_result.ok) {
+                const long long total_solve_ms = out.solve_ms;
                 out = extract_sat_solution(graph, nets, model, session, solve_result);
                 out.num_vars = session.num_vars();
                 out.num_clauses = session.num_clauses();
-                out.solve_ms = solve_ms;
+                out.solve_ms = total_solve_ms;
                 out.feedback_rounds = round;
                 log_routing_paths(graph, nets, out);
                 debug::info_fmt(
-                    "unified SAT ok: paths={} vars={} clauses={} ms={} round={}",
+                    "unified SAT ok: paths={} vars={} clauses={} round_solve_ms={} total_solve_ms={} round={}",
                     out.paths.size(),
                     out.num_vars,
                     out.num_clauses,
+                    solve_ms,
                     out.solve_ms,
                     round);
                 return out;

@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <iostream>
 #include <bit>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -1273,6 +1274,166 @@ auto test_cli_max_rss_option() -> void {
     require_invalid({"test/config/case1", "--max-rss-mb", "12MB"});
 }
 
+auto test_cli_initial_padding_options() -> void {
+    const auto parsed = parse_test_ilp_cli({
+        "algorithm/test_ILP/test/case_2btb",
+        "-v",
+        "--max-rss-mb",
+        "8192",
+        "-s",
+        "2",
+        "-d",
+        "3"});
+    require(
+        parsed.config_path == "algorithm/test_ILP/test/case_2btb",
+        "CLI must preserve config path with padding options");
+    require(parsed.verbose_level == 1, "CLI must preserve -v with padding options");
+    require(parsed.max_rss_mb == 8192, "CLI must preserve --max-rss-mb with padding options");
+    require(parsed.initial_scope_pad == 2, "CLI must parse -s");
+    require(parsed.initial_delay_pad == 3, "CLI must parse -d");
+
+    const auto zero_pads = parse_test_ilp_cli({"case_2btt", "-s", "0", "-d", "0"});
+    require(zero_pads.initial_scope_pad == 0, "CLI must accept -s 0");
+    require(zero_pads.initial_delay_pad == 0, "CLI must parse -d 0");
+
+    const auto require_invalid = [](std::initializer_list<std::string_view> args) {
+        try {
+            (void)parse_test_ilp_cli(args);
+            require(false, "invalid padding CLI input must be rejected");
+        }
+        catch (const std::invalid_argument&) {
+        }
+    };
+    require_invalid({"case_2btt", "-s"});
+    require_invalid({"case_2btt", "-d"});
+    require_invalid({"case_2btt", "-s", "-1"});
+    require_invalid({"case_2btt", "-d", "x"});
+}
+
+auto test_initial_search_padding_scope() -> void {
+    const auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}});
+    auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    const auto before = state.pairs[0].pair_bbox;
+    apply_initial_search_padding(state, nets, graph, 1, 0);
+    const auto expected = expand_pair_bbox_one_cell(before);
+    require_bbox(
+        state.pairs[0].pair_bbox,
+        expected.row_min,
+        expected.row_max,
+        expected.col_min,
+        expected.col_max,
+        "initial scope padding must expand pair bbox by one cell");
+    require(state.pairs[0].delays.empty(), "scope-only padding must leave delays empty");
+}
+
+auto test_initial_search_padding_delay() -> void {
+    const auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}});
+    auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    apply_initial_search_padding(state, nets, graph, 0, 2);
+    require(
+        state.pairs[0].delays == std::Vector<int>({3, 4, 5}),
+        "initial delay padding must span d_min through d_min+d");
+}
+
+auto test_initial_search_padding_rejects_delay_overflow() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    auto nets = std::Vector<RoutingNet> {
+        synthetic_net(0, {0}, {{2, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    try {
+        apply_initial_search_padding(
+            state,
+            nets,
+            graph,
+            0,
+            std::numeric_limits<int>::max());
+        require(false, "overflowing initial delay padding must be rejected");
+    }
+    catch (const std::overflow_error&) {
+    }
+}
+
+auto test_initial_search_padding_fanout_keeps_pair_delays_independent() -> void {
+    const auto graph = synthetic_graph(
+        6, {{0, 1}, {1, 2}, {0, 3}, {3, 4}, {4, 5}});
+    auto fanout = synthetic_net(1, {0}, {{2, {0}}, {5, {0}}});
+    auto nets = std::Vector<RoutingNet> {fanout};
+    auto state = init_routing_problem_state(nets);
+    apply_initial_search_padding(state, nets, graph, 0, 1);
+    require(
+        state.pairs[0].delays == std::Vector<int>({2, 3}),
+        "fanout demand 0 must pad from its own d_min");
+    require(
+        state.pairs[1].delays == std::Vector<int>({3, 4}),
+        "fanout demand 1 must pad from its own d_min");
+}
+
+auto test_initial_search_padding_bus_uses_shared_delay_without_bbox_merge() -> void {
+    const auto graph = synthetic_graph(
+        7, {{0, 1}, {1, 2}, {3, 4}, {4, 5}, {5, 6}});
+    auto bus = synthetic_net(2, {0, 3}, {{2, {0}}, {6, {1}}});
+    bus.is_sync_bus = true;
+    auto nets = std::Vector<RoutingNet> {bus};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].pair_bbox = IlpBoundingBox {0, 0, 0, 0};
+    state.pairs[1].pair_bbox = IlpBoundingBox {0, 1, 0, 1};
+    const auto bbox0 = state.pairs[0].pair_bbox;
+    const auto bbox1 = state.pairs[1].pair_bbox;
+    apply_state_to_nets(state, nets);
+
+    apply_initial_search_padding(state, nets, graph, 0, 1);
+
+    require(
+        state.pairs[0].delays == std::Vector<int>({3, 4})
+            && state.pairs[1].delays == std::Vector<int>({3, 4}),
+        "bus members must pad from the shared bus_d_min");
+    require_bbox(
+        state.pairs[0].pair_bbox,
+        bbox0.row_min,
+        bbox0.row_max,
+        bbox0.col_min,
+        bbox0.col_max,
+        "delay padding must not change bus member 0 bbox");
+    require_bbox(
+        state.pairs[1].pair_bbox,
+        bbox1.row_min,
+        bbox1.row_max,
+        bbox1.col_min,
+        bbox1.col_max,
+        "delay padding must not change bus member 1 bbox");
+}
+
+auto test_initial_search_padding_applies_scope_before_delay() -> void {
+    auto graph = synthetic_graph(
+        5, {{0, 1}, {1, 2}, {2, 3}, {0, 4}, {4, 3}});
+    for (const int node : {1, 2}) {
+        graph.nodes[static_cast<std::size_t>(node)].kind = UnifiedNodeKind::Track;
+        graph.nodes[static_cast<std::size_t>(node)].track_dir = 0;
+        graph.nodes[static_cast<std::size_t>(node)].track_row = 0;
+        graph.nodes[static_cast<std::size_t>(node)].track_col = 1;
+    }
+    graph.nodes[4].kind = UnifiedNodeKind::Track;
+    graph.nodes[4].track_dir = 0;
+    graph.nodes[4].track_row = 1;
+    graph.nodes[4].track_col = 1;
+
+    auto nets = std::Vector<RoutingNet> {
+        synthetic_net(3, {0}, {{3, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    apply_state_to_nets(state, nets);
+    const auto initial_scopes = build_all_scopes(graph, nets);
+    require(
+        bfs_shortest_delay(graph, initial_scopes[0], 0, 3) == 3,
+        "fixture must have d_min=3 before scope padding");
+
+    apply_initial_search_padding(state, nets, graph, 1, 1);
+    require(
+        state.pairs[0].delays == std::Vector<int>({2, 3}),
+        "delay padding must use d_min from the expanded scope");
+}
+
 auto test_sequential_at_most_one_truth_table_and_scaling() -> void {
     for (int mask = 0; mask < 8; ++mask) {
         auto session = CadicalSession {};
@@ -1842,6 +2003,26 @@ auto synthetic_pnnet(
     return net;
 }
 
+auto test_initial_search_padding_pnnet_keeps_sink_delays_independent() -> void {
+    const auto graph = synthetic_graph(
+        7,
+        {{0, 2}, {1, 2}, {2, 3}, {0, 4}, {1, 4}, {4, 5}, {5, 6}});
+    auto nets = std::Vector<RoutingNet> {
+        synthetic_pnnet(4, {0, 1}, {{3, {0, 1}}, {6, {0, 1}}})};
+    auto state = init_routing_problem_state(nets);
+    auto working_graph = graph;
+    augment_graph_for_pnnet(working_graph, nets);
+
+    apply_initial_search_padding(state, nets, working_graph, 0, 1);
+
+    require(
+        state.pairs[0].delays == std::Vector<int>({3, 4}),
+        "PNnet demand 0 must pad from its own virtual-source d_min");
+    require(
+        state.pairs[1].delays == std::Vector<int>({4, 5}),
+        "PNnet demand 1 must pad from its own virtual-source d_min");
+}
+
 auto test_pnnet_virtual_delay_shift() -> void {
     const auto graph = synthetic_graph(4, {{0, 2}, {1, 2}, {2, 3}});
     auto nets = std::Vector<RoutingNet> {synthetic_pnnet(0, {0, 1}, {{3, {0, 1}}})};
@@ -1962,9 +2143,17 @@ auto main() -> int {
         test_v14_bus_forall_d_equiv();
         test_v14_bus_missing_sink_d_is_false();
         test_cli_max_rss_option();
+        test_cli_initial_padding_options();
+        test_initial_search_padding_scope();
+        test_initial_search_padding_delay();
+        test_initial_search_padding_rejects_delay_overflow();
+        test_initial_search_padding_fanout_keeps_pair_delays_independent();
+        test_initial_search_padding_bus_uses_shared_delay_without_bbox_merge();
+        test_initial_search_padding_applies_scope_before_delay();
         test_sequential_at_most_one_truth_table_and_scaling();
         test_numeric_fixed_path_and_extraction();
         test_v14_rejects_multi_candidate_demand();
+        test_initial_search_padding_pnnet_keeps_sink_delays_independent();
         test_pnnet_virtual_delay_shift();
         test_pnnet_forbid_track_delay_ne_1();
         test_pnnet_virtual_arc_sat_extract();

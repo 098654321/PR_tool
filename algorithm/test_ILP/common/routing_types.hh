@@ -77,6 +77,7 @@ struct SatRoutingResult {
     std::String message;
     std::size_t num_vars{0};
     std::size_t num_clauses{0};
+    // Sum of CaDiCal solve time across all feedback rounds.
     long long solve_ms{0};
     std::size_t feedback_rounds{0};
     std::Vector<SourceSinkPairPath> paths;

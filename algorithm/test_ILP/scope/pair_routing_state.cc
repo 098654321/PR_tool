@@ -1,9 +1,13 @@
 #include "scope/pair_routing_state.hh"
 
+#include "delay/pair_delay_precompute.hh"
 #include "graph/unified_routing_graph.hh"
+#include "sat/unified_sat_scope.hh"
 #include "scope/scope_bbox.hh"
 
 #include <algorithm>
+#include <format>
+#include <limits>
 #include <stdexcept>
 
 namespace PR_tool {
@@ -167,6 +171,58 @@ auto all_pair_bboxes_full(const RoutingProblemState& state) -> bool {
         }
     }
     return true;
+}
+
+auto apply_initial_search_padding(
+    RoutingProblemState& state,
+    std::Vector<RoutingNet>& nets,
+    const UnifiedGraph& graph,
+    int scope_pad,
+    int delay_pad
+) -> void {
+    if (scope_pad == 0 && delay_pad == 0) {
+        return;
+    }
+
+    if (scope_pad > 0) {
+        for (auto& pair : state.pairs) {
+            for (int step = 0; step < scope_pad; ++step) {
+                pair.pair_bbox = expand_pair_bbox_one_cell(pair.pair_bbox);
+            }
+        }
+        apply_state_to_nets(state, nets);
+    }
+
+    if (delay_pad <= 0) {
+        return;
+    }
+
+    const auto scopes = build_all_scopes(graph, nets);
+    (void)compute_pair_delays(graph, nets, scopes, &state);
+
+    for (auto& pair : state.pairs) {
+        if (pair.delays.empty()) {
+            throw std::runtime_error(std::format(
+                "initial delay padding failed for net {} demand {}: no d_min",
+                pair.key.net_id,
+                pair.key.demand_id));
+        }
+        const int d_min = pair.delays.front();
+        if (delay_pad > std::numeric_limits<int>::max() - d_min) {
+            throw std::overflow_error(std::format(
+                "initial delay padding overflows for net {} demand {}: d_min={} pad={}",
+                pair.key.net_id,
+                pair.key.demand_id,
+                d_min,
+                delay_pad));
+        }
+        auto expanded = std::Vector<int> {};
+        expanded.reserve(static_cast<std::size_t>(delay_pad) + 1);
+        for (int delay = d_min; delay <= d_min + delay_pad; ++delay) {
+            expanded.push_back(delay);
+        }
+        pair.delays = std::move(expanded);
+    }
 }
 
 } // namespace PR_tool

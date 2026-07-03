@@ -54,4 +54,12 @@ auto sync_bus_after_expand(
 
 auto all_pair_bboxes_full(const RoutingProblemState& state) -> bool;
 
+auto apply_initial_search_padding(
+    RoutingProblemState& state,
+    std::Vector<RoutingNet>& nets,
+    const UnifiedGraph& graph,
+    int scope_pad,
+    int delay_pad
+) -> void;
+
 } // namespace PR_tool

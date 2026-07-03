@@ -18,7 +18,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: xmake run test_ILP <config_path> [-v|-vv] [--sat-log] [--max-rss-mb N]";
+    "Usage: xmake run test_ILP <config_path> [-v|-vv] [--sat-log] [--max-rss-mb N] [-s S] [-d D]";
 
 auto get_peak_rss_mb() -> double {
     rusage usage {};
@@ -60,11 +60,20 @@ auto run_main(int argc, char** argv) -> int {
     options.cadical.enable_sat_log = cli.enable_sat_log;
     options.cadical.verbose_level = cli.verbose_level;
     options.cadical.max_rss_mb = cli.max_rss_mb;
+    options.initial_scope_pad = cli.initial_scope_pad;
+    options.initial_delay_pad = cli.initial_delay_pad;
     if (cli.enable_sat_log) {
         debug::info_fmt("CaDiCal solver logs enabled: directory={}", options.cadical.log_dir);
     }
     if (cli.max_rss_mb != 0) {
         debug::info_fmt("Process peak RSS limit enabled: {} MB", cli.max_rss_mb);
+    }
+    if (cli.verbose_level >= 1
+        && (cli.initial_scope_pad != 0 || cli.initial_delay_pad != 0)) {
+        debug::info_fmt(
+            "initial search padding: scope_pad={} delay_pad={}",
+            cli.initial_scope_pad,
+            cli.initial_delay_pad);
     }
 
     const auto result = solve_unified_sat(interposer.get(), *basedie.get(), options);
@@ -80,7 +89,7 @@ auto run_main(int argc, char** argv) -> int {
         return 1;
     }
     debug::info_fmt(
-        "unified SAT routing succeeded: paths={} vars={} clauses={} solve_ms={}",
+        "unified SAT routing succeeded: paths={} vars={} clauses={} total_solve_ms={}",
         result.paths.size(),
         result.num_vars,
         result.num_clauses,

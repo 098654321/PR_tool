@@ -6,6 +6,21 @@
 
 namespace PR_tool {
 
+namespace {
+
+auto parse_non_negative_int(std::string_view value, const char* option_name) -> int {
+    int parsed = 0;
+    const auto [end, error] =
+        std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc {} || end != value.data() + value.size() || parsed < 0) {
+        throw std::invalid_argument(
+            std::format("{} requires a non-negative integer argument", option_name));
+    }
+    return parsed;
+}
+
+} // namespace
+
 auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlpCliOptions {
     if (args.empty()) {
         throw std::invalid_argument("No config path given");
@@ -33,6 +48,20 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
                     "--max-rss-mb requires a positive integer argument");
             }
             options.max_rss_mb = parsed;
+            continue;
+        }
+        if (arg == "-s") {
+            if (++i >= args.size()) {
+                throw std::invalid_argument("-s requires a non-negative integer argument");
+            }
+            options.initial_scope_pad = parse_non_negative_int(args[i], "-s");
+            continue;
+        }
+        if (arg == "-d") {
+            if (++i >= args.size()) {
+                throw std::invalid_argument("-d requires a non-negative integer argument");
+            }
+            options.initial_delay_pad = parse_non_negative_int(args[i], "-d");
             continue;
         }
         if (arg.size() >= 2 && arg[0] == '-' && arg[1] == 'v') {
