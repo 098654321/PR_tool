@@ -13,7 +13,8 @@ enum class UnifiedNodeKind {
     Track,
     Bump,
     HLine,
-    VLine
+    VLine,
+    VirtualSource
 };
 
 enum class PhysicalSwitchKind {
@@ -42,6 +43,7 @@ struct UnifiedArc {
     int v{0};
     bool is_vline_track_straight{false};
     bool is_vline_track_swap{false};
+    bool is_virtual_source_arc{false};
     int mode_group_id{-1};
     int physical_switch_id{-1};
     PhysicalSwitchKind physical_switch_kind{PhysicalSwitchKind::None};
@@ -67,6 +69,10 @@ auto build_unified_graph(
     hardware::Interposer* interposer,
     const std::Vector<RoutingNet>& nets
 ) -> UnifiedGraph;
+
+auto augment_graph_for_pnnet(UnifiedGraph& graph, std::Vector<RoutingNet>& nets) -> void;
+
+auto is_virtual_source_arc(const UnifiedArc& arc) -> bool;
 
 auto resolve_graph_node(const UnifiedGraph& graph, const GraphNodeRef& ref) -> int;
 

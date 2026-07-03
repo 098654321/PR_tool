@@ -90,11 +90,12 @@ struct BinarySuccessorVars {
     int overflow{0};
 };
 
+// Legacy v13 SyncBus loop-elimination helper; retained for unit tests only.
 auto add_binary_successor(
     CadicalSession& session,
     std::span<const int> input_bits,
     SatEncodingStats* stats = nullptr,
-    SatClauseCategory cat = SatClauseCategory::SyncBusLoopElimination
+    SatClauseCategory cat = SatClauseCategory::VariableRelation
 ) -> BinarySuccessorVars;
 auto add_conditional_successor(
     CadicalSession& session,
@@ -102,7 +103,7 @@ auto add_conditional_successor(
     const BinarySuccessorVars& successor,
     std::span<const int> output_bits,
     SatEncodingStats* stats = nullptr,
-    SatClauseCategory cat = SatClauseCategory::SyncBusLoopElimination
+    SatClauseCategory cat = SatClauseCategory::VariableRelation
 ) -> void;
 
 } // namespace PR_tool

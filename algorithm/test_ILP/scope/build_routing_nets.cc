@@ -84,6 +84,29 @@ auto make_routing_net(const circuit::Net& net, RoutingNetKind kind) -> RoutingNe
 
 } // namespace
 
+auto validate_v14_routing_nets(const std::Vector<RoutingNet>& nets) -> void {
+    for (const auto& net : nets) {
+        for (const auto& demand : net.demands) {
+            if (net.kind == RoutingNetKind::PNnet) {
+                if (demand.candidate_source_indices.empty()) {
+                    throw std::invalid_argument(std::format(
+                        "v14 PNnet '{}' demand {} requires at least one candidate source",
+                        net.name,
+                        demand.demand_id));
+                }
+                continue;
+            }
+            if (demand.candidate_source_indices.size() != 1) {
+                throw std::invalid_argument(std::format(
+                    "v14 net '{}' demand {} requires exactly one candidate source, got {}",
+                    net.name,
+                    demand.demand_id,
+                    demand.candidate_source_indices.size()));
+            }
+        }
+    }
+}
+
 auto bump_to_routing_coord(const hardware::Bump* bump) -> Bump_coord {
     const auto bump_index = bump->index();
     const auto tob_coord = bump->tob()->coord();
@@ -250,6 +273,7 @@ auto build_routing_nets(const std::Vector<std::Rc<circuit::Net>>& nets) -> std::
         throw std::runtime_error(std::format("unsupported net type in build_routing_nets: '{}'", net->name()));
     }
 
+    validate_v14_routing_nets(out);
     return out;
 }
 

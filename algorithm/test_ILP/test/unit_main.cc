@@ -1,12 +1,16 @@
 #include "common/hw_map.hh"
+#include "delay/pair_delay_precompute.hh"
 #include "graph/unified_routing_graph.hh"
 #include "sat/routing_path_log.hh"
+#include "sat/routing_feedback.hh"
 #include "sat/sat_constraint_kits.hh"
 #include "sat/sat_encoding_stats.hh"
 #include "sat/sat_solution_extract.hh"
 #include "sat/unified_sat_encoder.hh"
+#include "sat/unified_sat_scope.hh"
 #include "sat_allocation/cadical_solver.hh"
 #include "scope/build_routing_nets.hh"
+#include "scope/pair_routing_state.hh"
 #include "scope/scope_bbox.hh"
 #include "test_ilp_cli.hh"
 
@@ -19,6 +23,7 @@
 #include <hardware/tob/tob.hh>
 #include <hardware/track/track.hh>
 
+#include <algorithm>
 #include <iostream>
 #include <bit>
 #include <map>
@@ -423,9 +428,11 @@ auto test_pn_child_and_original_union() -> void {
         RoutingDemand {1, bump_ref(10), {0, 1}, false}};
 
     const auto children = compute_scope_child_bboxes(net);
-    require(children.size() == 2, "PNnet should have one bbox child per source");
-    require_bbox(children[0], 3, 5, 0, 6, "PNnet source 0 child union");
-    require_bbox(children[1], 1, 4, 3, 9, "PNnet source 1 child union");
+    require(children.size() == 2, "PNnet should have one bbox child per demand");
+    const auto demand0 = compute_pnnet_demand_pair_bbox(net, 0);
+    const auto demand1 = compute_pnnet_demand_pair_bbox(net, 1);
+    require_bbox(children[0], demand0.row_min, demand0.row_max, demand0.col_min, demand0.col_max, "PNnet demand 0 pair union");
+    require_bbox(children[1], demand1.row_min, demand1.row_max, demand1.col_min, demand1.col_max, "PNnet demand 1 pair union");
     require_bbox(compute_scope_bbox_for_net(net), 1, 5, 0, 9, "PNnet original child union");
 }
 
@@ -464,14 +471,13 @@ auto test_original_net_aggregation() -> void {
         tsbs_uid);
     auto tsbs_result = build_routing_nets({tsbs});
     require(tsbs_result.size() == 1, "TracksToBumpsNet must remain one RoutingNet");
-    require(tsbs_result[0].sources.size() == 2, "TracksToBumpsNet must keep all unique sources");
+    require(tsbs_result[0].kind == RoutingNetKind::PNnet, "TracksToBumpsNet must map to PNnet");
+    require(tsbs_result[0].sources.size() == 2, "TracksToBumpsNet must keep all candidate tracks");
     require(tsbs_result[0].demands.size() == 2, "TracksToBumpsNet must have one demand per bump");
-    for (const auto& demand : tsbs_result[0].demands) {
-        require(!demand.fixed_pair, "TracksToBumpsNet demands must allow source choice");
-        require(
-            demand.candidate_source_indices == std::Vector<std::size_t> {0, 1},
-            "TracksToBumpsNet demands must list every source candidate");
-    }
+    require(
+        tsbs_result[0].demands[0].candidate_source_indices.size() == 2,
+        "TracksToBumpsNet demands must list all candidate sources");
+    validate_v14_routing_nets(tsbs_result);
 }
 
 auto test_sync_pairing_and_normalization() -> void {
@@ -701,6 +707,58 @@ auto synthetic_net(
     return net;
 }
 
+auto build_v14_model(
+    CadicalSession& session,
+    const UnifiedGraph& graph_in,
+    const std::Vector<RoutingNet>& nets_in,
+    SatEncodingStats* stats = nullptr,
+    bool assume_pairs = true
+) -> UnifiedSatModel {
+    auto graph = graph_in;
+    auto nets = nets_in;
+    augment_graph_for_pnnet(graph, nets);
+    const auto scopes = build_all_scopes(graph, nets);
+    const auto delays = compute_pair_delays(graph, nets, scopes);
+    auto model = build_unified_sat_model(session, graph, nets, scopes, delays, stats);
+    if (assume_pairs) {
+        for (const auto& alpha : model.alpha_vars) {
+            session.assume(alpha.alpha_lit);
+        }
+    }
+    return model;
+}
+
+auto d_lit_at(
+    const UnifiedSatModel& model,
+    std::size_t model_source_index,
+    int node,
+    int delay
+) -> int {
+    const auto& source = model.sources[model_source_index];
+    const auto& scope = model.scopes[source.scope_index];
+    const int node_offset = scope.node_offset[static_cast<std::size_t>(node)];
+    if (node_offset < 0 || delay < 0 || delay > source.d_max) {
+        return 0;
+    }
+    return source.d_var[static_cast<std::size_t>(node_offset)][static_cast<std::size_t>(delay)];
+}
+
+auto a_lit_at(
+    const UnifiedSatModel& model,
+    int arc_id,
+    int delay,
+    std::size_t model_source_index = 0
+) -> int {
+    for (const auto& tob_arc : model.tob_arcs) {
+        if (tob_arc.arc_global_id == arc_id
+            && tob_arc.model_source_index == model_source_index
+            && delay <= tob_arc.d_max) {
+            return tob_arc.a_var[static_cast<std::size_t>(delay)];
+        }
+    }
+    return 0;
+}
+
 auto test_numeric_constraint_kits() -> void {
     auto session = CadicalSession {};
     const int a = session.new_var();
@@ -770,24 +828,424 @@ auto test_binary_successor_truth_table() -> void {
     }
 }
 
-auto test_sync_bus_successor_is_shared_per_node() -> void {
-    const auto graph = synthetic_graph(
-        4, {{0, 1}, {0, 2}, {1, 2}, {1, 3}, {2, 3}});
-    auto ordinary = synthetic_net(0, {0}, {{3, {0}}});
-    auto ordinary_session = CadicalSession {};
-    (void)build_unified_sat_model(ordinary_session, graph, {ordinary});
-
-    ordinary.is_sync_bus = true;
-    auto bus_session = CadicalSession {};
-    (void)build_unified_sat_model(bus_session, graph, {ordinary});
-
-    constexpr std::size_t width = 3;
-    constexpr std::size_t node_count = 4;
-    const std::size_t expected_extra_vars =
-        node_count * width + node_count * (2 * width - 1);
+auto test_delay_precompute_simple_path() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    const auto net = synthetic_net(0, {0}, {{2, {0}}});
+    const auto scopes = build_all_scopes(graph, {net});
+    const auto delays = compute_pair_delays(graph, {net}, scopes);
+    require(delays.pairs.size() == 1, "simple path must produce one pair delay");
     require(
-        bus_session.num_vars() - ordinary_session.num_vars() == expected_extra_vars,
-        "Sync distance encoding must allocate one distance and one successor circuit per node");
+        delays.pairs[0].target_delay == 2,
+        "chain 0->1->2 must have shortest delay 2");
+    require(
+        delays.pairs[0].delays == std::Vector<int>({2}),
+        "simple path delays must be singleton d_min");
+}
+
+auto test_pair_state_initial_delays_bbox() -> void {
+    const auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}});
+    auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    require(state.pairs.size() == 1, "single demand must init one pair state");
+    require(state.pairs[0].delays.empty(), "pair delays start empty before precompute");
+    apply_state_to_nets(state, nets);
+    require(nets[0].has_scope_bbox, "apply_state_to_nets must publish net scope_bbox");
+    const auto scopes = build_all_scopes(graph, nets);
+    (void)compute_pair_delays(graph, nets, scopes, &state);
+    require(
+        state.pairs[0].delays == std::Vector<int>({3}),
+        "chain 0->3 must initialize pair delays to shortest delay 3");
+
+    auto fanout = synthetic_net(1, {0}, {{2, {0}}, {3, {0}}});
+    auto fanout_state = init_routing_problem_state({fanout});
+    require(fanout_state.pairs.size() == 2, "fanout net must init one pair per demand");
+
+    auto bus = synthetic_net(2, {0, 4}, {{2, {0}}, {6, {1}}});
+    bus.is_sync_bus = true;
+    const auto bus_graph = synthetic_graph(
+        7, {{0, 1}, {1, 2}, {4, 5}, {5, 6}});
+    auto bus_nets = std::Vector<RoutingNet> {bus};
+    auto bus_state = init_routing_problem_state(bus_nets);
+    apply_state_to_nets(bus_state, bus_nets);
+    const auto bus_scopes = build_all_scopes(bus_graph, bus_nets);
+    (void)compute_pair_delays(bus_graph, bus_nets, bus_scopes, &bus_state);
+    require(
+        bus_state.pairs[0].delays == bus_state.pairs[1].delays,
+        "bus members must share aligned delays after precompute");
+    require(
+        bus_state.pairs[0].delays == std::Vector<int>({2}),
+        "bus aligned delays must equal bus_d_min");
+}
+
+auto test_delay_set_drives_d_max() -> void {
+    const auto graph = synthetic_graph(5, {{0, 1}, {1, 2}, {2, 3}, {0, 4}, {4, 3}});
+    auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].delays = {2, 3};
+    apply_state_to_nets(state, nets);
+    const auto scopes = build_all_scopes(graph, nets);
+    const auto delays = compute_pair_delays(graph, nets, scopes, &state);
+    require(delays.sources[0].d_max == 3, "d_max must follow max(pair.delays)");
+    require(
+        delays.pairs[0].delays == std::Vector<int>({2, 3}),
+        "expanded delay set must be preserved in pair delay info");
+
+    auto session = CadicalSession {};
+    const auto model = build_unified_sat_model(session, graph, nets, scopes, delays);
+    require(d_lit_at(model, 0, 3, 2) > 0, "delay 2 must allocate a sink D variable");
+    require(d_lit_at(model, 0, 3, 3) > 0, "delay 3 must allocate a sink D variable");
+    require(model.alpha_vars.size() == 1, "one pair must allocate one alpha variable");
+}
+
+auto test_cadical_assume_failed() -> void {
+    auto session = CadicalSession {};
+    const int x = session.new_var();
+    session.add_clause({-x});
+    session.assume(x);
+    const auto result = session.solve();
+    require(!result.ok && result.message == "UNSAT", "assumed literal conflicting with unit clause must be UNSAT");
+    require(
+        result.failed_assumption_literals.size() == 1
+            && result.failed_assumption_literals.front() == x,
+        "UNSAT result must list the failed assumption literal");
+    require(session.failed(x), "failed() must report the assumed literal in the unsat core");
+}
+
+auto test_alpha_implies_sink_d() -> void {
+    const auto graph = synthetic_graph(5, {{0, 1}, {1, 2}, {2, 3}, {0, 4}, {4, 3}});
+    auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].delays = {2, 3};
+    apply_state_to_nets(state, nets);
+    const auto scopes = build_all_scopes(graph, nets);
+    const auto delays = compute_pair_delays(graph, nets, scopes, &state);
+    auto session = CadicalSession {};
+    SatEncodingStats stats {};
+    const auto model = build_unified_sat_model(session, graph, nets, scopes, delays, &stats);
+    require(model.alpha_vars.size() == 1, "single pair must allocate one alpha variable");
+    require(stats.alpha_vars == 1, "encoding stats must count the alpha variable");
+    const int alpha = model.alpha_vars.front().alpha_lit;
+    const int sink_d2 = d_lit_at(model, 0, 3, 2);
+    const int sink_d3 = d_lit_at(model, 0, 3, 3);
+    require(sink_d2 > 0 && sink_d3 > 0, "fixture must allocate sink D at both target delays");
+    session.assume(alpha);
+    const auto result = session.solve();
+    require(result.ok, "assuming alpha on a satisfiable pair must remain SAT");
+    require(
+        session.value(sink_d2) || session.value(sink_d3),
+        "alpha assumption must imply at least one sink D literal is true");
+}
+
+auto test_alpha_gates_sink_connectivity() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
+    {
+        auto session = CadicalSession {};
+        const auto model = build_v14_model(session, graph, nets, nullptr, false);
+        const int sink_d2 = d_lit_at(model, 0, 2, 2);
+        require(sink_d2 > 0, "fixture must allocate sink D at target delay");
+        session.assume(-sink_d2);
+        require(
+            session.solve().ok,
+            "sink connectivity must be disabled when alpha is not assumed");
+    }
+
+    {
+        auto session = CadicalSession {};
+        const auto model = build_v14_model(session, graph, nets, nullptr, false);
+        const int alpha = model.alpha_vars.front().alpha_lit;
+        const int sink_d2 = d_lit_at(model, 0, 2, 2);
+        session.assume(alpha);
+        session.assume(-sink_d2);
+        const auto with_alpha = session.solve();
+        require(
+            !with_alpha.ok && with_alpha.message == "UNSAT",
+            "alpha and a disabled sink D must be UNSAT");
+        require(
+            session.failed(alpha),
+            "alpha must be part of the failed assumption core");
+    }
+}
+
+auto test_alpha_skips_unreachable_delays() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].delays = {2, 3};
+    apply_state_to_nets(state, nets);
+    const auto scopes = build_all_scopes(graph, nets);
+    const auto delays = compute_pair_delays(graph, nets, scopes, &state);
+    auto session = CadicalSession {};
+    const auto model = build_unified_sat_model(session, graph, nets, scopes, delays);
+    require(d_lit_at(model, 0, 2, 2) > 0, "reachable delay must allocate sink D");
+    require(d_lit_at(model, 0, 2, 3) <= 0, "unreachable delay must not allocate sink D");
+    session.assume(model.alpha_vars.front().alpha_lit);
+    require(
+        session.solve().ok,
+        "unreachable delays must be ignored when another allowed delay is reachable");
+}
+
+auto test_alpha_empty_sink_disjunction_reports_core() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].delays = {3};
+    apply_state_to_nets(state, nets);
+    const auto scopes = build_all_scopes(graph, nets);
+    const auto delays = compute_pair_delays(graph, nets, scopes, &state);
+    auto session = CadicalSession {};
+    const auto model = build_unified_sat_model(session, graph, nets, scopes, delays);
+    const int alpha = model.alpha_vars.front().alpha_lit;
+    session.assume(alpha);
+    const auto result = session.solve();
+    require(
+        !result.ok && result.message == "UNSAT",
+        "an empty sink disjunction must become UNSAT under alpha");
+    require(
+        session.failed(alpha),
+        "the empty sink disjunction must report alpha in the failed core");
+}
+
+auto test_feedback_expands_delays_on_unsat() -> void {
+    PairRoutingState pair {};
+    pair.key = PairKey {0, 0, 0};
+    pair.delays = {5};
+    expand_pair_delays(pair);
+    require(
+        pair.delays == std::Vector<int>({5, 6, 7}),
+        "feedback expansion must append max+1 and max+2 to delays");
+
+    auto state = RoutingProblemState {};
+    state.pairs.push_back(pair);
+    state.pair_index_by_key.emplace(pair.key, 0);
+    state.pair_indices_by_net[0] = {0};
+    const auto before = pair.pair_bbox;
+    state.pairs[0].pair_bbox = expand_pair_bbox_one_cell(before);
+    require(
+        state.pairs[0].pair_bbox.row_min <= before.row_min
+            && state.pairs[0].pair_bbox.row_max >= before.row_max,
+        "feedback expansion must grow pair bbox by one cell per side");
+}
+
+auto test_bus_member_delay_bbox_sync() -> void {
+    auto net = synthetic_net(0, {0, 4}, {{2, {0}}, {6, {1}}});
+    net.is_sync_bus = true;
+    const auto nets = std::Vector<RoutingNet> {net};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].delays = {5, 6};
+    state.pairs[0].pair_bbox = IlpBoundingBox {1, 2, 1, 2};
+    state.pairs[1].delays = {3};
+    state.pairs[1].pair_bbox = IlpBoundingBox {4, 5, 4, 5};
+    sync_bus_after_expand(state, nets, 0);
+    require(
+        state.pairs[0].delays == state.pairs[1].delays,
+        "bus sync must merge member delay sets");
+    require_bbox(
+        state.pairs[0].pair_bbox,
+        state.pairs[1].pair_bbox.row_min,
+        state.pairs[1].pair_bbox.row_max,
+        state.pairs[1].pair_bbox.col_min,
+        state.pairs[1].pair_bbox.col_max,
+        "bus sync must merge member bboxes to a shared hull");
+    require(
+        state.pairs[0].delays == std::Vector<int>({3, 5, 6}),
+        "bus merged delays must be the union of member delays");
+}
+
+auto test_feedback_rebuilds_after_reaching_full_bbox() -> void {
+    const auto nets = std::Vector<RoutingNet> {
+        synthetic_net(0, {0}, {{2, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].delays = {2};
+    const auto chip = full_chip_bbox();
+    state.pairs[0].pair_bbox =
+        IlpBoundingBox {chip.row_min + 1, chip.row_max, chip.col_min, chip.col_max};
+
+    const auto status =
+        apply_feedback_expansion(state, nets, {state.pairs[0].key});
+    require(
+        status == FeedbackExpansionStatus::Expanded,
+        "reaching full-chip bbox must rebuild and solve once before exhaustion");
+    require(
+        is_full_chip_bbox(state.pairs[0].pair_bbox),
+        "critical bbox must expand to full chip");
+    require(
+        state.pairs[0].delays == std::Vector<int>({2, 3, 4}),
+        "critical delays must expand exactly once");
+}
+
+auto test_feedback_exhausted_state_is_unchanged() -> void {
+    const auto nets = std::Vector<RoutingNet> {
+        synthetic_net(0, {0}, {{2, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].delays = {2};
+    state.pairs[0].pair_bbox = full_chip_bbox();
+
+    const auto status =
+        apply_feedback_expansion(state, nets, {state.pairs[0].key});
+    require(
+        status == FeedbackExpansionStatus::Exhausted,
+        "an UNSAT model already solved at full-chip bbox must be exhausted");
+    require(
+        state.pairs[0].delays == std::Vector<int>({2}),
+        "exhausted feedback must not mutate delays");
+}
+
+auto test_feedback_global_expand_skips_full_net_and_syncs_others() -> void {
+    auto full_net = synthetic_net(0, {0}, {{2, {0}}});
+    auto fanout_net = synthetic_net(1, {3}, {{4, {0}}, {5, {0}}});
+    const auto nets = std::Vector<RoutingNet> {full_net, fanout_net};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].delays = {2};
+    state.pairs[0].pair_bbox = full_chip_bbox();
+    state.pairs[1].delays = {4};
+    state.pairs[1].pair_bbox = IlpBoundingBox {2, 3, 2, 3};
+    state.pairs[2].delays = {6};
+    state.pairs[2].pair_bbox = IlpBoundingBox {4, 5, 4, 5};
+
+    const auto status =
+        apply_feedback_expansion(state, nets, {state.pairs[0].key});
+    require(
+        status == FeedbackExpansionStatus::Expanded,
+        "a full critical net must trigger expansion of the other nets");
+    require(
+        state.pairs[0].delays == std::Vector<int>({2}),
+        "the already-full critical net must not expand twice");
+    require(
+        state.pairs[1].delays == state.pairs[2].delays,
+        "global expansion must synchronize fanout delays");
+    require(
+        state.pairs[1].delays == std::Vector<int>({4, 5, 6, 7, 8}),
+        "global fanout synchronization must merge expanded delay sets");
+}
+
+auto test_bus_delay_takes_max_member() -> void {
+    const auto graph = synthetic_graph(
+        7, {{0, 1}, {1, 2}, {3, 4}, {4, 5}, {5, 6}});
+    auto net = synthetic_net(0, {0, 3}, {{2, {0}}, {6, {1}}});
+    net.is_sync_bus = true;
+    const auto scopes = build_all_scopes(graph, {net});
+    const auto delays = compute_pair_delays(graph, {net}, scopes);
+    require(delays.pairs.size() == 2, "bus net must produce two pair delays");
+    require(
+        delays.pairs[0].target_delay == 3 && delays.pairs[1].target_delay == 3,
+        "bus delay must equal max(member shortest delays)");
+    require(
+        delays.pairs[0].delays == std::Vector<int>({3})
+            && delays.pairs[1].delays == std::Vector<int>({3}),
+        "bus pair delays must be singleton bus_d_min");
+    require(
+        delays.pairs[0].member_shortest_delay == 2
+            && delays.pairs[1].member_shortest_delay == 3,
+        "bus members must retain their pre-alignment shortest delays");
+}
+
+auto test_v14_d_var_sparse_allocation() -> void {
+    const auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, nets);
+    require(model.sources.size() == 1, "single source net must allocate one source block");
+    const auto& source = model.sources.front();
+    require(source.d_max == 3, "chain length 4 must use delay 3 at sink");
+    std::size_t allocated = 0;
+    std::size_t unreachable = 0;
+    for (const auto& row : source.d_var) {
+        for (int lit : row) {
+            if (lit > 0) {
+                ++allocated;
+            }
+            else if (lit < 0) {
+                ++unreachable;
+            }
+        }
+    }
+    require(allocated > 0 && unreachable > 0, "D vars must be sparse across unreachable slots");
+}
+
+auto test_v14_unreachable_tob_arc_has_no_a_var() -> void {
+    auto graph = synthetic_graph(4, {{0, 1}, {2, 3}});
+    graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::BumpH;
+    graph.arcs[0].physical_switch_id = 7;
+    const auto nets = std::Vector<RoutingNet> {
+        synthetic_net(0, {2}, {{3, {0}}})};
+    auto session = CadicalSession {};
+    SatEncodingStats stats {};
+    const auto model = build_v14_model(session, graph, nets, &stats);
+
+    require(
+        a_lit_at(model, 0, 1) == 0,
+        "an unreachable TOB arc must not allocate an A variable");
+    require(stats.a_vars == 0, "unreachable TOB arcs must not contribute A variables");
+}
+
+auto test_v14_pure_track_chain_sat() -> void {
+    const auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
+    auto session = CadicalSession {};
+    (void)build_v14_model(session, graph, nets);
+    require(session.solve_once().ok, "pure track chain must be SAT");
+}
+
+auto test_v14_pure_track_fork_sat() -> void {
+    const auto graph = synthetic_graph(4, {{0, 1}, {0, 2}, {1, 3}, {2, 3}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
+    auto session = CadicalSession {};
+    (void)build_v14_model(session, graph, nets);
+    require(session.solve_once().ok, "pure track fork must be SAT");
+}
+
+auto test_v14_pure_track_unreachable_unsat() -> void {
+    const auto graph = synthetic_graph(3, {});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
+    try {
+        const auto scopes = build_all_scopes(graph, nets);
+        (void)compute_pair_delays(graph, nets, scopes);
+        require(false, "disconnected graph must fail delay precompute");
+    }
+    catch (const std::runtime_error&) {
+    }
+}
+
+auto test_v14_bus_equal_delay_equiv() -> void {
+    const auto graph = synthetic_graph(6, {{0, 1}, {1, 2}, {3, 4}, {4, 5}});
+    auto net = synthetic_net(0, {0, 3}, {{2, {0}}, {5, {1}}});
+    net.is_sync_bus = true;
+    auto session = CadicalSession {};
+    (void)build_v14_model(session, graph, {net});
+    require(session.solve_once().ok, "equal shortest bus members must be SAT");
+}
+
+auto test_v14_bus_forall_d_equiv() -> void {
+    const auto graph = synthetic_graph(
+        9, {{0, 1}, {1, 2}, {2, 8}, {3, 4}, {4, 5}, {5, 6}});
+    auto net = synthetic_net(0, {0, 3}, {{8, {0}}, {6, {1}}});
+    net.is_sync_bus = true;
+    auto session = CadicalSession {};
+    SatEncodingStats stats {};
+    (void)build_v14_model(session, graph, {net}, &stats);
+    const auto sync_clauses =
+        stats.clause_counts[static_cast<std::size_t>(SatClauseCategory::SyncBusEqualLength)];
+    require(
+        sync_clauses >= 2,
+        "bus forall-d equal length must encode at least one sink equiv layer");
+}
+
+auto test_v14_bus_missing_sink_d_is_false() -> void {
+    const auto graph = synthetic_graph(
+        10,
+        {{0, 1}, {1, 2}, {0, 4}, {4, 5}, {5, 2}, {6, 7}, {7, 8}, {8, 9}});
+    auto net = synthetic_net(0, {0, 6}, {{2, {0}}, {9, {1}}});
+    net.is_sync_bus = true;
+    auto session = CadicalSession {};
+    SatEncodingStats stats {};
+    (void)build_v14_model(session, graph, {net}, &stats);
+
+    const auto sync_clauses =
+        stats.clause_counts[static_cast<std::size_t>(SatClauseCategory::SyncBusEqualLength)];
+    require(
+        sync_clauses == 3,
+        "bus encoding must add !D when only one member has a sink literal at a delay");
 }
 
 auto test_cli_max_rss_option() -> void {
@@ -857,7 +1315,7 @@ auto test_numeric_fixed_path_and_extraction() -> void {
     const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
     const auto nets = std::Vector<RoutingNet> {synthetic_net(7, {0}, {{2, {0}}})};
     auto session = CadicalSession {};
-    const auto model = build_unified_sat_model(session, graph, nets);
+    const auto model = build_v14_model(session, graph, nets);
     const auto solved = session.solve_once();
     require(solved.ok, "connected fixed demand must be SAT");
     const auto result = extract_sat_solution(graph, nets, model, session, solved);
@@ -865,73 +1323,34 @@ auto test_numeric_fixed_path_and_extraction() -> void {
     require(result.paths[0].demand_id == 0, "extraction must preserve demand_id");
     require(
         result.paths[0].node_path == std::Vector<int>({0, 1, 2}),
-        "extraction must follow the unique true x chain");
+        "extraction must follow the unique D distance chain");
 
     const auto disconnected = synthetic_graph(3, {});
     auto disconnected_session = CadicalSession {};
-    (void)build_unified_sat_model(disconnected_session, disconnected, nets);
-    require(!disconnected_session.solve_once().ok, "disconnected fixed demand must be UNSAT");
+    try {
+        (void)build_v14_model(disconnected_session, disconnected, nets);
+        require(false, "disconnected fixed demand must fail delay precompute");
+    }
+    catch (const std::runtime_error&) {
+    }
 }
 
-auto test_candidate_pairs_and_forced_flow_amo() -> void {
+auto test_v14_rejects_multi_candidate_demand() -> void {
     const auto graph = synthetic_graph(4, {{0, 2}, {1, 2}, {2, 3}, {0, 3}});
-    const auto nets = std::Vector<RoutingNet> {
-        synthetic_net(1, {0, 1}, {{3, {0, 1}}})};
-    auto session = CadicalSession {};
-    const auto model = build_unified_sat_model(session, graph, nets);
-    require(model.pairs.size() == 2, "candidate pairs must come only from demand candidate indices");
-    const auto solved = session.solve_once();
-    require(solved.ok, "one of two candidate sources must route");
-    int active = 0;
-    for (const auto& pair : model.pairs) {
-        active += session.value(pair.activation) ? 1 : 0;
+    auto net = synthetic_net(1, {0, 1}, {{3, {0, 1}}});
+    net.kind = RoutingNetKind::Tnet;
+    net.demands[0].fixed_pair = false;
+    try {
+        validate_v14_routing_nets({net});
+        require(false, "multi-candidate Tnet demand must be rejected in v14");
     }
-    require(active == 1, "demand candidate activations must be ExactlyOne");
+    catch (const std::invalid_argument&) {
+    }
 
-    auto amo_session = CadicalSession {};
-    const auto amo_model = build_unified_sat_model(amo_session, graph, {
-        synthetic_net(2, {0}, {{3, {0}}})});
-    const auto& pair = amo_model.pairs.front();
-    amo_session.add_clause({pair.x_vars[0]});
-    amo_session.add_clause({pair.x_vars[3]});
-    require(!amo_session.solve_once().ok, "forcing two source outgoing arcs must violate AMO");
-
-    const auto sink_graph = synthetic_graph(
-        4, {{0, 1}, {0, 2}, {1, 3}, {2, 3}});
-    auto sink_session = CadicalSession {};
-    const auto sink_model = build_unified_sat_model(
-        sink_session, sink_graph, {synthetic_net(3, {0}, {{3, {0}}})});
-    sink_session.add_clause({sink_model.pairs.front().x_vars[2]});
-    sink_session.add_clause({sink_model.pairs.front().x_vars[3]});
-    require(!sink_session.solve_once().ok, "forcing two sink incoming arcs must violate AMO");
-
-    const auto intermediate_in_graph = synthetic_graph(
-        6, {{0, 5}, {0, 2}, {0, 3}, {2, 1}, {3, 1}, {1, 4}, {4, 2}});
-    auto intermediate_in_session = CadicalSession {};
-    const auto intermediate_in_model = build_unified_sat_model(
-        intermediate_in_session,
-        intermediate_in_graph,
-        {synthetic_net(4, {0}, {{5, {0}}})});
-    const auto& intermediate_in_pair = intermediate_in_model.pairs.front();
-    intermediate_in_session.add_clause({intermediate_in_pair.x_vars[3]});
-    intermediate_in_session.add_clause({intermediate_in_pair.x_vars[4]});
-    require(
-        !intermediate_in_session.solve_once().ok,
-        "forcing two incoming arcs at an intermediate node must violate AMO");
-
-    const auto intermediate_out_graph = synthetic_graph(
-        6, {{0, 5}, {0, 4}, {4, 1}, {1, 2}, {1, 3}, {2, 4}, {3, 4}});
-    auto intermediate_out_session = CadicalSession {};
-    const auto intermediate_out_model = build_unified_sat_model(
-        intermediate_out_session,
-        intermediate_out_graph,
-        {synthetic_net(5, {0}, {{5, {0}}})});
-    const auto& intermediate_out_pair = intermediate_out_model.pairs.front();
-    intermediate_out_session.add_clause({intermediate_out_pair.x_vars[3]});
-    intermediate_out_session.add_clause({intermediate_out_pair.x_vars[4]});
-    require(
-        !intermediate_out_session.solve_once().ok,
-        "forcing two outgoing arcs at an intermediate node must violate AMO");
+    auto pnnet = synthetic_net(2, {0, 1}, {{3, {0, 1}}});
+    pnnet.kind = RoutingNetKind::PNnet;
+    pnnet.demands[0].fixed_pair = false;
+    validate_v14_routing_nets({pnnet});
 }
 
 auto test_logical_source_exclusivity() -> void {
@@ -940,7 +1359,7 @@ auto test_logical_source_exclusivity() -> void {
         synthetic_net(0, {0}, {{2, {0}}}),
         synthetic_net(1, {1}, {{2, {0}}})};
     auto session = CadicalSession {};
-    (void)build_unified_sat_model(session, graph, nets);
+    (void)build_v14_model(session, graph, nets);
     require(!session.solve_once().ok, "distinct logical sources must be exclusive at a shared node");
 }
 
@@ -950,23 +1369,21 @@ auto test_logical_source_owns_its_source_node() -> void {
         synthetic_net(0, {0}, {{1, {0}}})};
 
     auto value_session = CadicalSession {};
-    const auto value_model = build_unified_sat_model(value_session, graph, nets);
-    const int source_p = value_model.logical_sources[0].p_vars[
-        static_cast<std::size_t>(value_model.scopes[0].node_offset[0])];
+    const auto value_model = build_v14_model(value_session, graph, nets);
+    const int source_d0 = d_lit_at(value_model, 0, 0, 0);
     const auto solved = value_session.solve_once();
     require(
-        solved.ok && value_session.value(source_p),
-        "logical P(source, source-node) must be true in every SAT model");
+        solved.ok && value_session.value(source_d0),
+        "logical D(source, source-node, 0) must be true in every SAT model");
 
     auto forced_false_session = CadicalSession {};
     const auto forced_false_model =
-        build_unified_sat_model(forced_false_session, graph, nets);
-    const int forced_false_p = forced_false_model.logical_sources[0].p_vars[
-        static_cast<std::size_t>(forced_false_model.scopes[0].node_offset[0])];
-    forced_false_session.add_clause({-forced_false_p});
+        build_v14_model(forced_false_session, graph, nets);
+    const int forced_false_d0 = d_lit_at(forced_false_model, 0, 0, 0);
+    forced_false_session.add_clause({-forced_false_d0});
     require(
         !forced_false_session.solve_once().ok,
-        "forcing logical P(source, source-node)=false must be UNSAT");
+        "forcing logical D(source, source-node, 0)=false must be UNSAT");
 }
 
 auto test_sat_encoding_stats_reconcile() -> void {
@@ -976,11 +1393,11 @@ auto test_sat_encoding_stats_reconcile() -> void {
     const auto source_in_graph = synthetic_graph(3, {{0, 2}, {1, 0}});
     auto source_in_session = CadicalSession {};
     SatEncodingStats source_in_stats {};
-    (void)build_unified_sat_model(
+    (void)build_v14_model(
         source_in_session, source_in_graph, nets, &source_in_stats);
     require(
-        source_in_session.num_clauses() == 23,
-        "source-incoming fixture must include its explicit zero unit clause");
+        source_in_stats.d_vars > 0,
+        "encoding stats must count allocated D variables");
     require(
         source_in_stats.total_clauses() == source_in_session.num_clauses(),
         "encoding stats must reconcile clause categories with session total");
@@ -989,44 +1406,26 @@ auto test_sat_encoding_stats_reconcile() -> void {
             SatClauseCategory::SyncBusEqualLength)]
             == 0,
         "non-sync fixture must have zero sync bus equal-length clauses");
-    require(
-        source_in_stats.clause_counts[static_cast<std::size_t>(
-            SatClauseCategory::SyncBusLoopElimination)]
-            == 0,
-        "non-sync fixture must have zero sync bus loop-elimination clauses");
 }
 
-auto test_source_incoming_and_sink_outgoing_are_zero() -> void {
+auto test_source_distance_constants() -> void {
     const auto nets = std::Vector<RoutingNet> {
         synthetic_net(0, {0}, {{2, {0}}})};
 
-    const auto source_in_graph = synthetic_graph(3, {{0, 2}, {1, 0}});
-    auto source_in_session = CadicalSession {};
-    const auto source_in_model =
-        build_unified_sat_model(source_in_session, source_in_graph, nets);
-    require(
-        source_in_session.num_clauses() == 23,
-        "source-incoming fixture must include its explicit zero unit clause");
-    source_in_session.add_clause({source_in_model.pairs[0].x_vars[1]});
-    require(
-        !source_in_session.solve_once().ok,
-        "forcing a selected arc into the pair source must be UNSAT");
-
-    const auto sink_out_graph = synthetic_graph(3, {{0, 2}, {2, 1}});
-    auto sink_out_session = CadicalSession {};
-    const auto sink_out_model =
-        build_unified_sat_model(sink_out_session, sink_out_graph, nets);
-    require(
-        sink_out_session.num_clauses() == 23,
-        "sink-outgoing fixture must include its explicit zero unit clause");
-    sink_out_session.add_clause({sink_out_model.pairs[0].x_vars[1]});
-    require(
-        !sink_out_session.solve_once().ok,
-        "forcing a selected arc out of the pair sink must be UNSAT");
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, nets);
+    const int source_d0 = d_lit_at(model, 0, 0, 0);
+    session.add_clause({-source_d0});
+    require(!session.solve_once().ok, "forcing D(source,source,0)=false must be UNSAT");
 }
 
 auto test_mode_group_zero_conflict() -> void {
     auto graph = synthetic_graph(4, {{0, 2}, {1, 3}});
+    graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
+    graph.arcs[1].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
+    graph.arcs[0].physical_switch_id = 70;
+    graph.arcs[1].physical_switch_id = 71;
     graph.arcs[0].mode_group_id = 0;
     graph.arcs[0].is_vline_track_straight = true;
     graph.arcs[1].mode_group_id = 0;
@@ -1035,21 +1434,26 @@ auto test_mode_group_zero_conflict() -> void {
         synthetic_net(0, {0}, {{2, {0}}}),
         synthetic_net(1, {1}, {{3, {0}}})};
     auto session = CadicalSession {};
-    (void)build_unified_sat_model(session, graph, nets);
+    (void)build_v14_model(session, graph, nets);
     require(!session.solve_once().ok, "group zero straight/swap uses must conflict");
 }
 
 auto test_all_mode_groups_and_group_zero_extraction() -> void {
     auto graph = synthetic_graph(2, {{0, 1}});
+    graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
+    graph.arcs[0].physical_switch_id = 77;
     graph.arcs[0].mode_group_id = 0;
     graph.arcs[0].is_vline_track_straight = true;
     const auto nets = std::Vector<RoutingNet> {
         synthetic_net(0, {0}, {{1, {0}}})};
     auto session = CadicalSession {};
-    const auto model = build_unified_sat_model(session, graph, nets);
+    const auto model = build_v14_model(session, graph, nets);
     require(
         model.mode_var_by_group.size() == 16 * 64,
         "model must allocate all 1024 global VLineTrack mode groups");
+    require(
+        model.switch_var_by_id.contains(77),
+        "VLineTrack use must aggregate into a physical-switch Y variable");
     const auto solved = session.solve_once();
     require(solved.ok, "single group-zero straight path must be SAT");
     const auto result = extract_sat_solution(graph, nets, model, session, solved);
@@ -1057,72 +1461,16 @@ auto test_all_mode_groups_and_group_zero_extraction() -> void {
         result.ok && result.vline_mode_straight_by_group.size() == 16 * 64,
         "extraction must return all 1024 mode states");
     require(
+        result.used_tob_switch_ids == std::Vector<int>({77}),
+        "extraction must return the used VLineTrack physical switch ID");
+    require(
         result.vline_mode_straight_by_group.at(0),
         "a used group-zero straight arc must extract M_0=true");
 }
 
-auto test_sync_bus_binary_distance() -> void {
-    const auto equal_graph = synthetic_graph(6, {{0, 1}, {1, 2}, {3, 4}, {4, 5}});
-    auto equal_net = synthetic_net(0, {0, 3}, {{2, {0}}, {5, {1}}});
-    equal_net.is_sync_bus = true;
-    auto equal_session = CadicalSession {};
-    (void)build_unified_sat_model(equal_session, equal_graph, {equal_net});
-    require(equal_session.solve_once().ok, "equal-length fixed Sync bus members must be SAT");
-
-    const auto unequal_graph = synthetic_graph(
-        7, {{0, 1}, {1, 2}, {3, 4}, {4, 5}, {5, 6}});
-    auto unequal_net = synthetic_net(0, {0, 3}, {{2, {0}}, {6, {1}}});
-    unequal_net.is_sync_bus = true;
-    auto unequal_session = CadicalSession {};
-    (void)build_unified_sat_model(unequal_session, unequal_graph, {unequal_net});
-    require(!unequal_session.solve_once().ok, "unequal fixed Sync bus members must be UNSAT");
-}
-
-auto test_sync_bus_distance_starts_at_one() -> void {
-    const auto graph = synthetic_graph(2, {{0, 1}});
-    auto bus = synthetic_net(0, {0}, {{1, {0}}});
-    bus.is_sync_bus = true;
-    auto session = CadicalSession {};
-    const auto model = build_unified_sat_model(session, graph, {bus});
-    const auto solved = session.solve_once();
-    require(solved.ok, "one-edge Sync bus distance fixture must be SAT");
-    const auto& sink_bits = model.pairs[0].sink_distance_bits;
-    require(sink_bits.size() == 2, "two scoped nodes require a two-bit strict distance width");
-    require(
-        !session.value(sink_bits[0]) && session.value(sink_bits[1]),
-        "d_source=1 must make a one-edge sink distance equal binary 2");
-}
-
-auto test_sync_bus_forbids_forced_cycle() -> void {
-    const auto graph = synthetic_graph(
-        5, {{0, 1}, {1, 2}, {3, 4}, {4, 3}});
-    auto bus = synthetic_net(0, {0}, {{2, {0}}});
-    bus.is_sync_bus = true;
-    auto bus_session = CadicalSession {};
-    const auto bus_model = build_unified_sat_model(bus_session, graph, {bus});
-    const auto& bus_pair = bus_model.pairs.front();
-    bus_session.add_clause({bus_pair.x_vars[2]});
-    bus_session.add_clause({bus_pair.x_vars[3]});
-    require(!bus_session.solve_once().ok, "binary distance must reject a forced bus cycle");
-
-    bus.is_sync_bus = false;
-    auto ordinary_session = CadicalSession {};
-    const auto ordinary_model = build_unified_sat_model(ordinary_session, graph, {bus});
-    const auto& ordinary_pair = ordinary_model.pairs.front();
-    ordinary_session.add_clause({ordinary_pair.x_vars[2]});
-    ordinary_session.add_clause({ordinary_pair.x_vars[3]});
-    const auto ordinary_solved = ordinary_session.solve_once();
-    require(ordinary_solved.ok, "non-bus redundant disjoint cycles may remain satisfiable");
-    const auto extracted = extract_sat_solution(
-        graph, {bus}, ordinary_model, ordinary_session, ordinary_solved);
-    require(
-        extracted.ok && extracted.paths[0].node_path == std::Vector<int>({0, 1, 2}),
-        "non-bus extraction must ignore a redundant disjoint cycle");
-}
-
 auto test_y_aggregation_and_partial_matching() -> void {
     auto graph = synthetic_graph(
-        5, {{0, 1}, {1, 0}, {0, 2}, {2, 0}, {3, 4}});
+        5, {{0, 1}, {1, 0}, {0, 2}, {2, 0}, {3, 0}, {0, 4}});
     graph.nodes[1].kind = UnifiedNodeKind::HLine;
     graph.nodes[2].kind = UnifiedNodeKind::HLine;
     for (std::size_t i = 0; i < 2; ++i) {
@@ -1134,7 +1482,7 @@ auto test_y_aggregation_and_partial_matching() -> void {
         graph.arcs[i].physical_switch_kind = PhysicalSwitchKind::BumpH;
     }
     auto session = CadicalSession {};
-    const auto model = build_unified_sat_model(
+    const auto model = build_v14_model(
         session, graph, {synthetic_net(0, {3}, {{4, {0}}})});
     require(
         model.switch_var_by_id.size() == 2,
@@ -1151,7 +1499,7 @@ auto matching_fixture(
     PhysicalSwitchKind switch_kind
 ) -> std::pair<UnifiedGraph, RoutingNet> {
     auto graph = synthetic_graph(
-        6, {{0, 1}, {1, 0}, {0, 2}, {2, 0}, {3, 4}, {3, 5}});
+        6, {{0, 1}, {1, 0}, {0, 2}, {2, 0}, {3, 0}, {0, 4}, {0, 5}});
     graph.nodes[0].kind = center_kind;
     graph.nodes[1].kind = leaf0_kind;
     graph.nodes[2].kind = leaf1_kind;
@@ -1177,7 +1525,7 @@ auto matching_side_is_unsat(
     auto [graph, net] = matching_fixture(
         center_kind, leaf0_kind, leaf1_kind, switch_kind);
     auto session = CadicalSession {};
-    const auto model = build_unified_sat_model(session, graph, {net});
+    const auto model = build_v14_model(session, graph, {net});
     session.add_clause({model.switch_var_by_id.at(10)});
     session.add_clause({model.switch_var_by_id.at(11)});
     return !session.solve_once().ok;
@@ -1217,24 +1565,30 @@ auto test_y_bidirectional_equivalence() -> void {
         UnifiedNodeKind::HLine,
         PhysicalSwitchKind::BumpH);
     auto y_to_x_session = CadicalSession {};
-    const auto y_to_x_model = build_unified_sat_model(y_to_x_session, graph, {net});
+    const auto y_to_x_model = build_v14_model(y_to_x_session, graph, {net});
     y_to_x_session.add_clause({y_to_x_model.switch_var_by_id.at(10)});
-    for (const auto& pair : y_to_x_model.pairs) {
-        y_to_x_session.add_clause({-pair.x_vars[0]});
-        y_to_x_session.add_clause({-pair.x_vars[1]});
+    const int a0 = a_lit_at(y_to_x_model, 0, 2);
+    const int a1 = a_lit_at(y_to_x_model, 1, 2);
+    if (a0 > 0) {
+        y_to_x_session.add_clause({-a0});
+    }
+    if (a1 > 0) {
+        y_to_x_session.add_clause({-a1});
     }
     require(
         !y_to_x_session.solve_once().ok,
-        "Y=true must require at least one direction x use across all pairs");
+        "Y=true must require at least one direction A use across all pairs");
 
     auto x_to_y_session = CadicalSession {};
-    const auto x_to_y_model = build_unified_sat_model(x_to_y_session, graph, {net});
+    const auto x_to_y_model = build_v14_model(x_to_y_session, graph, {net});
     x_to_y_session.add_clause({-x_to_y_model.switch_var_by_id.at(10)});
-    x_to_y_session.add_clause({x_to_y_model.pairs[0].x_vars[0]});
-    x_to_y_session.add_clause({x_to_y_model.pairs[0].x_vars[1]});
+    const int forward_a = a_lit_at(x_to_y_model, 0, 2);
+    if (forward_a > 0) {
+        x_to_y_session.add_clause({forward_a});
+    }
     require(
         !x_to_y_session.solve_once().ok,
-        "any directed x use must imply its aggregate physical-switch Y");
+        "any directed A use must imply its aggregate physical-switch Y");
 }
 
 auto test_forward_and_reverse_switch_use_extract_same_y() -> void {
@@ -1249,12 +1603,11 @@ auto test_forward_and_reverse_switch_use_extract_same_y() -> void {
         const auto nets = std::Vector<RoutingNet> {
             synthetic_net(0, {source}, {{sink, {0}}})};
         auto session = CadicalSession {};
-        const auto model = build_unified_sat_model(session, graph, nets);
+        const auto model = build_v14_model(session, graph, nets);
         const auto solved = session.solve_once();
         require(solved.ok, "single physical-switch direction must be SAT");
-        require(
-            session.value(model.pairs[0].x_vars[static_cast<std::size_t>(expected_arc)]),
-            "the expected directed physical arc must be selected");
+        const int a_lit = a_lit_at(model, static_cast<int>(expected_arc), 1);
+        require(a_lit > 0 && session.value(a_lit), "the expected directed TOB arc must be selected");
         require(
             session.value(model.switch_var_by_id.at(42)),
             "either physical arc direction must set the same aggregate Y");
@@ -1268,134 +1621,121 @@ auto test_forward_and_reverse_switch_use_extract_same_y() -> void {
     check_direction(1, 0, 1);
 }
 
-auto test_extraction_rejects_multiple_next_arcs() -> void {
-    const auto graph = synthetic_graph(3, {{0, 1}, {0, 2}});
+auto test_extraction_selects_one_valid_predecessor() -> void {
+    const auto graph = synthetic_graph(4, {{0, 1}, {0, 2}, {1, 3}, {2, 3}});
     const auto nets = std::Vector<RoutingNet> {
-        synthetic_net(0, {0}, {{1, {0}}})};
+        synthetic_net(0, {0}, {{3, {0}}})};
     auto session = CadicalSession {};
-    const int active = session.new_var();
-    const int x0 = session.new_var();
-    const int x1 = session.new_var();
-    session.add_clause({active});
-    session.add_clause({x0});
-    session.add_clause({x1});
     auto model = UnifiedSatModel {};
     auto scope = UnifiedSatNetScope {};
     scope.net_id = 0;
-    scope.node_ids = {0, 1, 2};
-    scope.arc_ids = {0, 1};
-    scope.node_offset = {0, 1, 2};
-    scope.arc_offset = {0, 1};
+    scope.node_ids = {0, 1, 2, 3};
+    scope.arc_ids = {0, 1, 2, 3};
+    scope.node_offset = {0, 1, 2, 3};
+    scope.arc_offset = {0, 1, 2, 3};
     model.scopes.push_back(scope);
-    auto pair = UnifiedSatPairVars {};
-    pair.net_id = 0;
-    pair.demand_id = 0;
-    pair.source_node = 0;
-    pair.sink_node = 1;
-    pair.activation = active;
-    pair.x_vars = {x0, x1};
-    model.pairs.push_back(pair);
+    model.pair_delays.push_back(PairDelayInfo {
+        0, 0, 0, 0, 3, std::Vector<int>({2}), 2, -1});
+
+    auto source = SourceDelayVars {};
+    source.net_id = 0;
+    source.source_index = 0;
+    source.source_node = 0;
+    source.scope_index = 0;
+    source.model_source_index = 0;
+    source.d_max = 2;
+    source.d_var = {
+        {session.new_var(), -1, -1},
+        {-1, session.new_var(), -1},
+        {-1, session.new_var(), -1},
+        {-1, -1, session.new_var()}};
+    model.sources.push_back(source);
+
+    session.add_clause({source.d_var[0][0]});
+    session.add_clause({source.d_var[1][1]});
+    session.add_clause({source.d_var[2][1]});
+    session.add_clause({source.d_var[3][2]});
     const auto solved = session.solve_once();
+    require(solved.ok, "manual ambiguous next-arc assignment must be SAT");
     const auto result = extract_sat_solution(graph, nets, model, session, solved);
     require(
-        !result.ok && std::string {result.message}.find("multiple next arcs") != std::string::npos,
-        "numeric extraction must report a malformed branching assignment");
+        result.ok && result.paths.size() == 1,
+        "extraction must select one valid predecessor when the D tree branches");
+    const auto& path = result.paths[0].node_path;
+    require(
+        path == std::Vector<int>({0, 1, 3})
+            || path == std::Vector<int>({0, 2, 3}),
+        "extraction must return one valid source-to-sink path");
 }
 
-struct ExtractionFixture {
-    UnifiedSatModel model;
-    std::unique_ptr<CadicalSession> session;
-    CadicalSolveResult solved;
-};
+auto test_extraction_handles_shared_source_fanout() -> void {
+    const auto graph = synthetic_graph(
+        5, {{0, 1}, {0, 2}, {1, 3}, {2, 4}});
+    const auto nets = std::Vector<RoutingNet> {
+        synthetic_net(0, {0}, {{3, {0}}, {4, {0}}})};
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, nets);
+    const auto solved = session.solve_once();
+    require(solved.ok, "shared-source fanout fixture must be SAT");
 
-auto extraction_fixture(
-    const UnifiedGraph& graph,
-    int active_count,
-    const std::Vector<int>& true_arc_offsets
-) -> ExtractionFixture {
-    auto session = std::make_unique<CadicalSession>();
-    auto model = UnifiedSatModel {};
-    auto scope = UnifiedSatNetScope {};
-    scope.net_id = 0;
-    scope.node_ids = {0, 1, 2};
-    scope.arc_ids.resize(graph.arcs.size());
-    scope.node_offset = {0, 1, 2};
-    scope.arc_offset.resize(graph.arcs.size());
-    for (std::size_t i = 0; i < graph.arcs.size(); ++i) {
-        scope.arc_ids[i] = static_cast<int>(i);
-        scope.arc_offset[i] = static_cast<int>(i);
-    }
-    model.scopes.push_back(scope);
-    for (int pair_index = 0; pair_index < active_count; ++pair_index) {
-        auto pair = UnifiedSatPairVars {};
-        pair.net_id = 0;
-        pair.demand_id = 0;
-        pair.source_node = 0;
-        pair.sink_node = 2;
-        pair.activation = session->new_var();
-        session->add_clause({pair.activation});
-        pair.x_vars.resize(graph.arcs.size());
-        for (std::size_t i = 0; i < graph.arcs.size(); ++i) {
-            pair.x_vars[i] = session->new_var();
-            session->add_clause({
-                std::find(true_arc_offsets.begin(), true_arc_offsets.end(), static_cast<int>(i))
-                        != true_arc_offsets.end()
-                    ? pair.x_vars[i]
-                    : -pair.x_vars[i]});
-        }
-        model.pairs.push_back(pair);
-    }
-    const auto solved = session->solve_once();
-    return {std::move(model), std::move(session), solved};
+    const auto result = extract_sat_solution(graph, nets, model, session, solved);
+    require(result.ok && result.paths.size() == 2, "fanout extraction must return both demands");
+    require(
+        result.paths[0].node_path == std::Vector<int>({0, 1, 3}),
+        "first fanout demand must follow its source-to-sink branch");
+    require(
+        result.paths[1].node_path == std::Vector<int>({0, 2, 4}),
+        "second fanout demand must follow its source-to-sink branch");
 }
 
 auto test_extraction_error_branches() -> void {
     const auto nets = std::Vector<RoutingNet> {
         synthetic_net(0, {0}, {{2, {0}}})};
 
-    const auto no_next_graph = synthetic_graph(3, {});
-    auto no_active_session = CadicalSession {};
-    const auto no_active_solved = no_active_session.solve_once();
-    const auto no_active = extract_sat_solution(
-        no_next_graph, nets, UnifiedSatModel {}, no_active_session, no_active_solved);
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    auto missing_pair_session = CadicalSession {};
+    const auto missing_pair_solved = missing_pair_session.solve_once();
+    const auto missing_pair = extract_sat_solution(
+        graph, nets, UnifiedSatModel {}, missing_pair_session, missing_pair_solved);
     require(
-        !no_active.ok && std::string {no_active.message}.find("no active") != std::string::npos,
-        "extraction must reject a demand with no active pair");
+        !missing_pair.ok && std::string {missing_pair.message}.find("no delay pair") != std::string::npos,
+        "extraction must reject a demand with no delay pair");
 
-    const auto direct_graph = synthetic_graph(3, {{0, 2}});
-    auto multiple_fixture = extraction_fixture(direct_graph, 2, {0});
-    const auto multiple = extract_sat_solution(
-        direct_graph,
-        nets,
-        multiple_fixture.model,
-        *multiple_fixture.session,
-        multiple_fixture.solved);
+    auto inactive_sink_session = CadicalSession {};
+    auto inactive_model = UnifiedSatModel {};
+    auto inactive_scope = UnifiedSatNetScope {};
+    inactive_scope.node_ids = {0, 1, 2};
+    inactive_scope.node_offset = {0, 1, 2};
+    inactive_model.scopes.push_back(inactive_scope);
+    inactive_model.pair_delays.push_back(PairDelayInfo {
+        0, 0, 0, 0, 2, std::Vector<int>({2}), 2, -1});
+    auto inactive_source = SourceDelayVars {};
+    inactive_source.scope_index = 0;
+    inactive_source.source_node = 0;
+    inactive_source.d_max = 2;
+    inactive_source.d_var = {
+        {inactive_sink_session.new_var(), -1, -1},
+        {-1, -1, -1},
+        {-1, -1, inactive_sink_session.new_var()}};
+    inactive_model.sources.push_back(inactive_source);
+    inactive_sink_session.add_clause({inactive_source.d_var[0][0]});
+    const auto inactive_solved = inactive_sink_session.solve_once();
+    const auto inactive = extract_sat_solution(
+        graph, nets, inactive_model, inactive_sink_session, inactive_solved);
     require(
-        !multiple.ok && std::string {multiple.message}.find("multiple active") != std::string::npos,
-        "extraction must reject multiple active candidate pairs");
+        !inactive.ok
+            && (std::string {inactive.message}.find("not active at any target delay") != std::string::npos
+                || std::string {inactive.message}.find("no next arc") != std::string::npos),
+        "extraction must reject an inactive sink delay");
 
-    auto stuck_fixture = extraction_fixture(no_next_graph, 1, {});
-    const auto stuck = extract_sat_solution(
-        no_next_graph,
-        nets,
-        stuck_fixture.model,
-        *stuck_fixture.session,
-        stuck_fixture.solved);
-    require(
-        !stuck.ok && std::string {stuck.message}.find("no next arc") != std::string::npos,
-        "extraction must reject a path that does not reach its sink");
-
-    const auto revisit_graph = synthetic_graph(3, {{0, 1}, {1, 0}});
-    auto revisit_fixture = extraction_fixture(revisit_graph, 1, {0, 1});
-    const auto revisit = extract_sat_solution(
-        revisit_graph,
-        nets,
-        revisit_fixture.model,
-        *revisit_fixture.session,
-        revisit_fixture.solved);
-    require(
-        !revisit.ok && std::string {revisit.message}.find("revisits node") != std::string::npos,
-        "extraction must reject a revisited node");
+    const auto disconnected = synthetic_graph(3, {});
+    try {
+        const auto scopes = build_all_scopes(disconnected, nets);
+        (void)compute_pair_delays(disconnected, nets, scopes);
+        require(false, "disconnected graph must fail before extraction");
+    }
+    catch (const std::runtime_error&) {
+    }
 }
 
 auto test_format_path_node_track_bump_hline_vline() -> void {
@@ -1492,11 +1832,86 @@ auto test_format_path_hops_and_graph_node_ref() -> void {
         "track endpoint ref must use compact TrackCoord text");
 }
 
+auto synthetic_pnnet(
+    std::size_t net_id,
+    const std::Vector<std::size_t>& sources,
+    const std::Vector<std::pair<std::size_t, std::Vector<std::size_t>>>& demands
+) -> RoutingNet {
+    auto net = synthetic_net(net_id, sources, demands);
+    net.kind = RoutingNetKind::PNnet;
+    return net;
+}
+
+auto test_pnnet_virtual_delay_shift() -> void {
+    const auto graph = synthetic_graph(4, {{0, 2}, {1, 2}, {2, 3}});
+    auto nets = std::Vector<RoutingNet> {synthetic_pnnet(0, {0, 1}, {{3, {0, 1}}})};
+    auto working_graph = graph;
+    augment_graph_for_pnnet(working_graph, nets);
+    const auto scopes = build_all_scopes(working_graph, nets);
+    const auto delays = compute_pair_delays(working_graph, nets, scopes);
+    require(delays.pairs.size() == 1, "PNnet fixture must have one pair delay");
+    const int physical_shortest = bfs_shortest_delay(graph, scopes[0], 0, 3);
+    require(physical_shortest == 2, "PNnet fixture physical shortest path must be 2 hops");
+    require(
+        delays.pairs[0].delays.size() == 1 && delays.pairs[0].delays[0] == physical_shortest + 1,
+        "PNnet initial delay must be 1 + min physical shortest path");
+    require(
+        delays.pairs[0].source_node == nets[0].virtual_source_node,
+        "PNnet pair delay must reference virtual source node");
+}
+
+auto test_pnnet_forbid_track_delay_ne_1() -> void {
+    const auto graph = synthetic_graph(4, {{0, 2}, {1, 2}, {2, 3}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_pnnet(0, {0, 1}, {{3, {0, 1}}})};
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, nets);
+    require(!model.sources.empty(), "PNnet model must allocate a logical source block");
+    const int track_d2 = d_lit_at(model, 0, 0, 2);
+    if (track_d2 > 0) {
+        auto forced_session = CadicalSession {};
+        const auto forced_model = build_v14_model(forced_session, graph, nets);
+        const int lit = d_lit_at(forced_model, 0, 0, 2);
+        forced_session.add_clause({lit});
+        require(
+            !forced_session.solve_once().ok,
+            "forcing D(r_n, track, d!=1) must be UNSAT for PNnet");
+    }
+}
+
+auto test_pnnet_virtual_arc_sat_extract() -> void {
+    const auto graph = synthetic_graph(4, {{0, 2}, {1, 2}, {2, 3}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_pnnet(0, {0, 1}, {{3, {0, 1}}})};
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, nets);
+    const auto solved = session.solve_once();
+    require(solved.ok, "PNnet fork fixture must be SAT");
+    auto ext_graph = graph;
+    auto ext_nets = nets;
+    augment_graph_for_pnnet(ext_graph, ext_nets);
+    const auto result = extract_sat_solution(ext_graph, ext_nets, model, session, solved);
+    require(result.ok, "PNnet extraction must succeed");
+    require(result.paths.size() == 1, "PNnet fixture must extract one path");
+    const auto& extracted = result.paths[0];
+    require(
+        extracted.physical_source_node == 0 || extracted.physical_source_node == 1,
+        "PNnet path must record selected physical track");
+    require(
+        extracted.node_path.front() == extracted.physical_source_node,
+        "PNnet extracted path must start at selected track");
+    require(
+        extracted.node_path.back() == 3,
+        "PNnet extracted path must end at sink");
+    require(
+        std::find(extracted.node_path.begin(), extracted.node_path.end(), ext_nets[0].virtual_source_node)
+            == extracted.node_path.end(),
+        "PNnet extracted path must not include virtual source node");
+}
+
 auto test_log_routing_paths_two_pin() -> void {
     const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
     const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
     auto session = CadicalSession {};
-    const auto model = build_unified_sat_model(session, graph, nets);
+    const auto model = build_v14_model(session, graph, nets);
     const auto solved = session.solve_once();
     require(solved.ok, "two-pin fixture must be SAT");
     const auto result = extract_sat_solution(graph, nets, model, session, solved);
@@ -1524,25 +1939,47 @@ auto main() -> int {
         test_cadical_session_memory_limit();
         test_numeric_constraint_kits();
         test_binary_successor_truth_table();
-        test_sync_bus_successor_is_shared_per_node();
+        test_delay_precompute_simple_path();
+        test_pair_state_initial_delays_bbox();
+        test_delay_set_drives_d_max();
+        test_cadical_assume_failed();
+        test_alpha_implies_sink_d();
+        test_alpha_gates_sink_connectivity();
+        test_alpha_skips_unreachable_delays();
+        test_alpha_empty_sink_disjunction_reports_core();
+        test_feedback_expands_delays_on_unsat();
+        test_bus_member_delay_bbox_sync();
+        test_feedback_rebuilds_after_reaching_full_bbox();
+        test_feedback_exhausted_state_is_unchanged();
+        test_feedback_global_expand_skips_full_net_and_syncs_others();
+        test_bus_delay_takes_max_member();
+        test_v14_d_var_sparse_allocation();
+        test_v14_unreachable_tob_arc_has_no_a_var();
+        test_v14_pure_track_chain_sat();
+        test_v14_pure_track_fork_sat();
+        test_v14_pure_track_unreachable_unsat();
+        test_v14_bus_equal_delay_equiv();
+        test_v14_bus_forall_d_equiv();
+        test_v14_bus_missing_sink_d_is_false();
         test_cli_max_rss_option();
         test_sequential_at_most_one_truth_table_and_scaling();
         test_numeric_fixed_path_and_extraction();
-        test_candidate_pairs_and_forced_flow_amo();
+        test_v14_rejects_multi_candidate_demand();
+        test_pnnet_virtual_delay_shift();
+        test_pnnet_forbid_track_delay_ne_1();
+        test_pnnet_virtual_arc_sat_extract();
         test_logical_source_exclusivity();
         test_logical_source_owns_its_source_node();
         test_sat_encoding_stats_reconcile();
-        test_source_incoming_and_sink_outgoing_are_zero();
+        test_source_distance_constants();
         test_mode_group_zero_conflict();
         test_all_mode_groups_and_group_zero_extraction();
-        test_sync_bus_binary_distance();
-        test_sync_bus_distance_starts_at_one();
-        test_sync_bus_forbids_forced_cycle();
         test_y_aggregation_and_partial_matching();
         test_all_four_y_partial_matching_sides();
         test_y_bidirectional_equivalence();
         test_forward_and_reverse_switch_use_extract_same_y();
-        test_extraction_rejects_multiple_next_arcs();
+        test_extraction_selects_one_valid_predecessor();
+        test_extraction_handles_shared_source_fanout();
         test_extraction_error_branches();
         test_format_path_node_track_bump_hline_vline();
         test_infer_net_display_kind();

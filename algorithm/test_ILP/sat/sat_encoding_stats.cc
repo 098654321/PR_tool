@@ -21,13 +21,11 @@ auto category_label(const SatClauseCategory cat) -> const char* {
         case SatClauseCategory::Connectivity:
             return "connectivity constraints";
         case SatClauseCategory::Exclusivity:
-            return "exclusivity (global P)";
+            return "exclusivity (global D)";
         case SatClauseCategory::VlineTrackMode:
             return "vline-track mode (M_g)";
         case SatClauseCategory::SyncBusEqualLength:
             return "sync bus equal length";
-        case SatClauseCategory::SyncBusLoopElimination:
-            return "sync bus loop elimination";
         case SatClauseCategory::TobSwitchUniqueness:
             return "TOB switch uniqueness (Y)";
     }
@@ -41,8 +39,7 @@ auto SatEncodingStats::add_clauses(const SatClauseCategory cat, const std::size_
 }
 
 auto SatEncodingStats::known_primary_vars() const -> std::size_t {
-    return p_logical_vars + pair_p_vars + x_vars + activation_vars + mode_vars + switch_vars
-        + bus_distance_vars;
+    return d_vars + a_vars + mode_vars + switch_vars + alpha_vars;
 }
 
 auto SatEncodingStats::finalize_variables(const std::size_t total_session_vars) -> void {
@@ -62,15 +59,20 @@ auto log_sat_encoding_stats(
 ) -> void {
     debug::info("========== unified SAT encoding stats (-v) ==========");
     debug::info("Variables:");
-    debug::info_fmt(
-        "  P   (logical-source occupancy) : {}",
-        stats.p_logical_vars);
-    debug::info_fmt("  p   (pair node usage)          : {}", stats.pair_p_vars);
-    debug::info_fmt("  x   (pair arc usage)           : {}", stats.x_vars);
-    debug::info_fmt("  activation (pair enable)       : {}", stats.activation_vars);
+    debug::info_fmt("  D   (source distance)          : {}", stats.d_vars);
+    debug::info_fmt("  A   (TOB arc transition)       : {}", stats.a_vars);
     debug::info_fmt("  M_g (vline-track mode)         : {}", stats.mode_vars);
     debug::info_fmt("  Y   (physical switch aggregate): {}", stats.switch_vars);
-    debug::info_fmt("  bus distance bits              : {}", stats.bus_distance_vars);
+    debug::info_fmt("  alpha (pair assumptions)       : {}", stats.alpha_vars);
+    debug::info_fmt(
+        "  reachable (source,node,d) triples: {}",
+        stats.reachable_delay_triples);
+    if (stats.reachable_delay_triples > 0) {
+        debug::info_fmt(
+            "  D var / reachable ratio        : {:.3f}",
+            static_cast<double>(stats.d_vars)
+                / static_cast<double>(stats.reachable_delay_triples));
+    }
     debug::info_fmt("  encoding auxiliary             : {}", stats.encoding_aux_vars);
     debug::info_fmt("  total SAT variables            : {}", total_session_vars);
 

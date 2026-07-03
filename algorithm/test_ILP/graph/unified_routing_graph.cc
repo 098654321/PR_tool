@@ -7,6 +7,7 @@
 #include <hardware/cob/cobunit.hh>
 
 #include <format>
+#include <stdexcept>
 
 namespace PR_tool {
 
@@ -22,7 +23,7 @@ auto add_node(UnifiedGraph& g, const UnifiedNode& node) -> int {
             id;
         g.track_node_count += 1;
     }
-    else {
+    else if (node.kind != UnifiedNodeKind::VirtualSource) {
         g.tob_node_count += 1;
     }
     g.in_arc_ids.emplace_back();
@@ -68,9 +69,32 @@ auto add_arc(
         v,
         is_straight,
         is_swap,
+        false,
         mode_group_id,
         physical_switch_id,
         physical_switch_kind});
+    g.out_arc_ids[static_cast<std::size_t>(u)].push_back(arc_id);
+    g.in_arc_ids[static_cast<std::size_t>(v)].push_back(arc_id);
+}
+
+auto add_virtual_source_arc(UnifiedGraph& g, int u, int v) -> void {
+    if (u < 0 || v < 0) {
+        return;
+    }
+    if (g.directed_arc_set.contains({u, v})) {
+        return;
+    }
+    g.directed_arc_set.insert({u, v});
+    const int arc_id = static_cast<int>(g.arcs.size());
+    g.arcs.push_back(UnifiedArc {
+        u,
+        v,
+        false,
+        false,
+        true,
+        -1,
+        -1,
+        PhysicalSwitchKind::None});
     g.out_arc_ids[static_cast<std::size_t>(u)].push_back(arc_id);
     g.in_arc_ids[static_cast<std::size_t>(v)].push_back(arc_id);
 }
@@ -339,6 +363,32 @@ auto build_unified_graph(hardware::Interposer* interposer, const std::Vector<Rou
     return graph;
 }
 
+auto augment_graph_for_pnnet(UnifiedGraph& graph, std::Vector<RoutingNet>& nets) -> void {
+    for (auto& net : nets) {
+        if (net.kind != RoutingNetKind::PNnet) {
+            continue;
+        }
+        UnifiedNode virtual_node {};
+        virtual_node.kind = UnifiedNodeKind::VirtualSource;
+        virtual_node.unit = net.net_id;
+        const int virtual_id = add_node(graph, virtual_node);
+        net.virtual_source_node = virtual_id;
+        for (const auto& source_ref : net.sources) {
+            const int track_node = resolve_graph_node(graph, source_ref);
+            if (track_node < 0) {
+                throw std::invalid_argument(std::format(
+                    "PNnet '{}' has unresolved candidate source track",
+                    net.name));
+            }
+            add_virtual_source_arc(graph, virtual_id, track_node);
+        }
+    }
+}
+
+auto is_virtual_source_arc(const UnifiedArc& arc) -> bool {
+    return arc.is_virtual_source_arc;
+}
+
 auto resolve_graph_node(const UnifiedGraph& graph, const GraphNodeRef& ref) -> int {
     if (ref.kind == GraphNodeRef::Kind::Bump) {
         const auto it = graph.bump_node_by_key.find(ref.bump);
@@ -363,6 +413,9 @@ auto node_in_scope(const UnifiedGraph& graph, int node_id, const IlpBoundingBox&
         return false;
     }
     const auto& node = graph.nodes[static_cast<std::size_t>(node_id)];
+    if (node.kind == UnifiedNodeKind::VirtualSource) {
+        return true;
+    }
     if (node.kind == UnifiedNodeKind::Track) {
         if (node.track_dir == 0) {
             return cob_in_scope(graph, node.track_row, node.track_col - 1, scope)
@@ -402,6 +455,8 @@ auto format_unified_node(const UnifiedGraph& graph, int node_id) -> std::String 
             return std::format("H T{} B{} G{} J{}", node.tob, node.bank, node.group, node.line_index);
         case UnifiedNodeKind::VLine:
             return std::format("V T{} B{} V{}", node.tob, node.bank, node.line_index);
+        case UnifiedNodeKind::VirtualSource:
+            return std::format("R_n net={}", node.unit);
     }
     return std::format("N{}", node_id);
 }

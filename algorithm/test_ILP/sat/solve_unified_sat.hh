@@ -11,6 +11,7 @@ namespace PR_tool {
 struct UnifiedSatSolveOptions {
     CadicalDiagnosticsOptions cadical {};
     int verbose_level{0};
+    std::size_t max_feedback_rounds{64};
 };
 
 auto solve_unified_sat(

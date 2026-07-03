@@ -23,6 +23,7 @@ struct CadicalSolveResult {
     int status{0};
     bool memory_limit_exceeded{false};
     std::String message;
+    std::Vector<int> failed_assumption_literals;
 };
 
 class MemoryLimitExceeded final : public std::runtime_error {
@@ -45,7 +46,11 @@ public:
 
     [[nodiscard]] auto num_vars() const -> std::size_t;
     [[nodiscard]] auto num_clauses() const -> std::size_t;
+
+    auto assume(int lit) -> void;
+    auto solve() -> CadicalSolveResult;
     auto solve_once() -> CadicalSolveResult;
+    [[nodiscard]] auto failed(int lit) const -> bool;
     [[nodiscard]] auto value(int var) const -> bool;
 
     [[nodiscard]] auto memory_limit_exceeded() const -> bool;

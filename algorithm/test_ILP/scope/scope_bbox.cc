@@ -177,28 +177,34 @@ auto compute_scope_child_bboxes(const RoutingNet& net) -> std::Vector<IlpBoundin
     }
 
     if (net.kind == RoutingNetKind::PNnet) {
-        for (std::size_t source_index = 0; source_index < net.sources.size(); ++source_index) {
-            auto source_boxes = std::Vector<IlpBoundingBox> {};
-            for (const auto& demand : net.demands) {
-                if (std::find(
-                        demand.candidate_source_indices.begin(),
-                        demand.candidate_source_indices.end(),
-                        source_index)
-                    == demand.candidate_source_indices.end()) {
-                    continue;
-                }
-                source_boxes.emplace_back(compute_tnet_bbox(
-                    net.sources[source_index].track_coord,
-                    demand.sink.bump));
-            }
-            if (!source_boxes.empty()) {
-                boxes.emplace_back(rect_hull_boxes(source_boxes));
-            }
+        for (std::size_t demand_index = 0; demand_index < net.demands.size(); ++demand_index) {
+            boxes.push_back(compute_pnnet_demand_pair_bbox(net, demand_index));
         }
         return boxes;
     }
 
     return boxes;
+}
+
+auto compute_pnnet_demand_pair_bbox(const RoutingNet& net, std::size_t demand_index) -> IlpBoundingBox {
+    if (net.kind != RoutingNetKind::PNnet || demand_index >= net.demands.size()) {
+        return clamp_bbox(IlpBoundingBox {0, 0, 0, 0});
+    }
+    const auto& demand = net.demands[demand_index];
+    auto candidate_boxes = std::Vector<IlpBoundingBox> {};
+    candidate_boxes.reserve(demand.candidate_source_indices.size());
+    for (const std::size_t source_index : demand.candidate_source_indices) {
+        if (source_index >= net.sources.size()) {
+            continue;
+        }
+        candidate_boxes.emplace_back(compute_tnet_bbox(
+            net.sources[source_index].track_coord,
+            demand.sink.bump));
+    }
+    if (candidate_boxes.empty()) {
+        return clamp_bbox(IlpBoundingBox {0, 0, 0, 0});
+    }
+    return rect_hull_boxes(candidate_boxes);
 }
 
 auto compute_scope_bbox_for_net(const RoutingNet& net) -> IlpBoundingBox {
@@ -214,6 +220,28 @@ auto assign_scope_bboxes(std::Vector<RoutingNet>& nets) -> void {
         net.scope_bbox = compute_scope_bbox_for_net(net);
         net.has_scope_bbox = true;
     }
+}
+
+auto full_chip_bbox() -> IlpBoundingBox {
+    const auto max_row = static_cast<std::i64>(hardware::Interposer::COB_ARRAY_HEIGHT) - 1;
+    const auto max_col = static_cast<std::i64>(hardware::Interposer::COB_ARRAY_WIDTH) - 1;
+    return clamp_bbox(IlpBoundingBox {0, max_row, 0, max_col});
+}
+
+auto expand_pair_bbox_one_cell(IlpBoundingBox box) -> IlpBoundingBox {
+    box.row_min -= 1;
+    box.row_max += 1;
+    box.col_min -= 1;
+    box.col_max += 1;
+    return clamp_bbox(box);
+}
+
+auto is_full_chip_bbox(const IlpBoundingBox& box) -> bool {
+    const auto chip = full_chip_bbox();
+    return box.row_min <= chip.row_min
+        && box.row_max >= chip.row_max
+        && box.col_min <= chip.col_min
+        && box.col_max >= chip.col_max;
 }
 
 } // namespace PR_tool

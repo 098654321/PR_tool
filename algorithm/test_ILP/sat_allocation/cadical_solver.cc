@@ -122,6 +122,7 @@ public:
     int solve_status{0};
     bool solve_called{false};
     bool memory_exceeded{false};
+    std::Vector<int> assumed_literals;
 };
 
 CadicalSession::CadicalSession(CadicalDiagnosticsOptions options)
@@ -182,9 +183,18 @@ auto CadicalSession::num_clauses() const -> std::size_t {
     return impl_->clause_count;
 }
 
-auto CadicalSession::solve_once() -> CadicalSolveResult {
+auto CadicalSession::assume(int lit) -> void {
+    impl_->ensure_encoding_open();
+    if (lit == 0) {
+        throw std::invalid_argument("CaDiCaL assume() requires a non-zero literal");
+    }
+    impl_->solver.assume(lit);
+    impl_->assumed_literals.push_back(lit);
+}
+
+auto CadicalSession::solve() -> CadicalSolveResult {
     if (impl_->solve_called) {
-        throw std::logic_error("CaDiCaL solve_once() may only be called once");
+        throw std::logic_error("CaDiCaL solve() may only be called once per session");
     }
     impl_->solve_called = true;
 
@@ -217,6 +227,11 @@ auto CadicalSession::solve_once() -> CadicalSolveResult {
     }
     else if (impl_->solve_status == CaDiCaL::UNSATISFIABLE) {
         out.message = "UNSAT";
+        for (const int lit : impl_->assumed_literals) {
+            if (impl_->solver.failed(lit)) {
+                out.failed_assumption_literals.push_back(lit);
+            }
+        }
     }
     else if (impl_->memory_exceeded) {
         out.memory_limit_exceeded = true;
@@ -225,7 +240,22 @@ auto CadicalSession::solve_once() -> CadicalSolveResult {
     else {
         out.message = std::format("CaDiCal returned status={}", impl_->solve_status);
     }
+    impl_->assumed_literals.clear();
     return out;
+}
+
+auto CadicalSession::solve_once() -> CadicalSolveResult {
+    return solve();
+}
+
+auto CadicalSession::failed(int lit) const -> bool {
+    if (!impl_->solve_called || impl_->solve_status != CaDiCaL::UNSATISFIABLE) {
+        throw std::logic_error("CaDiCaL failed() requires an UNSAT result");
+    }
+    if (lit == 0) {
+        throw std::invalid_argument("CaDiCaL failed() requires a non-zero literal");
+    }
+    return impl_->solver.failed(lit);
 }
 
 auto CadicalSession::value(int var) const -> bool {

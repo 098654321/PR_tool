@@ -157,6 +157,8 @@ auto format_path_node(const UnifiedGraph& graph, int node_id) -> std::String {
                 format_tob_linear(node.tob),
                 node.bank,
                 node.line_index);
+        case UnifiedNodeKind::VirtualSource:
+            return std::format("R_n net={}", node.unit);
     }
     return std::format("N{}", node_id);
 }
@@ -257,7 +259,16 @@ auto log_routing_paths(
             }
             const auto& demand = net.demands[path->demand_id];
             GraphNodeRef source_ref {};
-            if (path->source_index < net.sources.size()) {
+            if (path->physical_source_node >= 0
+                && path->physical_source_node < static_cast<int>(graph.nodes.size())
+                && graph.nodes[static_cast<std::size_t>(path->physical_source_node)].kind
+                    == UnifiedNodeKind::Track) {
+                source_ref.kind = GraphNodeRef::Kind::Track;
+                source_ref.track_coord =
+                    track_coord_from_node(graph.nodes[static_cast<std::size_t>(path->physical_source_node)]);
+                source_ref.track_index = source_ref.track_coord.index;
+            }
+            else if (path->source_index < net.sources.size()) {
                 source_ref = net.sources[path->source_index];
             }
             else {

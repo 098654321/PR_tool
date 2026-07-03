@@ -1,182 +1,103 @@
 # PR_tool / algorithm/test_ILP 工程指南
 
-本文件是 `algorithm/test_ILP/` 子工程的入口说明。当前 `test_ILP` 目标实现**第十三版统一图 SAT 可行性布线**（见 `problem_formulation/第十三版方法.md`），不直接替代 `source/algo/router/` 的正式路由流程。
+本文件是 `algorithm/test_ILP/` 子工程的入口说明。当前 `test_ILP` 实现**第十四版 D/A 距离语义 SAT 可行性布线**（见 `problem_formulation/第十四版方法.md`），不直接替代 `source/algo/router/` 的正式路由流程。
 
 ## 项目总体介绍
 
-`test_ILP` 将 TOB 分配与 COB/track 布线建模到**一张有向图**上，用 CaDiCal 单次求解可行性 SAT。核心流水线：
+`test_ILP` 将 TOB 与 COB/track 布线建模到**一张有向图**上，用 CaDiCal 求解可行性 SAT。核心流水线：
 
-1. **Net 聚合**：`build_routing_nets` 为每个原始 `circuit::Net` 生成一个 `RoutingNet`，用 `RoutingDemand` 保留固定配对或候选 source 关系。
-2. **Scope 计算**：`assign_scope_bboxes` 仅按几何需要拆出 bbox 子项，再取 RectHull 得到原始 net 的 COB 级 `scope_bbox`（无扩边重试）。
-3. **统一图构建**：`build_unified_graph` 生成 track mesh + TOB 子图（bump / hline / vline / track 节点及弧）。
-4. **SAT 编码**：`build_unified_sat_model` 直接向一个 `CadicalSession` 流式写入数值变量和子句，编码 `P` / `p` / `x`、连通性、互斥、`M_g` / `Y`、SyncBus 二进制等长与去环约束。
-5. **求解与提取**：同一 CaDiCal session 单次求解，随后按模型中的数值变量直接输出路径。
+1. **Net 聚合**：`build_routing_nets` → `validate_v14_routing_nets`（非 PNnet 每 demand 恰好一个 candidate source；**PNnet 允许多候选 track**）。
+2. **Pair 状态初始化**：`init_routing_problem_state` 为每个 `(net, demand)` 建立 `PairRoutingState`（`delays` 集合、`pair_bbox`）；PNnet 逻辑源 `source_index=0`（虚拟 \(r_n\)）；`apply_state_to_nets` 写回 `net.scope_bbox`。
+3. **统一图**：`build_unified_graph`（track mesh + 16 TOB 子图）→ **`augment_graph_for_pnnet`**（每 PNnet 追加 `VirtualSource` 节点 \(r_n\) 及 \(r_n\to s_j\) 虚拟弧）。
+4. **反馈环**（`solve_with_feedback`）：每轮 `apply_state_to_nets` → `build_all_scopes` → `compute_pair_delays(state)` → `build_unified_sat_model`（连通性仅由 `α_{s,t}⇒⋁D` 门控）→ `assume(α)` → CaDiCal `solve()`。
+   - **SAT**：`extract_sat_solution` 从 sink 按 delay 递减回溯；PNnet 经虚拟弧回到 \(r_n\)，路径展示从**选中 track** 起算（扣 1 虚拟跳）。
+   - **UNSAT**：`failed(α)` 收集 critical pairs → `apply_feedback_expansion` 返回 `Expanded/Exhausted` → 扩 `delays`（`max+1,max+2`）与 `pair_bbox`（四边 ±1）→ fanout/bus/**PNnet 同 net 多汇**同步 → 全量重建 session/model；刚扩到全片仍重建求解一次，只有全片状态已求解仍 UNSAT 才 `Exhausted`；`MEMORY_LIMIT` 不扩边。
+5. **Delay 预计算**：scope 内 BFS；初始 `delays(s,t)={d_min}`，反馈后可多元素；bus 取 `bus_d_min=max(member最短)`；**PNnet** 从 \(r_n\) BFS，初值 \(d_{\min}(r_n,t_i)=1+\min_j d_{\min}(s_j,t_i)\)。
+6. **SAT 编码**：`D_{s,n,d}`、`A_{s,u→v,d}`、`α⇒⋁D`、`Y`、`M_g`、bus `∀d` 等长；`delays` 中不存在的 sink D 按 false 跳过，整个析取为空时编码 `¬α`；PNnet 一块逻辑源（`source_index=0`），对物理 track 强制 \(D_{r_n,s_j,d}=0\ (d\neq1)\)，**无** `ExactlyOne` 选轨（多源可并存、路径可汇合）。
 
-**不包含**（第十三版明确剔除）：路径预计算、tier 放开、SAT/ MC F 分阶段、Gurobi MCF、scope 扩边重试、结果写回 interposer。
+**不包含**：SAT+MCF 分阶段、Gurobi MCF、结果写回 interposer。
 
-硬件与电路基础来自项目根目录 `source/hardware` 与 `source/circuit`。方法依据以 `problem_formulation/第十三版方法.md` 为准；历史版本见同目录 `第一版方法.md` … `第十二版方法.md`（第十二版为 SAT+MCF 两阶段，已不再由 `test_ILP` 目标链接）。
+方法依据：`problem_formulation/第十四版方法.md`。历史版本见同目录 `第一版方法.md` … `第十三版方法.md`。
 
-## 工作流程中必须要做的事情
+## 工作流程要求
 
-- 改代码前先读清方法文档与硬件映射的资料。方法文档在 `problem_formulation/`；硬件映射在 `source/hardware` 与 `source/circuit`。不允许修改方法文档。允许改动范围：优先修改 `algorithm/test_ILP/` 内部；除非必要，不改 `source/` 主流程接口语义。
-- 修改后评估是否同步更新本文件（不超过 200 行），以及是否在项目根目录 `.plan/` 下新增改动记录。本文件描述当前工程状态，不记录单次修改流水账。
-- 100 行以上的修改完成后，应启动子 agent 独立评估实现是否完整、正确。
-- 每一个文件应当简化职责，其中的内容职责紧凑，实现功能语义清晰。任何文件都不应该超过1500行，否则需要对文件内容做重构，拆解为多个功能职责更加紧凑的小文件，必要时可以建立新目录来管理多个小文件。
-- 关键步骤应打日志（`debug::info` / `debug::info_fmt`），便于从 `output/debug.log` 追踪。
+- 改代码前读清方法文档与 `source/hardware`、`source/circuit` 映射；**不允许修改方法文档**。
+- 优先改动 `algorithm/test_ILP/`；非必要不改 `source/` 主流程。
+- 修改后评估是否同步更新本文件（≤200 行）。
+- 单次修改 >100 行时，启动子 agent 审查。
+- 单文件职责紧凑，不超过 1500 行；关键步骤用 `debug::info_fmt` 打日志。
 
 ## 目录结构
 
-头文件以 `algorithm/test_ILP` 为 include 根，例如 `#include "common/routing_types.hh"`。
-
 ```text
 algorithm/test_ILP/
-├── main.cc                      # CLI：读 config → solve_unified_sat
-├── common/                      # Bump_coord、RoutingNet、SatRoutingResult、hw_map
-├── scope/                       # build_routing_nets、scope_bbox
-├── graph/                       # unified_routing_graph（track + TOB 子图）
-├── sat/                         # constraint_kits、unified_sat_encoder、solve/extract、routing_path_log
-├── sat_allocation/              # cadical_solver（通用 CNF 求解封装）
-├── problem_formulation/         # 方法定义文档
-│
-│  # 以下为第十二版遗留，未编入 test_ILP 目标，仅供 wirelength_study 等对照：
-├── mcf/                         # BusMCF / SimpleMCF（legacy）
-├── precompute/                  # path precompute、bbox（legacy）
-├── ilp_allocation/              # TOB ILP / Gurobi（legacy）
-└── visualization/               # MCF 资源可视化脚本（legacy）
+├── main.cc
+├── common/           # RoutingNet、SatRoutingResult、hw_map
+├── scope/            # build_routing_nets、scope_bbox、pair_routing_state
+├── graph/            # unified_routing_graph（含 VirtualSource / augment_graph_for_pnnet）
+├── delay/            # pair_delay_precompute（BFS、bus_d_min、PNnet r_n 偏移）
+├── sat/              # encoder、routing_feedback、encode_tob_special、encode_bus_sync、extract
+├── sat_allocation/   # cadical_solver（assume/solve/failed）
+├── problem_formulation/
+├── mcf/ precompute/ ilp_allocation/ visualization/   # 第十二版遗留，未链接 test_ILP
 ```
 
-## 关键文件与职责
+## 关键模块
 
-- `main.cc`
-  - 解析 `config_path`、`-v`/`-vv`、`--sat-log`。
-  - 调用 `parse::read_config`、`algo::build_nets`、`solve_unified_sat`。
-  - 打印峰值 RSS 与总耗时。
+| 模块 | 职责 |
+|------|------|
+| `graph/unified_routing_graph` | `VirtualSource` 节点；`is_virtual_source_arc`；`augment_graph_for_pnnet` |
+| `scope/scope_bbox` | PNnet：`compute_pnnet_demand_pair_bbox`（按 demand 合并各 \((s_j,t_i)\) Tnet bbox） |
+| `scope/pair_routing_state` | per-pair `delays`/`pair_bbox`；fanout/bus/PNnet 同步；全片扩 |
+| `delay/pair_delay_precompute` | BFS 可达性；PNnet 从 \(r_n\)；读取 state 中可增长 `delays`；`d_max=max(delays)` |
+| `sat/routing_feedback` | UNSAT core 驱动 scope/delay 扩展；显式 `Expanded/Exhausted` 状态；每轮新建 `CadicalSession` |
+| `sat/unified_sat_scope` | per-net 紧凑 scope；PNnet 强制含 \(r_n\)、全部候选 track、虚拟弧 |
+| `sat/unified_sat_encoder` | 稀疏 `D`/`A`；`α⇒⋁D`；PNnet track \(d\neq1\) 禁止；虚拟弧 connectivity |
+| `sat/encode_tob_special` | `A⇒D`、三类物理连接 `Y` 聚合、`Y⇒M_g/¬M_g`、四类 partial matching |
+| `sat/encode_bus_sync` | `∀d`：`D_{ref,t_ref,d} ↔ D_{member,t_i,d}`；不存在的 D 按 false |
+| `sat/sat_solution_extract` | sink→source 回溯；PNnet 剥离 \(r_n\)、记录 `physical_source_node` |
+| `sat/sat_encoding_stats` | `-v`：7 类 CNF + `alpha_vars` |
 
-- `common/routing_types.hh`
-  - `RoutingNet`（`net_id`、`kind`、去重后的 `sources`、`demands`、`scope_bbox`、`is_sync_bus` 及原始 net 元数据）。
-  - `RoutingDemand`（`demand_id`、`sink`、`candidate_source_indices`、`fixed_pair`）；`fixed_pair=true` 表示保留原始 2-pin 配对，`false` 表示 sink 可从候选 source 中选择。
-  - `sinks` 仅为其他旧调用方的兼容视图；当前 SAT encoder 直接读取 `demands`。
-  - `GraphNodeRef`（track / bump / hline / vline 端点引用）。
-  - `SatRoutingResult`、`SourceSinkPairPath`。
+### 变量与约束（v14）
 
-- `common/ilp_types.hh`
-  - `Bump_coord`、`map_track()`、`kSyncBusOriginPrefix`。
+- **D**：逻辑 source `s` 到节点 `n` 的精确距离 `d`（仅可达 `(n,d)` 分配）。
+- **A**：仅 TOB 弧的转移选择；只在两个端点 D 都存在时分配。
+- **α**：每 pair 一个假设字面量；连通性只由 `α⇒⋁_{d∈delays(s,t)} D_{sink,d}` 门控；不可达 delay 不分配 D，空析取编码为 `¬α`；UNSAT 时 `failed(α)` 诊断 critical pair。
+- **Y / M_g**：Bump-HLine、HLine-VLine、VLine-Track 三类物理开关与 vline-track 模式（1024 组全局 `M_g`）。
+- **Bus**：各 member 独立最短 → `bus_d_min=max`；SAT 侧 `∀d` 等等长。
+- **PNnet**：整网一个 \(r_n\)；`D_{r_n,r_n,0}=true`；物理 track 仅在 \(d=1\) 可达；路径 hop 统计扣 1 虚拟跳。
 
-- `scope/build_routing_nets.cc`
-  - 每个原始 net 只生成一个 `RoutingNet`；多端口 net 不在这里拆成多个 SAT net。
-  - `TracksToBumpsNet`：全部 begin track 为去重 source；每个 bump 一个非固定 demand，候选为全部 source。
-  - `TrackToBumpsNet`：一个 track source；每个 bump 一个固定 demand。
-  - `SyncNet`：每个 2-pin member 保留一个固定 demand；`btt`/`ttb` 均规范为 **track source、bump sink**，混合 Bnet/Tnet member 时拒绝。
-  - `BumpToBumpNet`、`BumpToTrackNet`、`TrackToBumpNet` 各生成一个固定 demand。
-  - `BumpToBumpsNet`、`BumpToTracksNet` 不支持，并在错误中报告类型和 net 名。
+### v14 不支持
 
-- `scope/scope_bbox.cc`
-  - bbox 子项仅用于几何 scope：SyncNet 每个 member 一个子项；TrackToBumpsNet 每个 sink 一个 Tnet 子项；普通 2-pin net 一个子项。
-  - TracksToBumpsNet 每个 source 一个 PN 子项；该子项先合并此 source 到各 bump 的 Tnet bbox，再由所有 source 子项取 RectHull。
-  - 原始 `RoutingNet.scope_bbox` 为全部子项的 RectHull，最后并入所有 source/sink 端点 COB；SAT 仍求解原始 net。
+- 非 PNnet 网的多候选 source（`validate_v14_routing_nets` 拒绝）。
+- 多源多汇当前仅支持 `TracksToBumpsNet`（归一化为 PNnet）；其他多源多汇 net 类型不在当前 case 范围内。
+- SAT+MCF 分阶段、Gurobi MCF。
 
-- `graph/unified_routing_graph.cc`
-  - 构建固定的完整硬件图：track 级 mesh（Wilton 开关）与全部 16 个 TOB 的 bump/hline/vline 子图；弧属性使用带 `-1` 哨兵的 `mode_group_id`、`physical_switch_id` 及物理开关类型。
-
-- `sat/sat_encoding_stats.hh` / `sat_encoding_stats.cc`
-  - `-v` 编码统计：`SatEncodingStats` 与 `log_sat_encoding_stats`（变量区 + 8 类 CNF 子句对账）。
-
-- `sat/unified_sat_encoder.cc`
-  - 每个原始 net 一个紧凑 scope；每个逻辑 `(net, source)` 的 `P`；仅为 demand 明确列出的候选 source 分配 pair `p`/`x`。
-  - 使用全局节点/弧 ID 的扁平 offset 表，不创建变量名或 pair 级嵌套 map；逻辑 source 节点和候选 pair 预先索引，多源争用节点使用线性规模 Sinz `P` 互斥。
-  - 连通性、流入/流出 AtMostOne；固定分配全部 1024 个全局 `M_g`，并聚合物理开关 `Y`（四类 TOB partial matching）；SyncBus 二进制距离等长与去环。
-
-- `sat/sat_solution_extract.cc`
-  - 从 live CaDiCal 数值赋值沿每个 active demand pair 的 `x` 提取完整 `SourceSinkPairPath`，同时提取全部 `M` 与已用 `Y`。
-
-- `sat/routing_path_log.cc`
-  - 成功求解后默认打印按原始 `RoutingNet` 分组的源→汇 hop 路径（track 用紧凑格式 `{r7, c6, H, i56}` / `V` 表方向，TOB 节点用 `TOB(tr,tc)+编号`）。
-  - `-v` 打印每个 net 合并 `scope_bbox` 四角；`-vv` 额外打印 `compute_scope_child_bboxes` 子 bbox 四角。
-
-- `sat_allocation/cadical_solver.cc`
-  - `CadicalSession`：边编码边写 CaDiCal；启用内存上限时按至多 4096 次全局编码操作采样，超长子句每 4096 个 literal 额外采样；`--sat-log` 时写入 `cadical-log/`。`solve_sat_cnf` 只为旧单元测试保留。
-
-## 构建、运行、测试
-
-在项目根目录（仅需 CaDiCal，**不需要 Gurobi**）：
+## 构建与测试
 
 ```bash
 xmake f --cadical=y
 xmake build test_ILP
-./output/test_ILP <config_path>
-./output/test_ILP <config_path> -v
-./output/test_ILP <config_path> --sat-log
-```
-
-CLI 参数：
-
-- `-v` / `-vv`：`-v` 在 scope 计算后打印每个原始 net 的 bbox 四角，并在建模完成后打印 SAT 编码统计（变量数与 8 类 CNF 子句数）；`-vv` 额外打印子 bbox 四角。
-- `--sat-log`：CaDiCal 轨迹写入 `cadical-log/`。
-
-典型日志阶段：
-
-```text
-scope net="..." id=... kind=... display=... corners: (r0,c0) (r0,c1) (r1,c0) (r1,c1) bounds=(...)
-  scope child net="..." id=... index=0 corners: ...    # 仅 -vv
-unified graph: nodes=... arcs=... track_nodes=... tob_nodes=...
-streaming unified numeric SAT model into CaDiCal...
-unified SAT model built: vars=... clauses=...
-========== unified SAT encoding stats (-v) ==========    # 仅 -v
-Variables:
-  P   (logical-source occupancy) : ...
-  ...
-Clauses by category (CNF):
-  [1] constant constraints              : ...
-  ...
-=====================================================
-solving unified SAT with CaDiCal...
-route net="..." id=... kind=... display=TwoPin|SyncBus|TrackToBumps|TracksToBumps demands=...
-  member demand=0 src=... snk=...
-    path: <hop0> -> <hop1> -> ...
-unified SAT ok: paths=... vars=... clauses=... ms=...
-Process peak RSS: ... MB
-```
-
-单元测试：
-
-```bash
 xmake build test_ILP_unit
 ./output/test_ILP_unit
+./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192
 ```
 
-最小验证建议：
+集成 case：`case_2btb`、`case_2btt`、`case_2fanout`、`case_bus2btb`、`case_bus2btt`、`test/config/case5`（PNnet / `TracksToBumpsNet`）；建议 `--max-rss-mb 8192`（`main.cc` 打印 `Process peak RSS`）。
 
-首先修改 source/hardware/interposer.hh当中的COB_ARRAY_WIDTH为12
+`-v` 日志含 scope、delay、`feedback round=`、`feedback critical`、`unified SAT encoding stats`（`d_vars`/`a_vars`/`alpha_vars`/7 类 CNF）、路径（PNnet 含选中 track）。
 
-```bash
-xmake build test_ILP
-使用一下case进行验证：algorithm/test_ILP/test/*
-./output/test_ILP test/config/case1
-./output/test_ILP test/config/case5
-```
+反馈扩边示例：`feedback round=2 critical net=3 demand=1 delays=10->10,11,12 bbox=(2,5,0,6)->(1,6,0,7)`。
 
-进阶验证建议：
+## 已知限制
 
-首先修改 source/hardware/interposer.hh当中的COB_ARRAY_WIDTH为13
-
-```bash
-xmake build test_ILP
-./output/test_ILP test/config/case7 -v
-./output/test_ILP test/config/case8 -v
-./output/test_ILP test/config/case9 -v
-```
-
-## 已知限制与排错
-
-- **规模**：数值流式编码已移除命名 CNF 的整份内存副本，但 PNnet 多 demand × 大 scope 仍会为每个候选 pair 分配独立 `p`/`x`；SyncBus 还会按 `O((|V|+|A|) log |V|)` 生成二进制距离约束。
-- **UNSAT**：当前无 scope 扩边重试、无 tier；UNSAT 直接失败退出。
-- **external port 坐标错误**：若出现 `is not a valid external port coord`，可检查 `source/hardware/interposer.hh` 中 `COB_ARRAY_WIDTH`（常见为 12 或 13）。
+- **反馈环**：每轮全量重建 CNF；`max_feedback_rounds`（默认 64）防止无限循环；只有全片 bbox 状态已经完成一次求解且仍 UNSAT 才终止。
+- **CaDiCal core**：`failed()` 不保证最小；空 core 时回退到 max-delay pair。
+- **规模**：全图 1024 `M_g` 变量；大 scope 下 D/A 仍随可达 triple 增长；**case5** 等大实例可能触达 8GB RSS 上限（`MEMORY_LIMIT`）。
 
 ## 工程风格
 
-- 小步、局部、可解释：每个改动应对应方法文档条目或明确 bug/需求。
-- 不做无关重构；不顺手改 `source/` 主流程。
-- `net_id` 由 `build_routing_nets` 顺序分配，编码与解提取均依赖其对齐。
-- Tnet / PNnet 端点语义：**track = source，bump = sink**（含 SyncNet 内 `btt`）。
-- 新日志应含 `net_id`、`net` 名、kind、scope、`pairs`/`vars`/`clauses` 等定位信息。
-- 若恢复第十二版 SAT+MCF 能力，应作为独立 xmake 目标或显式开关，避免与第十三版流水线混用。
+- 小步、可解释；不做无关重构。
+- `net_id` 由 `build_routing_nets` 顺序分配。
+- Tnet / SyncNet member：**track = source，bump = sink**；PNnet：**逻辑源 = \(r_n\)**，物理 track 由解中虚拟弧后继确定。
+- 第十二版 SAT+MCF 应独立目标，不与 v14 混用。

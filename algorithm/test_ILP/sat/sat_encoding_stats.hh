@@ -13,20 +13,18 @@ enum class SatClauseCategory : std::uint8_t {
     Exclusivity,
     VlineTrackMode,
     SyncBusEqualLength,
-    SyncBusLoopElimination,
     TobSwitchUniqueness,
 };
 
-constexpr std::size_t kSatClauseCategoryCount = 8;
+constexpr std::size_t kSatClauseCategoryCount = 7;
 
 struct SatEncodingStats {
-    std::size_t p_logical_vars{0};
-    std::size_t pair_p_vars{0};
-    std::size_t x_vars{0};
-    std::size_t activation_vars{0};
+    std::size_t d_vars{0};
+    std::size_t a_vars{0};
     std::size_t mode_vars{0};
     std::size_t switch_vars{0};
-    std::size_t bus_distance_vars{0};
+    std::size_t alpha_vars{0};
+    std::size_t reachable_delay_triples{0};
     std::size_t encoding_aux_vars{0};
 
     std::array<std::size_t, kSatClauseCategoryCount> clause_counts {};
