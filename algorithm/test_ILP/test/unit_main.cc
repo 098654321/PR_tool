@@ -968,7 +968,7 @@ auto test_alpha_gates_sink_connectivity() -> void {
     }
 }
 
-auto test_alpha_skips_unreachable_delays() -> void {
+auto test_alpha_keeps_unreachable_delay_for_sat() -> void {
     const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
     auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
     auto state = init_routing_problem_state(nets);
@@ -979,14 +979,14 @@ auto test_alpha_skips_unreachable_delays() -> void {
     auto session = CadicalSession {};
     const auto model = build_unified_sat_model(session, graph, nets, scopes, delays);
     require(d_lit_at(model, 0, 2, 2) > 0, "reachable delay must allocate sink D");
-    require(d_lit_at(model, 0, 2, 3) <= 0, "unreachable delay must not allocate sink D");
+    require(d_lit_at(model, 0, 2, 3) > 0, "every requested delay must allocate sink D");
     session.assume(model.alpha_vars.front().alpha_lit);
     require(
         session.solve().ok,
-        "unreachable delays must be ignored when another allowed delay is reachable");
+        "SAT must choose the reachable delay when another allowed delay is unreachable");
 }
 
-auto test_alpha_empty_sink_disjunction_reports_core() -> void {
+auto test_alpha_unreachable_exact_delay_reports_core() -> void {
     const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
     auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
     auto state = init_routing_problem_state(nets);
@@ -996,15 +996,18 @@ auto test_alpha_empty_sink_disjunction_reports_core() -> void {
     const auto delays = compute_pair_delays(graph, nets, scopes, &state);
     auto session = CadicalSession {};
     const auto model = build_unified_sat_model(session, graph, nets, scopes, delays);
+    require(
+        d_lit_at(model, 0, 2, 3) > 0,
+        "an unreachable exact delay must still allocate a sink D variable");
     const int alpha = model.alpha_vars.front().alpha_lit;
     session.assume(alpha);
     const auto result = session.solve();
     require(
         !result.ok && result.message == "UNSAT",
-        "an empty sink disjunction must become UNSAT under alpha");
+        "SAT connectivity must reject an unreachable exact delay");
     require(
         session.failed(alpha),
-        "the empty sink disjunction must report alpha in the failed core");
+        "the unreachable exact delay must report alpha in the failed core");
 }
 
 auto test_feedback_expands_delays_on_unsat() -> void {
@@ -1141,30 +1144,29 @@ auto test_bus_delay_takes_max_member() -> void {
         "bus members must retain their pre-alignment shortest delays");
 }
 
-auto test_v14_d_var_sparse_allocation() -> void {
+auto test_v14_d_var_dense_allocation() -> void {
     const auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}});
     const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
     auto session = CadicalSession {};
-    const auto model = build_v14_model(session, graph, nets);
+    SatEncodingStats stats {};
+    const auto model = build_v14_model(session, graph, nets, &stats);
     require(model.sources.size() == 1, "single source net must allocate one source block");
     const auto& source = model.sources.front();
     require(source.d_max == 3, "chain length 4 must use delay 3 at sink");
     std::size_t allocated = 0;
-    std::size_t unreachable = 0;
     for (const auto& row : source.d_var) {
         for (int lit : row) {
-            if (lit > 0) {
-                ++allocated;
-            }
-            else if (lit < 0) {
-                ++unreachable;
-            }
+            require(lit > 0, "every scope x delay slot must allocate a D variable");
+            ++allocated;
         }
     }
-    require(allocated > 0 && unreachable > 0, "D vars must be sparse across unreachable slots");
+    require(
+        allocated == source.d_var.size() * static_cast<std::size_t>(source.d_max + 1),
+        "D allocation must cover the full dense source domain");
+    require(stats.d_vars == allocated, "D statistics must count the dense domain");
 }
 
-auto test_v14_unreachable_tob_arc_has_no_a_var() -> void {
+auto test_v14_tob_arc_allocates_dense_a_var() -> void {
     auto graph = synthetic_graph(4, {{0, 1}, {2, 3}});
     graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::BumpH;
     graph.arcs[0].physical_switch_id = 7;
@@ -1175,9 +1177,49 @@ auto test_v14_unreachable_tob_arc_has_no_a_var() -> void {
     const auto model = build_v14_model(session, graph, nets, &stats);
 
     require(
-        a_lit_at(model, 0, 1) == 0,
-        "an unreachable TOB arc must not allocate an A variable");
-    require(stats.a_vars == 0, "unreachable TOB arcs must not contribute A variables");
+        a_lit_at(model, 0, 1) > 0,
+        "every scoped TOB arc and delay must allocate an A variable");
+    require(stats.a_vars == 1, "dense TOB arc slots must contribute A variables");
+}
+
+auto test_v14_dense_d_base_states_are_fixed() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
+
+    {
+        auto session = CadicalSession {};
+        const auto model = build_v14_model(session, graph, nets, nullptr, false);
+        const int source_d1 = d_lit_at(model, 0, 0, 1);
+        require(source_d1 > 0, "dense allocation must include source D at d>0");
+        session.add_clause({source_d1});
+        require(
+            !session.solve_once().ok,
+            "the logical source must be true only at delay zero");
+    }
+
+    {
+        auto session = CadicalSession {};
+        const auto model = build_v14_model(session, graph, nets, nullptr, false);
+        const int non_source_d0 = d_lit_at(model, 0, 1, 0);
+        require(non_source_d0 > 0, "dense allocation must include non-source D at d=0");
+        session.add_clause({non_source_d0});
+        require(
+            !session.solve_once().ok,
+            "non-source nodes must be false at delay zero");
+    }
+}
+
+auto test_v14_dense_d_without_predecessor_is_false() -> void {
+    const auto graph = synthetic_graph(4, {{0, 1}, {1, 2}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, nets, nullptr, false);
+    const int isolated_d1 = d_lit_at(model, 0, 3, 1);
+    require(isolated_d1 > 0, "dense allocation must include isolated node states");
+    session.add_clause({isolated_d1});
+    require(
+        !session.solve_once().ok,
+        "a D state without any connectivity predecessor must be false");
 }
 
 auto test_v14_pure_track_chain_sat() -> void {
@@ -1232,7 +1274,7 @@ auto test_v14_bus_forall_d_equiv() -> void {
         "bus forall-d equal length must encode at least one sink equiv layer");
 }
 
-auto test_v14_bus_missing_sink_d_is_false() -> void {
+auto test_v14_bus_sync_covers_dense_delay_domain() -> void {
     const auto graph = synthetic_graph(
         10,
         {{0, 1}, {1, 2}, {0, 4}, {4, 5}, {5, 2}, {6, 7}, {7, 8}, {8, 9}});
@@ -1245,8 +1287,8 @@ auto test_v14_bus_missing_sink_d_is_false() -> void {
     const auto sync_clauses =
         stats.clause_counts[static_cast<std::size_t>(SatClauseCategory::SyncBusEqualLength)];
     require(
-        sync_clauses == 3,
-        "bus encoding must add !D when only one member has a sink literal at a delay");
+        sync_clauses == 8,
+        "bus encoding must equate both sink D variables at every dense delay layer");
 }
 
 auto test_cli_max_rss_option() -> void {
@@ -2126,22 +2168,24 @@ auto main() -> int {
         test_cadical_assume_failed();
         test_alpha_implies_sink_d();
         test_alpha_gates_sink_connectivity();
-        test_alpha_skips_unreachable_delays();
-        test_alpha_empty_sink_disjunction_reports_core();
+        test_alpha_keeps_unreachable_delay_for_sat();
+        test_alpha_unreachable_exact_delay_reports_core();
         test_feedback_expands_delays_on_unsat();
         test_bus_member_delay_bbox_sync();
         test_feedback_rebuilds_after_reaching_full_bbox();
         test_feedback_exhausted_state_is_unchanged();
         test_feedback_global_expand_skips_full_net_and_syncs_others();
         test_bus_delay_takes_max_member();
-        test_v14_d_var_sparse_allocation();
-        test_v14_unreachable_tob_arc_has_no_a_var();
+        test_v14_d_var_dense_allocation();
+        test_v14_tob_arc_allocates_dense_a_var();
+        test_v14_dense_d_base_states_are_fixed();
+        test_v14_dense_d_without_predecessor_is_false();
         test_v14_pure_track_chain_sat();
         test_v14_pure_track_fork_sat();
         test_v14_pure_track_unreachable_unsat();
         test_v14_bus_equal_delay_equiv();
         test_v14_bus_forall_d_equiv();
-        test_v14_bus_missing_sink_d_is_false();
+        test_v14_bus_sync_covers_dense_delay_domain();
         test_cli_max_rss_option();
         test_cli_initial_padding_options();
         test_initial_search_padding_scope();

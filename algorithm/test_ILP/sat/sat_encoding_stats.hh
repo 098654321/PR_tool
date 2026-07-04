@@ -24,7 +24,6 @@ struct SatEncodingStats {
     std::size_t mode_vars{0};
     std::size_t switch_vars{0};
     std::size_t alpha_vars{0};
-    std::size_t reachable_delay_triples{0};
     std::size_t encoding_aux_vars{0};
 
     std::array<std::size_t, kSatClauseCategoryCount> clause_counts {};

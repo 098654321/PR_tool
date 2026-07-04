@@ -141,12 +141,12 @@ auto encode_connectivity(
                     }
                 }
                 if (predecessors.empty()) {
-                    throw std::runtime_error(std::format(
-                        "net {} source {} node {} delay {} has D var but no connectivity predecessors",
-                        source.net_id,
-                        source.source_index,
-                        node,
-                        delay));
+                    add_unit_clause(
+                        session,
+                        stats,
+                        SatClauseCategory::Connectivity,
+                        -d_lit);
+                    continue;
                 }
                 auto clause = predecessors;
                 clause.push_back(-d_lit);
@@ -249,54 +249,62 @@ auto build_unified_sat_model(
     model.pair_delays = delays.pairs;
 
     auto logical_source_nodes = std::Vector<std::size_t>(graph.nodes.size(), 0);
-    for (std::size_t reach_index = 0; reach_index < delays.sources.size(); ++reach_index) {
-        const auto& reach = delays.sources[reach_index];
-        const auto& scope = scopes[reach.scope_index];
+    for (std::size_t domain_index = 0; domain_index < delays.sources.size(); ++domain_index) {
+        const auto& domain = delays.sources[domain_index];
+        const auto& scope = scopes[domain.scope_index];
         auto source = SourceDelayVars {};
-        source.net_id = reach.net_id;
-        source.source_index = reach.source_index;
-        source.source_node = reach.source_node;
-        source.scope_index = reach.scope_index;
-        source.model_source_index = reach_index;
-        source.d_max = reach.d_max;
+        source.net_id = domain.net_id;
+        source.source_index = domain.source_index;
+        source.source_node = domain.source_node;
+        source.scope_index = domain.scope_index;
+        source.model_source_index = domain_index;
+        source.d_max = domain.d_max;
         source.d_var.assign(
             scope.node_ids.size(),
-            std::Vector<int>(static_cast<std::size_t>(reach.d_max) + 1, 0));
+            std::Vector<int>(static_cast<std::size_t>(domain.d_max) + 1, 0));
         for (std::size_t node_offset = 0; node_offset < scope.node_ids.size(); ++node_offset) {
-            for (int delay = 0; delay <= reach.d_max; ++delay) {
-                if (!reach.table.reachable[node_offset][static_cast<std::size_t>(delay)]) {
-                    source.d_var[node_offset][static_cast<std::size_t>(delay)] = -1;
-                    continue;
-                }
+            for (int delay = 0; delay <= domain.d_max; ++delay) {
                 source.d_var[node_offset][static_cast<std::size_t>(delay)] = session.new_var();
                 if (stats != nullptr) {
                     ++stats->d_vars;
                 }
             }
         }
-        ++logical_source_nodes[static_cast<std::size_t>(reach.source_node)];
+        ++logical_source_nodes[static_cast<std::size_t>(domain.source_node)];
         model.sources.push_back(std::move(source));
     }
 
     for (auto& source : model.sources) {
         const auto& scope = scopes[source.scope_index];
-        const auto source_offset =
-            static_cast<std::size_t>(scope.node_offset[static_cast<std::size_t>(source.source_node)]);
-        const int d0 = source.d_var[source_offset][0];
-        if (d0 > 0) {
-            add_unit_clause(session, stats, SatClauseCategory::Constant, d0);
-        }
         for (std::size_t node_offset = 0; node_offset < scope.node_ids.size(); ++node_offset) {
             const int node = scope.node_ids[node_offset];
             if (node == source.source_node) {
+                add_unit_clause(
+                    session,
+                    stats,
+                    SatClauseCategory::Constant,
+                    source.d_var[node_offset][0]);
+                for (int delay = 1; delay <= source.d_max; ++delay) {
+                    add_unit_clause(
+                        session,
+                        stats,
+                        SatClauseCategory::Constant,
+                        -source.d_var[node_offset][static_cast<std::size_t>(delay)]);
+                }
                 continue;
             }
+            add_unit_clause(
+                session,
+                stats,
+                SatClauseCategory::Constant,
+                -source.d_var[node_offset][0]);
             if (logical_source_nodes[static_cast<std::size_t>(node)] != 0) {
-                for (int delay = 0; delay <= source.d_max; ++delay) {
-                    const int lit = source.d_var[node_offset][static_cast<std::size_t>(delay)];
-                    if (lit > 0) {
-                        add_unit_clause(session, stats, SatClauseCategory::Constant, -lit);
-                    }
+                for (int delay = 1; delay <= source.d_max; ++delay) {
+                    add_unit_clause(
+                        session,
+                        stats,
+                        SatClauseCategory::Constant,
+                        -source.d_var[node_offset][static_cast<std::size_t>(delay)]);
                 }
             }
         }
@@ -319,13 +327,9 @@ auto build_unified_sat_model(
             tob_arc.d_max = source.d_max;
             tob_arc.a_var.assign(static_cast<std::size_t>(source.d_max) + 1, 0);
             for (int delay = 1; delay <= source.d_max; ++delay) {
-                const int d_u = d_literal(model, source_index, scope, arc.u, delay - 1);
-                const int d_v = d_literal(model, source_index, scope, arc.v, delay);
-                if (d_u > 0 && d_v > 0) {
-                    tob_arc.a_var[static_cast<std::size_t>(delay)] = session.new_var();
-                    if (stats != nullptr) {
-                        ++stats->a_vars;
-                    }
+                tob_arc.a_var[static_cast<std::size_t>(delay)] = session.new_var();
+                if (stats != nullptr) {
+                    ++stats->a_vars;
                 }
             }
             const auto tob_arc_index = model.tob_arcs.size();
@@ -399,20 +403,6 @@ auto build_unified_sat_model(
         if (stats != nullptr) {
             stats->add_clauses(SatClauseCategory::VariableRelation, 1);
         }
-    }
-
-    if (stats != nullptr) {
-        std::size_t reachable_triples = 0;
-        for (const auto& reach : delays.sources) {
-            for (const auto& node_row : reach.table.reachable) {
-                for (bool flag : node_row) {
-                    if (flag) {
-                        ++reachable_triples;
-                    }
-                }
-            }
-        }
-        stats->reachable_delay_triples = reachable_triples;
     }
 
     debug::info_fmt(

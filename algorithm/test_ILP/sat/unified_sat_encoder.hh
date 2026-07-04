@@ -17,7 +17,7 @@ struct SourceDelayVars {
     std::size_t scope_index{0};
     std::size_t model_source_index{0};
     int d_max{0};
-    // d_var[node_offset][d], -1 when unreachable
+    // Dense d_var[node_offset][d] domain for every scoped node and 0 <= d <= d_max.
     std::Vector<std::Vector<int>> d_var;
 };
 

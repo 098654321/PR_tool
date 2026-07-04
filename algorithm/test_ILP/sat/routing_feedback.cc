@@ -154,9 +154,21 @@ auto solve_with_feedback(
             debug::info_fmt("feedback round={} begin", round);
         }
 
+        const auto precompute_begin = std::chrono::steady_clock::now();
         apply_state_to_nets(problem_state, nets);
         const auto scopes = build_all_scopes(graph, nets);
         const auto delays = compute_pair_delays(graph, nets, scopes, &problem_state);
+        const auto precompute_end = std::chrono::steady_clock::now();
+        const auto precompute_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                precompute_end - precompute_begin)
+                .count();
+        debug::info_fmt(
+            "delay precompute finished: round={} sources={} pairs={} delay_precompute_ms={}",
+            round,
+            delays.sources.size(),
+            delays.pairs.size(),
+            precompute_ms);
         log_delay_precompute(nets, delays, options.verbose_level);
 
         auto session = CadicalSession {options.cadical};
@@ -165,6 +177,7 @@ auto solve_with_feedback(
             debug::info("streaming unified numeric SAT model into CaDiCal...");
             SatEncodingStats encoding_stats {};
             SatEncodingStats* stats_ptr = options.verbose_level >= 1 ? &encoding_stats : nullptr;
+            const auto model_build_begin = std::chrono::steady_clock::now();
             const auto model = build_unified_sat_model(
                 session,
                 graph,
@@ -172,10 +185,16 @@ auto solve_with_feedback(
                 scopes,
                 delays,
                 stats_ptr);
+            const auto model_build_end = std::chrono::steady_clock::now();
+            const auto model_build_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    model_build_end - model_build_begin)
+                    .count();
             debug::info_fmt(
-                "unified SAT model built: vars={} clauses={}",
+                "unified SAT model built: vars={} clauses={} model_build_ms={}",
                 session.num_vars(),
-                session.num_clauses());
+                session.num_clauses(),
+                model_build_ms);
             if (stats_ptr != nullptr) {
                 encoding_stats.finalize_variables(session.num_vars());
                 log_sat_encoding_stats(

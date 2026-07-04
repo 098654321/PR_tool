@@ -38,74 +38,23 @@ auto copy_delays_to_state(
     }
 }
 
-auto pnnet_initial_delay(
+auto bfs_shortest_distances(
     const UnifiedGraph& graph,
     const UnifiedSatNetScope& scope,
-    const RoutingNet& net,
-    int sink_node
-) -> int {
-    int best = -1;
-    for (const auto& demand : net.demands) {
-        if (resolve_graph_node(graph, demand.sink) != sink_node) {
-            continue;
-        }
-        for (const std::size_t source_index : demand.candidate_source_indices) {
-            if (source_index >= net.sources.size()) {
-                continue;
-            }
-            const int track_node = resolve_graph_node(graph, net.sources[source_index]);
-            const int shortest = bfs_shortest_delay(graph, scope, track_node, sink_node);
-            if (shortest < 0) {
-                continue;
-            }
-            const int shifted = shortest + 1;
-            best = best < 0 ? shifted : std::min(best, shifted);
-        }
-        break;
-    }
-    if (best < 0) {
-        for (const auto& source_ref : net.sources) {
-            const int track_node = resolve_graph_node(graph, source_ref);
-            const int shortest = bfs_shortest_delay(graph, scope, track_node, sink_node);
-            if (shortest < 0) {
-                continue;
-            }
-            const int shifted = shortest + 1;
-            best = best < 0 ? shifted : std::min(best, shifted);
-        }
-    }
-    return best;
-}
-
-} // namespace
-
-auto bfs_reachability(
-    const UnifiedGraph& graph,
-    const UnifiedSatNetScope& scope,
-    int source_node,
-    int d_max_bound
-) -> ReachableDelayTable {
+    int source_node
+) -> std::Vector<int> {
     if (!scope_node_in_bounds(scope, source_node)) {
         throw std::invalid_argument("BFS source is outside scope");
     }
     const auto source_offset =
         static_cast<std::size_t>(scope.node_offset[static_cast<std::size_t>(source_node)]);
-    auto table = ReachableDelayTable {};
-    table.d_max = d_max_bound;
-    table.reachable.assign(
-        scope.node_ids.size(),
-        std::Vector<bool>(static_cast<std::size_t>(d_max_bound) + 1, false));
-
-    auto seen = std::Vector<std::Vector<bool>>(
-        scope.node_ids.size(),
-        std::Vector<bool>(static_cast<std::size_t>(d_max_bound) + 1, false));
-    auto queue = std::queue<std::pair<std::size_t, int>> {};
-    queue.emplace(source_offset, 0);
-    seen[source_offset][0] = true;
-    table.reachable[source_offset][0] = true;
+    auto distances = std::Vector<int>(scope.node_ids.size(), -1);
+    auto queue = std::queue<std::size_t> {};
+    queue.push(source_offset);
+    distances[source_offset] = 0;
 
     while (!queue.empty()) {
-        const auto [node_offset, delay] = queue.front();
+        const auto node_offset = queue.front();
         queue.pop();
         const int node = scope.node_ids[node_offset];
         for (const int arc_id : graph.out_arc_ids[static_cast<std::size_t>(node)]) {
@@ -118,21 +67,18 @@ auto bfs_reachability(
             if (next_offset < 0) {
                 continue;
             }
-            const int next_delay = delay + 1;
-            if (next_delay > d_max_bound) {
-                continue;
-            }
             const auto next_offset_u = static_cast<std::size_t>(next_offset);
-            if (seen[next_offset_u][static_cast<std::size_t>(next_delay)]) {
+            if (distances[next_offset_u] >= 0) {
                 continue;
             }
-            seen[next_offset_u][static_cast<std::size_t>(next_delay)] = true;
-            table.reachable[next_offset_u][static_cast<std::size_t>(next_delay)] = true;
-            queue.emplace(next_offset_u, next_delay);
+            distances[next_offset_u] = distances[node_offset] + 1;
+            queue.push(next_offset_u);
         }
     }
-    return table;
+    return distances;
 }
+
+} // namespace
 
 auto bfs_shortest_delay(
     const UnifiedGraph& graph,
@@ -140,19 +86,13 @@ auto bfs_shortest_delay(
     int source_node,
     int sink_node
 ) -> int {
-    const int bound = static_cast<int>(scope.node_ids.size());
-    const auto table = bfs_reachability(graph, scope, source_node, bound);
     if (!scope_node_in_bounds(scope, sink_node)) {
         return -1;
     }
+    const auto distances = bfs_shortest_distances(graph, scope, source_node);
     const auto sink_offset =
         static_cast<std::size_t>(scope.node_offset[static_cast<std::size_t>(sink_node)]);
-    for (int delay = 0; delay <= table.d_max; ++delay) {
-        if (table.reachable[sink_offset][static_cast<std::size_t>(delay)]) {
-            return delay;
-        }
-    }
-    return -1;
+    return distances[sink_offset];
 }
 
 auto compute_pair_delays(
@@ -163,11 +103,28 @@ auto compute_pair_delays(
 ) -> DelayPrecomputeResult {
     auto result = DelayPrecomputeResult {};
     auto source_key_to_index = std::map<std::tuple<std::size_t, std::size_t, std::size_t>, std::size_t> {};
+    auto shortest_by_source =
+        std::map<std::tuple<std::size_t, std::size_t, std::size_t>, std::Vector<int>> {};
 
     for (std::size_t net_index = 0; net_index < nets.size(); ++net_index) {
         const auto& net = nets[net_index];
         const auto& scope = scopes[net_index];
         const auto [source_nodes, sink_nodes] = resolve_endpoint_nodes(graph, net);
+        const auto shortest_for = [&](const std::size_t source_index,
+                                      const int source_node,
+                                      const int sink_node) -> int {
+            const auto key = std::tuple {net.net_id, source_index, net_index};
+            auto [it, inserted] = shortest_by_source.try_emplace(key);
+            if (inserted) {
+                it->second = bfs_shortest_distances(graph, scope, source_node);
+            }
+            if (!scope_node_in_bounds(scope, sink_node)) {
+                return -1;
+            }
+            const auto sink_offset =
+                static_cast<std::size_t>(scope.node_offset[static_cast<std::size_t>(sink_node)]);
+            return it->second[sink_offset];
+        };
 
         auto member_pairs = std::Vector<PairDelayInfo> {};
         member_pairs.reserve(net.demands.size());
@@ -192,7 +149,7 @@ auto compute_pair_delays(
                 delay_values = existing->delays;
             }
             else if (net.kind == RoutingNetKind::PNnet) {
-                const int shortest = pnnet_initial_delay(graph, scope, net, sink_node);
+                const int shortest = shortest_for(0, source_node, sink_node);
                 if (shortest < 0) {
                     throw std::runtime_error(std::format(
                         "net {} demand {} has no scoped path from any candidate source to sink {}",
@@ -204,7 +161,7 @@ auto compute_pair_delays(
                 member_shortest = shortest;
             }
             else {
-                const int shortest = bfs_shortest_delay(graph, scope, source_node, sink_node);
+                const int shortest = shortest_for(source_index, source_node, sink_node);
                 if (shortest < 0) {
                     throw std::runtime_error(std::format(
                         "net {} demand {} has no scoped path from source {} to sink {}",
@@ -248,47 +205,22 @@ auto compute_pair_delays(
             }
         }
 
-        if (net.kind == RoutingNetKind::PNnet) {
-            const auto key = std::tuple {net.net_id, std::size_t {0}, net_index};
+        for (const auto& member : member_pairs) {
+            const auto key = std::tuple {net.net_id, member.source_index, net_index};
             if (!source_key_to_index.contains(key)) {
                 int d_max = 0;
                 for (const auto& pair : member_pairs) {
-                    d_max = std::max(d_max, max_delay(pair.delays));
-                }
-                const int source_node = net.virtual_source_node;
-                auto reach = bfs_reachability(graph, scope, source_node, d_max);
-                source_key_to_index.emplace(key, result.sources.size());
-                result.sources.push_back(SourceDelayReachability {
-                    net.net_id,
-                    0,
-                    source_node,
-                    net_index,
-                    d_max,
-                    std::move(reach)});
-            }
-        }
-        else {
-            for (std::size_t source_index = 0; source_index < net.sources.size(); ++source_index) {
-                const auto key = std::tuple {net.net_id, source_index, net_index};
-                if (source_key_to_index.contains(key)) {
-                    continue;
-                }
-                int d_max = 0;
-                for (const auto& pair : member_pairs) {
-                    if (pair.source_index == source_index) {
+                    if (pair.source_index == member.source_index) {
                         d_max = std::max(d_max, max_delay(pair.delays));
                     }
                 }
-                const int source_node = source_nodes[source_index];
-                auto reach = bfs_reachability(graph, scope, source_node, d_max);
                 source_key_to_index.emplace(key, result.sources.size());
-                result.sources.push_back(SourceDelayReachability {
+                result.sources.push_back(SourceDelayDomain {
                     net.net_id,
-                    source_index,
-                    source_node,
+                    member.source_index,
+                    member.source_node,
                     net_index,
-                    d_max,
-                    std::move(reach)});
+                    d_max});
             }
         }
 

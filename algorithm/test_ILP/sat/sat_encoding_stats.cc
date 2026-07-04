@@ -64,15 +64,6 @@ auto log_sat_encoding_stats(
     debug::info_fmt("  M_g (vline-track mode)         : {}", stats.mode_vars);
     debug::info_fmt("  Y   (physical switch aggregate): {}", stats.switch_vars);
     debug::info_fmt("  alpha (pair assumptions)       : {}", stats.alpha_vars);
-    debug::info_fmt(
-        "  reachable (source,node,d) triples: {}",
-        stats.reachable_delay_triples);
-    if (stats.reachable_delay_triples > 0) {
-        debug::info_fmt(
-            "  D var / reachable ratio        : {:.3f}",
-            static_cast<double>(stats.d_vars)
-                / static_cast<double>(stats.reachable_delay_triples));
-    }
     debug::info_fmt("  encoding auxiliary             : {}", stats.encoding_aux_vars);
     debug::info_fmt("  total SAT variables            : {}", total_session_vars);
 
