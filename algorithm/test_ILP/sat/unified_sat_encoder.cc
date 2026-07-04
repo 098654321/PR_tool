@@ -6,6 +6,7 @@
 #include "sat/sat_constraint_kits.hh"
 #include "sat/sat_encoding_stats.hh"
 
+#include <algorithm>
 #include <debug/debug.hh>
 #include <format>
 #include <stdexcept>
@@ -259,11 +260,64 @@ auto build_unified_sat_model(
         source.scope_index = domain.scope_index;
         source.model_source_index = domain_index;
         source.d_max = domain.d_max;
+        const auto net_it = std::find_if(
+            nets.begin(),
+            nets.end(),
+            [&](const RoutingNet& net) { return net.net_id == domain.net_id; });
+        if (net_it == nets.end()) {
+            throw std::logic_error(std::format(
+                "missing routing net {} for source unit selection",
+                domain.net_id));
+        }
+        if (net_it->kind == RoutingNetKind::Bnet
+            && graph.nodes[static_cast<std::size_t>(domain.source_node)].kind
+                == UnifiedNodeKind::Bump) {
+            source.unit_selector_var_by_unit.reserve(16);
+            for (std::size_t unit = 0; unit < 16; ++unit) {
+                source.unit_selector_var_by_unit.push_back(session.new_var());
+                if (stats != nullptr) {
+                    ++stats->unit_selector_vars;
+                }
+            }
+            add_at_least_one(
+                session,
+                source.unit_selector_var_by_unit,
+                stats,
+                SatClauseCategory::SourceUnitSelection);
+            add_sequential_at_most_one(
+                session,
+                source.unit_selector_var_by_unit,
+                stats,
+                SatClauseCategory::SourceUnitSelection);
+        }
         source.d_var.assign(
             scope.node_ids.size(),
             std::Vector<int>(static_cast<std::size_t>(domain.d_max) + 1, 0));
+        const auto expected_slots =
+            scope.node_ids.size() * (static_cast<std::size_t>(domain.d_max) + 1);
+        if (domain.active_d.size() != expected_slots) {
+            throw std::logic_error(std::format(
+                "net {} source {} active D mask has {} slots, expected {}",
+                domain.net_id,
+                domain.source_index,
+                domain.active_d.size(),
+                expected_slots));
+        }
+        if (stats != nullptr) {
+            stats->dense_d_slots += expected_slots;
+            stats->unit_eligible_d_slots +=
+                domain.unit_eligible_node_count
+                * (static_cast<std::size_t>(domain.d_max) + 1);
+        }
         for (std::size_t node_offset = 0; node_offset < scope.node_ids.size(); ++node_offset) {
             for (int delay = 0; delay <= domain.d_max; ++delay) {
+                const auto slot =
+                    node_offset * (static_cast<std::size_t>(domain.d_max) + 1)
+                    + static_cast<std::size_t>(delay);
+                if (domain.active_d[slot] == 0) {
+                    source.d_var[node_offset][static_cast<std::size_t>(delay)] = -1;
+                    continue;
+                }
                 source.d_var[node_offset][static_cast<std::size_t>(delay)] = session.new_var();
                 if (stats != nullptr) {
                     ++stats->d_vars;
@@ -279,32 +333,46 @@ auto build_unified_sat_model(
         for (std::size_t node_offset = 0; node_offset < scope.node_ids.size(); ++node_offset) {
             const int node = scope.node_ids[node_offset];
             if (node == source.source_node) {
+                const int d0 = source.d_var[node_offset][0];
+                if (d0 > 0) {
+                    add_unit_clause(
+                        session,
+                        stats,
+                        SatClauseCategory::Constant,
+                        d0);
+                }
+                for (int delay = 1; delay <= source.d_max; ++delay) {
+                    const int lit =
+                        source.d_var[node_offset][static_cast<std::size_t>(delay)];
+                    if (lit > 0) {
+                        add_unit_clause(
+                            session,
+                            stats,
+                            SatClauseCategory::Constant,
+                            -lit);
+                    }
+                }
+                continue;
+            }
+            const int d0 = source.d_var[node_offset][0];
+            if (d0 > 0) {
                 add_unit_clause(
                     session,
                     stats,
                     SatClauseCategory::Constant,
-                    source.d_var[node_offset][0]);
-                for (int delay = 1; delay <= source.d_max; ++delay) {
-                    add_unit_clause(
-                        session,
-                        stats,
-                        SatClauseCategory::Constant,
-                        -source.d_var[node_offset][static_cast<std::size_t>(delay)]);
-                }
-                continue;
+                    -d0);
             }
-            add_unit_clause(
-                session,
-                stats,
-                SatClauseCategory::Constant,
-                -source.d_var[node_offset][0]);
             if (logical_source_nodes[static_cast<std::size_t>(node)] != 0) {
                 for (int delay = 1; delay <= source.d_max; ++delay) {
-                    add_unit_clause(
-                        session,
-                        stats,
-                        SatClauseCategory::Constant,
-                        -source.d_var[node_offset][static_cast<std::size_t>(delay)]);
+                    const int lit =
+                        source.d_var[node_offset][static_cast<std::size_t>(delay)];
+                    if (lit > 0) {
+                        add_unit_clause(
+                            session,
+                            stats,
+                            SatClauseCategory::Constant,
+                            -lit);
+                    }
                 }
             }
         }
@@ -315,7 +383,21 @@ auto build_unified_sat_model(
     // Allocate TOB A vars before connectivity implications that reference them.
     for (std::size_t source_index = 0; source_index < model.sources.size(); ++source_index) {
         const auto& source = model.sources[source_index];
+        const auto& domain = delays.sources[source_index];
         const auto& scope = scopes[source.scope_index];
+        if (stats != nullptr) {
+            stats->dense_a_slots +=
+                static_cast<std::size_t>(source.d_max)
+                * static_cast<std::size_t>(std::count_if(
+                    scope.arc_ids.begin(),
+                    scope.arc_ids.end(),
+                    [&](const int arc_id) {
+                        return is_tob_arc(graph.arcs[static_cast<std::size_t>(arc_id)]);
+                    }));
+            stats->unit_eligible_a_slots +=
+                static_cast<std::size_t>(source.d_max)
+                * domain.unit_eligible_tob_arc_count;
+        }
         for (const int arc_id : scope.arc_ids) {
             const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
             if (!is_tob_arc(arc)) {
@@ -327,9 +409,13 @@ auto build_unified_sat_model(
             tob_arc.d_max = source.d_max;
             tob_arc.a_var.assign(static_cast<std::size_t>(source.d_max) + 1, 0);
             for (int delay = 1; delay <= source.d_max; ++delay) {
-                tob_arc.a_var[static_cast<std::size_t>(delay)] = session.new_var();
-                if (stats != nullptr) {
-                    ++stats->a_vars;
+                const int d_u = d_literal(model, source_index, scope, arc.u, delay - 1);
+                const int d_v = d_literal(model, source_index, scope, arc.v, delay);
+                if (d_u > 0 && d_v > 0) {
+                    tob_arc.a_var[static_cast<std::size_t>(delay)] = session.new_var();
+                    if (stats != nullptr) {
+                        ++stats->a_vars;
+                    }
                 }
             }
             const auto tob_arc_index = model.tob_arcs.size();
@@ -337,6 +423,43 @@ auto build_unified_sat_model(
             model.tob_arc_index.emplace(
                 std::pair {source_index, arc_id},
                 tob_arc_index);
+        }
+    }
+
+    for (const auto& tob_arc : model.tob_arcs) {
+        const auto& source = model.sources[tob_arc.model_source_index];
+        if (source.unit_selector_var_by_unit.empty()) {
+            continue;
+        }
+        const auto& arc = graph.arcs[static_cast<std::size_t>(tob_arc.arc_global_id)];
+        if (arc.physical_switch_kind != PhysicalSwitchKind::VLineTrack) {
+            continue;
+        }
+        const auto& u_node = graph.nodes[static_cast<std::size_t>(arc.u)];
+        const auto& v_node = graph.nodes[static_cast<std::size_t>(arc.v)];
+        const UnifiedNode* track = nullptr;
+        if (u_node.kind == UnifiedNodeKind::Track) {
+            track = &u_node;
+        }
+        else if (v_node.kind == UnifiedNodeKind::Track) {
+            track = &v_node;
+        }
+        if (track == nullptr || track->unit >= source.unit_selector_var_by_unit.size()) {
+            throw std::logic_error(std::format(
+                "VLineTrack arc {} has no valid track unit",
+                tob_arc.arc_global_id));
+        }
+        const int q_lit = source.unit_selector_var_by_unit[track->unit];
+        for (int delay = 1; delay <= tob_arc.d_max; ++delay) {
+            const int a_lit = tob_arc.a_var[static_cast<std::size_t>(delay)];
+            if (a_lit > 0) {
+                add_implies(
+                    session,
+                    a_lit,
+                    q_lit,
+                    stats,
+                    SatClauseCategory::SourceUnitSelection);
+            }
         }
     }
 

@@ -5,6 +5,7 @@
 #include "scope/pair_routing_state.hh"
 
 #include <algorithm>
+#include <cstdint>
 #include <debug/debug.hh>
 #include <format>
 #include <queue>
@@ -76,6 +77,190 @@ auto bfs_shortest_distances(
         }
     }
     return distances;
+}
+
+auto delay_slot(
+    const std::size_t node_offset,
+    const int delay,
+    const int d_max
+) -> std::size_t {
+    return node_offset * (static_cast<std::size_t>(d_max) + 1)
+        + static_cast<std::size_t>(delay);
+}
+
+auto unit_bit(const std::size_t unit) -> std::uint16_t {
+    return unit < 16 ? static_cast<std::uint16_t>(std::uint16_t {1} << unit) : 0;
+}
+
+auto compute_source_unit_mask(
+    const UnifiedGraph& graph,
+    const RoutingNet& net,
+    const int source_node
+) -> std::uint16_t {
+    if (net.kind == RoutingNetKind::PNnet) {
+        std::uint16_t mask = 0;
+        for (const auto& source_ref : net.sources) {
+            const int candidate = resolve_graph_node(graph, source_ref);
+            if (candidate < 0) {
+                continue;
+            }
+            const auto& node = graph.nodes[static_cast<std::size_t>(candidate)];
+            if (node.kind == UnifiedNodeKind::Track) {
+                mask = static_cast<std::uint16_t>(mask | unit_bit(node.unit));
+            }
+        }
+        return mask;
+    }
+    const auto& node = graph.nodes[static_cast<std::size_t>(source_node)];
+    if (node.kind == UnifiedNodeKind::Track) {
+        return unit_bit(node.unit);
+    }
+    return std::uint16_t {0xffff};
+}
+
+auto node_unit_eligible(
+    const UnifiedNode& node,
+    const std::uint16_t source_unit_mask
+) -> bool {
+    if (node.kind == UnifiedNodeKind::Track) {
+        return (source_unit_mask & unit_bit(node.unit)) != 0;
+    }
+    if (node.kind == UnifiedNodeKind::VLine) {
+        const std::size_t local_unit = node.line_index % 8;
+        const auto pair_mask = static_cast<std::uint16_t>(
+            unit_bit(local_unit) | unit_bit(local_unit + 8));
+        return (source_unit_mask & pair_mask) != 0;
+    }
+    return true;
+}
+
+auto arc_unit_eligible(
+    const UnifiedGraph& graph,
+    const UnifiedArc& arc,
+    const std::uint16_t source_unit_mask
+) -> bool {
+    return node_unit_eligible(
+               graph.nodes[static_cast<std::size_t>(arc.u)],
+               source_unit_mask)
+        && node_unit_eligible(
+               graph.nodes[static_cast<std::size_t>(arc.v)],
+               source_unit_mask);
+}
+
+auto compute_active_delay_mask(
+    const UnifiedGraph& graph,
+    const UnifiedSatNetScope& scope,
+    const int source_node,
+    const int d_max,
+    const std::Vector<PairDelayInfo>& pairs,
+    const std::size_t source_index,
+    const std::uint16_t source_unit_mask
+) -> std::Vector<std::uint8_t> {
+    const auto slot_count =
+        scope.node_ids.size() * (static_cast<std::size_t>(d_max) + 1);
+    auto forward = std::Vector<std::uint8_t>(slot_count, 0);
+    auto active = std::Vector<std::uint8_t>(slot_count, 0);
+    const auto source_offset =
+        static_cast<std::size_t>(scope.node_offset[static_cast<std::size_t>(source_node)]);
+    forward[delay_slot(source_offset, 0, d_max)] = 1;
+
+    for (int delay = 1; delay <= d_max; ++delay) {
+        for (const int arc_id : scope.arc_ids) {
+            const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
+            if (!arc_unit_eligible(graph, arc, source_unit_mask)) {
+                continue;
+            }
+            const auto u_offset =
+                static_cast<std::size_t>(scope.node_offset[static_cast<std::size_t>(arc.u)]);
+            const auto v_offset =
+                static_cast<std::size_t>(scope.node_offset[static_cast<std::size_t>(arc.v)]);
+            if (forward[delay_slot(u_offset, delay - 1, d_max)] != 0) {
+                forward[delay_slot(v_offset, delay, d_max)] = 1;
+            }
+        }
+    }
+
+    for (const auto& pair : pairs) {
+        if (pair.source_index != source_index) {
+            continue;
+        }
+        const int sink_offset_i =
+            scope.node_offset[static_cast<std::size_t>(pair.sink_node)];
+        if (sink_offset_i < 0) {
+            continue;
+        }
+        const auto sink_offset = static_cast<std::size_t>(sink_offset_i);
+        auto backward = std::Vector<std::uint8_t>(slot_count, 0);
+        backward[delay_slot(sink_offset, 0, d_max)] = 1;
+        for (int remaining = 1; remaining <= d_max; ++remaining) {
+            for (const int arc_id : scope.arc_ids) {
+                const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
+                if (!arc_unit_eligible(graph, arc, source_unit_mask)) {
+                    continue;
+                }
+                const auto u_offset =
+                    static_cast<std::size_t>(scope.node_offset[static_cast<std::size_t>(arc.u)]);
+                const auto v_offset =
+                    static_cast<std::size_t>(scope.node_offset[static_cast<std::size_t>(arc.v)]);
+                if (backward[delay_slot(v_offset, remaining - 1, d_max)] != 0) {
+                    backward[delay_slot(u_offset, remaining, d_max)] = 1;
+                }
+            }
+        }
+        for (const int target_delay : pair.delays) {
+            if (target_delay < 0 || target_delay > d_max) {
+                continue;
+            }
+            for (int delay = 0; delay <= target_delay; ++delay) {
+                const int remaining = target_delay - delay;
+                for (std::size_t node_offset = 0;
+                     node_offset < scope.node_ids.size();
+                     ++node_offset) {
+                    const auto slot = delay_slot(node_offset, delay, d_max);
+                    if (forward[slot] != 0
+                        && backward[delay_slot(node_offset, remaining, d_max)] != 0) {
+                        active[slot] = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    active[delay_slot(source_offset, 0, d_max)] = 1;
+    for (int delay = 1; delay <= d_max; ++delay) {
+        active[delay_slot(source_offset, delay, d_max)] = 0;
+    }
+    return active;
+}
+
+auto count_unit_eligible_nodes(
+    const UnifiedGraph& graph,
+    const UnifiedSatNetScope& scope,
+    const std::uint16_t source_unit_mask
+) -> std::size_t {
+    return static_cast<std::size_t>(std::count_if(
+        scope.node_ids.begin(),
+        scope.node_ids.end(),
+        [&](const int node_id) {
+            return node_unit_eligible(
+                graph.nodes[static_cast<std::size_t>(node_id)],
+                source_unit_mask);
+        }));
+}
+
+auto count_unit_eligible_tob_arcs(
+    const UnifiedGraph& graph,
+    const UnifiedSatNetScope& scope,
+    const std::uint16_t source_unit_mask
+) -> std::size_t {
+    return static_cast<std::size_t>(std::count_if(
+        scope.arc_ids.begin(),
+        scope.arc_ids.end(),
+        [&](const int arc_id) {
+            const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
+            return arc.physical_switch_kind != PhysicalSwitchKind::None
+                && arc_unit_eligible(graph, arc, source_unit_mask);
+        }));
 }
 
 } // namespace
@@ -214,13 +399,26 @@ auto compute_pair_delays(
                         d_max = std::max(d_max, max_delay(pair.delays));
                     }
                 }
+                const auto source_unit_mask =
+                    compute_source_unit_mask(graph, net, member.source_node);
                 source_key_to_index.emplace(key, result.sources.size());
                 result.sources.push_back(SourceDelayDomain {
                     net.net_id,
                     member.source_index,
                     member.source_node,
                     net_index,
-                    d_max});
+                    d_max,
+                    source_unit_mask,
+                    count_unit_eligible_nodes(graph, scope, source_unit_mask),
+                    count_unit_eligible_tob_arcs(graph, scope, source_unit_mask),
+                    compute_active_delay_mask(
+                        graph,
+                        scope,
+                        member.source_node,
+                        d_max,
+                        member_pairs,
+                        member.source_index,
+                        source_unit_mask)});
             }
         }
 

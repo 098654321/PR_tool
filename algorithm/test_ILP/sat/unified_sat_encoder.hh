@@ -17,8 +17,10 @@ struct SourceDelayVars {
     std::size_t scope_index{0};
     std::size_t model_source_index{0};
     int d_max{0};
-    // Dense d_var[node_offset][d] domain for every scoped node and 0 <= d <= d_max.
+    // Positive literal for an active exact-delay state; -1 when pruned.
     std::Vector<std::Vector<int>> d_var;
+    // Bnet only: exactly one selected physical COBUnit.
+    std::Vector<int> unit_selector_var_by_unit;
 };
 
 struct TobArcDelayVars {

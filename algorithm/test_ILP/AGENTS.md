@@ -18,8 +18,8 @@
    - 普通 2-pin、单源多汇与 PNnet 每个 pair 按自己的 `d_min` 独立扩展，不跨 demand 合并；bus 先由 `compute_pair_delays` 对齐到统一 `bus_d_min`，再为各 member 添加相同区间。
    - `-d` 不修改任何 `pair_bbox`；首轮 padding 不调用反馈阶段使用的 fanout/bus 同步函数。
    - 反馈 round 0 的 `compute_pair_delays(state)` **保留**已填充的 `delays`；仅 scope 扩展、未设 `-d` 时 round 0 才首次写入 `{d_min}`。
-6. **Delay 预计算**：每个逻辑 source 在 scope 内执行一次普通最短路 BFS，每个节点只访问一次；初始 `delays(s,t)={d_min}`，反馈后可多元素；bus 取 `bus_d_min=max(member最短)`；**PNnet** 直接从 \(r_n\) BFS，虚拟弧自然计入一步。预计算不分析哪些精确 `d` 可达。
-7. **SAT 编码**：对每个逻辑 source 完整分配 scope 内 `D_{s,n,0…d_max}`，对每条 scope 内 TOB 弧完整分配 `A_{s,u→v,1…d_max}`；精确 delay 是否可达由 CNF 连通性判定。另含 `α⇒⋁D`、`Y`、`M_g`、bus `∀d` 等长；PNnet 一块逻辑源（`source_index=0`），对物理 track 强制 \(D_{r_n,s_j,d}=0\ (d\neq1)\)，**无** `ExactlyOne` 选轨（多源可并存、路径可汇合）。
+6. **Delay 与稀疏域预计算**：先用普通最短路 BFS 求各 pair 的 `d_min`；得到当前 `delays` 与 `d_max` 后，再在当前 scope、当前 `d_max` 内计算分层前向可达与各 sink 的反向可达，只保留位于某个当前允许长度 source-to-sink walk 上的 D 状态。同一 source 的 fanout/PNnet 多 sink 对有效状态取并集；feedback 后按新 scope/delay 全量重算，不预建未来轮次状态。
+7. **COBUnit 裁剪与 SAT 编码**：Tnet/IO track source 使用其唯一 unit mask，PNnet \(r_n\) 使用候选 source track 的 unit 并集，Bnet 静态保留全部 16 unit。Track、VLine 与相关弧先按 mask 过滤，再创建有效 `D`；TOB `A_{s,u→v,d}` 仅在两端 D 都有效时创建。每个 Bnet bump source 另建 16 个 `Q(s,u)` 并以 sequential ExactlyOne 选择一个 unit，所有有效 VLine-Track `A` 按 Track 端 unit 编码 `A⇒Q`。另含 `α⇒⋁D`、`Y`、`M_g`、bus `∀d` 等长；PNnet 不建 Q，物理 track 仍只允许 \(d=1\)，多个候选 source 可并存、汇合。
 
 **不包含**：SAT+MCF 分阶段、Gurobi MCF、结果写回 interposer。
 
@@ -55,20 +55,21 @@ algorithm/test_ILP/
 | `graph/unified_routing_graph` | `VirtualSource` 节点；`is_virtual_source_arc`；`augment_graph_for_pnnet` |
 | `scope/scope_bbox` | PNnet：`compute_pnnet_demand_pair_bbox`（按 demand 合并各 \((s_j,t_i)\) Tnet bbox） |
 | `scope/pair_routing_state` | per-pair `delays`/`pair_bbox`；`apply_initial_search_padding`（CLI 首轮 scope/delay 预扩展）；fanout/bus/PNnet 同步；全片扩 |
-| `delay/pair_delay_precompute` | 每个逻辑 source 一次普通最短路 BFS；PNnet 从 \(r_n\)；读取 state 中可增长 `delays`；`d_max=max(delays)` |
+| `delay/pair_delay_precompute` | 普通 BFS 求 `d_min`；当前 `d_max` 内前向+反向精确可达 mask；source unit mask；PNnet 从 \(r_n\) |
 | `sat/routing_feedback` | UNSAT core 驱动 scope/delay 扩展；显式 `Expanded/Exhausted` 状态；每轮新建 `CadicalSession` |
 | `sat/unified_sat_scope` | per-net 紧凑 scope；PNnet 强制含 \(r_n\)、全部候选 track、虚拟弧 |
-| `sat/unified_sat_encoder` | scope×delay 完整 `D`/`A`；不可达精确 delay 由 connectivity 压为 false；`α⇒⋁D`；PNnet track \(d\neq1\) 禁止 |
+| `sat/unified_sat_encoder` | 按有效 mask 稀疏创建 `D`/`A`；Bnet `Q(s,u)` ExactlyOne 与 `A⇒Q`；`α⇒⋁D`；PNnet track \(d\neq1\) 禁止 |
 | `sat/encode_tob_special` | `A⇒D`、三类物理连接 `Y` 聚合、`Y⇒M_g/¬M_g`、四类 partial matching |
 | `sat/encode_bus_sync` | `∀d`：`D_{ref,t_ref,d} ↔ D_{member,t_i,d}`；不存在的 D 按 false |
 | `sat/sat_solution_extract` | sink→source 回溯；PNnet 剥离 \(r_n\)、记录 `physical_source_node` |
-| `sat/sat_encoding_stats` | `-v`：7 类 CNF + `alpha_vars` |
+| `sat/sat_encoding_stats` | `-v`：dense/unit-eligible/active D/A、Q、aux、8 类 CNF |
 
 ### 变量与约束（v14）
 
-- **D**：逻辑 source `s` 到节点 `n` 的精确距离 `d`；对 scope 内所有节点和 `0…d_max` 完整分配。显式约束 `D(source,0)=true`、`D(source,d>0)=false`、`D(non-source,0)=false`；无前驱的状态编码为 false。
-- **A**：仅 TOB 弧的转移选择；对 scope 内每条 TOB 弧和 `1…d_max` 完整分配。
-- **α**：每 pair 一个假设字面量；连通性只由 `α⇒⋁_{d∈delays(s,t)} D_{sink,d}` 门控；精确 delay 不可达时由 SAT 推导对应 D 为 false；UNSAT 时 `failed(α)` 诊断 critical pair。
+- **D**：逻辑 source `s` 到节点 `n` 的精确距离 `d`；只为通过 unit mask 且同时满足当前前向/反向精确可达的 `(n,d)` 创建。`D(source,0)=true`；其余无效槽位不存在。fanout/PNnet 对同一 source 的多 pair 取有效槽位并集。
+- **A**：仅 TOB 弧的转移选择；仅当 `D(u,d-1)` 与 `D(v,d)` 都存在时创建 `A_{s,u→v,d}`。
+- **Q**：仅 Bnet bump source 创建 16 个 `Q(s,u)`，sequential ExactlyOne；每个 VLine-Track A 根据 Track 的精确 unit 满足 `A⇒Q(s,u)`。Tnet 由静态 mask 固定 unit；PNnet 允许候选 unit 并集，因此不创建 Q。
+- **α**：每 pair 一个假设字面量；连通性只由 `α⇒⋁_{d∈delays(s,t)} D_{sink,d}` 门控；若当前允许长度没有有效 sink D，则直接得到 `¬α`，交给现有 UNSAT feedback 扩展。
 - **Y / M_g**：Bump-HLine、HLine-VLine、VLine-Track 三类物理开关与 vline-track 模式（1024 组全局 `M_g`）。
 - **Bus**：各 member 独立最短 → `bus_d_min=max`；SAT 侧 `∀d` 等等长。
 - **PNnet**：整网一个 \(r_n\)；`D_{r_n,r_n,0}=true`；物理 track 仅在 \(d=1\) 可达；路径 hop 统计扣 1 虚拟跳。
@@ -95,7 +96,7 @@ xmake build test_ILP_unit
 
 集成 case：`case_2btb`、`case_2btt`、`case_2fanout`、`case_bus2btb`、`case_bus2btt`（各验证基线、`-s 0 -d 1`、`-s 1 -d 1` 三组）；`test/config/case5`（PNnet）；建议 `--max-rss-mb 8192`。
 
-`-v` 日志含 scope、delay、`feedback round=`、`feedback critical`、`unified SAT encoding stats`（`d_vars`/`a_vars`/`alpha_vars`/7 类 CNF）、路径（PNnet 含选中 track）；`delay_precompute_ms` 是当前轮 scope 构建和最短路预计算时间，`model_build_ms` 是当前轮 CNF 构建并流入 CaDiCaL 的时间，`round_solve_ms` 是当前轮 CaDiCaL 求解时间，`total_solve_ms` 是所有反馈轮累计 CaDiCaL 时间，`run_main total elapsed` 是完整端到端时间。
+`-v` 日志含 scope、delay、`feedback round=`、`feedback critical`、`unified SAT encoding stats`（D/A 的 dense、unit-eligible、active 数量与比例，Q/aux 变量，8 类 CNF）、路径（PNnet 含选中 track）；`delay_precompute_ms` 是当前轮 scope 构建、最短路和稀疏 mask 预计算时间，`model_build_ms` 是当前轮 CNF 构建并流入 CaDiCaL 的时间，`round_solve_ms` 是当前轮 CaDiCaL 求解时间，`total_solve_ms` 是所有反馈轮累计 CaDiCaL 时间，`run_main total elapsed` 是完整端到端时间。
 
 反馈扩边示例：`feedback round=2 critical net=3 demand=1 delays=10->10,11,12 bbox=(2,5,0,6)->(1,6,0,7)`。
 
@@ -103,7 +104,7 @@ xmake build test_ILP_unit
 
 - **反馈环**：每轮全量重建 CNF；`max_feedback_rounds`（默认 64）防止无限循环；只有全片 bbox 状态已经完成一次求解且仍 UNSAT 才终止。
 - **CaDiCal core**：`failed()` 不保证最小；空 core 时回退到 max-delay pair。
-- **规模**：全图 1024 `M_g` 变量；D/A 按 scope×`d_max` 完整分配，大 scope 或较大 delay 会显著增加 CNF 和模型构建时间；**case5** 等大实例可能触达 8GB RSS 上限（`MEMORY_LIMIT`）。
+- **规模**：全图固定 1024 个 `M_g`；D/A 已按当前精确可达与 unit 资格稀疏创建，但大 scope、较大 `d_max` 或 feedback 轮次仍会增加 mask 预计算与 CNF 规模；`MEMORY_LIMIT` 仍用于硬性保护。
 - **首轮扩展**：`-s`/`-d` 无配置上界；过大值会膨胀首轮 CNF/RSS。实现会拒绝 `d_min+d` 的整数溢出；fanout、bus、PNnet 的 padding 语义均有单测覆盖。
 
 ## 工程风格

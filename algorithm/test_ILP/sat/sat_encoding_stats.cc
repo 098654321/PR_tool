@@ -28,6 +28,8 @@ auto category_label(const SatClauseCategory cat) -> const char* {
             return "sync bus equal length";
         case SatClauseCategory::TobSwitchUniqueness:
             return "TOB switch uniqueness (Y)";
+        case SatClauseCategory::SourceUnitSelection:
+            return "source unit selection (Q)";
     }
     return "unknown";
 }
@@ -39,7 +41,8 @@ auto SatEncodingStats::add_clauses(const SatClauseCategory cat, const std::size_
 }
 
 auto SatEncodingStats::known_primary_vars() const -> std::size_t {
-    return d_vars + a_vars + mode_vars + switch_vars + alpha_vars;
+    return d_vars + a_vars + mode_vars + switch_vars + alpha_vars
+        + unit_selector_vars;
 }
 
 auto SatEncodingStats::finalize_variables(const std::size_t total_session_vars) -> void {
@@ -60,9 +63,50 @@ auto log_sat_encoding_stats(
     debug::info("========== unified SAT encoding stats (-v) ==========");
     debug::info("Variables:");
     debug::info_fmt("  D   (source distance)          : {}", stats.d_vars);
+    debug::info_fmt("  D dense slots                  : {}", stats.dense_d_slots);
+    debug::info_fmt(
+        "  D unit-eligible slots          : {}",
+        stats.unit_eligible_d_slots);
+    if (stats.dense_d_slots > 0) {
+        debug::info_fmt(
+            "  D unit / dense ratio           : {:.3f}",
+            static_cast<double>(stats.unit_eligible_d_slots)
+                / static_cast<double>(stats.dense_d_slots));
+        debug::info_fmt(
+            "  D active / dense ratio         : {:.3f}",
+            static_cast<double>(stats.d_vars)
+                / static_cast<double>(stats.dense_d_slots));
+    }
+    if (stats.unit_eligible_d_slots > 0) {
+        debug::info_fmt(
+            "  D active / unit ratio          : {:.3f}",
+            static_cast<double>(stats.d_vars)
+                / static_cast<double>(stats.unit_eligible_d_slots));
+    }
     debug::info_fmt("  A   (TOB arc transition)       : {}", stats.a_vars);
+    debug::info_fmt("  A dense slots                  : {}", stats.dense_a_slots);
+    debug::info_fmt(
+        "  A unit-eligible slots          : {}",
+        stats.unit_eligible_a_slots);
+    if (stats.dense_a_slots > 0) {
+        debug::info_fmt(
+            "  A unit / dense ratio           : {:.3f}",
+            static_cast<double>(stats.unit_eligible_a_slots)
+                / static_cast<double>(stats.dense_a_slots));
+        debug::info_fmt(
+            "  A active / dense ratio         : {:.3f}",
+            static_cast<double>(stats.a_vars)
+                / static_cast<double>(stats.dense_a_slots));
+    }
+    if (stats.unit_eligible_a_slots > 0) {
+        debug::info_fmt(
+            "  A active / unit ratio          : {:.3f}",
+            static_cast<double>(stats.a_vars)
+                / static_cast<double>(stats.unit_eligible_a_slots));
+    }
     debug::info_fmt("  M_g (vline-track mode)         : {}", stats.mode_vars);
     debug::info_fmt("  Y   (physical switch aggregate): {}", stats.switch_vars);
+    debug::info_fmt("  Q   (Bnet source unit)          : {}", stats.unit_selector_vars);
     debug::info_fmt("  alpha (pair assumptions)       : {}", stats.alpha_vars);
     debug::info_fmt("  encoding auxiliary             : {}", stats.encoding_aux_vars);
     debug::info_fmt("  total SAT variables            : {}", total_session_vars);

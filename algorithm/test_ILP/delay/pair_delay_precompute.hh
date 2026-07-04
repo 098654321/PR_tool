@@ -5,6 +5,7 @@
 #include "sat/unified_sat_scope.hh"
 #include "scope/pair_routing_state.hh"
 
+#include <cstdint>
 #include <std/collection.hh>
 
 namespace PR_tool {
@@ -29,6 +30,12 @@ struct SourceDelayDomain {
     int source_node{-1};
     std::size_t scope_index{0};
     int d_max{0};
+    std::uint16_t source_unit_mask{0xffff};
+    std::size_t unit_eligible_node_count{0};
+    std::size_t unit_eligible_tob_arc_count{0};
+    // Flat [node_offset * (d_max + 1) + d] mask. True only when the state lies
+    // on a structural source-to-sink walk at a currently allowed pair delay.
+    std::Vector<std::uint8_t> active_d;
 };
 
 struct DelayPrecomputeResult {

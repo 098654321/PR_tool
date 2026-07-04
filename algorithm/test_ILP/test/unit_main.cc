@@ -968,7 +968,7 @@ auto test_alpha_gates_sink_connectivity() -> void {
     }
 }
 
-auto test_alpha_keeps_unreachable_delay_for_sat() -> void {
+auto test_alpha_skips_unreachable_delay_for_sat() -> void {
     const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
     auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
     auto state = init_routing_problem_state(nets);
@@ -979,14 +979,14 @@ auto test_alpha_keeps_unreachable_delay_for_sat() -> void {
     auto session = CadicalSession {};
     const auto model = build_unified_sat_model(session, graph, nets, scopes, delays);
     require(d_lit_at(model, 0, 2, 2) > 0, "reachable delay must allocate sink D");
-    require(d_lit_at(model, 0, 2, 3) > 0, "every requested delay must allocate sink D");
+    require(d_lit_at(model, 0, 2, 3) <= 0, "unreachable requested delay must not allocate sink D");
     session.assume(model.alpha_vars.front().alpha_lit);
     require(
         session.solve().ok,
         "SAT must choose the reachable delay when another allowed delay is unreachable");
 }
 
-auto test_alpha_unreachable_exact_delay_reports_core() -> void {
+auto test_alpha_empty_exact_delay_reports_core() -> void {
     const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
     auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
     auto state = init_routing_problem_state(nets);
@@ -997,8 +997,8 @@ auto test_alpha_unreachable_exact_delay_reports_core() -> void {
     auto session = CadicalSession {};
     const auto model = build_unified_sat_model(session, graph, nets, scopes, delays);
     require(
-        d_lit_at(model, 0, 2, 3) > 0,
-        "an unreachable exact delay must still allocate a sink D variable");
+        d_lit_at(model, 0, 2, 3) <= 0,
+        "an unreachable exact delay must not allocate a sink D variable");
     const int alpha = model.alpha_vars.front().alpha_lit;
     session.assume(alpha);
     const auto result = session.solve();
@@ -1144,7 +1144,7 @@ auto test_bus_delay_takes_max_member() -> void {
         "bus members must retain their pre-alignment shortest delays");
 }
 
-auto test_v14_d_var_dense_allocation() -> void {
+auto test_v14_d_var_exact_reachability_allocation() -> void {
     const auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}});
     const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
     auto session = CadicalSession {};
@@ -1154,19 +1154,27 @@ auto test_v14_d_var_dense_allocation() -> void {
     const auto& source = model.sources.front();
     require(source.d_max == 3, "chain length 4 must use delay 3 at sink");
     std::size_t allocated = 0;
+    std::size_t omitted = 0;
     for (const auto& row : source.d_var) {
         for (int lit : row) {
-            require(lit > 0, "every scope x delay slot must allocate a D variable");
-            ++allocated;
+            if (lit > 0) {
+                ++allocated;
+            }
+            else {
+                ++omitted;
+            }
         }
     }
     require(
-        allocated == source.d_var.size() * static_cast<std::size_t>(source.d_max + 1),
-        "D allocation must cover the full dense source domain");
-    require(stats.d_vars == allocated, "D statistics must count the dense domain");
+        allocated > 0 && omitted > 0,
+        "exact reachability must omit structurally irrelevant D slots");
+    require(stats.d_vars == allocated, "D statistics must count active variables");
+    require(
+        stats.dense_d_slots == allocated + omitted,
+        "D statistics must retain the pre-pruning dense slot count");
 }
 
-auto test_v14_tob_arc_allocates_dense_a_var() -> void {
+auto test_v14_unreachable_tob_arc_has_no_a_var() -> void {
     auto graph = synthetic_graph(4, {{0, 1}, {2, 3}});
     graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::BumpH;
     graph.arcs[0].physical_switch_id = 7;
@@ -1177,12 +1185,13 @@ auto test_v14_tob_arc_allocates_dense_a_var() -> void {
     const auto model = build_v14_model(session, graph, nets, &stats);
 
     require(
-        a_lit_at(model, 0, 1) > 0,
-        "every scoped TOB arc and delay must allocate an A variable");
-    require(stats.a_vars == 1, "dense TOB arc slots must contribute A variables");
+        a_lit_at(model, 0, 1) == 0,
+        "a TOB arc outside every source-to-sink walk must not allocate A");
+    require(stats.a_vars == 0, "irrelevant TOB arcs must not contribute A variables");
+    require(stats.dense_a_slots == 1, "A statistics must retain the dense slot count");
 }
 
-auto test_v14_dense_d_base_states_are_fixed() -> void {
+auto test_v14_irrelevant_base_states_are_not_allocated() -> void {
     const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
     const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
 
@@ -1190,36 +1199,283 @@ auto test_v14_dense_d_base_states_are_fixed() -> void {
         auto session = CadicalSession {};
         const auto model = build_v14_model(session, graph, nets, nullptr, false);
         const int source_d1 = d_lit_at(model, 0, 0, 1);
-        require(source_d1 > 0, "dense allocation must include source D at d>0");
-        session.add_clause({source_d1});
         require(
-            !session.solve_once().ok,
-            "the logical source must be true only at delay zero");
+            source_d1 <= 0,
+            "source D at d>0 must be omitted from the exact useful domain");
     }
 
     {
         auto session = CadicalSession {};
         const auto model = build_v14_model(session, graph, nets, nullptr, false);
         const int non_source_d0 = d_lit_at(model, 0, 1, 0);
-        require(non_source_d0 > 0, "dense allocation must include non-source D at d=0");
-        session.add_clause({non_source_d0});
         require(
-            !session.solve_once().ok,
-            "non-source nodes must be false at delay zero");
+            non_source_d0 <= 0,
+            "non-source D at delay zero must be omitted");
     }
 }
 
-auto test_v14_dense_d_without_predecessor_is_false() -> void {
+auto test_v14_d_without_predecessor_is_not_allocated() -> void {
     const auto graph = synthetic_graph(4, {{0, 1}, {1, 2}});
     const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
     auto session = CadicalSession {};
     const auto model = build_v14_model(session, graph, nets, nullptr, false);
     const int isolated_d1 = d_lit_at(model, 0, 3, 1);
-    require(isolated_d1 > 0, "dense allocation must include isolated node states");
-    session.add_clause({isolated_d1});
+    require(
+        isolated_d1 <= 0,
+        "a D state without any connectivity predecessor must be omitted");
+}
+
+auto test_v14_reverse_reachability_prunes_dead_branch() -> void {
+    const auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {0, 3}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, nets, nullptr, false);
+    require(d_lit_at(model, 0, 1, 1) > 0, "source-to-sink branch must retain its D state");
+    require(
+        d_lit_at(model, 0, 3, 1) <= 0,
+        "forward-reachable branch that cannot reach the sink must be omitted");
+}
+
+auto test_v14_feedback_delay_rebuilds_active_mask() -> void {
+    const auto graph = synthetic_graph(
+        5,
+        {{0, 1}, {1, 4}, {0, 2}, {2, 3}, {3, 4}});
+    auto nets = std::Vector<RoutingNet> {
+        synthetic_net(0, {0}, {{4, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    apply_state_to_nets(state, nets);
+
+    {
+        const auto scopes = build_all_scopes(graph, nets);
+        const auto delays = compute_pair_delays(graph, nets, scopes, &state);
+        auto session = CadicalSession {};
+        const auto model =
+            build_unified_sat_model(session, graph, nets, scopes, delays);
+        require(
+            d_lit_at(model, 0, 2, 1) <= 0,
+            "a longer branch must be absent before its delay is allowed");
+    }
+
+    state.pairs[0].delays = {2, 3};
+    apply_state_to_nets(state, nets);
+    const auto scopes = build_all_scopes(graph, nets);
+    const auto delays = compute_pair_delays(graph, nets, scopes, &state);
+    auto session = CadicalSession {};
+    const auto model =
+        build_unified_sat_model(session, graph, nets, scopes, delays);
+    require(
+        d_lit_at(model, 0, 2, 1) > 0 && d_lit_at(model, 0, 4, 3) > 0,
+        "feedback delay expansion must rebuild and expose newly valid states");
+}
+
+auto test_v14_fanout_active_mask_unions_sinks() -> void {
+    const auto graph =
+        synthetic_graph(5, {{0, 1}, {1, 2}, {0, 3}, {3, 4}});
+    const auto net = synthetic_net(0, {0}, {{2, {0}}, {4, {0}}});
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, {net}, nullptr, false);
+    require(
+        d_lit_at(model, 0, 1, 1) > 0
+            && d_lit_at(model, 0, 3, 1) > 0,
+        "fanout source domain must union states useful to different sinks");
+}
+
+auto test_v14_source_unit_masks() -> void {
+    {
+        auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+        graph.nodes[0].kind = UnifiedNodeKind::Track;
+        graph.nodes[0].unit = 3;
+        const auto net = synthetic_net(0, {0}, {{2, {0}}});
+        const auto scopes = build_all_scopes(graph, {net});
+        const auto delays = compute_pair_delays(graph, {net}, scopes);
+        require(
+            delays.sources[0].source_unit_mask == (std::uint16_t {1} << 3),
+            "track source must expose exactly its physical COBUnit");
+    }
+
+    {
+        auto graph = synthetic_graph(4, {{0, 2}, {1, 2}, {2, 3}});
+        graph.nodes[0].kind = UnifiedNodeKind::Track;
+        graph.nodes[0].unit = 2;
+        graph.nodes[1].kind = UnifiedNodeKind::Track;
+        graph.nodes[1].unit = 10;
+        auto pnnet = synthetic_net(1, {0, 1}, {{3, {0, 1}}});
+        pnnet.kind = RoutingNetKind::PNnet;
+        auto nets = std::Vector<RoutingNet> {pnnet};
+        augment_graph_for_pnnet(graph, nets);
+        const auto scopes = build_all_scopes(graph, nets);
+        const auto delays = compute_pair_delays(graph, nets, scopes);
+        require(
+            delays.sources[0].source_unit_mask
+                == ((std::uint16_t {1} << 2) | (std::uint16_t {1} << 10)),
+            "PNnet virtual source must expose the union of candidate track units");
+        auto session = CadicalSession {};
+        const auto model =
+            build_unified_sat_model(session, graph, nets, scopes, delays);
+        require(
+            d_lit_at(model, 0, 0, 1) > 0
+                && d_lit_at(model, 0, 1, 1) > 0,
+            "PNnet active mask must retain every useful candidate source track");
+    }
+
+    {
+        const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+        auto net = synthetic_net(2, {0}, {{2, {0}}});
+        net.kind = RoutingNetKind::Bnet;
+        const auto scopes = build_all_scopes(graph, {net});
+        const auto delays = compute_pair_delays(graph, {net}, scopes);
+        require(
+            delays.sources[0].source_unit_mask == std::uint16_t {0xffff},
+            "Bnet bump source must keep all 16 units statically eligible");
+    }
+}
+
+auto test_v14_unit_mask_prunes_track_and_vline_states() -> void {
+    {
+        auto graph = synthetic_graph(4, {{0, 1}, {1, 3}, {0, 2}, {2, 3}});
+        for (const int node : {0, 1, 2}) {
+            graph.nodes[static_cast<std::size_t>(node)].kind = UnifiedNodeKind::Track;
+        }
+        graph.nodes[0].unit = 3;
+        graph.nodes[1].unit = 3;
+        graph.nodes[2].unit = 4;
+        auto session = CadicalSession {};
+        SatEncodingStats stats {};
+        const auto model = build_v14_model(
+            session,
+            graph,
+            {synthetic_net(0, {0}, {{3, {0}}})},
+            &stats,
+            false);
+        require(d_lit_at(model, 0, 1, 1) > 0, "same-unit track state must remain active");
+        require(d_lit_at(model, 0, 2, 1) <= 0, "different-unit track state must be omitted");
+        require(
+            stats.unit_eligible_d_slots < stats.dense_d_slots,
+            "unit eligibility statistics must count pruned track slots");
+    }
+
+    {
+        auto graph = synthetic_graph(4, {{0, 1}, {1, 3}, {0, 2}, {2, 3}});
+        graph.nodes[0].kind = UnifiedNodeKind::Track;
+        graph.nodes[0].unit = 3;
+        graph.nodes[1].kind = UnifiedNodeKind::VLine;
+        graph.nodes[1].line_index = 3;
+        graph.nodes[2].kind = UnifiedNodeKind::VLine;
+        graph.nodes[2].line_index = 4;
+        for (const int arc_id : {0, 2}) {
+            graph.arcs[static_cast<std::size_t>(arc_id)].physical_switch_kind =
+                PhysicalSwitchKind::VLineTrack;
+            graph.arcs[static_cast<std::size_t>(arc_id)].physical_switch_id = 100 + arc_id;
+            graph.arcs[static_cast<std::size_t>(arc_id)].mode_group_id = arc_id / 2;
+            graph.arcs[static_cast<std::size_t>(arc_id)].is_vline_track_straight = true;
+        }
+        auto session = CadicalSession {};
+        const auto model = build_v14_model(
+            session,
+            graph,
+            {synthetic_net(0, {0}, {{3, {0}}})},
+            nullptr,
+            false);
+        require(d_lit_at(model, 0, 1, 1) > 0, "matching local-k VLine must remain active");
+        require(d_lit_at(model, 0, 2, 1) <= 0, "mismatched local-k VLine must be omitted");
+        require(a_lit_at(model, 0, 1) > 0, "eligible VLine-track A must remain allocated");
+        require(a_lit_at(model, 2, 1) == 0, "ineligible VLine-track A must be omitted");
+    }
+}
+
+auto test_v14_bnet_unit_selectors_only() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+
+    {
+        auto bnet = synthetic_net(0, {0}, {{2, {0}}});
+        bnet.kind = RoutingNetKind::Bnet;
+        auto session = CadicalSession {};
+        SatEncodingStats stats {};
+        const auto model = build_v14_model(session, graph, {bnet}, &stats, false);
+        require(
+            model.sources[0].unit_selector_var_by_unit.size() == 16,
+            "Bnet source must allocate one Q selector for each COBUnit");
+        require(
+            stats.unit_selector_vars == 16,
+            "Q statistics must count all Bnet unit selectors");
+        require(
+            stats.clause_counts[static_cast<std::size_t>(
+                SatClauseCategory::SourceUnitSelection)] > 0,
+            "Bnet ExactlyOne and A-to-Q clauses need a separate statistics category");
+    }
+
+    {
+        auto session = CadicalSession {};
+        const auto model = build_v14_model(
+            session,
+            graph,
+            {synthetic_net(1, {0}, {{2, {0}}})},
+            nullptr,
+            false);
+        require(
+            model.sources[0].unit_selector_var_by_unit.empty(),
+            "Tnet source must not allocate dynamic unit selectors");
+    }
+
+    {
+        auto pn_graph = synthetic_graph(3, {{0, 2}, {1, 2}});
+        pn_graph.nodes[0].kind = UnifiedNodeKind::Track;
+        pn_graph.nodes[0].unit = 0;
+        pn_graph.nodes[1].kind = UnifiedNodeKind::Track;
+        pn_graph.nodes[1].unit = 1;
+        auto pnnet = synthetic_net(2, {0, 1}, {{2, {0, 1}}});
+        pnnet.kind = RoutingNetKind::PNnet;
+        auto session = CadicalSession {};
+        const auto model = build_v14_model(session, pn_graph, {pnnet}, nullptr, false);
+        require(
+            model.sources[0].unit_selector_var_by_unit.empty(),
+            "PNnet virtual source must not allocate dynamic unit selectors");
+    }
+}
+
+auto bnet_two_unit_graph() -> UnifiedGraph {
+    auto graph = synthetic_graph(
+        6,
+        {{0, 1}, {1, 2}, {2, 5}, {0, 3}, {3, 4}, {4, 5}});
+    graph.nodes[1].kind = UnifiedNodeKind::VLine;
+    graph.nodes[1].line_index = 0;
+    graph.nodes[2].kind = UnifiedNodeKind::Track;
+    graph.nodes[2].unit = 0;
+    graph.nodes[3].kind = UnifiedNodeKind::VLine;
+    graph.nodes[3].line_index = 1;
+    graph.nodes[4].kind = UnifiedNodeKind::Track;
+    graph.nodes[4].unit = 1;
+    for (const int arc_id : {1, 4}) {
+        auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
+        arc.physical_switch_kind = PhysicalSwitchKind::VLineTrack;
+        arc.physical_switch_id = 200 + arc_id;
+        arc.mode_group_id = arc_id == 1 ? 0 : 1;
+        arc.is_vline_track_straight = true;
+    }
+    return graph;
+}
+
+auto test_v14_bnet_unit_selector_rejects_two_units() -> void {
+    const auto graph = bnet_two_unit_graph();
+    auto bnet = synthetic_net(0, {0}, {{5, {0}}});
+    bnet.kind = RoutingNetKind::Bnet;
+
+    for (const int selected_arc : {1, 4}) {
+        auto session = CadicalSession {};
+        const auto model = build_v14_model(session, graph, {bnet});
+        session.add_clause({a_lit_at(model, selected_arc, 2)});
+        require(
+            session.solve_once().ok,
+            "a Bnet must be able to select either individually reachable unit");
+    }
+
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, {bnet});
+    session.add_clause({a_lit_at(model, 1, 2)});
+    session.add_clause({a_lit_at(model, 4, 2)});
     require(
         !session.solve_once().ok,
-        "a D state without any connectivity predecessor must be false");
+        "forcing one Bnet source through two different track units must be UNSAT");
 }
 
 auto test_v14_pure_track_chain_sat() -> void {
@@ -1274,7 +1530,7 @@ auto test_v14_bus_forall_d_equiv() -> void {
         "bus forall-d equal length must encode at least one sink equiv layer");
 }
 
-auto test_v14_bus_sync_covers_dense_delay_domain() -> void {
+auto test_v14_bus_sync_covers_reachable_delay_domain() -> void {
     const auto graph = synthetic_graph(
         10,
         {{0, 1}, {1, 2}, {0, 4}, {4, 5}, {5, 2}, {6, 7}, {7, 8}, {8, 9}});
@@ -1287,8 +1543,8 @@ auto test_v14_bus_sync_covers_dense_delay_domain() -> void {
     const auto sync_clauses =
         stats.clause_counts[static_cast<std::size_t>(SatClauseCategory::SyncBusEqualLength)];
     require(
-        sync_clauses == 8,
-        "bus encoding must equate both sink D variables at every dense delay layer");
+        sync_clauses == 2,
+        "bus encoding must equate the shared reachable sink delay");
 }
 
 auto test_cli_max_rss_option() -> void {
@@ -1686,7 +1942,7 @@ auto test_y_aggregation_and_partial_matching() -> void {
     }
     auto session = CadicalSession {};
     const auto model = build_v14_model(
-        session, graph, {synthetic_net(0, {3}, {{4, {0}}})});
+        session, graph, {synthetic_net(0, {3}, {{1, {0}}, {2, {0}}})});
     require(
         model.switch_var_by_id.size() == 2,
         "reverse arcs and all pair uses must aggregate to one Y per physical switch");
@@ -1716,7 +1972,7 @@ auto matching_fixture(
     }
     return {
         std::move(graph),
-        synthetic_net(0, {3}, {{4, {0}}, {5, {0}}})};
+        synthetic_net(0, {3}, {{1, {0}}, {2, {0}}})};
 }
 
 auto matching_side_is_unsat(
@@ -2168,24 +2424,31 @@ auto main() -> int {
         test_cadical_assume_failed();
         test_alpha_implies_sink_d();
         test_alpha_gates_sink_connectivity();
-        test_alpha_keeps_unreachable_delay_for_sat();
-        test_alpha_unreachable_exact_delay_reports_core();
+        test_alpha_skips_unreachable_delay_for_sat();
+        test_alpha_empty_exact_delay_reports_core();
         test_feedback_expands_delays_on_unsat();
         test_bus_member_delay_bbox_sync();
         test_feedback_rebuilds_after_reaching_full_bbox();
         test_feedback_exhausted_state_is_unchanged();
         test_feedback_global_expand_skips_full_net_and_syncs_others();
         test_bus_delay_takes_max_member();
-        test_v14_d_var_dense_allocation();
-        test_v14_tob_arc_allocates_dense_a_var();
-        test_v14_dense_d_base_states_are_fixed();
-        test_v14_dense_d_without_predecessor_is_false();
+        test_v14_d_var_exact_reachability_allocation();
+        test_v14_unreachable_tob_arc_has_no_a_var();
+        test_v14_irrelevant_base_states_are_not_allocated();
+        test_v14_d_without_predecessor_is_not_allocated();
+        test_v14_reverse_reachability_prunes_dead_branch();
+        test_v14_feedback_delay_rebuilds_active_mask();
+        test_v14_fanout_active_mask_unions_sinks();
+        test_v14_source_unit_masks();
+        test_v14_unit_mask_prunes_track_and_vline_states();
+        test_v14_bnet_unit_selectors_only();
+        test_v14_bnet_unit_selector_rejects_two_units();
         test_v14_pure_track_chain_sat();
         test_v14_pure_track_fork_sat();
         test_v14_pure_track_unreachable_unsat();
         test_v14_bus_equal_delay_equiv();
         test_v14_bus_forall_d_equiv();
-        test_v14_bus_sync_covers_dense_delay_domain();
+        test_v14_bus_sync_covers_reachable_delay_domain();
         test_cli_max_rss_option();
         test_cli_initial_padding_options();
         test_initial_search_padding_scope();
