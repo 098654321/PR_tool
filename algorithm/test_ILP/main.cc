@@ -52,6 +52,8 @@ auto run_main(int argc, char** argv) -> int {
         return 1;
     }
 
+    debug::initial_log("./debug.log");
+
     auto [interposer, basedie] = PR_tool::parse::read_config(cli.config_path, 0, false);
     algo::build_nets(basedie.get(), interposer.get());
 
@@ -89,11 +91,12 @@ auto run_main(int argc, char** argv) -> int {
         return 1;
     }
     debug::info_fmt(
-        "unified SAT routing succeeded: paths={} vars={} clauses={} total_solve_ms={}",
+        "unified SAT routing succeeded: paths={} vars={} clauses={} total_solve_ms={} total_wirelength={}",
         result.paths.size(),
         result.num_vars,
         result.num_clauses,
-        result.solve_ms);
+        result.solve_ms,
+        result.total_wirelength);
     return 0;
 }
 

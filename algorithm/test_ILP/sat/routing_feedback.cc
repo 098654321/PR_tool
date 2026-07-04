@@ -190,11 +190,7 @@ auto solve_with_feedback(
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     model_build_end - model_build_begin)
                     .count();
-            debug::info_fmt(
-                "unified SAT model built: vars={} clauses={} model_build_ms={}",
-                session.num_vars(),
-                session.num_clauses(),
-                model_build_ms);
+            debug::info_fmt("unified SAT model built: model_build_ms={}", model_build_ms);
             if (stats_ptr != nullptr) {
                 encoding_stats.finalize_variables(session.num_vars());
                 log_sat_encoding_stats(
@@ -239,14 +235,16 @@ auto solve_with_feedback(
                 out.num_clauses = session.num_clauses();
                 out.solve_ms = total_solve_ms;
                 out.feedback_rounds = round;
+                out.total_wirelength = total_wirelength(graph, out);
                 log_routing_paths(graph, nets, out);
                 debug::info_fmt(
-                    "unified SAT ok: paths={} vars={} clauses={} round_solve_ms={} total_solve_ms={} round={}",
+                    "unified SAT ok: paths={} vars={} clauses={} round_solve_ms={} total_solve_ms={} total_wirelength={} round={}",
                     out.paths.size(),
                     out.num_vars,
                     out.num_clauses,
                     solve_ms,
                     out.solve_ms,
+                    out.total_wirelength,
                     round);
                 return out;
             }

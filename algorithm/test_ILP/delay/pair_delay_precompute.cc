@@ -447,12 +447,10 @@ auto log_delay_precompute(
             [&](const RoutingNet& net) { return net.net_id == pair.net_id; });
         const auto net_name = net_it == nets.end() ? std::String {"?"} : net_it->name;
         debug::info_fmt(
-            "delay net=\"{}\" id={} demand={} src={} snk={} delays={}",
+            "delay net=\"{}\" id={} demand={} delays={}",
             net_name,
             pair.net_id,
             pair.demand_id,
-            pair.source_node,
-            pair.sink_node,
             [&] {
                 auto text = std::String {};
                 for (std::size_t i = 0; i < pair.delays.size(); ++i) {

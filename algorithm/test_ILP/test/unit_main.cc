@@ -12,8 +12,10 @@
 #include "scope/build_routing_nets.hh"
 #include "scope/pair_routing_state.hh"
 #include "scope/scope_bbox.hh"
+#include "sat/solve_unified_sat.hh"
 #include "test_ilp_cli.hh"
 
+#include <algo/netbuilder/netbuilder.hh>
 #include <circuit/net/types/bbnet.hh>
 #include <circuit/net/types/btnet.hh>
 #include <circuit/net/types/syncnet.hh>
@@ -22,8 +24,10 @@
 #include <hardware/bump/bump.hh>
 #include <hardware/tob/tob.hh>
 #include <hardware/track/track.hh>
+#include <parse/reader/module.hh>
 
 #include <algorithm>
+#include <fstream>
 #include <iostream>
 #include <bit>
 #include <limits>
@@ -1783,6 +1787,9 @@ auto test_numeric_fixed_path_and_extraction() -> void {
     require(
         result.paths[0].node_path == std::Vector<int>({0, 1, 2}),
         "extraction must follow the unique D distance chain");
+    require(
+        total_wirelength(graph, result) == 3,
+        "extracted path wirelength must count bump hops only in synthetic graph");
 
     const auto disconnected = synthetic_graph(3, {});
     auto disconnected_session = CadicalSession {};
@@ -2275,6 +2282,48 @@ auto test_format_bbox_corners() -> void {
         "bbox corners must list all four rectangle corners");
 }
 
+auto test_path_wirelength_counts_bump_and_track_only() -> void {
+    auto graph = UnifiedGraph {};
+    graph.nodes.resize(5);
+    graph.in_arc_ids.resize(5);
+    graph.out_arc_ids.resize(5);
+    graph.nodes[0].kind = UnifiedNodeKind::Track;
+    graph.nodes[1].kind = UnifiedNodeKind::HLine;
+    graph.nodes[2].kind = UnifiedNodeKind::Bump;
+    graph.nodes[3].kind = UnifiedNodeKind::VLine;
+    graph.nodes[4].kind = UnifiedNodeKind::Track;
+
+    require(
+        path_wirelength(graph, std::Vector<int> {0, 1, 2, 3, 4}) == 3,
+        "wirelength must count only bump and track nodes");
+
+    auto result = SatRoutingResult {};
+    result.paths.push_back(SourceSinkPairPath {0, 0, 0, -1, std::Vector<int> {0, 1, 2}});
+    result.paths.push_back(SourceSinkPairPath {1, 0, 0, -1, std::Vector<int> {4}});
+    require(
+        total_wirelength(graph, result) == 3,
+        "total wirelength must sum deduplicated bump and track resources per net");
+
+    result.paths.clear();
+    result.paths.push_back(SourceSinkPairPath {0, 0, 0, -1, std::Vector<int> {0, 1, 2}});
+    result.paths.push_back(SourceSinkPairPath {0, 0, 1, -1, std::Vector<int> {0, 4}});
+    require(
+        path_wirelength(graph, result.paths[0].node_path) == 2,
+        "per-pair wirelength must still count every hop on one path");
+    require(
+        path_wirelength(graph, result.paths[1].node_path) == 2,
+        "per-pair wirelength must count the second fanout path independently");
+    const auto fanout_paths = std::Vector<const SourceSinkPairPath*> {
+        &result.paths[0],
+        &result.paths[1]};
+    require(
+        net_wirelength(graph, fanout_paths) == 3,
+        "net wirelength must deduplicate shared track nodes across fanout paths");
+    require(
+        total_wirelength(graph, result) == 3,
+        "total wirelength must use net-level deduplication");
+}
+
 auto test_format_path_hops_and_graph_node_ref() -> void {
     auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
     const auto hops = format_path_hops(graph, std::Vector<int> {0, 1, 2});
@@ -2398,6 +2447,52 @@ auto test_log_routing_paths_two_pin() -> void {
     log_routing_paths(graph, nets, result);
 }
 
+auto read_wirelength_golden(const std::string& golden_path) -> std::size_t {
+    std::ifstream input {golden_path};
+    if (!input.is_open()) {
+        throw std::runtime_error("failed to open golden wirelength file: " + golden_path);
+    }
+    std::size_t expected = 0;
+    input >> expected;
+    if (!input || expected == 0) {
+        throw std::runtime_error("invalid golden wirelength in: " + golden_path);
+    }
+    return expected;
+}
+
+auto solve_testlength_case(const std::string& case_dir) -> SatRoutingResult {
+    auto [interposer, basedie] = parse::read_config(case_dir, 0, false);
+    algo::build_nets(basedie.get(), interposer.get());
+    UnifiedSatSolveOptions options {};
+    options.verbose_level = 0;
+    return solve_unified_sat(interposer.get(), *basedie.get(), options);
+}
+
+auto test_wirelength_matches_testlength_golden() -> void {
+    constexpr auto kTestlengthRoot = "test/module_test/test_function/testlength";
+    const auto strict_cases = std::Vector<const char*> {
+        "testiosimple",
+        "testchipletsimple",
+        "testchipletbus",
+        "testiobus",
+    };
+    for (const auto* case_name : strict_cases) {
+        const std::string case_dir = std::string {kTestlengthRoot} + "/" + case_name;
+        const auto expected = read_wirelength_golden(case_dir + "/golden.txt");
+        const auto result = solve_testlength_case(case_dir);
+        require(result.ok, std::string {case_name} + " must solve with unified SAT");
+        require(
+            result.total_wirelength == expected,
+            std::string {case_name} + " wirelength mismatch: got "
+                + std::to_string(result.total_wirelength) + " expected "
+                + std::to_string(expected));
+    }
+
+    const std::string pn_dir = std::string {kTestlengthRoot} + "/testpn";
+    const auto pn_result = solve_testlength_case(pn_dir);
+    require(pn_result.ok, "testpn must solve with unified SAT");
+}
+
 } // namespace
 
 auto main() -> int {
@@ -2480,8 +2575,10 @@ auto main() -> int {
         test_format_path_node_track_bump_hline_vline();
         test_infer_net_display_kind();
         test_format_bbox_corners();
+        test_path_wirelength_counts_bump_and_track_only();
         test_format_path_hops_and_graph_node_ref();
         test_log_routing_paths_two_pin();
+        test_wirelength_matches_testlength_golden();
         std::cout << "test_ILP_unit: all tests passed\n";
         return 0;
     }

@@ -80,6 +80,8 @@ struct SatRoutingResult {
     // Sum of CaDiCal solve time across all feedback rounds.
     long long solve_ms{0};
     std::size_t feedback_rounds{0};
+    // Sum of per-net deduplicated bump+track resource counts (post-solve stat only).
+    std::size_t total_wirelength{0};
     std::Vector<SourceSinkPairPath> paths;
     std::map<std::size_t, bool> vline_mode_straight_by_group;
     std::Vector<int> used_tob_switch_ids;

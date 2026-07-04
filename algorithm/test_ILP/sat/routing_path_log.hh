@@ -31,6 +31,15 @@ auto format_bbox_corners(const IlpBoundingBox& box) -> std::String;
 
 auto format_path_hops(const UnifiedGraph& graph, const std::Vector<int>& node_path) -> std::String;
 
+auto path_wirelength(const UnifiedGraph& graph, const std::Vector<int>& node_path) -> std::size_t;
+
+auto net_wirelength(
+    const UnifiedGraph& graph,
+    const std::Vector<const SourceSinkPairPath*>& paths
+) -> std::size_t;
+
+auto total_wirelength(const UnifiedGraph& graph, const SatRoutingResult& result) -> std::size_t;
+
 auto log_scope_bboxes(const std::Vector<RoutingNet>& nets, int verbose_level) -> void;
 
 auto log_routing_paths(

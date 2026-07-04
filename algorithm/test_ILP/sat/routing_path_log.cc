@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <debug/debug.hh>
 #include <format>
+#include <set>
 
 namespace PR_tool {
 
@@ -77,6 +78,14 @@ auto paths_for_net(
 }
 
 } // namespace
+
+auto is_wirelength_resource_node(const UnifiedGraph& graph, int node_id) -> bool {
+    if (node_id < 0 || static_cast<std::size_t>(node_id) >= graph.nodes.size()) {
+        return false;
+    }
+    const auto kind = graph.nodes[static_cast<std::size_t>(node_id)].kind;
+    return kind == UnifiedNodeKind::Track || kind == UnifiedNodeKind::Bump;
+}
 
 auto format_track_coord(const hardware::TrackCoord& coord) -> std::String {
     const char dir =
@@ -192,6 +201,52 @@ auto format_path_hops(const UnifiedGraph& graph, const std::Vector<int>& node_pa
     return out;
 }
 
+auto path_wirelength(const UnifiedGraph& graph, const std::Vector<int>& node_path) -> std::size_t {
+    std::size_t length = 0;
+    for (const int node_id : node_path) {
+        if (is_wirelength_resource_node(graph, node_id)) {
+            ++length;
+        }
+    }
+    return length;
+}
+
+auto net_wirelength(
+    const UnifiedGraph& graph,
+    const std::Vector<const SourceSinkPairPath*>& paths
+) -> std::size_t {
+    auto unique_nodes = std::set<int> {};
+    for (const auto* path : paths) {
+        if (path == nullptr) {
+            continue;
+        }
+        for (const int node_id : path->node_path) {
+            if (is_wirelength_resource_node(graph, node_id)) {
+                unique_nodes.insert(node_id);
+            }
+        }
+    }
+    return unique_nodes.size();
+}
+
+auto total_wirelength(const UnifiedGraph& graph, const SatRoutingResult& result) -> std::size_t {
+    auto net_ids = std::set<std::size_t> {};
+    for (const auto& path : result.paths) {
+        net_ids.insert(path.net_id);
+    }
+    std::size_t sum = 0;
+    for (const std::size_t net_id : net_ids) {
+        auto net_paths = std::Vector<const SourceSinkPairPath*> {};
+        for (const auto& path : result.paths) {
+            if (path.net_id == net_id) {
+                net_paths.push_back(&path);
+            }
+        }
+        sum += net_wirelength(graph, net_paths);
+    }
+    return sum;
+}
+
 auto log_scope_bboxes(const std::Vector<RoutingNet>& nets, int verbose_level) -> void {
     if (verbose_level < 1) {
         return;
@@ -250,6 +305,7 @@ auto log_routing_paths(
                 format_graph_node_ref(source_ref_for_demand(net, demand)),
                 format_graph_node_ref(demand.sink));
             debug::info_fmt("  path: {}", format_path_hops(graph, path->node_path));
+            debug::info_fmt("  net_wirelength={}", net_wirelength(graph, net_paths));
             continue;
         }
 
@@ -292,6 +348,7 @@ auto log_routing_paths(
             }
             debug::info_fmt("    path: {}", format_path_hops(graph, path->node_path));
         }
+        debug::info_fmt("  net_wirelength={}", net_wirelength(graph, net_paths));
     }
 }
 

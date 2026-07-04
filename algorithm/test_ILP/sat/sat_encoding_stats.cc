@@ -77,12 +77,6 @@ auto log_sat_encoding_stats(
             static_cast<double>(stats.d_vars)
                 / static_cast<double>(stats.dense_d_slots));
     }
-    if (stats.unit_eligible_d_slots > 0) {
-        debug::info_fmt(
-            "  D active / unit ratio          : {:.3f}",
-            static_cast<double>(stats.d_vars)
-                / static_cast<double>(stats.unit_eligible_d_slots));
-    }
     debug::info_fmt("  A   (TOB arc transition)       : {}", stats.a_vars);
     debug::info_fmt("  A dense slots                  : {}", stats.dense_a_slots);
     debug::info_fmt(
@@ -97,12 +91,6 @@ auto log_sat_encoding_stats(
             "  A active / dense ratio         : {:.3f}",
             static_cast<double>(stats.a_vars)
                 / static_cast<double>(stats.dense_a_slots));
-    }
-    if (stats.unit_eligible_a_slots > 0) {
-        debug::info_fmt(
-            "  A active / unit ratio          : {:.3f}",
-            static_cast<double>(stats.a_vars)
-                / static_cast<double>(stats.unit_eligible_a_slots));
     }
     debug::info_fmt("  M_g (vline-track mode)         : {}", stats.mode_vars);
     debug::info_fmt("  Y   (physical switch aggregate): {}", stats.switch_vars);

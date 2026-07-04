@@ -94,9 +94,9 @@ xmake build test_ILP_unit
 
 **首轮扩展**（可选，与反馈扩边独立）：`-s S` 外扩 pair bbox；`-d D` 初始 delay 集合 `{d_min,…,d_min+D}`。`-v` 时 `main.cc` 打印 `initial search padding: scope_pad=… delay_pad=…`；初始 scope 与 `scope after initial search padding` 分别展示扩展前后范围，round 0 的 `delay net=… delays=[…]` 展示最终 pair delay。
 
-集成 case：`case_2btb`、`case_2btt`、`case_2fanout`、`case_bus2btb`、`case_bus2btt`（各验证基线、`-s 0 -d 1`、`-s 1 -d 1` 三组）；`test/config/case5`（PNnet）；建议 `--max-rss-mb 8192`。
+集成 case：`case_2btb`、`case_2btt`、`case_2fanout`、`case_bus2btb`、`case_bus2btt`（各验证基线、`-s 0 -d 1`、`-s 1 -d 1` 三组）；`test/config/case5`（PNnet）；`test/module_test/test_function/testlength` 下 `testiosimple`/`testchipletsimple`/`testchipletbus`/`testiobus` 的 `total_wirelength` 须与各自 `golden.txt` 一致（`testpn` 仅要求 SAT 成功，线长允许与 golden 不同）；建议 `--max-rss-mb 8192`。
 
-`-v` 日志含 scope、delay、`feedback round=`、`feedback critical`、`unified SAT encoding stats`（D/A 的 dense、unit-eligible、active 数量与比例，Q/aux 变量，8 类 CNF）、路径（PNnet 含选中 track）；`delay_precompute_ms` 是当前轮 scope 构建、最短路和稀疏 mask 预计算时间，`model_build_ms` 是当前轮 CNF 构建并流入 CaDiCaL 的时间，`round_solve_ms` 是当前轮 CaDiCaL 求解时间，`total_solve_ms` 是所有反馈轮累计 CaDiCaL 时间，`run_main total elapsed` 是完整端到端时间。
+`-v` 日志含 scope、delay、`feedback round=`、`feedback critical`、`unified SAT encoding stats`（D/A 的 dense、unit-eligible、active 数量与比例，Q/aux 变量，8 类 CNF）、路径（PNnet 含选中 track；每个 net 末行 `net_wirelength=` 为 net 内 bump+track 去重计数）；成功时 `unified SAT ok` / `unified SAT routing succeeded` 含 `total_wirelength=`（各 net 的 `net_wirelength` 之和，net 内共享 track/bump 只计一次）；`delay_precompute_ms` 是当前轮 scope 构建、最短路和稀疏 mask 预计算时间，`model_build_ms` 是当前轮 CNF 构建并流入 CaDiCaL 的时间，`round_solve_ms` 是当前轮 CaDiCaL 求解时间，`total_solve_ms` 是所有反馈轮累计 CaDiCaL 时间，`run_main total elapsed` 是完整端到端时间。
 
 反馈扩边示例：`feedback round=2 critical net=3 demand=1 delays=10->10,11,12 bbox=(2,5,0,6)->(1,6,0,7)`。
 
