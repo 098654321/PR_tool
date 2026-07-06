@@ -184,6 +184,7 @@ target("test_ILP")
         "algorithm/test_ILP/sat/encode_bus_sync.cc",
         "algorithm/test_ILP/sat/solve_unified_sat.cc",
         "algorithm/test_ILP/sat/routing_feedback.cc",
+        "algorithm/test_ILP/sat/routing_solution_validate.cc",
         "algorithm/test_ILP/sat/sat_solution_extract.cc",
         "algorithm/test_ILP/sat/routing_path_log.cc",
         "algorithm/test_ILP/sat_allocation/cadical_solver.cc"
@@ -227,6 +228,7 @@ target("test_ILP_unit")
         "algorithm/test_ILP/sat/encode_bus_sync.cc",
         "algorithm/test_ILP/sat/solve_unified_sat.cc",
         "algorithm/test_ILP/sat/routing_feedback.cc",
+        "algorithm/test_ILP/sat/routing_solution_validate.cc",
         "algorithm/test_ILP/sat/sat_solution_extract.cc",
         "algorithm/test_ILP/sat/routing_path_log.cc",
         "algorithm/test_ILP/sat_allocation/cadical_solver.cc"

@@ -3,6 +3,7 @@
 #include "delay/pair_delay_precompute.hh"
 #include "graph/unified_routing_graph.hh"
 #include "sat/routing_path_log.hh"
+#include "sat/routing_solution_validate.hh"
 #include "sat/sat_encoding_stats.hh"
 #include "sat/sat_solution_extract.hh"
 #include "sat/unified_sat_encoder.hh"
@@ -14,7 +15,6 @@
 #include <algorithm>
 #include <chrono>
 #include <debug/debug.hh>
-#include <format>
 #include <set>
 
 namespace PR_tool {
@@ -237,6 +237,8 @@ auto solve_with_feedback(
                 out.feedback_rounds = round;
                 out.total_wirelength = total_wirelength(graph, out);
                 log_routing_paths(graph, nets, out);
+                const auto validation = validate_routing_solution(graph, nets, model, session, out);
+                log_validation_report(validation, options.verbose_level);
                 debug::info_fmt(
                     "unified SAT ok: paths={} vars={} clauses={} round_solve_ms={} total_solve_ms={} total_wirelength={} round={}",
                     out.paths.size(),

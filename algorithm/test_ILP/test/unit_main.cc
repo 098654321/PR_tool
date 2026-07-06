@@ -3,6 +3,7 @@
 #include "graph/unified_routing_graph.hh"
 #include "sat/routing_path_log.hh"
 #include "sat/routing_feedback.hh"
+#include "sat/routing_solution_validate.hh"
 #include "sat/sat_constraint_kits.hh"
 #include "sat/sat_encoding_stats.hh"
 #include "sat/sat_solution_extract.hh"
@@ -2447,6 +2448,59 @@ auto test_log_routing_paths_two_pin() -> void {
     log_routing_paths(graph, nets, result);
 }
 
+auto test_validate_accepts_valid_two_pin() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, nets);
+    const auto solved = session.solve_once();
+    require(solved.ok, "validator SAT fixture must solve");
+    const auto result = extract_sat_solution(graph, nets, model, session, solved);
+    require(result.ok, "validator fixture extraction must succeed");
+
+    const auto validation = validate_routing_solution(graph, nets, model, session, result);
+    require(validation.pass, "valid two-pin route must pass validation");
+    require(validation.violations_count == 0, "valid route must not report violations");
+}
+
+auto test_validate_detects_missing_arc() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, nets);
+    const auto solved = session.solve_once();
+    require(solved.ok, "missing-arc fixture must solve before tampering");
+    auto result = extract_sat_solution(graph, nets, model, session, solved);
+    require(result.ok && result.paths.size() == 1, "missing-arc fixture must extract one path");
+    result.paths[0].node_path = {0, 2};
+
+    const auto validation = validate_routing_solution(graph, nets, model, session, result);
+    require(!validation.pass, "missing arc must fail validation");
+    require(
+        validation.category_counts.contains(ViolationKind::MissingArc)
+            && validation.category_counts.at(ViolationKind::MissingArc) > 0,
+        "missing arc must be reported under MissingArc");
+}
+
+auto test_validate_detects_endpoint_mismatch() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, nets);
+    const auto solved = session.solve_once();
+    require(solved.ok, "endpoint-mismatch fixture must solve before tampering");
+    auto result = extract_sat_solution(graph, nets, model, session, solved);
+    require(result.ok && result.paths.size() == 1, "endpoint-mismatch fixture must extract one path");
+    result.paths[0].node_path = {1, 2};
+
+    const auto validation = validate_routing_solution(graph, nets, model, session, result);
+    require(!validation.pass, "endpoint mismatch must fail validation");
+    require(
+        validation.category_counts.contains(ViolationKind::EndpointMismatch)
+            && validation.category_counts.at(ViolationKind::EndpointMismatch) > 0,
+        "endpoint mismatch must be reported under EndpointMismatch");
+}
+
 auto read_wirelength_golden(const std::string& golden_path) -> std::size_t {
     std::ifstream input {golden_path};
     if (!input.is_open()) {
@@ -2578,6 +2632,9 @@ auto main() -> int {
         test_path_wirelength_counts_bump_and_track_only();
         test_format_path_hops_and_graph_node_ref();
         test_log_routing_paths_two_pin();
+        test_validate_accepts_valid_two_pin();
+        test_validate_detects_missing_arc();
+        test_validate_detects_endpoint_mismatch();
         test_wirelength_matches_testlength_golden();
         std::cout << "test_ILP_unit: all tests passed\n";
         return 0;

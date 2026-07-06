@@ -61,6 +61,7 @@ algorithm/test_ILP/
 | `sat/unified_sat_encoder` | 按有效 mask 稀疏创建 `D`/`A`；Bnet `Q(s,u)` ExactlyOne 与 `A⇒Q`；`α⇒⋁D`；PNnet track \(d\neq1\) 禁止 |
 | `sat/encode_tob_special` | `A⇒D`、三类物理连接 `Y` 聚合、`Y⇒M_g/¬M_g`、四类 partial matching |
 | `sat/encode_bus_sync` | `∀d`：`D_{ref,t_ref,d} ↔ D_{member,t_i,d}`；不存在的 D 按 false |
+| `sat/routing_solution_validate` | SAT 结果诊断校验（路径结构、D/A 回放、跨网资源冲突、bus/PNnet 规则），仅记录日志不改 `out.ok` |
 | `sat/sat_solution_extract` | sink→source 回溯；PNnet 剥离 \(r_n\)、记录 `physical_source_node` |
 | `sat/sat_encoding_stats` | `-v`：dense/unit-eligible/active D/A、Q、aux、8 类 CNF |
 
