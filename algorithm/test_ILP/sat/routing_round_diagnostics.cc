@@ -48,15 +48,40 @@ auto format_percent(double actual, double shortest) -> std::String {
     return stream.str();
 }
 
-struct StretchEntry {
-    std::size_t net_id{0};
-    std::String name;
-    std::size_t actual{0};
-    std::size_t shortest{0};
-    double delta_percent{0.0};
-};
-
 } // namespace
+
+auto collect_net_stretch_info(
+    hardware::Interposer* interposer,
+    const UnifiedGraph& graph,
+    const std::Vector<RoutingNet>& nets,
+    const DelayPrecomputeResult& delays,
+    const SatRoutingResult& result
+) -> std::Vector<NetStretchInfo> {
+    auto entries = std::Vector<NetStretchInfo> {};
+    if (!result.ok) {
+        return entries;
+    }
+    for (const auto& net : nets) {
+        const auto net_paths = paths_for_net(result, net.net_id);
+        if (net_paths.empty()) {
+            continue;
+        }
+        const auto actual = net_wirelength(graph, net_paths);
+        const auto shortest = ideal_net_wirelength(interposer, graph, net, delays);
+        const auto delta = shortest == 0
+            ? 0.0
+            : (static_cast<double>(actual) - static_cast<double>(shortest))
+                * 100.0 / static_cast<double>(shortest);
+        entries.push_back(NetStretchInfo {net.net_id, net.name, actual, shortest, delta});
+    }
+    std::sort(entries.begin(), entries.end(), [](const NetStretchInfo& lhs, const NetStretchInfo& rhs) {
+        if (lhs.delta_percent != rhs.delta_percent) {
+            return lhs.delta_percent > rhs.delta_percent;
+        }
+        return lhs.net_id < rhs.net_id;
+    });
+    return entries;
+}
 
 auto feedback_round_status_name(FeedbackRoundStatus status) -> std::String {
     switch (status) {
@@ -121,32 +146,9 @@ auto log_non_shortest_nets(
         return;
     }
 
-    auto stretched = std::Vector<StretchEntry> {};
-    for (const auto& net : nets) {
-        const auto net_paths = paths_for_net(result, net.net_id);
-        if (net_paths.empty()) {
-            continue;
-        }
-        const auto actual = net_wirelength(graph, net_paths);
-        const auto shortest = ideal_net_wirelength(interposer, graph, net, delays);
-        if (shortest == 0 || actual <= shortest) {
-            continue;
-        }
-        stretched.push_back(StretchEntry {
-            net.net_id,
-            net.name,
-            actual,
-            shortest,
-            (static_cast<double>(actual) - static_cast<double>(shortest))
-                * 100.0
-                / static_cast<double>(shortest)});
-    }
-
-    std::sort(stretched.begin(), stretched.end(), [](const StretchEntry& lhs, const StretchEntry& rhs) {
-        if (lhs.delta_percent != rhs.delta_percent) {
-            return lhs.delta_percent > rhs.delta_percent;
-        }
-        return lhs.net_id < rhs.net_id;
+    auto stretched = collect_net_stretch_info(interposer, graph, nets, delays, result);
+    std::erase_if(stretched, [](const NetStretchInfo& entry) {
+        return entry.shortest == 0 || entry.actual <= entry.shortest;
     });
 
     debug::info_fmt("non-shortest nets: count={}", stretched.size());

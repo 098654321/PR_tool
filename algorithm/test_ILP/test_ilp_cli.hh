@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <initializer_list>
+#include <optional>
 #include <span>
 #include <std/string.hh>
 #include <string_view>
@@ -15,6 +16,8 @@ struct TestIlpCliOptions {
     std::size_t max_rss_mb{0};
     int initial_scope_pad{0};
     int initial_delay_pad{0};
+    bool enable_ilp_optimize{false};
+    std::optional<double> ilp_stretch_threshold_percent;
 };
 
 auto parse_test_ilp_cli(std::span<const std::string_view> args) -> TestIlpCliOptions;

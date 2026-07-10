@@ -1,6 +1,7 @@
 #include "test_ilp_cli.hh"
 
 #include <charconv>
+#include <cmath>
 #include <format>
 #include <stdexcept>
 
@@ -15,6 +16,20 @@ auto parse_non_negative_int(std::string_view value, const char* option_name) -> 
     if (error != std::errc {} || end != value.data() + value.size() || parsed < 0) {
         throw std::invalid_argument(
             std::format("{} requires a non-negative integer argument", option_name));
+    }
+    return parsed;
+}
+
+auto parse_non_negative_double(std::string_view value, const char* option_name) -> double {
+    double parsed = 0.0;
+    const auto [end, error] =
+        std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc {}
+        || end != value.data() + value.size()
+        || !std::isfinite(parsed)
+        || parsed < 0.0) {
+        throw std::invalid_argument(
+            std::format("{} requires a non-negative finite number", option_name));
     }
     return parsed;
 }
@@ -64,6 +79,18 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
             options.initial_delay_pad = parse_non_negative_int(args[i], "-d");
             continue;
         }
+        if (arg == "--ilp-optimize") {
+            options.enable_ilp_optimize = true;
+            continue;
+        }
+        if (arg == "-L") {
+            if (++i >= args.size()) {
+                throw std::invalid_argument("-L requires a non-negative finite number");
+            }
+            options.ilp_stretch_threshold_percent =
+                parse_non_negative_double(args[i], "-L");
+            continue;
+        }
         if (arg.size() >= 2 && arg[0] == '-' && arg[1] == 'v') {
             bool all_v = true;
             for (std::size_t char_index = 1; char_index < arg.size(); ++char_index) {
@@ -78,6 +105,12 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
             }
         }
         throw std::invalid_argument(std::format("Unknown argument: {}", arg));
+    }
+    if (options.enable_ilp_optimize && !options.ilp_stretch_threshold_percent.has_value()) {
+        throw std::invalid_argument("--ilp-optimize requires -L <percent>");
+    }
+    if (!options.enable_ilp_optimize && options.ilp_stretch_threshold_percent.has_value()) {
+        throw std::invalid_argument("-L requires --ilp-optimize");
     }
     return options;
 }

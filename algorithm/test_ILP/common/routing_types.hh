@@ -85,6 +85,16 @@ struct SatRoutingResult {
     std::Vector<SourceSinkPairPath> paths;
     std::map<std::size_t, bool> vline_mode_straight_by_group;
     std::Vector<int> used_tob_switch_ids;
+    // Optional v15 post-optimization diagnostics.  The SAT fields above keep
+    // their v14 meanings even when Gurobi is enabled.
+    bool ilp_optimization_requested{false};
+    bool ilp_optimization_applied{false};
+    bool ilp_fallback_to_v14{false};
+    std::String ilp_status;
+    std::size_t ilp_model_vars{0};
+    std::size_t ilp_model_constraints{0};
+    long long ilp_model_build_ms{0};
+    long long ilp_solve_ms{0};
 };
 
 } // namespace PR_tool

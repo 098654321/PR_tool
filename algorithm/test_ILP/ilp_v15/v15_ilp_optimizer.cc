@@ -1,0 +1,265 @@
+#include "ilp_v15/v15_ilp_optimizer.hh"
+
+#include "ilp_v15/v15_ilp_extract.hh"
+#include "ilp_v15/v15_ilp_model.hh"
+#include "ilp_v15/v15_ilp_prepare.hh"
+#include "ilp_v15/v15_ilp_validate.hh"
+#include "sat/routing_path_log.hh"
+#include "sat/routing_round_diagnostics.hh"
+
+#include <algorithm>
+#include <chrono>
+#include <debug/debug.hh>
+#include <format>
+
+namespace PR_tool {
+
+namespace {
+
+constexpr auto kV15Banner =
+    "************************************************************************************************************************";
+
+auto paths_for_net(
+    const SatRoutingResult& result,
+    std::size_t net_id
+) -> std::Vector<const SourceSinkPairPath*> {
+    auto paths = std::Vector<const SourceSinkPairPath*> {};
+    for (const auto& path : result.paths) {
+        if (path.net_id == net_id) {
+            paths.push_back(&path);
+        }
+    }
+    return paths;
+}
+
+auto status_name(V15IlpStatus status) -> const char* {
+    switch (status) {
+        case V15IlpStatus::SkippedNoCandidates:
+            return "SKIPPED_NO_CANDIDATES";
+        case V15IlpStatus::Optimal:
+            return "OPTIMAL";
+        case V15IlpStatus::Suboptimal:
+            return "SUBOPTIMAL";
+        case V15IlpStatus::Failed:
+            return "FAILED";
+    }
+    return "UNKNOWN";
+}
+
+auto log_validation(const V15ValidationReport& report, int verbose_level) -> void {
+    if (report.ok) {
+        debug::info_fmt("v15 ILP validation: PASS paths={}", report.checked_paths);
+        return;
+    }
+    debug::warning_fmt(
+        "v15 ILP validation: FAIL paths={} violations={}",
+        report.checked_paths,
+        report.violations.size());
+    if (verbose_level >= 1) {
+        for (const auto& violation : report.violations) {
+            debug::warning_fmt("  v15 validation: {}", violation);
+        }
+    }
+}
+
+} // namespace
+
+auto optimize_v15_routes(
+    hardware::Interposer* interposer,
+    const UnifiedGraph& graph,
+    const std::Vector<RoutingNet>& nets,
+    const std::Vector<UnifiedSatNetScope>& scopes,
+    const DelayPrecomputeResult& delays,
+    const SatRoutingResult& sat_result,
+    const V15IlpOptimizeOptions& options
+) -> V15IlpOptimizeResult {
+    auto out = V15IlpOptimizeResult {};
+    out.routing = sat_result;
+    if (!options.enabled) {
+        out.status = V15IlpStatus::SkippedNoCandidates;
+        out.message = "DISABLED";
+        return out;
+    }
+
+    debug::info(kV15Banner);
+    debug::info_fmt(
+        "v15 ILP optimization begin: threshold={:.2f}% gurobi_log={}/v15_ilp.log",
+        options.stretch_threshold_percent,
+        options.gurobi_log_dir);
+
+    const auto stretch = collect_net_stretch_info(interposer, graph, nets, delays, sat_result);
+    for (const auto& entry : stretch) {
+        if (entry.shortest == 0) {
+            debug::warning_fmt(
+                "v15 ILP skip net=\"{}\" id={}: theoretical shortest wirelength is zero",
+                entry.name,
+                entry.net_id);
+        }
+    }
+    out.selected_net_ids = select_v15_net_ids(stretch, options.stretch_threshold_percent);
+    out.stats.selected_nets = out.selected_net_ids.size();
+    out.stats.locked_nets = nets.size() - out.selected_net_ids.size();
+    if (options.verbose_level >= 1) {
+        for (const auto& entry : stretch) {
+            debug::info_fmt(
+                "v15 ILP candidate net=\"{}\" id={} actual={} shortest={} delta={:.2f}% selected={}",
+                entry.name,
+                entry.net_id,
+                entry.actual,
+                entry.shortest,
+                entry.delta_percent,
+                out.selected_net_ids.contains(entry.net_id));
+        }
+    }
+    debug::info_fmt(
+        "v15 ILP selection: selected_nets={} locked_nets={} total_nets={}",
+        out.stats.selected_nets,
+        out.stats.locked_nets,
+        nets.size());
+
+    if (out.selected_net_ids.empty()) {
+        out.status = V15IlpStatus::SkippedNoCandidates;
+        out.message = "SKIPPED_NO_CANDIDATES";
+        debug::info("v15 ILP optimization end: status=SKIPPED_NO_CANDIDATES");
+        debug::info(kV15Banner);
+        return out;
+    }
+
+    try {
+        const auto commodities =
+            build_v15_commodities(graph, nets, scopes, out.selected_net_ids);
+        out.stats.commodities = commodities.size();
+        const auto locked = collect_v15_locked_resources(graph, sat_result, out.selected_net_ids);
+        const auto mip_start = build_v15_mip_start(graph, commodities, sat_result);
+        std::size_t two_pin_commodities = 0;
+        std::size_t fanout_commodities = 0;
+        std::size_t bus_member_commodities = 0;
+        for (const auto& commodity : commodities) {
+            if (commodity.is_bus_member) {
+                ++bus_member_commodities;
+            }
+            else if (commodity.k > 1) {
+                ++fanout_commodities;
+            }
+            else {
+                ++two_pin_commodities;
+            }
+        }
+        std::size_t mip_x_count = 0;
+        std::size_t mip_y_count = 0;
+        for (const auto& [commodity_id, arcs] : mip_start.selected_arc_ids) {
+            (void)commodity_id;
+            mip_x_count += arcs.size();
+        }
+        for (const auto& [commodity_id, nodes] : mip_start.used_node_ids) {
+            (void)commodity_id;
+            mip_y_count += nodes.size();
+        }
+        debug::info_fmt(
+            "v15 ILP preparation: commodities={} two_pin={} fanout={} bus_member={} locked_nodes={} locked_switches={} mip_start={} F_start={} x_start={} y_start={}",
+            commodities.size(),
+            two_pin_commodities,
+            fanout_commodities,
+            bus_member_commodities,
+            std::count(locked.node_used.begin(), locked.node_used.end(), true),
+            locked.switch_used.size(),
+            mip_start.available,
+            mip_start.flow_by_arc.size(),
+            mip_x_count,
+            mip_y_count);
+
+        const auto model_begin = std::chrono::steady_clock::now();
+        const auto model_result =
+            solve_v15_ilp_model(graph, scopes, commodities, locked, options, mip_start);
+        const auto model_end = std::chrono::steady_clock::now();
+        out.stats = model_result.stats;
+        out.stats.selected_nets = out.selected_net_ids.size();
+        out.stats.locked_nets = nets.size() - out.selected_net_ids.size();
+        out.stats.commodities = commodities.size();
+        if (out.stats.model_build_ms == 0) {
+            out.stats.model_build_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                model_end - model_begin).count() - out.stats.solve_ms;
+        }
+        out.status = model_result.status;
+        out.message = model_result.message;
+        debug::info_fmt(
+            "v15 ILP model: F={} x={} y={} M={} constraints={} nonzeros={} model_build_ms={} gurobi_optimize_ms={} status={} solutions={}",
+            out.stats.f_vars,
+            out.stats.x_vars,
+            out.stats.y_vars,
+            out.stats.mode_vars,
+            out.stats.constraints,
+            out.stats.nonzeros,
+            out.stats.model_build_ms,
+            out.stats.solve_ms,
+            status_name(out.status),
+            out.stats.solution_count);
+
+        if (!model_result.ok) {
+            out.status = V15IlpStatus::Failed;
+            out.routing = sat_result;
+            debug::warning_fmt(
+                "v15 ILP optimization failed: {} fallback_to_v14=true",
+                model_result.message);
+            debug::info(kV15Banner);
+            return out;
+        }
+
+        const auto extracted = extract_v15_routing_solution(
+            graph,
+            nets,
+            commodities,
+            model_result,
+            sat_result,
+            out.selected_net_ids);
+        const auto validation = validate_v15_routing_solution(graph, nets, scopes, extracted);
+        log_validation(validation, options.verbose_level);
+        if (!extracted.ok || !validation.ok) {
+            out.status = V15IlpStatus::Failed;
+            out.message = extracted.ok ? "V15_VALIDATION_FAILED" : extracted.message;
+            out.routing = sat_result;
+            debug::warning_fmt(
+                "v15 ILP optimization failed: {} fallback_to_v14=true",
+                out.message);
+            debug::info(kV15Banner);
+            return out;
+        }
+
+        for (const auto& entry : stretch) {
+            if (!out.selected_net_ids.contains(entry.net_id)) {
+                continue;
+            }
+            const auto before = net_wirelength(graph, paths_for_net(sat_result, entry.net_id));
+            const auto after = net_wirelength(graph, paths_for_net(extracted, entry.net_id));
+            debug::info_fmt(
+                "v15 ILP net id={} wirelength={} -> {} delta={:+d}",
+                entry.net_id,
+                before,
+                after,
+                static_cast<long long>(after) - static_cast<long long>(before));
+        }
+        debug::info_fmt(
+            "v15 ILP objective={:.0f} best_bound={:.0f} mip_gap={:.6f} total_wirelength={} -> {}",
+            out.stats.objective,
+            out.stats.best_bound,
+            out.stats.mip_gap,
+            sat_result.total_wirelength,
+            extracted.total_wirelength);
+        out.routing = extracted;
+        debug::info_fmt("v15 ILP optimization end: status={}", status_name(out.status));
+        debug::info(kV15Banner);
+        return out;
+    }
+    catch (const std::exception& error) {
+        out.status = V15IlpStatus::Failed;
+        out.message = error.what();
+        out.routing = sat_result;
+        debug::warning_fmt(
+            "v15 ILP optimization exception: {} fallback_to_v14=true",
+            out.message);
+        debug::info(kV15Banner);
+        return out;
+    }
+}
+
+} // namespace PR_tool

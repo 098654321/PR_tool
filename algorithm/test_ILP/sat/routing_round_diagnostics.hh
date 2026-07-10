@@ -21,6 +21,22 @@ enum class FeedbackRoundStatus {
     MaxRoundsExceeded,
 };
 
+struct NetStretchInfo {
+    std::size_t net_id{0};
+    std::String name;
+    std::size_t actual{0};
+    std::size_t shortest{0};
+    double delta_percent{0.0};
+};
+
+auto collect_net_stretch_info(
+    hardware::Interposer* interposer,
+    const UnifiedGraph& graph,
+    const std::Vector<RoutingNet>& nets,
+    const DelayPrecomputeResult& delays,
+    const SatRoutingResult& result
+) -> std::Vector<NetStretchInfo>;
+
 auto feedback_round_status_name(FeedbackRoundStatus status) -> std::String;
 
 auto unique_failed_net_ids(const std::Vector<PairKey>& critical) -> std::Vector<std::size_t>;

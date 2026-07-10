@@ -1,6 +1,6 @@
 # PR_tool / algorithm/test_ILP 工程指南
 
-本文件是 `algorithm/test_ILP/` 子工程的入口说明。当前 `test_ILP` 实现**第十四版 D/A 距离语义 SAT 可行性布线**（见 `problem_formulation/第十四版方法.md`），不直接替代 `source/algo/router/` 的正式路由流程。
+本文件是 `algorithm/test_ILP/` 子工程的入口说明。当前 `test_ILP` 默认实现**第十四版 D/A 距离语义 SAT 可行性布线**（见 `problem_formulation/第十四版方法.md`）；可选的 `--ilp-optimize -L <percent>` 会在 SAT 成功后执行第十五版 Gurobi MCF 线长优化。不直接替代 `source/algo/router/` 的正式路由流程。
 
 ## 项目总体介绍
 
@@ -21,7 +21,7 @@
 6. **Delay 与稀疏域预计算**：先用普通最短路 BFS 求各 pair 的 `d_min`；得到当前 `delays` 与 `d_max` 后，再在当前 scope、当前 `d_max` 内计算分层前向可达与各 sink 的反向可达，只保留位于某个当前允许长度 source-to-sink walk 上的 D 状态。同一 source 的 fanout/PNnet 多 sink 对有效状态取并集；feedback 后按新 scope/delay 全量重算，不预建未来轮次状态。
 7. **COBUnit 裁剪与 SAT 编码**：Tnet/IO track source 使用其唯一 unit mask，PNnet \(r_n\) 使用候选 source track 的 unit 并集，Bnet 静态保留全部 16 unit。Track、VLine 与相关弧先按 mask 过滤，再创建有效 `D`；TOB `A_{s,u→v,d}` 仅在两端 D 都有效时创建。每个 Bnet bump source 另建 16 个 `Q(s,u)` 并以 sequential ExactlyOne 选择一个 unit，所有有效 VLine-Track `A` 按 Track 端 unit 编码 `A⇒Q`。另含 `α⇒⋁D`、`Y`、`M_g`、bus `∀d` 等长；PNnet 不建 Q，物理 track 仍只允许 \(d=1\)，多个候选 source 可并存、汇合。
 
-**不包含**：SAT+MCF 分阶段、Gurobi MCF、结果写回 interposer。
+默认流程不包含结果写回 interposer。
 
 方法依据：`problem_formulation/第十四版方法.md`。历史版本见同目录 `第一版方法.md` … `第十三版方法.md`。
 
@@ -66,6 +66,7 @@ algorithm/test_ILP/
 | `sat/routing_solution_validate` | SAT 结果诊断校验（路径结构、D/A 回放、跨网资源冲突、bus/PNnet 规则），仅记录日志不改 `out.ok` |
 | `sat/sat_solution_extract` | sink→source 回溯；PNnet 剥离 \(r_n\)、记录 `physical_source_node` |
 | `sat/sat_encoding_stats` | `-v`：dense/unit-eligible/active D/A、Q、aux、8 类 CNF |
+| `ilp_v15/` | 可选的第十五版 Gurobi MCF 后优化：candidate/commodity/MIP start、模型、提取、物理校验和阶段编排 |
 
 ### 变量与约束（v14）
 
@@ -76,6 +77,13 @@ algorithm/test_ILP/
 - **Y / M_g**：Bump-HLine、HLine-VLine、VLine-Track 三类物理开关与 vline-track 模式（1024 组全局 `M_g`）。
 - **Bus**：各 member 独立最短 → `bus_d_min=max`；SAT 侧 `∀d` 等等长。
 - **PNnet**：整网一个 \(r_n\)；`D_{r_n,r_n,0}=true`；物理 track 仅在 \(d=1\) 可达；路径 hop 统计扣 1 虚拟跳。
+
+### v15 可选后优化
+
+- 仅当同时给出 `--ilp-optimize -L <非负百分比>` 时启动；未启用时不会创建 Gurobi 环境或 `./gurobi/`。
+- 对增长率 `actual/shortest-1 >= L` 的整网重布；普通 2-pin、TrackToBumps 多汇树和 PNnet/TracksToBumps 虚拟根均使用 `F/x/y` MCF。SyncNet 拆为 2-pin commodity，并以 (L) 等长约束连接。
+- 未选 net 的物理节点与 TOB 开关被锁定；模型包含 TOB physical-switch 唯一性、Bump-HLine/HLine-VLine partial matching 和最后一级 straight/swap mode 约束。Gurobi 异常、无可用解或提取校验失败会记录 `fallback_to_v14=true` 并完整回退 SAT 解。
+- 原生日志固定覆盖 `./gurobi/v15_ilp.log`（不输出到控制台）；`debug.log` 记录筛选、模型规模、耗时、状态、前后线长及校验结果。
 
 ### v14 不支持
 
@@ -93,6 +101,8 @@ xmake build test_ILP_unit
 ./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192
 ./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192 -s 0 -d 1
 ./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192 -s 1 -d 1
+./output/test_ILP test/config/case7 -v
+./output/test_ILP test/config/case7 -v --ilp-optimize -L 10
 ```
 
 **首轮扩展**（可选，与反馈扩边独立）：`-s S` 外扩 pair bbox；`-d D` 初始 delay 集合 `{d_min,…,d_min+D}`。`-v` 时 `main.cc` 打印 `initial search padding: scope_pad=… delay_pad=…`；初始 scope 与 `scope after initial search padding` 分别展示扩展前后范围，round 0 的 `delay net=… delays=[…]` 展示最终 pair delay。

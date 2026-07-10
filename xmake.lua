@@ -176,6 +176,11 @@ target("test_ILP")
         "algorithm/test_ILP/scope/pair_routing_state.cc",
         "algorithm/test_ILP/graph/unified_routing_graph.cc",
         "algorithm/test_ILP/delay/pair_delay_precompute.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_prepare.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_model.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_extract.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_validate.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_optimizer.cc",
         "algorithm/test_ILP/sat/unified_sat_scope.cc",
         "algorithm/test_ILP/sat/sat_constraint_kits.cc",
         "algorithm/test_ILP/sat/sat_encoding_stats.cc",
@@ -208,6 +213,21 @@ target("test_ILP")
             add_syslinks("pthread")
         end
     end
+    local gurobi_home = os.getenv("GUROBI_HOME")
+    if not gurobi_home or gurobi_home == "" then
+        if is_plat("linux") then
+            gurobi_home = "/opt/gurobi1302/linux64"
+        else
+            gurobi_home = "/Library/gurobi1302/macos_universal2"
+        end
+    end
+    add_includedirs(gurobi_home .. "/include")
+    add_linkdirs(gurobi_home .. "/lib")
+    add_rpathdirs(gurobi_home .. "/lib")
+    if is_plat("linux") then
+        add_links("pthread", "dl", "m")
+    end
+    add_links("gurobi_c++", "gurobi130")
 
 target("test_ILP_unit")
     set_kind("binary")
@@ -222,6 +242,11 @@ target("test_ILP_unit")
         "algorithm/test_ILP/scope/pair_routing_state.cc",
         "algorithm/test_ILP/graph/unified_routing_graph.cc",
         "algorithm/test_ILP/delay/pair_delay_precompute.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_prepare.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_model.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_extract.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_validate.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_optimizer.cc",
         "algorithm/test_ILP/sat/unified_sat_scope.cc",
         "algorithm/test_ILP/sat/sat_constraint_kits.cc",
         "algorithm/test_ILP/sat/sat_encoding_stats.cc",
@@ -254,6 +279,21 @@ target("test_ILP_unit")
             add_syslinks("pthread")
         end
     end
+    local gurobi_home = os.getenv("GUROBI_HOME")
+    if not gurobi_home or gurobi_home == "" then
+        if is_plat("linux") then
+            gurobi_home = "/opt/gurobi1302/linux64"
+        else
+            gurobi_home = "/Library/gurobi1302/macos_universal2"
+        end
+    end
+    add_includedirs(gurobi_home .. "/include")
+    add_linkdirs(gurobi_home .. "/lib")
+    add_rpathdirs(gurobi_home .. "/lib")
+    if is_plat("linux") then
+        add_links("pthread", "dl", "m")
+    end
+    add_links("gurobi_c++", "gurobi130")
 
 target("wirelength_study")
     set_kind("binary")

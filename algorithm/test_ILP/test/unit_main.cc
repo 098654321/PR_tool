@@ -1,6 +1,11 @@
 #include "common/hw_map.hh"
 #include "delay/pair_delay_precompute.hh"
 #include "graph/unified_routing_graph.hh"
+#include "ilp_v15/v15_ilp_prepare.hh"
+#include "ilp_v15/v15_ilp_model.hh"
+#include "ilp_v15/v15_ilp_extract.hh"
+#include "ilp_v15/v15_ilp_validate.hh"
+#include "ilp_v15/v15_ilp_optimizer.hh"
 #include "sat/ideal_shortest_wirelength.hh"
 #include "sat/routing_path_log.hh"
 #include "sat/routing_feedback.hh"
@@ -146,10 +151,20 @@ auto test_unified_graph_fixed_hardware_inventory() -> void {
     require(
         graph.directed_arc_set.empty(),
         "construction-only directed-arc dedup storage must be released before returning the graph");
-    require(graph.rows == 9 && graph.cols == 12, "unified graph dimensions must be 9x12");
-    require(graph.track_node_count == 30336, "unified graph must contain exactly 30,336 track nodes");
+    require(
+        graph.rows == static_cast<int>(hardware::Interposer::COB_ARRAY_HEIGHT)
+            && graph.cols == static_cast<int>(hardware::Interposer::COB_ARRAY_WIDTH),
+        "unified graph dimensions must match the hardware inventory");
+    const auto expected_track_nodes = std::size_t {128}
+        * (static_cast<std::size_t>(graph.rows + 1) * static_cast<std::size_t>(graph.cols)
+           + static_cast<std::size_t>(graph.rows) * static_cast<std::size_t>(graph.cols + 1));
+    require(
+        graph.track_node_count == expected_track_nodes,
+        "unified graph track-node count must match the configured hardware dimensions");
     require(graph.tob_node_count == 6144, "unified graph must contain exactly 6,144 TOB nodes");
-    require(graph.nodes.size() == 36480, "unified graph must contain exactly 36,480 nodes");
+    require(
+        graph.nodes.size() == expected_track_nodes + graph.tob_node_count,
+        "unified graph total node count must equal track plus TOB nodes");
     require(graph.bump_node_by_key.size() == 16 * 128, "every TOB must contain all 128 bump nodes");
     require(graph.hline_node_by_key.size() == 16 * 128, "every TOB must contain all 128 h-line nodes");
     require(graph.vline_node_by_key.size() == 16 * 128, "every TOB must contain all 128 v-line nodes");
@@ -713,6 +728,369 @@ auto synthetic_net(
             demands[i].second.size() == 1});
     }
     return net;
+}
+
+auto synthetic_scope(const UnifiedGraph& graph, std::size_t net_id) -> UnifiedSatNetScope {
+    auto scope = UnifiedSatNetScope {};
+    scope.net_id = net_id;
+    scope.node_offset.assign(graph.nodes.size(), -1);
+    scope.arc_offset.assign(graph.arcs.size(), -1);
+    for (std::size_t i = 0; i < graph.nodes.size(); ++i) {
+        scope.node_offset[i] = static_cast<int>(scope.node_ids.size());
+        scope.node_ids.push_back(static_cast<int>(i));
+    }
+    for (std::size_t i = 0; i < graph.arcs.size(); ++i) {
+        scope.arc_offset[i] = static_cast<int>(scope.arc_ids.size());
+        scope.arc_ids.push_back(static_cast<int>(i));
+    }
+    return scope;
+}
+
+auto test_v15_commodity_construction() -> void {
+    auto graph = synthetic_graph(
+        8,
+        {{0, 1}, {1, 2}, {1, 3}, {4, 5}, {6, 7}});
+    auto fanout = synthetic_net(0, {0}, {{2, {0}}, {3, {0}}});
+
+    auto bus = synthetic_net(1, {4, 6}, {{5, {0}}, {7, {1}}});
+    bus.is_sync_bus = true;
+
+    const auto commodities = build_v15_commodities(
+        graph,
+        {fanout, bus},
+        {synthetic_scope(graph, 0), synthetic_scope(graph, 1)},
+        std::set<std::size_t> {0, 1});
+
+    require(commodities.size() == 3, "v15 must keep fanout whole and split two bus members");
+    require(
+        commodities[0].routing_net_id == 0
+            && commodities[0].source_node == 0
+            && commodities[0].sink_nodes == std::Vector<int>({2, 3})
+            && commodities[0].k == 2
+            && !commodities[0].is_bus_member,
+        "fanout must become one two-unit commodity");
+    require(
+        commodities[1].routing_net_id == 1
+            && commodities[1].demand_ids == std::Vector<std::size_t>({0})
+            && commodities[1].source_node == 4
+            && commodities[1].sink_nodes == std::Vector<int>({5})
+            && commodities[1].is_bus_member,
+        "first bus member must become its own commodity");
+    require(
+        commodities[2].routing_net_id == 1
+            && commodities[2].demand_ids == std::Vector<std::size_t>({1})
+            && commodities[2].source_node == 6
+            && commodities[2].sink_nodes == std::Vector<int>({7})
+            && commodities[2].is_bus_member,
+        "second bus member must retain its source/demand identity");
+}
+
+auto test_v15_locked_resource_collection() -> void {
+    auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}});
+    graph.nodes[1].kind = UnifiedNodeKind::HLine;
+    graph.nodes[2].kind = UnifiedNodeKind::VLine;
+    graph.arcs[1].physical_switch_id = 17;
+    graph.arcs[1].physical_switch_kind = PhysicalSwitchKind::HLineVLine;
+
+    auto sat = SatRoutingResult {};
+    sat.ok = true;
+    sat.paths.push_back(SourceSinkPairPath {0, 0, 0, -1, {0, 1, 2, 3}});
+    const auto locked = collect_v15_locked_resources(graph, sat, std::set<std::size_t> {});
+    require(
+        std::ranges::all_of(locked.node_used, [](bool used) { return used; }),
+        "every physical node on a locked path must be reserved");
+    require(
+        locked.switch_used.contains(17),
+        "every TOB switch on a locked path must be reserved");
+
+    const auto selected = collect_v15_locked_resources(graph, sat, std::set<std::size_t> {0});
+    require(
+        std::ranges::none_of(selected.node_used, [](bool used) { return used; })
+            && selected.switch_used.empty(),
+        "selected nets must be removed from locked resources");
+}
+
+auto test_v15_stretch_threshold_is_inclusive() -> void {
+    const auto selected = select_v15_net_ids(
+        {
+            NetStretchInfo {0, "below", 109, 100, 9.0},
+            NetStretchInfo {1, "boundary", 110, 100, 10.0},
+            NetStretchInfo {2, "above", 111, 100, 11.0},
+        },
+        10.0);
+    require(
+        selected == std::set<std::size_t>({1, 2}),
+        "v15 must select growth equal to or greater than -L");
+}
+
+auto test_v15_model_two_pin_and_shared_fanout_flow() -> void {
+    auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {1, 3}});
+    auto commodity = IlpCommodity {};
+    commodity.commodity_id = 0;
+    commodity.routing_net_id = 0;
+    commodity.scope_index = 0;
+    commodity.source_node = 0;
+    commodity.sink_nodes = {2, 3};
+    commodity.demand_ids = {0, 1};
+    commodity.source_indices = {0, 0};
+    commodity.k = 2;
+
+    auto locked = V15LockedResources {};
+    locked.node_used.assign(graph.nodes.size(), false);
+    auto options = V15IlpOptimizeOptions {};
+    options.gurobi_log_dir = "/tmp/pr_tool_v15_unit_gurobi";
+    const auto solved = solve_v15_ilp_model(
+        graph,
+        {synthetic_scope(graph, 0)},
+        {commodity},
+        locked,
+        options,
+        {});
+
+    require(solved.ok, "v15 fanout fixture must have a Gurobi solution");
+    require(solved.commodities.size() == 1, "v15 solution must retain commodity identity");
+    require(
+        solved.commodities[0].selected_arc_ids == std::set<int>({0, 1, 2}),
+        "fanout solution must select the shared trunk and both leaves");
+    require(
+        solved.commodities[0].flow_by_arc.at(0) == 2
+            && solved.commodities[0].flow_by_arc.at(1) == 1
+            && solved.commodities[0].flow_by_arc.at(2) == 1,
+        "shared trunk must carry two units while each leaf carries one");
+}
+
+auto test_v15_mip_start_counts_downstream_sinks() -> void {
+    auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {1, 3}});
+    auto commodity = IlpCommodity {};
+    commodity.commodity_id = 0;
+    commodity.routing_net_id = 0;
+    commodity.scope_index = 0;
+    commodity.source_node = 0;
+    commodity.sink_nodes = {2, 3};
+    commodity.demand_ids = {0, 1};
+    commodity.source_indices = {0, 0};
+    commodity.k = 2;
+    auto sat = SatRoutingResult {};
+    sat.ok = true;
+    sat.paths = {
+        SourceSinkPairPath {0, 0, 0, -1, {0, 1, 2}},
+        SourceSinkPairPath {0, 0, 1, -1, {0, 1, 3}},
+    };
+
+    const auto start = build_v15_mip_start(graph, {commodity}, sat);
+    require(start.available, "v15 must provide a MIP start from SAT paths");
+    require(
+        start.selected_arc_ids.at(0) == std::set<int>({0, 1, 2}),
+        "v15 MIP start must deduplicate a shared trunk");
+    require(
+        start.flow_by_arc.at({0, 0}) == 2
+            && start.flow_by_arc.at({0, 1}) == 1
+            && start.flow_by_arc.at({0, 2}) == 1,
+        "v15 MIP start must count downstream sinks on every tree arc");
+}
+
+auto test_v15_model_respects_locked_nodes() -> void {
+    auto graph = synthetic_graph(4, {{0, 1}, {1, 3}, {0, 2}, {2, 3}});
+    auto commodity = IlpCommodity {};
+    commodity.commodity_id = 0;
+    commodity.routing_net_id = 0;
+    commodity.scope_index = 0;
+    commodity.source_node = 0;
+    commodity.sink_nodes = {3};
+    commodity.demand_ids = {0};
+    commodity.source_indices = {0};
+    commodity.k = 1;
+
+    auto locked = V15LockedResources {};
+    locked.node_used.assign(graph.nodes.size(), false);
+    locked.node_used[1] = true;
+    auto options = V15IlpOptimizeOptions {};
+    options.gurobi_log_dir = "/tmp/pr_tool_v15_unit_gurobi";
+    const auto solved = solve_v15_ilp_model(
+        graph,
+        {synthetic_scope(graph, 0)},
+        {commodity},
+        locked,
+        options,
+        {});
+
+    require(solved.ok, "v15 locked-node fixture must remain routable");
+    require(
+        solved.commodities[0].selected_arc_ids == std::set<int>({2, 3}),
+        "v15 model must route around a locked physical node");
+}
+
+auto test_v15_extract_ignores_disconnected_cycles() -> void {
+    auto graph = synthetic_graph(5, {{0, 1}, {1, 2}, {3, 4}, {4, 3}});
+    auto net = synthetic_net(0, {0}, {{2, {0}}});
+    auto commodity = IlpCommodity {};
+    commodity.commodity_id = 0;
+    commodity.routing_net_id = 0;
+    commodity.scope_index = 0;
+    commodity.source_node = 0;
+    commodity.sink_nodes = {2};
+    commodity.demand_ids = {0};
+    commodity.source_indices = {0};
+    commodity.k = 1;
+
+    auto model = V15IlpModelResult {};
+    model.ok = true;
+    model.status = V15IlpStatus::Optimal;
+    model.commodities.push_back(V15CommodityModelSolution {
+        0,
+        {0, 1, 2, 3},
+        {{0, 1}, {1, 1}, {2, 1}, {3, 1}},
+        {0, 1, 2, 3, 4}});
+    auto sat = SatRoutingResult {};
+    sat.ok = true;
+    sat.paths.push_back(SourceSinkPairPath {0, 0, 0, -1, {0, 1, 2}});
+
+    const auto extracted = extract_v15_routing_solution(
+        graph,
+        {net},
+        {commodity},
+        model,
+        sat,
+        std::set<std::size_t> {0});
+    require(extracted.ok, "v15 extraction must accept a root-reachable route");
+    require(extracted.paths.size() == 1, "disconnected cycles must not produce paths");
+    require(
+        extracted.paths[0].node_path == std::Vector<int>({0, 1, 2}),
+        "v15 extraction must return only the root-to-sink path");
+    const auto validation = validate_v15_routing_solution(
+        graph,
+        {net},
+        {synthetic_scope(graph, 0)},
+        extracted);
+    require(validation.ok, "v15 extracted fixture must pass structural validation");
+}
+
+auto test_v15_pnnet_virtual_root_is_removed_on_extract() -> void {
+    auto graph = synthetic_graph(4, {{0, 1}, {1, 3}, {0, 2}, {2, 3}});
+    graph.nodes[0].kind = UnifiedNodeKind::VirtualSource;
+    auto net = synthetic_net(0, {1, 2}, {{3, {0}}});
+    net.kind = RoutingNetKind::PNnet;
+    net.virtual_source_node = 0;
+    const auto scope = synthetic_scope(graph, 0);
+    const auto commodities = build_v15_commodities(graph, {net}, {scope}, {0});
+    require(
+        commodities.size() == 1 && commodities[0].source_node == 0,
+        "v15 PNnet must use the virtual root as its commodity source");
+
+    auto model = V15IlpModelResult {};
+    model.ok = true;
+    model.status = V15IlpStatus::Optimal;
+    model.commodities.push_back(V15CommodityModelSolution {
+        0,
+        {0, 1},
+        {{0, 1}, {1, 1}},
+        {0, 1, 3}});
+    auto sat = SatRoutingResult {};
+    sat.ok = true;
+    sat.paths.push_back(SourceSinkPairPath {0, 0, 0, 1, {1, 3}});
+    const auto extracted = extract_v15_routing_solution(
+        graph,
+        {net},
+        commodities,
+        model,
+        sat,
+        {0});
+    require(
+        extracted.ok && extracted.paths.size() == 1
+            && extracted.paths[0].physical_source_node == 1
+            && extracted.paths[0].node_path == std::Vector<int>({1, 3}),
+        "v15 PNnet extraction must strip the virtual root and retain the selected track");
+}
+
+auto test_v15_bus_l_and_tob_conflicts() -> void {
+    auto graph = synthetic_graph(5, {{0, 1}, {2, 4}, {4, 3}});
+    auto first = IlpCommodity {0, 0, 0, 0, {1}, {0}, {0}, 1, true};
+    auto second = IlpCommodity {1, 0, 0, 2, {3}, {1}, {1}, 1, true};
+    auto locked = V15LockedResources {};
+    locked.node_used.assign(graph.nodes.size(), false);
+    auto options = V15IlpOptimizeOptions {};
+    options.gurobi_log_dir = "/tmp/pr_tool_v15_unit_gurobi";
+    const auto unequal_bus = solve_v15_ilp_model(
+        graph,
+        {synthetic_scope(graph, 0)},
+        {first, second},
+        locked,
+        options,
+        {});
+    require(!unequal_bus.ok, "v15 bus L constraint must reject unequal fixed member lengths");
+
+    auto matching_graph = synthetic_graph(4, {{0, 1}, {1, 2}, {1, 3}});
+    matching_graph.nodes[0].kind = UnifiedNodeKind::Bump;
+    matching_graph.nodes[1].kind = UnifiedNodeKind::HLine;
+    matching_graph.nodes[2].kind = UnifiedNodeKind::VLine;
+    matching_graph.nodes[3].kind = UnifiedNodeKind::VLine;
+    matching_graph.arcs[0].physical_switch_id = 0;
+    matching_graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::BumpH;
+    matching_graph.arcs[1].physical_switch_id = 1;
+    matching_graph.arcs[1].physical_switch_kind = PhysicalSwitchKind::HLineVLine;
+    matching_graph.arcs[2].physical_switch_id = 2;
+    matching_graph.arcs[2].physical_switch_kind = PhysicalSwitchKind::HLineVLine;
+    auto fanout = IlpCommodity {0, 0, 0, 0, {2, 3}, {0, 1}, {0, 0}, 2, false};
+    locked.node_used.assign(matching_graph.nodes.size(), false);
+    const auto matching_conflict = solve_v15_ilp_model(
+        matching_graph,
+        {synthetic_scope(matching_graph, 0)},
+        {fanout},
+        locked,
+        options,
+        {});
+    require(!matching_conflict.ok, "v15 TOB partial matching must reject two HLine-VLine switches on one HLine");
+
+    auto mode_graph = synthetic_graph(3, {{0, 1}, {0, 2}});
+    mode_graph.nodes[0].kind = UnifiedNodeKind::VLine;
+    mode_graph.nodes[1].kind = UnifiedNodeKind::Track;
+    mode_graph.nodes[2].kind = UnifiedNodeKind::Track;
+    mode_graph.arcs[0].physical_switch_id = 0;
+    mode_graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
+    mode_graph.arcs[0].mode_group_id = 0;
+    mode_graph.arcs[0].is_vline_track_straight = true;
+    mode_graph.arcs[1].physical_switch_id = 1;
+    mode_graph.arcs[1].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
+    mode_graph.arcs[1].mode_group_id = 0;
+    mode_graph.arcs[1].is_vline_track_swap = true;
+    locked.node_used.assign(mode_graph.nodes.size(), false);
+    const auto mode_conflict = solve_v15_ilp_model(
+        mode_graph,
+        {synthetic_scope(mode_graph, 0)},
+        {IlpCommodity {0, 0, 0, 0, {1, 2}, {0, 1}, {0, 0}, 2, false}},
+        locked,
+        options,
+        {});
+    require(!mode_conflict.ok, "v15 final-stage straight/swap mode must reject mixed uses in one group");
+}
+
+auto test_v15_optimizer_skips_when_threshold_selects_nothing() -> void {
+    auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    auto net = synthetic_net(0, {0}, {{2, {0}}});
+    const auto scopes = std::Vector<UnifiedSatNetScope> {synthetic_scope(graph, 0)};
+    const auto delays = compute_pair_delays(graph, {net}, scopes);
+    auto sat = SatRoutingResult {};
+    sat.ok = true;
+    sat.paths.push_back(SourceSinkPairPath {0, 0, 0, -1, {0, 1, 2}});
+    sat.total_wirelength = total_wirelength(graph, sat);
+    auto options = V15IlpOptimizeOptions {};
+    options.enabled = true;
+    options.stretch_threshold_percent = 1000.0;
+    options.gurobi_log_dir = "/tmp/pr_tool_v15_unit_gurobi";
+
+    const auto optimized = optimize_v15_routes(
+        nullptr,
+        graph,
+        {net},
+        scopes,
+        delays,
+        sat,
+        options);
+    require(
+        optimized.status == V15IlpStatus::SkippedNoCandidates
+            && optimized.routing.paths.size() == 1
+            && optimized.routing.paths[0].node_path == sat.paths[0].node_path,
+        "v15 optimizer must return the SAT result unchanged when no net reaches -L");
 }
 
 auto build_v14_model(
@@ -1613,6 +1991,40 @@ auto test_cli_initial_padding_options() -> void {
     require_invalid({"case_2btt", "-d"});
     require_invalid({"case_2btt", "-s", "-1"});
     require_invalid({"case_2btt", "-d", "x"});
+}
+
+auto test_cli_v15_ilp_options() -> void {
+    const auto integer_threshold = parse_test_ilp_cli({
+        "test/config/case7", "-v", "--ilp-optimize", "-L", "10"});
+    require(integer_threshold.enable_ilp_optimize, "CLI must enable v15 ILP optimization");
+    require(
+        integer_threshold.ilp_stretch_threshold_percent.has_value()
+            && integer_threshold.ilp_stretch_threshold_percent.value() == 10.0,
+        "CLI must parse integer-looking -L values as percentages");
+
+    const auto decimal_threshold = parse_test_ilp_cli({
+        "test/config/case7", "-L", "10.5", "--ilp-optimize"});
+    require(decimal_threshold.enable_ilp_optimize, "CLI option order must not matter");
+    require(
+        decimal_threshold.ilp_stretch_threshold_percent.has_value()
+            && decimal_threshold.ilp_stretch_threshold_percent.value() == 10.5,
+        "CLI must accept a non-negative decimal -L value");
+
+    const auto require_invalid = [](std::initializer_list<std::string_view> args) {
+        try {
+            (void)parse_test_ilp_cli(args);
+            require(false, "invalid v15 ILP CLI input must be rejected");
+        }
+        catch (const std::invalid_argument&) {
+        }
+    };
+    require_invalid({"test/config/case7", "--ilp-optimize"});
+    require_invalid({"test/config/case7", "-L", "10"});
+    require_invalid({"test/config/case7", "--ilp-optimize", "-L"});
+    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "-1"});
+    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "nan"});
+    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "inf"});
+    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "ten"});
 }
 
 auto test_initial_search_padding_scope() -> void {
@@ -2651,6 +3063,17 @@ auto main() -> int {
         test_v14_bus_sync_covers_reachable_delay_domain();
         test_cli_max_rss_option();
         test_cli_initial_padding_options();
+        test_cli_v15_ilp_options();
+        test_v15_commodity_construction();
+        test_v15_locked_resource_collection();
+        test_v15_stretch_threshold_is_inclusive();
+        test_v15_model_two_pin_and_shared_fanout_flow();
+        test_v15_mip_start_counts_downstream_sinks();
+        test_v15_model_respects_locked_nodes();
+        test_v15_extract_ignores_disconnected_cycles();
+        test_v15_pnnet_virtual_root_is_removed_on_extract();
+        test_v15_bus_l_and_tob_conflicts();
+        test_v15_optimizer_skips_when_threshold_selects_nothing();
         test_initial_search_padding_scope();
         test_initial_search_padding_delay();
         test_initial_search_padding_rejects_delay_overflow();

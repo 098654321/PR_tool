@@ -18,7 +18,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: xmake run test_ILP <config_path> [-v|-vv] [--sat-log] [--max-rss-mb N] [-s S] [-d D]";
+    "Usage: xmake run test_ILP <config_path> [-v|-vv] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--ilp-optimize -L percent]";
 
 auto get_peak_rss_mb() -> double {
     rusage usage {};
@@ -64,6 +64,10 @@ auto run_main(int argc, char** argv) -> int {
     options.cadical.max_rss_mb = cli.max_rss_mb;
     options.initial_scope_pad = cli.initial_scope_pad;
     options.initial_delay_pad = cli.initial_delay_pad;
+    options.ilp_optimize.enabled = cli.enable_ilp_optimize;
+    options.ilp_optimize.stretch_threshold_percent =
+        cli.ilp_stretch_threshold_percent.value_or(0.0);
+    options.ilp_optimize.verbose_level = cli.verbose_level;
     if (cli.enable_sat_log) {
         debug::info_fmt("CaDiCal solver logs enabled: directory={}", options.cadical.log_dir);
     }
@@ -76,6 +80,12 @@ auto run_main(int argc, char** argv) -> int {
             "initial search padding: scope_pad={} delay_pad={}",
             cli.initial_scope_pad,
             cli.initial_delay_pad);
+    }
+    if (cli.enable_ilp_optimize) {
+        debug::info_fmt(
+            "v15 ILP optimization enabled: threshold={:.2f}% gurobi_log_dir={}",
+            options.ilp_optimize.stretch_threshold_percent,
+            options.ilp_optimize.gurobi_log_dir);
     }
 
     const auto result = solve_unified_sat(interposer.get(), *basedie.get(), options);
@@ -91,12 +101,20 @@ auto run_main(int argc, char** argv) -> int {
         return 1;
     }
     debug::info_fmt(
-        "unified SAT routing succeeded: paths={} vars={} clauses={} total_solve_ms={} total_wirelength={}",
+        "unified SAT routing succeeded: paths={} vars={} clauses={} total_solve_ms={} total_wirelength={} ilp_requested={} ilp_applied={} ilp_fallback_to_v14={} ilp_status={} ilp_vars={} ilp_constraints={} ilp_model_build_ms={} ilp_solve_ms={}",
         result.paths.size(),
         result.num_vars,
         result.num_clauses,
         result.solve_ms,
-        result.total_wirelength);
+        result.total_wirelength,
+        result.ilp_optimization_requested,
+        result.ilp_optimization_applied,
+        result.ilp_fallback_to_v14,
+        result.ilp_status,
+        result.ilp_model_vars,
+        result.ilp_model_constraints,
+        result.ilp_model_build_ms,
+        result.ilp_solve_ms);
     return 0;
 }
 
