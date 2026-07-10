@@ -1,8 +1,10 @@
 #include "common/hw_map.hh"
 #include "delay/pair_delay_precompute.hh"
 #include "graph/unified_routing_graph.hh"
+#include "sat/ideal_shortest_wirelength.hh"
 #include "sat/routing_path_log.hh"
 #include "sat/routing_feedback.hh"
+#include "sat/routing_round_diagnostics.hh"
 #include "sat/routing_solution_validate.hh"
 #include "sat/sat_constraint_kits.hh"
 #include "sat/sat_encoding_stats.hh"
@@ -2501,6 +2503,55 @@ auto test_validate_detects_endpoint_mismatch() -> void {
         "endpoint mismatch must be reported under EndpointMismatch");
 }
 
+auto test_unique_failed_net_ids_deduplicates() -> void {
+    const auto critical = std::Vector<PairKey> {
+        PairKey {3, 0, 0},
+        PairKey {3, 1, 0},
+        PairKey {7, 0, 0},
+    };
+    const auto ids = unique_failed_net_ids(critical);
+    require(ids.size() == 2, "failed net ids must deduplicate by net_id");
+    require(ids[0] == 3 && ids[1] == 7, "failed net ids must be sorted ascending");
+}
+
+auto test_ideal_two_pin_wirelength_matches_shortest_path() -> void {
+    auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    graph.nodes[0].kind = UnifiedNodeKind::Bump;
+    graph.nodes[1].kind = UnifiedNodeKind::Track;
+    graph.nodes[2].kind = UnifiedNodeKind::Bump;
+    auto net = synthetic_net(0, {0}, {{2, {0}}});
+    auto delays = DelayPrecomputeResult {};
+    delays.pairs.push_back(PairDelayInfo {
+        0, 0, 0, 0, 2, std::Vector<int> {2}, 2, -1});
+    const auto path = shortest_unified_node_path(graph, 0, 2);
+    require(path == std::Vector<int>({0, 1, 2}), "fixture must expose a unique shortest path");
+    const auto expected = unified_path_wirelength(graph, path);
+    require(
+        ideal_net_wirelength(nullptr, graph, net, delays) == expected,
+        "two-pin ideal wirelength must match bump+track count on shortest path");
+}
+
+auto test_ideal_sync_bus_wirelength_scales_by_members() -> void {
+    auto graph = synthetic_graph(5, {{0, 1}, {1, 2}, {3, 4}});
+    graph.nodes[0].kind = UnifiedNodeKind::Bump;
+    graph.nodes[1].kind = UnifiedNodeKind::Track;
+    graph.nodes[2].kind = UnifiedNodeKind::Bump;
+    graph.nodes[3].kind = UnifiedNodeKind::Bump;
+    graph.nodes[4].kind = UnifiedNodeKind::Bump;
+    auto net = synthetic_net(0, {0, 3}, {{2, {0}}, {4, {1}}});
+    net.is_sync_bus = true;
+    auto delays = DelayPrecomputeResult {};
+    delays.pairs.push_back(PairDelayInfo {
+        0, 0, 0, 0, 2, std::Vector<int> {2}, 2, 2});
+    delays.pairs.push_back(PairDelayInfo {
+        0, 1, 1, 3, 4, std::Vector<int> {2}, 2, 3});
+    const auto reference_path = shortest_unified_node_path(graph, 3, 4);
+    const auto reference_wirelength = unified_path_wirelength(graph, reference_path);
+    require(
+        ideal_net_wirelength(nullptr, graph, net, delays) == reference_wirelength * net.demands.size(),
+        "sync-bus ideal wirelength must scale by member count");
+}
+
 auto read_wirelength_golden(const std::string& golden_path) -> std::size_t {
     std::ifstream input {golden_path};
     if (!input.is_open()) {
@@ -2635,6 +2686,9 @@ auto main() -> int {
         test_validate_accepts_valid_two_pin();
         test_validate_detects_missing_arc();
         test_validate_detects_endpoint_mismatch();
+        test_unique_failed_net_ids_deduplicates();
+        test_ideal_two_pin_wirelength_matches_shortest_path();
+        test_ideal_sync_bus_wirelength_scales_by_members();
         test_wirelength_matches_testlength_golden();
         std::cout << "test_ILP_unit: all tests passed\n";
         return 0;

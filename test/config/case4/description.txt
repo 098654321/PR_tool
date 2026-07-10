@@ -7,12 +7,14 @@ COB array = 9 * 12
 
 
 五类互连统计：
-1. chiplet -> 0/1 port: 49 根（49个bump，nege25 + pose24）
+1. chiplet -> 0/1 port: 64 根（64个bump，nege32 + pose32）
 2. chiplet与I/O port之间的bus：3根，位宽4bit
 3. chiplet之间的bus：
-    - 12bit位宽：15根
-    - 20bit位宽：15根
-4. chiplet与I/O port之间的普通互连：39根
+    - 12bit位宽：13根
+    - 20bit位宽：14根
+    - 23bit位宽：1根
+    - 14bit位宽：2根
+4. chiplet与I/O port之间的普通互连：103根
 5. chiplet之间的普通互连：0根
 
 I/O端口数量：83个

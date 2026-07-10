@@ -3,6 +3,7 @@
 #include "delay/pair_delay_precompute.hh"
 #include "graph/unified_routing_graph.hh"
 #include "sat/routing_path_log.hh"
+#include "sat/routing_round_diagnostics.hh"
 #include "sat/routing_solution_validate.hh"
 #include "sat/sat_encoding_stats.hh"
 #include "sat/sat_solution_extract.hh"
@@ -150,9 +151,7 @@ auto solve_with_feedback(
     }
 
     for (std::size_t round = 0; round < options.max_feedback_rounds; ++round) {
-        if (options.verbose_level >= 1) {
-            debug::info_fmt("feedback round={} begin", round);
-        }
+        log_feedback_round_begin(round);
 
         const auto precompute_begin = std::chrono::steady_clock::now();
         apply_state_to_nets(problem_state, nets);
@@ -225,6 +224,7 @@ auto solve_with_feedback(
                     out.num_vars,
                     out.num_clauses,
                     round);
+                log_feedback_round_end(round, FeedbackRoundStatus::MemoryLimit);
                 return out;
             }
 
@@ -248,6 +248,8 @@ auto solve_with_feedback(
                     out.solve_ms,
                     out.total_wirelength,
                     round);
+                log_non_shortest_nets(interposer, graph, nets, delays, out);
+                log_feedback_round_end(round, FeedbackRoundStatus::SatSuccess);
                 return out;
             }
 
@@ -259,10 +261,12 @@ auto solve_with_feedback(
                     out.num_vars,
                     out.num_clauses,
                     round);
+                log_feedback_round_end(round, FeedbackRoundStatus::SolverError);
                 return out;
             }
 
             const auto critical = collect_critical_pairs(model, solve_result, problem_state);
+            log_failed_nets(nets, critical);
             if (options.verbose_level >= 1) {
                 for (const auto& key : critical) {
                     const auto* pair = find_pair_state(problem_state, key);
@@ -293,14 +297,17 @@ auto solve_with_feedback(
                 debug::error_fmt(
                     "unified SAT failed: UNSAT after full-chip bbox expansion (round={})",
                     round);
+                log_feedback_round_end(round, FeedbackRoundStatus::UnsatExhausted);
                 return out;
             }
+            log_feedback_round_end(round, FeedbackRoundStatus::UnsatExpand);
         }
         catch (const MemoryLimitExceeded&) {
             out.message = "MEMORY_LIMIT";
             out.num_vars = session.num_vars();
             out.num_clauses = session.num_clauses();
             out.feedback_rounds = round;
+            log_feedback_round_end(round, FeedbackRoundStatus::MemoryLimit);
             return out;
         }
     }
@@ -310,6 +317,9 @@ auto solve_with_feedback(
     debug::error_fmt(
         "unified SAT failed: exceeded max_feedback_rounds={}",
         options.max_feedback_rounds);
+    log_feedback_round_end(
+        options.max_feedback_rounds,
+        FeedbackRoundStatus::MaxRoundsExceeded);
     return out;
 }
 

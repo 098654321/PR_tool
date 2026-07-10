@@ -57,6 +57,8 @@ algorithm/test_ILP/
 | `scope/pair_routing_state` | per-pair `delays`/`pair_bbox`；`apply_initial_search_padding`（CLI 首轮 scope/delay 预扩展）；fanout/bus/PNnet 同步；全片扩 |
 | `delay/pair_delay_precompute` | 普通 BFS 求 `d_min`；当前 `d_max` 内前向+反向精确可达 mask；source unit mask；PNnet 从 \(r_n\) |
 | `sat/routing_feedback` | UNSAT core 驱动 scope/delay 扩展；显式 `Expanded/Exhausted` 状态；每轮新建 `CadicalSession` |
+| `sat/routing_round_diagnostics` | 反馈轮次星号框、UNSAT 失败 net 汇总、SAT 成功后非最短 net 线长对比（诊断日志，不改求解结果） |
+| `sat/ideal_shortest_wirelength` | 按 net 类型计算理想最短 `net_wirelength` 下界（2-pin/bus 用 UnifiedGraph BFS，fanout/PNnet 用 Interposer maze 树） |
 | `sat/unified_sat_scope` | per-net 紧凑 scope；PNnet 强制含 \(r_n\)、全部候选 track、虚拟弧 |
 | `sat/unified_sat_encoder` | 按有效 mask 稀疏创建 `D`/`A`；Bnet `Q(s,u)` ExactlyOne 与 `A⇒Q`；`α⇒⋁D`；PNnet track \(d\neq1\) 禁止 |
 | `sat/encode_tob_special` | `A⇒D`、三类物理连接 `Y` 聚合、`Y⇒M_g/¬M_g`、四类 partial matching |
