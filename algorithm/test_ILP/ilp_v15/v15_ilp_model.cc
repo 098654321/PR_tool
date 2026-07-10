@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <debug/debug.hh>
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -18,19 +19,13 @@ namespace {
 
 constexpr int kModeGroupCount = 16 * 64;
 
-struct CommodityVars {
+struct SegmentVars {
     std::map<int, GRBVar> f_by_arc;
-    std::map<int, GRBVar> x_by_arc;
-    std::map<int, GRBVar> y_by_node;
 };
 
-// This domain reduction is exact: an arc can participate in a commodity only
-// when its endpoints remain usable and it lies on a directed source-to-sink
-// walk inside the SAT scope.  In particular, resources fixed by an unselected
-// net never need ILP variables.
-struct CommodityDomain {
-    std::Vector<int> node_ids;
-    std::Vector<int> arc_ids;
+struct ParentVars {
+    std::map<int, GRBVar> x_by_arc;
+    std::map<int, GRBVar> y_by_node;
 };
 
 auto is_physical_node(const UnifiedGraph& graph, int node) -> bool {
@@ -45,93 +40,6 @@ auto is_wirelength_node(const UnifiedGraph& graph, int node) -> bool {
     }
     const auto kind = graph.nodes[static_cast<std::size_t>(node)].kind;
     return kind == UnifiedNodeKind::Track || kind == UnifiedNodeKind::Bump;
-}
-
-auto contains_sink(const IlpCommodity& commodity, int node) -> bool {
-    return std::find(commodity.sink_nodes.begin(), commodity.sink_nodes.end(), node)
-        != commodity.sink_nodes.end();
-}
-
-auto build_commodity_domain(
-    const UnifiedGraph& graph,
-    const UnifiedSatNetScope& scope,
-    const IlpCommodity& commodity,
-    const V15LockedResources& locked
-) -> CommodityDomain {
-    auto allowed = std::Vector<bool>(graph.nodes.size(), false);
-    for (const int node : scope.node_ids) {
-        const bool endpoint = node == commodity.source_node || contains_sink(commodity, node);
-        const bool locked_node = is_physical_node(graph, node)
-            && static_cast<std::size_t>(node) < locked.node_used.size()
-            && locked.node_used[static_cast<std::size_t>(node)];
-        allowed[static_cast<std::size_t>(node)] = endpoint || !locked_node;
-    }
-
-    auto candidate_arcs = std::Vector<int> {};
-    auto forward = std::Vector<std::Vector<int>>(graph.nodes.size());
-    auto reverse = std::Vector<std::Vector<int>>(graph.nodes.size());
-    for (const int arc_id : scope.arc_ids) {
-        const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
-        if (!allowed[static_cast<std::size_t>(arc.u)] || !allowed[static_cast<std::size_t>(arc.v)]) {
-            continue;
-        }
-        candidate_arcs.push_back(arc_id);
-        forward[static_cast<std::size_t>(arc.u)].push_back(arc.v);
-        reverse[static_cast<std::size_t>(arc.v)].push_back(arc.u);
-    }
-
-    auto reachable_from_source = std::Vector<bool>(graph.nodes.size(), false);
-    auto queue = std::queue<int> {};
-    if (allowed[static_cast<std::size_t>(commodity.source_node)]) {
-        reachable_from_source[static_cast<std::size_t>(commodity.source_node)] = true;
-        queue.push(commodity.source_node);
-    }
-    while (!queue.empty()) {
-        const int node = queue.front();
-        queue.pop();
-        for (const int next : forward[static_cast<std::size_t>(node)]) {
-            if (!reachable_from_source[static_cast<std::size_t>(next)]) {
-                reachable_from_source[static_cast<std::size_t>(next)] = true;
-                queue.push(next);
-            }
-        }
-    }
-
-    auto can_reach_sink = std::Vector<bool>(graph.nodes.size(), false);
-    for (const int sink : commodity.sink_nodes) {
-        if (allowed[static_cast<std::size_t>(sink)] && !can_reach_sink[static_cast<std::size_t>(sink)]) {
-            can_reach_sink[static_cast<std::size_t>(sink)] = true;
-            queue.push(sink);
-        }
-    }
-    while (!queue.empty()) {
-        const int node = queue.front();
-        queue.pop();
-        for (const int previous : reverse[static_cast<std::size_t>(node)]) {
-            if (!can_reach_sink[static_cast<std::size_t>(previous)]) {
-                can_reach_sink[static_cast<std::size_t>(previous)] = true;
-                queue.push(previous);
-            }
-        }
-    }
-
-    auto out = CommodityDomain {};
-    for (const int node : scope.node_ids) {
-        if (reachable_from_source[static_cast<std::size_t>(node)]
-            && can_reach_sink[static_cast<std::size_t>(node)]) {
-            out.node_ids.push_back(node);
-        }
-    }
-    for (const int arc_id : candidate_arcs) {
-        const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
-        if (reachable_from_source[static_cast<std::size_t>(arc.u)]
-            && can_reach_sink[static_cast<std::size_t>(arc.u)]
-            && reachable_from_source[static_cast<std::size_t>(arc.v)]
-            && can_reach_sink[static_cast<std::size_t>(arc.v)]) {
-            out.arc_ids.push_back(arc_id);
-        }
-    }
-    return out;
 }
 
 auto use_expression_for_switch(
@@ -160,8 +68,7 @@ auto gurobi_status_name(int status) -> std::String {
 
 auto solve_v15_ilp_model(
     const UnifiedGraph& graph,
-    const std::Vector<UnifiedSatNetScope>& scopes,
-    const std::Vector<IlpCommodity>& commodities,
+    const V15PrepareResult& prepared,
     const V15LockedResources& locked,
     const V15IlpOptimizeOptions& options,
     const V15MipStart& mip_start
@@ -176,46 +83,69 @@ auto solve_v15_ilp_model(
         auto env = GRBEnv {true};
         env.set(GRB_IntParam_OutputFlag, 1);
         env.set(GRB_IntParam_LogToConsole, 0);
-        // The joint case7 model is sparse but large.  Dual simplex avoids the
-        // concurrent barrier's substantially higher root-relaxation memory;
-        // one thread further reduces the optional post-pass RSS without
-        // changing the MIP or its gap criterion.
-        env.set(GRB_IntParam_Method, 1);
+        env.set(GRB_IntParam_Method, -1);
         env.set(GRB_IntParam_Threads, 1);
+        // Large segment models already have a feasible SAT-derived MIP start.
+        // Favor finding and improving incumbents over an expensive aggressive
+        // presolve/proof phase, while retaining Gurobi's default no-limit run.
+        env.set(GRB_IntParam_Presolve, -1);
+        env.set(GRB_IntParam_PreSparsify, -1);
+        env.set(GRB_IntParam_Symmetry, -1);
+        env.set(GRB_IntParam_MIPFocus, 1);
+        env.set(GRB_IntParam_Cuts, -1);
         env.set(GRB_StringParam_LogFile, log_path.string());
         env.start();
         auto model = GRBModel {env};
         model.set(GRB_IntAttr_ModelSense, GRB_MINIMIZE);
 
-        auto vars = std::Vector<CommodityVars>(commodities.size());
-        auto domains = std::Vector<CommodityDomain>(commodities.size());
+        auto segment_vars = std::Vector<SegmentVars>(prepared.segments.size());
+        auto parent_vars = std::Vector<ParentVars>(prepared.parents.size());
+        auto parent_arcs_by_id = std::Vector<std::set<int>>(prepared.parents.size());
+        auto parent_nodes_by_id = std::Vector<std::set<int>>(prepared.parents.size());
+
         auto objective = GRBLinExpr {0.0};
-        for (const auto& commodity : commodities) {
-            if (commodity.scope_index >= scopes.size() || commodity.commodity_id >= vars.size()) {
-                throw std::invalid_argument("v15 commodity references an invalid scope or ID");
-            }
-            const auto& scope = scopes[commodity.scope_index];
-            auto& cv = vars[commodity.commodity_id];
-            auto& domain = domains[commodity.commodity_id];
-            domain = build_commodity_domain(graph, scope, commodity, locked);
-            for (const int node : domain.node_ids) {
-                if (!is_physical_node(graph, node)) {
-                    continue;
+        for (const auto& parent : prepared.parents) {
+            auto& pv = parent_vars[parent.parent_id];
+            auto& arcs = parent_arcs_by_id[parent.parent_id];
+            auto& nodes = parent_nodes_by_id[parent.parent_id];
+            for (const std::size_t segment_id : parent.segment_ids) {
+                const auto& segment = prepared.segments[segment_id];
+                for (const int arc_id : segment.scope.arc_ids) {
+                    arcs.insert(arc_id);
                 }
+                for (const int node : segment.scope.node_ids) {
+                    if (is_physical_node(graph, node)) {
+                        nodes.insert(node);
+                    }
+                }
+            }
+            for (const int arc_id : arcs) {
+                pv.x_by_arc.emplace(arc_id, model.addVar(0.0, 1.0, 0.0, GRB_BINARY));
+                ++out.stats.x_vars;
+            }
+            for (const int node : nodes) {
                 auto y = model.addVar(0.0, 1.0, 0.0, GRB_BINARY);
-                cv.y_by_node.emplace(node, y);
+                pv.y_by_node.emplace(node, y);
                 if (is_wirelength_node(graph, node)) {
                     objective += y;
                 }
                 ++out.stats.y_vars;
             }
-            for (const int arc_id : domain.arc_ids) {
-                auto f = model.addVar(0.0, commodity.k, 0.0, GRB_INTEGER);
-                auto x = model.addVar(0.0, 1.0, 0.0, GRB_BINARY);
-                cv.f_by_arc.emplace(arc_id, f);
-                cv.x_by_arc.emplace(arc_id, x);
+            if (options.verbose_level >= 1) {
+                debug::info_fmt(
+                    "v15 parent net={} id={} segments={} arcs={} nodes={}",
+                    parent.routing_net_id,
+                    parent.parent_id,
+                    parent.segment_ids.size(),
+                    arcs.size(),
+                    nodes.size());
+            }
+        }
+        for (const auto& segment : prepared.segments) {
+            auto& sv = segment_vars[segment.segment_id];
+            for (const int arc_id : segment.scope.arc_ids) {
+                sv.f_by_arc.emplace(arc_id, model.addVar(0.0, 1.0, 0.0, GRB_BINARY));
                 ++out.stats.f_vars;
-                ++out.stats.x_vars;
             }
         }
         model.setObjective(objective, GRB_MINIMIZE);
@@ -228,72 +158,122 @@ auto solve_v15_ilp_model(
         }
         model.update();
 
-        for (const auto& commodity : commodities) {
-            const auto& domain = domains[commodity.commodity_id];
-            auto& cv = vars[commodity.commodity_id];
-            for (const int arc_id : domain.arc_ids) {
+        for (const auto& segment : prepared.segments) {
+            auto& sv = segment_vars[segment.segment_id];
+            const auto& parent = prepared.parents[segment.parent_id];
+            auto& pv = parent_vars[parent.parent_id];
+            for (const int arc_id : segment.scope.arc_ids) {
+                const auto f = sv.f_by_arc.at(arc_id);
+                const auto x = pv.x_by_arc.at(arc_id);
+                model.addConstr(f <= x);
+                ++out.stats.constraints;
+            }
+            for (const int node : segment.scope.node_ids) {
+                auto out_f = GRBLinExpr {0.0};
+                auto in_f = GRBLinExpr {0.0};
+                for (const int arc_id : graph.out_arc_ids[static_cast<std::size_t>(node)]) {
+                    if (const auto it = sv.f_by_arc.find(arc_id); it != sv.f_by_arc.end()) {
+                        out_f += it->second;
+                    }
+                }
+                for (const int arc_id : graph.in_arc_ids[static_cast<std::size_t>(node)]) {
+                    if (const auto it = sv.f_by_arc.find(arc_id); it != sv.f_by_arc.end()) {
+                        in_f += it->second;
+                    }
+                }
+                int balance = 0;
+                if (node == segment.endpoint_a) {
+                    balance = 1;
+                }
+                else if (node == segment.endpoint_b) {
+                    balance = -1;
+                }
+                model.addConstr(out_f - in_f == balance);
+                ++out.stats.constraints;
+            }
+        }
+
+        for (const auto& parent : prepared.parents) {
+            auto& pv = parent_vars[parent.parent_id];
+            const auto& arcs = parent_arcs_by_id[parent.parent_id];
+            for (const int arc_id : arcs) {
+                auto sum_f = GRBLinExpr {0.0};
+                for (const std::size_t segment_id : parent.segment_ids) {
+                    const auto& sv = segment_vars[segment_id];
+                    if (const auto it = sv.f_by_arc.find(arc_id); it != sv.f_by_arc.end()) {
+                        sum_f += it->second;
+                    }
+                }
+                model.addConstr(pv.x_by_arc.at(arc_id) <= sum_f);
+                ++out.stats.constraints;
+            }
+
+            for (const int node : parent_nodes_by_id[parent.parent_id]) {
+                auto out_x = GRBLinExpr {0.0};
+                auto in_x = GRBLinExpr {0.0};
+                for (const int arc_id : graph.out_arc_ids[static_cast<std::size_t>(node)]) {
+                    if (const auto it = pv.x_by_arc.find(arc_id); it != pv.x_by_arc.end()) {
+                        out_x += it->second;
+                    }
+                }
+                for (const int arc_id : graph.in_arc_ids[static_cast<std::size_t>(node)]) {
+                    if (const auto it = pv.x_by_arc.find(arc_id); it != pv.x_by_arc.end()) {
+                        in_x += it->second;
+                    }
+                }
+                if (node != parent.root_node) {
+                    model.addConstr(in_x == pv.y_by_node.at(node));
+                    ++out.stats.constraints;
+                }
+            }
+
+            for (const auto& [arc_id, x] : pv.x_by_arc) {
                 const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
-                const auto f = cv.f_by_arc.at(arc_id);
-                const auto x = cv.x_by_arc.at(arc_id);
-                model.addConstr(f >= x);
-                model.addConstr(f <= commodity.k * x);
-                out.stats.constraints += 2;
-                if (const auto it = cv.y_by_node.find(arc.u); it != cv.y_by_node.end()) {
+                if (const auto it = pv.y_by_node.find(arc.u); it != pv.y_by_node.end()) {
                     model.addConstr(x <= it->second);
                     ++out.stats.constraints;
                 }
-                if (const auto it = cv.y_by_node.find(arc.v); it != cv.y_by_node.end()) {
+                if (const auto it = pv.y_by_node.find(arc.v); it != pv.y_by_node.end()) {
                     model.addConstr(x <= it->second);
                     ++out.stats.constraints;
                 }
             }
 
-            for (const int node : domain.node_ids) {
-                auto out_f = GRBLinExpr {0.0};
-                auto in_f = GRBLinExpr {0.0};
-                auto out_x = GRBLinExpr {0.0};
-                auto in_x = GRBLinExpr {0.0};
-                for (const int arc_id : graph.out_arc_ids[static_cast<std::size_t>(node)]) {
-                    if (const auto it = cv.f_by_arc.find(arc_id); it != cv.f_by_arc.end()) {
-                        out_f += it->second;
-                        out_x += cv.x_by_arc.at(arc_id);
-                    }
+            auto in_at_root = GRBLinExpr {0.0};
+            for (const int arc_id : graph.in_arc_ids[static_cast<std::size_t>(parent.root_node)]) {
+                if (const auto it = pv.x_by_arc.find(arc_id); it != pv.x_by_arc.end()) {
+                    in_at_root += it->second;
                 }
-                for (const int arc_id : graph.in_arc_ids[static_cast<std::size_t>(node)]) {
-                    if (const auto it = cv.f_by_arc.find(arc_id); it != cv.f_by_arc.end()) {
-                        in_f += it->second;
-                        in_x += cv.x_by_arc.at(arc_id);
-                    }
-                }
-                int balance = 0;
-                if (node == commodity.source_node) {
-                    balance = commodity.k;
-                }
-                else if (contains_sink(commodity, node)) {
-                    balance = -1;
-                }
-                model.addConstr(out_f - in_f == balance);
-                ++out.stats.constraints;
+            }
+            model.addConstr(in_at_root == 0.0);
+            ++out.stats.constraints;
 
-                if (node == commodity.source_node) {
-                    model.addConstr(in_x == 0.0);
-                    ++out.stats.constraints;
-                    if (const auto it = cv.y_by_node.find(node); it != cv.y_by_node.end()) {
-                        model.addConstr(it->second == 1.0);
-                        ++out.stats.constraints;
+            for (const int sink : parent.origin_sinks) {
+                auto out_at_sink = GRBLinExpr {0.0};
+                for (const int arc_id : graph.out_arc_ids[static_cast<std::size_t>(sink)]) {
+                    if (const auto it = pv.x_by_arc.find(arc_id); it != pv.x_by_arc.end()) {
+                        out_at_sink += it->second;
                     }
                 }
-                else if (const auto it = cv.y_by_node.find(node); it != cv.y_by_node.end()) {
-                    model.addConstr(in_x == it->second);
+                model.addConstr(out_at_sink == 0.0);
+                ++out.stats.constraints;
+                if (const auto it = pv.y_by_node.find(sink); it != pv.y_by_node.end()) {
+                    model.addConstr(it->second == 1.0);
                     ++out.stats.constraints;
                 }
-                if (contains_sink(commodity, node)) {
-                    model.addConstr(out_x == 0.0);
+            }
+
+            if (is_physical_node(graph, parent.root_node)) {
+                if (const auto it = pv.y_by_node.find(parent.root_node); it != pv.y_by_node.end()) {
+                    model.addConstr(it->second == 1.0);
                     ++out.stats.constraints;
-                    if (const auto it = cv.y_by_node.find(node); it != cv.y_by_node.end()) {
-                        model.addConstr(it->second == 1.0);
-                        ++out.stats.constraints;
-                    }
+                }
+            }
+            for (const int track : parent.fixed_track_nodes) {
+                if (const auto it = pv.y_by_node.find(track);
+                    it != pv.y_by_node.end()) {
+                    model.addConstr(it->second == 1.0);
+                    ++out.stats.constraints;
                 }
             }
         }
@@ -303,8 +283,8 @@ auto solve_v15_ilp_model(
                 continue;
             }
             auto occupancy = GRBLinExpr {0.0};
-            for (const auto& cv : vars) {
-                if (const auto it = cv.y_by_node.find(node); it != cv.y_by_node.end()) {
+            for (const auto& pv : parent_vars) {
+                if (const auto it = pv.y_by_node.find(node); it != pv.y_by_node.end()) {
                     occupancy += it->second;
                 }
             }
@@ -325,9 +305,8 @@ auto solve_v15_ilp_model(
                 arc.physical_switch_id,
                 locked.switch_used.contains(arc.physical_switch_id) ? 1.0 : 0.0);
         }
-        for (const auto& commodity : commodities) {
-            const auto& cv = vars[commodity.commodity_id];
-            for (const auto& [arc_id, x] : cv.x_by_arc) {
+        for (const auto& pv : parent_vars) {
+            for (const auto& [arc_id, x] : pv.x_by_arc) {
                 const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
                 if (arc.physical_switch_id >= 0) {
                     use_by_switch.at(arc.physical_switch_id) += x;
@@ -386,9 +365,9 @@ auto solve_v15_ilp_model(
         }
 
         auto bus_members = std::map<std::size_t, std::Vector<std::size_t>> {};
-        for (const auto& commodity : commodities) {
-            if (commodity.is_bus_member) {
-                bus_members[commodity.routing_net_id].push_back(commodity.commodity_id);
+        for (const auto& parent : prepared.parents) {
+            if (parent.is_bus_member) {
+                bus_members[parent.routing_net_id].push_back(parent.parent_id);
             }
         }
         for (const auto& [net_id, ids] : bus_members) {
@@ -397,14 +376,14 @@ auto solve_v15_ilp_model(
                 continue;
             }
             auto reference = GRBLinExpr {0.0};
-            for (const auto& [node, y] : vars[ids.front()].y_by_node) {
+            for (const auto& [node, y] : parent_vars[ids.front()].y_by_node) {
                 if (is_wirelength_node(graph, node)) {
                     reference += y;
                 }
             }
             for (std::size_t i = 1; i < ids.size(); ++i) {
                 auto length = GRBLinExpr {0.0};
-                for (const auto& [node, y] : vars[ids[i]].y_by_node) {
+                for (const auto& [node, y] : parent_vars[ids[i]].y_by_node) {
                     if (is_wirelength_node(graph, node)) {
                         length += y;
                     }
@@ -415,22 +394,27 @@ auto solve_v15_ilp_model(
         }
 
         if (mip_start.available) {
-            for (const auto& commodity : commodities) {
-                auto& cv = vars[commodity.commodity_id];
-                const auto selected_it = mip_start.selected_arc_ids.find(commodity.commodity_id);
-                const auto used_it = mip_start.used_node_ids.find(commodity.commodity_id);
-                for (auto& [arc_id, x] : cv.x_by_arc) {
-                    const bool selected = selected_it != mip_start.selected_arc_ids.end()
-                        && selected_it->second.contains(arc_id);
-                    x.set(GRB_DoubleAttr_Start, selected ? 1.0 : 0.0);
-                    const auto flow_it = mip_start.flow_by_arc.find({commodity.commodity_id, arc_id});
-                    cv.f_by_arc.at(arc_id).set(
-                        GRB_DoubleAttr_Start,
-                        flow_it == mip_start.flow_by_arc.end() ? 0.0 : flow_it->second);
+            for (const auto& segment : prepared.segments) {
+                auto& sv = segment_vars[segment.segment_id];
+                const auto flow_it = mip_start.segment_flow_arc_ids.find(segment.segment_id);
+                for (auto& [arc_id, f] : sv.f_by_arc) {
+                    const bool selected = flow_it != mip_start.segment_flow_arc_ids.end()
+                        && flow_it->second.contains(arc_id);
+                    f.set(GRB_DoubleAttr_Start, selected ? 1.0 : 0.0);
                 }
-                for (auto& [node, y] : cv.y_by_node) {
-                    const bool used = used_it != mip_start.used_node_ids.end()
-                        && used_it->second.contains(node);
+            }
+            for (const auto& parent : prepared.parents) {
+                auto& pv = parent_vars[parent.parent_id];
+                const auto arc_it = mip_start.parent_arc_ids.find(parent.parent_id);
+                const auto node_it = mip_start.parent_node_ids.find(parent.parent_id);
+                for (auto& [arc_id, x] : pv.x_by_arc) {
+                    const bool selected = arc_it != mip_start.parent_arc_ids.end()
+                        && arc_it->second.contains(arc_id);
+                    x.set(GRB_DoubleAttr_Start, selected ? 1.0 : 0.0);
+                }
+                for (auto& [node, y] : pv.y_by_node) {
+                    const bool used = node_it != mip_start.parent_node_ids.end()
+                        && node_it->second.contains(node);
                     y.set(GRB_DoubleAttr_Start, used ? 1.0 : 0.0);
                 }
             }
@@ -446,6 +430,9 @@ auto solve_v15_ilp_model(
         const auto build_done = std::chrono::steady_clock::now();
         out.stats.model_build_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             build_done - build_begin).count();
+        out.stats.parents = prepared.parents.size();
+        out.stats.segments = prepared.segments.size();
+
         const auto solve_begin = std::chrono::steady_clock::now();
         model.optimize();
         const auto solve_done = std::chrono::steady_clock::now();
@@ -469,24 +456,32 @@ auto solve_v15_ilp_model(
         out.stats.best_bound = model.get(GRB_DoubleAttr_ObjBound);
         out.stats.mip_gap = model.get(GRB_DoubleAttr_MIPGap);
 
-        for (const auto& commodity : commodities) {
-            auto solution = V15CommodityModelSolution {};
-            solution.commodity_id = commodity.commodity_id;
-            const auto& cv = vars[commodity.commodity_id];
-            for (const auto& [arc_id, x] : cv.x_by_arc) {
+        for (const auto& parent : prepared.parents) {
+            auto solution = V15ParentModelSolution {};
+            solution.parent_id = parent.parent_id;
+            const auto& pv = parent_vars[parent.parent_id];
+            for (const auto& [arc_id, x] : pv.x_by_arc) {
                 if (x.get(GRB_DoubleAttr_X) > 0.5) {
                     solution.selected_arc_ids.insert(arc_id);
-                    solution.flow_by_arc.emplace(
-                        arc_id,
-                        static_cast<int>(std::llround(cv.f_by_arc.at(arc_id).get(GRB_DoubleAttr_X))));
                 }
             }
-            for (const auto& [node, y] : cv.y_by_node) {
+            for (const auto& [node, y] : pv.y_by_node) {
                 if (y.get(GRB_DoubleAttr_X) > 0.5) {
                     solution.used_node_ids.insert(node);
                 }
             }
-            out.commodities.push_back(std::move(solution));
+            out.parents.push_back(std::move(solution));
+        }
+        for (const auto& segment : prepared.segments) {
+            auto solution = V15SegmentModelSolution {};
+            solution.segment_id = segment.segment_id;
+            const auto& sv = segment_vars[segment.segment_id];
+            for (const auto& [arc_id, f] : sv.f_by_arc) {
+                if (f.get(GRB_DoubleAttr_X) > 0.5) {
+                    solution.flow_arc_ids.insert(arc_id);
+                }
+            }
+            out.segments.push_back(std::move(solution));
         }
         for (int group = 0; group < kModeGroupCount; ++group) {
             out.mode_straight.emplace(

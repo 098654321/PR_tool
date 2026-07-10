@@ -91,6 +91,13 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
                 parse_non_negative_double(args[i], "-L");
             continue;
         }
+        if (arg == "-R") {
+            if (++i >= args.size()) {
+                throw std::invalid_argument("-R requires a non-negative integer argument");
+            }
+            options.ilp_segment_bbox_pad = parse_non_negative_int(args[i], "-R");
+            continue;
+        }
         if (arg.size() >= 2 && arg[0] == '-' && arg[1] == 'v') {
             bool all_v = true;
             for (std::size_t char_index = 1; char_index < arg.size(); ++char_index) {
@@ -111,6 +118,9 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
     }
     if (!options.enable_ilp_optimize && options.ilp_stretch_threshold_percent.has_value()) {
         throw std::invalid_argument("-L requires --ilp-optimize");
+    }
+    if (!options.enable_ilp_optimize && options.ilp_segment_bbox_pad.has_value()) {
+        throw std::invalid_argument("-R requires --ilp-optimize");
     }
     return options;
 }

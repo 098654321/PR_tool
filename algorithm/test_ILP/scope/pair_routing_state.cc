@@ -86,11 +86,15 @@ auto find_pair_state(const RoutingProblemState& state, const PairKey& key) -> co
     return &state.pairs[it->second];
 }
 
-auto append_delays(std::Vector<int>& delays, int d1, int d2) -> void {
-    delays.push_back(d1);
-    delays.push_back(d2);
+auto append_delay(std::Vector<int>& delays, int d) -> void {
+    delays.push_back(d);
     std::sort(delays.begin(), delays.end());
     delays.erase(std::unique(delays.begin(), delays.end()), delays.end());
+}
+
+auto append_delays(std::Vector<int>& delays, int d1, int d2) -> void {
+    append_delay(delays, d1);
+    append_delay(delays, d2);
 }
 
 auto max_delay(const std::Vector<int>& delays) -> int {
@@ -100,9 +104,15 @@ auto max_delay(const std::Vector<int>& delays) -> int {
     return *std::max_element(delays.begin(), delays.end());
 }
 
-auto expand_pair_delays(PairRoutingState& pair) -> void {
-    const int max_d = max_delay(pair.delays);
-    append_delays(pair.delays, max_d + 1, max_d + 2);
+auto expand_pair_delay_one(PairRoutingState& pair) -> void {
+    append_delay(pair.delays, max_delay(pair.delays) + 1);
+}
+
+auto apply_feedback_step_to_pair(PairRoutingState& pair, int net_failure_count) -> void {
+    expand_pair_delay_one(pair);
+    if (net_failure_count % 2 == 0) {
+        pair.pair_bbox = expand_pair_bbox_one_cell(pair.pair_bbox);
+    }
 }
 
 auto merge_delays_union(std::Vector<int>& target, const std::Vector<int>& extra) -> void {

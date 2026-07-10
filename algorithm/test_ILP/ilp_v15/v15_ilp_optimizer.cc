@@ -3,6 +3,7 @@
 #include "ilp_v15/v15_ilp_extract.hh"
 #include "ilp_v15/v15_ilp_model.hh"
 #include "ilp_v15/v15_ilp_prepare.hh"
+#include "ilp_v15/v15_ilp_segment.hh"
 #include "ilp_v15/v15_ilp_validate.hh"
 #include "sat/routing_path_log.hh"
 #include "sat/routing_round_diagnostics.hh"
@@ -46,6 +47,17 @@ auto status_name(V15IlpStatus status) -> const char* {
     return "UNKNOWN";
 }
 
+auto format_node_ids(const std::Vector<int>& nodes) -> std::String {
+    auto out = std::String {};
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+        if (index != 0) {
+            out += ",";
+        }
+        out += std::to_string(nodes[index]);
+    }
+    return out;
+}
+
 auto log_validation(const V15ValidationReport& report, int verbose_level) -> void {
     if (report.ok) {
         debug::info_fmt("v15 ILP validation: PASS paths={}", report.checked_paths);
@@ -83,8 +95,9 @@ auto optimize_v15_routes(
 
     debug::info(kV15Banner);
     debug::info_fmt(
-        "v15 ILP optimization begin: threshold={:.2f}% gurobi_log={}/v15_ilp.log",
+        "v15 ILP optimization begin: threshold={:.2f}% segment_bbox_pad={} gurobi_log={}/v15_ilp.log",
         options.stretch_threshold_percent,
+        options.segment_bbox_pad,
         options.gurobi_log_dir);
 
     const auto stretch = collect_net_stretch_info(interposer, graph, nets, delays, sat_result);
@@ -126,56 +139,90 @@ auto optimize_v15_routes(
     }
 
     try {
-        const auto commodities =
-            build_v15_commodities(graph, nets, scopes, out.selected_net_ids);
-        out.stats.commodities = commodities.size();
         const auto locked = collect_v15_locked_resources(graph, sat_result, out.selected_net_ids);
-        const auto mip_start = build_v15_mip_start(graph, commodities, sat_result);
-        std::size_t two_pin_commodities = 0;
-        std::size_t fanout_commodities = 0;
-        std::size_t bus_member_commodities = 0;
-        for (const auto& commodity : commodities) {
-            if (commodity.is_bus_member) {
-                ++bus_member_commodities;
+        const auto prepared = build_v15_parents_and_segments(
+            graph,
+            nets,
+            scopes,
+            sat_result,
+            out.selected_net_ids,
+            options.segment_bbox_pad,
+            locked);
+        out.stats.parents = prepared.parents.size();
+        out.stats.segments = prepared.segments.size();
+
+        const auto mip_start = build_v15_sat_mip_start(prepared, sat_result);
+        std::size_t decomposed_parents = 0;
+        std::size_t bus_parents = 0;
+        for (const auto& parent : prepared.parents) {
+            if (parent.is_bus_member) {
+                ++bus_parents;
             }
-            else if (commodity.k > 1) {
-                ++fanout_commodities;
+            if (parent.decomposed) {
+                ++decomposed_parents;
             }
-            else {
-                ++two_pin_commodities;
+            if (options.verbose_level >= 1) {
+                debug::info_fmt(
+                    "v15 parent id={} net={} fixed_sat_tracks=[{}] tree_nodes={}=>{} tree_edges={}=>{} virtual_hops={}",
+                    parent.parent_id,
+                    parent.routing_net_id,
+                    format_node_ids(parent.fixed_track_nodes),
+                    parent.tree_nodes_before_prune,
+                    parent.tree_nodes_after_prune,
+                    parent.tree_edges_before_prune,
+                    parent.tree_edges_after_prune,
+                    parent.fixed_track_nodes.size());
+            }
+        }
+        if (options.verbose_level >= 1) {
+            for (const auto& segment : prepared.segments) {
+                debug::info_fmt(
+                    "v15 segment guide coverage: PASS parent={} segment={} endpoints={}=>{} arcs={} virtual_hop={}",
+                    segment.parent_id,
+                    segment.segment_id,
+                    segment.endpoint_a,
+                    segment.endpoint_b,
+                    segment.guide_arc_ids.size(),
+                    segment.is_virtual_hop);
             }
         }
         std::size_t mip_x_count = 0;
         std::size_t mip_y_count = 0;
-        for (const auto& [commodity_id, arcs] : mip_start.selected_arc_ids) {
-            (void)commodity_id;
+        std::size_t mip_f_count = 0;
+        for (const auto& [parent_id, arcs] : mip_start.parent_arc_ids) {
+            (void)parent_id;
             mip_x_count += arcs.size();
         }
-        for (const auto& [commodity_id, nodes] : mip_start.used_node_ids) {
-            (void)commodity_id;
+        for (const auto& [parent_id, nodes] : mip_start.parent_node_ids) {
+            (void)parent_id;
             mip_y_count += nodes.size();
         }
+        for (const auto& [segment_id, arcs] : mip_start.segment_flow_arc_ids) {
+            (void)segment_id;
+            mip_f_count += arcs.size();
+        }
         debug::info_fmt(
-            "v15 ILP preparation: commodities={} two_pin={} fanout={} bus_member={} locked_nodes={} locked_switches={} mip_start={} F_start={} x_start={} y_start={}",
-            commodities.size(),
-            two_pin_commodities,
-            fanout_commodities,
-            bus_member_commodities,
+            "v15 ILP preparation: parents={} segments={} decomposed_parents={} bus_parents={} locked_nodes={} locked_switches={} mip_start={} F_start={} x_start={} y_start={}",
+            prepared.parents.size(),
+            prepared.segments.size(),
+            decomposed_parents,
+            bus_parents,
             std::count(locked.node_used.begin(), locked.node_used.end(), true),
             locked.switch_used.size(),
             mip_start.available,
-            mip_start.flow_by_arc.size(),
+            mip_f_count,
             mip_x_count,
             mip_y_count);
 
         const auto model_begin = std::chrono::steady_clock::now();
         const auto model_result =
-            solve_v15_ilp_model(graph, scopes, commodities, locked, options, mip_start);
+            solve_v15_ilp_model(graph, prepared, locked, options, mip_start);
         const auto model_end = std::chrono::steady_clock::now();
         out.stats = model_result.stats;
         out.stats.selected_nets = out.selected_net_ids.size();
         out.stats.locked_nets = nets.size() - out.selected_net_ids.size();
-        out.stats.commodities = commodities.size();
+        out.stats.parents = prepared.parents.size();
+        out.stats.segments = prepared.segments.size();
         if (out.stats.model_build_ms == 0) {
             out.stats.model_build_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 model_end - model_begin).count() - out.stats.solve_ms;
@@ -208,11 +255,18 @@ auto optimize_v15_routes(
         const auto extracted = extract_v15_routing_solution(
             graph,
             nets,
-            commodities,
+            prepared,
             model_result,
             sat_result,
             out.selected_net_ids);
-        const auto validation = validate_v15_routing_solution(graph, nets, scopes, extracted);
+        const auto validation = validate_v15_routing_solution(
+            graph,
+            nets,
+            scopes,
+            prepared,
+            model_result,
+            extracted,
+            out.selected_net_ids);
         log_validation(validation, options.verbose_level);
         if (!extracted.ok || !validation.ok) {
             out.status = V15IlpStatus::Failed;
@@ -249,6 +303,13 @@ auto optimize_v15_routes(
         debug::info_fmt("v15 ILP optimization end: status={}", status_name(out.status));
         debug::info(kV15Banner);
         return out;
+    }
+    catch (const V15PreparationInvariantError& error) {
+        debug::error_fmt(
+            "v15 ILP preparation invariant failed: {}; terminating without SAT fallback",
+            error.what());
+        debug::info(kV15Banner);
+        throw;
     }
     catch (const std::exception& error) {
         out.status = V15IlpStatus::Failed;

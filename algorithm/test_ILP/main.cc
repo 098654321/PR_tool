@@ -18,7 +18,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: xmake run test_ILP <config_path> [-v|-vv] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--ilp-optimize -L percent]";
+    "Usage: xmake run test_ILP <config_path> [-v|-vv] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--ilp-optimize -L percent [-R pad]]";
 
 auto get_peak_rss_mb() -> double {
     rusage usage {};
@@ -67,6 +67,8 @@ auto run_main(int argc, char** argv) -> int {
     options.ilp_optimize.enabled = cli.enable_ilp_optimize;
     options.ilp_optimize.stretch_threshold_percent =
         cli.ilp_stretch_threshold_percent.value_or(0.0);
+    options.ilp_optimize.segment_bbox_pad =
+        cli.ilp_segment_bbox_pad.value_or(0);
     options.ilp_optimize.verbose_level = cli.verbose_level;
     if (cli.enable_sat_log) {
         debug::info_fmt("CaDiCal solver logs enabled: directory={}", options.cadical.log_dir);
@@ -83,8 +85,9 @@ auto run_main(int argc, char** argv) -> int {
     }
     if (cli.enable_ilp_optimize) {
         debug::info_fmt(
-            "v15 ILP optimization enabled: threshold={:.2f}% gurobi_log_dir={}",
+            "v15 ILP optimization enabled: threshold={:.2f}% segment_bbox_pad={} gurobi_log_dir={}",
             options.ilp_optimize.stretch_threshold_percent,
+            options.ilp_optimize.segment_bbox_pad,
             options.ilp_optimize.gurobi_log_dir);
     }
 

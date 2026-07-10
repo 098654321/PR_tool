@@ -62,6 +62,18 @@ auto collect_critical_pairs(
     return critical;
 }
 
+auto critical_net_ids(const std::Vector<PairKey>& critical_pairs) -> std::set<std::size_t> {
+    auto out = std::set<std::size_t> {};
+    for (const auto& key : critical_pairs) {
+        out.insert(key.net_id);
+    }
+    return out;
+}
+
+auto increment_feedback_failure_count(RoutingProblemState& state, std::size_t net_id) -> int {
+    return ++state.feedback_failure_count_by_net[net_id];
+}
+
 } // namespace
 
 auto apply_feedback_expansion(
@@ -73,6 +85,7 @@ auto apply_feedback_expansion(
         return FeedbackExpansionStatus::Exhausted;
     }
 
+    const auto critical_nets = critical_net_ids(critical_pairs);
     auto full_critical_nets = std::set<std::size_t> {};
     for (const auto& key : critical_pairs) {
         const auto* pair = find_pair_state(state, key);
@@ -83,24 +96,42 @@ auto apply_feedback_expansion(
 
     auto touched_nets = std::set<std::size_t> {};
     if (!full_critical_nets.empty()) {
-        for (auto& pair : state.pairs) {
-            if (full_critical_nets.contains(pair.key.net_id)) {
+        for (const std::size_t net_id : critical_nets) {
+            if (full_critical_nets.contains(net_id)) {
+                increment_feedback_failure_count(state, net_id);
+            }
+        }
+
+        auto other_nets = std::set<std::size_t> {};
+        for (const auto& pair : state.pairs) {
+            if (!full_critical_nets.contains(pair.key.net_id)) {
+                other_nets.insert(pair.key.net_id);
+            }
+        }
+        for (const std::size_t net_id : other_nets) {
+            const int failure_count = increment_feedback_failure_count(state, net_id);
+            const auto net_it = state.pair_indices_by_net.find(net_id);
+            if (net_it == state.pair_indices_by_net.end()) {
                 continue;
             }
-            expand_pair_delays(pair);
-            pair.pair_bbox = expand_pair_bbox_one_cell(pair.pair_bbox);
-            touched_nets.insert(pair.key.net_id);
+            for (const std::size_t pair_index : net_it->second) {
+                apply_feedback_step_to_pair(state.pairs[pair_index], failure_count);
+            }
+            touched_nets.insert(net_id);
         }
     }
     else {
+        for (const std::size_t net_id : critical_nets) {
+            increment_feedback_failure_count(state, net_id);
+        }
         for (const auto& key : critical_pairs) {
             auto* pair = find_pair_state(state, key);
             if (pair == nullptr) {
                 continue;
             }
-            expand_pair_delays(*pair);
-            pair->pair_bbox = expand_pair_bbox_one_cell(pair->pair_bbox);
-            touched_nets.insert(pair->key.net_id);
+            const int failure_count = state.feedback_failure_count_by_net[key.net_id];
+            apply_feedback_step_to_pair(*pair, failure_count);
+            touched_nets.insert(key.net_id);
         }
     }
 

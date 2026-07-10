@@ -11,7 +11,7 @@
 3. **统一图**：`build_unified_graph`（track mesh + 16 TOB 子图）→ **`augment_graph_for_pnnet`**（每 PNnet 追加 `VirtualSource` 节点 \(r_n\) 及 \(r_n\to s_j\) 虚拟弧）→ **可选首轮扩展** `apply_initial_search_padding`（CLI `-s`/`-d`，见下）。
 4. **反馈环**（`solve_with_feedback`）：每轮 `apply_state_to_nets` → `build_all_scopes` → `compute_pair_delays(state)` → `build_unified_sat_model`（连通性仅由 `α_{s,t}⇒⋁D` 门控）→ `assume(α)` → CaDiCal `solve()`。
    - **SAT**：`extract_sat_solution` 从 sink 按 delay 递减回溯；PNnet 经虚拟弧回到 \(r_n\)，路径展示从**选中 track** 起算（扣 1 虚拟跳）。
-   - **UNSAT**：`failed(α)` 收集 critical pairs → `apply_feedback_expansion` 返回 `Expanded/Exhausted` → 扩 `delays`（`max+1,max+2`）与 `pair_bbox`（四边 ±1）→ fanout/bus/**PNnet 同 net 多汇**同步 → 全量重建 session/model；刚扩到全片仍重建求解一次，只有全片状态已求解仍 UNSAT 才 `Exhausted`；`MEMORY_LIMIT` 不扩边。
+   - **UNSAT**：`failed(α)` 收集 critical pairs → `apply_feedback_expansion` 返回 `Expanded/Exhausted` → 按 net 失败次数奇偶扩边：奇数次只加 `delays` 的 `max+1`，偶数次再加 `pair_bbox` 四边 ±1 → fanout/bus/**PNnet 同 net 多汇**同步 → 全量重建 session/model；critical net 已满片时其它 net 各自按本 net 失败计数扩边；刚扩到全片仍重建求解一次，只有全片状态已求解仍 UNSAT 才 `Exhausted`；`MEMORY_LIMIT` 不扩边。
 5. **首轮搜索扩展**（`apply_initial_search_padding`，图构建后、反馈环前执行一次；`UnifiedSatSolveOptions.initial_scope_pad` / `initial_delay_pad`；CLI `-s S` / `-d D`；默认均为 0）：
    - `-s S`：每个 `pair_bbox` 四边各外扩 S 格（重复 `expand_pair_bbox_one_cell` S 次）→ `apply_state_to_nets` 更新 `net.scope_bbox`。
    - `-d D`：在**当前** scope（若已 `-s` 则为扩后 scope）上 `build_all_scopes` + `compute_pair_delays` 得 `d_min`，再设 `delays={d_min,…,d_min+D}`。
@@ -66,7 +66,7 @@ algorithm/test_ILP/
 | `sat/routing_solution_validate` | SAT 结果诊断校验（路径结构、D/A 回放、跨网资源冲突、bus/PNnet 规则），仅记录日志不改 `out.ok` |
 | `sat/sat_solution_extract` | sink→source 回溯；PNnet 剥离 \(r_n\)、记录 `physical_source_node` |
 | `sat/sat_encoding_stats` | `-v`：dense/unit-eligible/active D/A、Q、aux、8 类 CNF |
-| `ilp_v15/` | 可选的第十五版 Gurobi MCF 后优化：candidate/commodity/MIP start、模型、提取、物理校验和阶段编排 |
+| `ilp_v15/` | 可选的第十五版 Gurobi segment/parent MCF 后优化：parent/segment 拆解、SAT guide MIP start、模型、提取、物理校验和阶段编排 |
 
 ### 变量与约束（v14）
 
@@ -80,9 +80,10 @@ algorithm/test_ILP/
 
 ### v15 可选后优化
 
-- 仅当同时给出 `--ilp-optimize -L <非负百分比>` 时启动；未启用时不会创建 Gurobi 环境或 `./gurobi/`。
-- 对增长率 `actual/shortest-1 >= L` 的整网重布；普通 2-pin、TrackToBumps 多汇树和 PNnet/TracksToBumps 虚拟根均使用 `F/x/y` MCF。SyncNet 拆为 2-pin commodity，并以 (L) 等长约束连接。
+- 仅当同时给出 `--ilp-optimize -L <非负百分比>` 时启动；`-R <非负整数>` 也只能与该组合一起使用，省略时默认 `R=0`；未启用时不会创建 Gurobi 环境或 `./gurobi/`。
+- 对增长率 `actual/shortest-1 >= L` 的整网重布。普通 2-pin、SyncBus member 各为一个 parent+segment；TrackToBumps / PNnet 多扇出先拆 segment，ILP 用 parent 级 `x/y` 与 segment 级 `f` 建模。SyncBus 以 parent 线长等长约束连接。
 - 未选 net 的物理节点与 TOB 开关被锁定；模型包含 TOB physical-switch 唯一性、Bump-HLine/HLine-VLine partial matching 和最后一级 straight/swap mode 约束。Gurobi 异常、无可用解或提取校验失败会记录 `fallback_to_v14=true` 并完整回退 SAT 解。
+- `--ilp-optimize` 的 MIP start 来自 SAT 恢复树 / segment `guide` 弧，填 `f`（segment）与 `x/y`（parent）；`M_g` 仍来自 SAT `vline_mode_straight_by_group`。PNnet 固定**全部** SAT 实际选中的 candidate track，每个 track 保留唯一 `r_n→track` 虚拟首跳；普通 segment 禁止虚拟节点。若 BFS 去除多 source 重汇合后会使任一已选 track 脱离所有 sink，当前单入边 parent-tree 表达不了该结构，会作为不变量错误终止而非静默改源。多扇出 / PNnet 按 BFS 父树剪除死支后拆成 2-pin segment（`-R` 控制 bbox 外推，默认 0）；guide 自洽或覆盖检查失败同样终止，不回退 SAT。`-v` 额外记录已选 track、剪枝前后树规模和 guide coverage。
 - 原生日志固定覆盖 `./gurobi/v15_ilp.log`（不输出到控制台）；`debug.log` 记录筛选、模型规模、耗时、状态、前后线长及校验结果。
 
 ### v14 不支持
@@ -111,7 +112,7 @@ xmake build test_ILP_unit
 
 `-v` 日志含 scope、delay、`feedback round=`、`feedback critical`、`unified SAT encoding stats`（D/A 的 dense、unit-eligible、active 数量与比例，Q/aux 变量，8 类 CNF）、路径（PNnet 含选中 track；每个 net 末行 `net_wirelength=` 为 net 内 bump+track 去重计数）；成功时 `unified SAT ok` / `unified SAT routing succeeded` 含 `total_wirelength=`（各 net 的 `net_wirelength` 之和，net 内共享 track/bump 只计一次）；`delay_precompute_ms` 是当前轮 scope 构建、最短路和稀疏 mask 预计算时间，`model_build_ms` 是当前轮 CNF 构建并流入 CaDiCaL 的时间，`round_solve_ms` 是当前轮 CaDiCaL 求解时间，`total_solve_ms` 是所有反馈轮累计 CaDiCaL 时间，`run_main total elapsed` 是完整端到端时间。
 
-反馈扩边示例：`feedback round=2 critical net=3 demand=1 delays=10->10,11,12 bbox=(2,5,0,6)->(1,6,0,7)`。
+反馈扩边示例：`feedback round=2 critical net=3 demand=1 delays=10->10,11 bbox=(2,5,0,6)->(2,5,0,6)`（奇数次）；`feedback round=3 ... delays=10,11->10,11,12 bbox=(2,5,0,6)->(1,6,0,7)`（偶数次）。
 
 ## 已知限制
 

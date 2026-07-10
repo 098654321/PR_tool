@@ -46,15 +46,153 @@ auto add_violation(V15ValidationReport& report, std::String message) -> void {
     report.violations.push_back(std::move(message));
 }
 
+auto parent_solution_by_id(
+    const V15IlpModelResult& result,
+    std::size_t parent_id
+) -> const V15ParentModelSolution* {
+    const auto it = std::find_if(
+        result.parents.begin(),
+        result.parents.end(),
+        [&](const V15ParentModelSolution& solution) { return solution.parent_id == parent_id; });
+    return it == result.parents.end() ? nullptr : &*it;
+}
+
+auto segment_solution_by_id(
+    const V15IlpModelResult& result,
+    std::size_t segment_id
+) -> const V15SegmentModelSolution* {
+    const auto it = std::find_if(
+        result.segments.begin(),
+        result.segments.end(),
+        [&](const V15SegmentModelSolution& solution) { return solution.segment_id == segment_id; });
+    return it == result.segments.end() ? nullptr : &*it;
+}
+
+auto validate_v15_model_solution(
+    const UnifiedGraph& graph,
+    const V15PrepareResult& prepared,
+    const V15IlpModelResult& model_result,
+    V15ValidationReport& report
+) -> void {
+    for (const auto& parent : prepared.parents) {
+        const auto* parent_solution = parent_solution_by_id(model_result, parent.parent_id);
+        if (parent_solution == nullptr) {
+            add_violation(report, std::format("v15 parent {} has no model solution", parent.parent_id));
+            continue;
+        }
+        auto parent_scope_arcs = std::set<int> {};
+        auto flow_supported_arcs = std::set<int> {};
+        auto selected_virtual_tracks = std::set<int> {};
+
+        for (const std::size_t segment_id : parent.segment_ids) {
+            if (segment_id >= prepared.segments.size()) {
+                add_violation(report, std::format(
+                    "v15 parent {} references missing segment {}", parent.parent_id, segment_id));
+                continue;
+            }
+            const auto& segment = prepared.segments[segment_id];
+            const auto* segment_solution = segment_solution_by_id(model_result, segment_id);
+            if (segment_solution == nullptr) {
+                add_violation(report, std::format("v15 segment {} has no flow solution", segment_id));
+                continue;
+            }
+            const auto scope_arcs = std::set<int>(segment.scope.arc_ids.begin(), segment.scope.arc_ids.end());
+            const auto scope_nodes = std::set<int>(segment.scope.node_ids.begin(), segment.scope.node_ids.end());
+            parent_scope_arcs.insert(scope_arcs.begin(), scope_arcs.end());
+            auto flow_in = std::map<int, int> {};
+            auto flow_out = std::map<int, int> {};
+            for (const int arc_id : segment_solution->flow_arc_ids) {
+                if (!scope_arcs.contains(arc_id)
+                    || arc_id < 0
+                    || static_cast<std::size_t>(arc_id) >= graph.arcs.size()) {
+                    add_violation(report, std::format(
+                        "v15 segment {} flow uses arc {} outside its scope", segment_id, arc_id));
+                    continue;
+                }
+                const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
+                ++flow_out[arc.u];
+                ++flow_in[arc.v];
+                flow_supported_arcs.insert(arc_id);
+            }
+            for (const int node : scope_nodes) {
+                const int out = flow_out[node];
+                const int in = flow_in[node];
+                const int expected = node == segment.endpoint_a ? 1 : node == segment.endpoint_b ? -1 : 0;
+                if (out - in != expected) {
+                    add_violation(report, std::format(
+                        "v15 segment {} violates unit flow at node {}: out-in={} expected={}",
+                        segment_id,
+                        node,
+                        out - in,
+                        expected));
+                }
+            }
+        }
+
+        for (const int arc_id : parent_solution->selected_arc_ids) {
+            if (!parent_scope_arcs.contains(arc_id)) {
+                add_violation(report, std::format(
+                    "v15 parent {} selects arc {} outside all segment scopes",
+                    parent.parent_id,
+                    arc_id));
+                continue;
+            }
+            if (!flow_supported_arcs.contains(arc_id)) {
+                add_violation(report, std::format(
+                    "v15 parent {} selects arc {} without segment flow support",
+                    parent.parent_id,
+                    arc_id));
+            }
+            if (arc_id >= 0 && static_cast<std::size_t>(arc_id) < graph.arcs.size()) {
+                const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
+                if (graph.nodes[static_cast<std::size_t>(arc.u)].kind == UnifiedNodeKind::VirtualSource) {
+                    selected_virtual_tracks.insert(arc.v);
+                    if (arc.u != parent.root_node
+                        || std::find(
+                               parent.fixed_track_nodes.begin(),
+                               parent.fixed_track_nodes.end(),
+                               arc.v)
+                            == parent.fixed_track_nodes.end()) {
+                        add_violation(report, std::format(
+                            "v15 parent {} selects non-SAT PN virtual arc {}->{}",
+                            parent.parent_id,
+                            arc.u,
+                            arc.v));
+                    }
+                }
+            }
+        }
+        for (const int track : parent.fixed_track_nodes) {
+            if (!parent_solution->used_node_ids.contains(track)) {
+                add_violation(report, std::format(
+                    "v15 parent {} does not use fixed SAT-selected track {}",
+                    parent.parent_id,
+                    track));
+            }
+        }
+        if (!parent.fixed_track_nodes.empty()
+            && selected_virtual_tracks
+                != std::set<int>(parent.fixed_track_nodes.begin(), parent.fixed_track_nodes.end())) {
+            add_violation(report, std::format(
+                "v15 parent {} virtual root tracks differ from SAT-selected tracks",
+                parent.parent_id));
+        }
+    }
+}
+
 } // namespace
 
 auto validate_v15_routing_solution(
     const UnifiedGraph& graph,
     const std::Vector<RoutingNet>& nets,
     const std::Vector<UnifiedSatNetScope>& scopes,
-    const SatRoutingResult& result
+    const V15PrepareResult& prepared,
+    const V15IlpModelResult& model_result,
+    const SatRoutingResult& result,
+    const std::set<std::size_t>& v15_selected_net_ids
 ) -> V15ValidationReport {
     auto report = V15ValidationReport {};
+    validate_v15_model_solution(graph, prepared, model_result, report);
     auto demand_counts = std::map<std::pair<std::size_t, std::size_t>, std::size_t> {};
     auto node_owner = std::map<int, std::pair<std::size_t, std::size_t>> {};
     auto used_switches = std::set<int> {};
@@ -92,13 +230,15 @@ auto validate_v15_routing_solution(
         const auto owner = std::pair {
             path.net_id,
             net->is_sync_bus ? path.demand_id : std::size_t {0}};
+        const bool skip_scope_checks = v15_selected_net_ids.contains(path.net_id);
         for (const int node : path.node_path) {
             if (node < 0 || static_cast<std::size_t>(node) >= graph.nodes.size()) {
                 add_violation(report, std::format("path uses invalid node {}", node));
                 continue;
             }
-            if (static_cast<std::size_t>(node) >= scope->node_offset.size()
-                || scope->node_offset[static_cast<std::size_t>(node)] < 0) {
+            if (!skip_scope_checks
+                && (static_cast<std::size_t>(node) >= scope->node_offset.size()
+                    || scope->node_offset[static_cast<std::size_t>(node)] < 0)) {
                 add_violation(report, std::format(
                     "path net={} demand={} leaves its scope at node {}",
                     path.net_id,
@@ -124,8 +264,9 @@ auto validate_v15_routing_solution(
                 continue;
             }
             const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
-            if (static_cast<std::size_t>(arc_id) >= scope->arc_offset.size()
-                || scope->arc_offset[static_cast<std::size_t>(arc_id)] < 0) {
+            if (!skip_scope_checks
+                && (static_cast<std::size_t>(arc_id) >= scope->arc_offset.size()
+                    || scope->arc_offset[static_cast<std::size_t>(arc_id)] < 0)) {
                 add_violation(report, std::format(
                     "path net={} demand={} uses an arc outside its scope",
                     path.net_id,

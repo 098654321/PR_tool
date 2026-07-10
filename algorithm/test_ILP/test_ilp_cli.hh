@@ -18,6 +18,7 @@ struct TestIlpCliOptions {
     int initial_delay_pad{0};
     bool enable_ilp_optimize{false};
     std::optional<double> ilp_stretch_threshold_percent;
+    std::optional<int> ilp_segment_bbox_pad;
 };
 
 auto parse_test_ilp_cli(std::span<const std::string_view> args) -> TestIlpCliOptions;

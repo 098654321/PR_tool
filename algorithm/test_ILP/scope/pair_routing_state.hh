@@ -26,6 +26,7 @@ struct RoutingProblemState {
     std::Vector<PairRoutingState> pairs;
     std::map<PairKey, std::size_t> pair_index_by_key;
     std::map<std::size_t, std::Vector<std::size_t>> pair_indices_by_net;
+    std::map<std::size_t, int> feedback_failure_count_by_net;
 };
 
 auto init_routing_problem_state(const std::Vector<RoutingNet>& nets) -> RoutingProblemState;
@@ -36,11 +37,15 @@ auto find_pair_state(RoutingProblemState& state, const PairKey& key) -> PairRout
 
 auto find_pair_state(const RoutingProblemState& state, const PairKey& key) -> const PairRoutingState*;
 
+auto append_delay(std::Vector<int>& delays, int d) -> void;
+
 auto append_delays(std::Vector<int>& delays, int d1, int d2) -> void;
 
 auto max_delay(const std::Vector<int>& delays) -> int;
 
-auto expand_pair_delays(PairRoutingState& pair) -> void;
+auto expand_pair_delay_one(PairRoutingState& pair) -> void;
+
+auto apply_feedback_step_to_pair(PairRoutingState& pair, int net_failure_count) -> void;
 
 auto merge_delays_union(std::Vector<int>& target, const std::Vector<int>& extra) -> void;
 
