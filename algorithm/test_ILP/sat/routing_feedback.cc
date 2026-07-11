@@ -140,7 +140,6 @@ auto apply_feedback_expansion(
     }
 
     for (const std::size_t net_id : touched_nets) {
-        sync_fanout_delays(state, net_id);
         const auto* net = net_by_id(nets, net_id);
         if (net != nullptr && net->is_sync_bus) {
             sync_bus_after_expand(state, nets, net_id);

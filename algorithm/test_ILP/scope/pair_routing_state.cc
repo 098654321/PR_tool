@@ -121,20 +121,6 @@ auto merge_delays_union(std::Vector<int>& target, const std::Vector<int>& extra)
     target.erase(std::unique(target.begin(), target.end()), target.end());
 }
 
-auto sync_fanout_delays(RoutingProblemState& state, std::size_t net_id) -> void {
-    const auto net_it = state.pair_indices_by_net.find(net_id);
-    if (net_it == state.pair_indices_by_net.end()) {
-        return;
-    }
-    auto merged = std::Vector<int> {};
-    for (const std::size_t pair_index : net_it->second) {
-        merge_delays_union(merged, state.pairs[pair_index].delays);
-    }
-    for (const std::size_t pair_index : net_it->second) {
-        state.pairs[pair_index].delays = merged;
-    }
-}
-
 auto sync_bus_after_expand(
     RoutingProblemState& state,
     const std::Vector<RoutingNet>& nets,

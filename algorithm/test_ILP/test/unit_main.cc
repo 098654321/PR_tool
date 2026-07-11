@@ -1707,7 +1707,28 @@ auto test_feedback_exhausted_state_is_unchanged() -> void {
         "exhausted feedback must not mutate delays");
 }
 
-auto test_feedback_global_expand_skips_full_net_and_syncs_others() -> void {
+auto test_feedback_expands_only_critical_fanout_pair_delay() -> void {
+    const auto fanout_net = synthetic_net(0, {0}, {{2, {0}}, {3, {0}}});
+    const auto nets = std::Vector<RoutingNet> {fanout_net};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].delays = {4};
+    state.pairs[1].delays = {6};
+
+    const auto status =
+        apply_feedback_expansion(state, nets, {state.pairs[0].key});
+
+    require(
+        status == FeedbackExpansionStatus::Expanded,
+        "a critical fanout pair must expand");
+    require(
+        state.pairs[0].delays == std::Vector<int>({4, 5}),
+        "the critical fanout pair must append its own max+1");
+    require(
+        state.pairs[1].delays == std::Vector<int>({6}),
+        "a non-critical fanout pair must keep its own delay set");
+}
+
+auto test_feedback_global_expand_skips_full_net_and_keeps_fanout_delays_independent() -> void {
     auto full_net = synthetic_net(0, {0}, {{2, {0}}});
     auto fanout_net = synthetic_net(1, {3}, {{4, {0}}, {5, {0}}});
     const auto nets = std::Vector<RoutingNet> {full_net, fanout_net};
@@ -1728,11 +1749,11 @@ auto test_feedback_global_expand_skips_full_net_and_syncs_others() -> void {
         state.pairs[0].delays == std::Vector<int>({2}),
         "the already-full critical net must not expand twice");
     require(
-        state.pairs[1].delays == state.pairs[2].delays,
-        "global expansion must synchronize fanout delays");
+        state.pairs[1].delays == std::Vector<int>({4, 5}),
+        "global expansion must append the first fanout pair's own max+1");
     require(
-        state.pairs[1].delays == std::Vector<int>({4, 5, 6, 7}),
-        "global fanout synchronization must merge single-step expanded delay sets");
+        state.pairs[2].delays == std::Vector<int>({6, 7}),
+        "global expansion must append the second fanout pair's own max+1");
 }
 
 auto test_bus_delay_takes_max_member() -> void {
@@ -3327,7 +3348,8 @@ auto main() -> int {
         test_bus_member_delay_bbox_sync();
         test_feedback_rebuilds_after_reaching_full_bbox();
         test_feedback_exhausted_state_is_unchanged();
-        test_feedback_global_expand_skips_full_net_and_syncs_others();
+        test_feedback_expands_only_critical_fanout_pair_delay();
+        test_feedback_global_expand_skips_full_net_and_keeps_fanout_delays_independent();
         test_bus_delay_takes_max_member();
         test_v14_d_var_exact_reachability_allocation();
         test_v14_unreachable_tob_arc_has_no_a_var();

@@ -49,8 +49,6 @@ auto apply_feedback_step_to_pair(PairRoutingState& pair, int net_failure_count) 
 
 auto merge_delays_union(std::Vector<int>& target, const std::Vector<int>& extra) -> void;
 
-auto sync_fanout_delays(RoutingProblemState& state, std::size_t net_id) -> void;
-
 auto sync_bus_after_expand(
     RoutingProblemState& state,
     const std::Vector<RoutingNet>& nets,
