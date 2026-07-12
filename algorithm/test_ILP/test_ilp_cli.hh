@@ -11,6 +11,7 @@ namespace PR_tool {
 
 struct TestIlpCliOptions {
     std::String config_path;
+    std::String output_dir{"."};
     int verbose_level{0};
     bool enable_sat_log{false};
     std::size_t max_rss_mb{0};

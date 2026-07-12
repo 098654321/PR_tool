@@ -45,6 +45,14 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
     options.config_path = args.front();
     for (std::size_t i = 1; i < args.size(); ++i) {
         const auto arg = args[i];
+        if (arg == "-o" || arg == "--output") {
+            if (++i >= args.size() || args[i].empty() || args[i][0] == '-') {
+                throw std::invalid_argument(
+                    "-o/--output requires an output directory");
+            }
+            options.output_dir = args[i];
+            continue;
+        }
         if (arg == "--sat-log") {
             options.enable_sat_log = true;
             continue;

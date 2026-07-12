@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <format>
 #include <stdexcept>
 #include <sys/resource.h>
@@ -18,7 +19,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: xmake run test_ILP <config_path> [-v|-vv] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--ilp-optimize -L percent [-R pad]]";
+    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--ilp-optimize -L percent [-R pad]]";
 
 auto get_peak_rss_mb() -> double {
     rusage usage {};
@@ -52,7 +53,9 @@ auto run_main(int argc, char** argv) -> int {
         return 1;
     }
 
-    debug::initial_log("./debug.log");
+    const auto log_dir = std::filesystem::path {cli.output_dir};
+    std::filesystem::create_directories(log_dir);
+    debug::initial_log(log_dir / "debug.log");
 
     auto [interposer, basedie] = PR_tool::parse::read_config(cli.config_path, 0, false);
     algo::build_nets(basedie.get(), interposer.get());

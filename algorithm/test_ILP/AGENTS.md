@@ -103,8 +103,11 @@ xmake build test_ILP_unit
 ./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192 -s 0 -d 1
 ./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192 -s 1 -d 1
 ./output/test_ILP test/config/case7 -v
+./output/test_ILP test/config/case7 -v -o output/case7_run
 ./output/test_ILP test/config/case7 -v --ilp-optimize -L 10
 ```
+
+**输出目录**（可选）：`-o DIR` / `--output DIR` 将 `debug.log` 写到 `DIR/debug.log`（目录不存在时创建）；省略时仍为 `./debug.log`。`--sat-log` 的 `./cadical-log` 与 `--ilp-optimize` 的 `./gurobi/` 路径不受 `-o` 影响。
 
 **首轮扩展**（可选，与反馈扩边独立）：`-s S` 外扩 pair bbox；`-d D` 初始 delay 集合 `{d_min,…,d_min+D}`。`-v` 时 `main.cc` 打印 `initial search padding: scope_pad=… delay_pad=…`；初始 scope 与 `scope after initial search padding` 分别展示扩展前后范围，round 0 的 `delay net=… delays=[…]` 展示最终 pair delay。
 

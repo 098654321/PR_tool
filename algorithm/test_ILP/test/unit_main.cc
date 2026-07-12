@@ -2290,6 +2290,36 @@ auto test_cli_initial_padding_options() -> void {
     require_invalid({"case_2btt", "-d", "x"});
 }
 
+auto test_cli_output_dir_option() -> void {
+    const auto parsed = parse_test_ilp_cli({
+        "test/config/case1", "-v", "-o", "output/case1_run"});
+    require(parsed.config_path == "test/config/case1", "CLI must preserve the config path");
+    require(parsed.verbose_level == 1, "CLI must preserve -v with -o");
+    require(parsed.output_dir == "output/case1_run", "CLI must parse -o output directory");
+
+    const auto long_form = parse_test_ilp_cli({
+        "test/config/case1", "--output", "out/exp"});
+    require(
+        long_form.output_dir == "out/exp",
+        "CLI must accept --output as an alias of -o");
+
+    const auto defaults = parse_test_ilp_cli({"test/config/case1", "-v"});
+    require(defaults.output_dir == ".", "missing -o must keep the default output directory");
+
+    const auto require_invalid = [](std::initializer_list<std::string_view> args) {
+        try {
+            (void)parse_test_ilp_cli(args);
+            require(false, "invalid -o/--output input must be rejected");
+        }
+        catch (const std::invalid_argument&) {
+        }
+    };
+    require_invalid({"test/config/case1", "-o"});
+    require_invalid({"test/config/case1", "--output"});
+    require_invalid({"test/config/case1", "-o", "-v"});
+    require_invalid({"test/config/case1", "--output", "--sat-log"});
+}
+
 auto test_cli_v15_ilp_options() -> void {
     const auto integer_threshold = parse_test_ilp_cli({
         "test/config/case7", "-v", "--ilp-optimize", "-L", "10"});
@@ -3371,6 +3401,7 @@ auto main() -> int {
         test_v14_bus_sync_covers_reachable_delay_domain();
         test_cli_max_rss_option();
         test_cli_initial_padding_options();
+        test_cli_output_dir_option();
         test_cli_v15_ilp_options();
         test_v15_parent_construction();
         test_v15_pnnet_keeps_all_sat_selected_tracks_as_virtual_hops();
