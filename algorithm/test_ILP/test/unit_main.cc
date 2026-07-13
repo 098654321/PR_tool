@@ -2344,6 +2344,19 @@ auto test_cli_v15_ilp_options() -> void {
             && segment_pad.ilp_segment_bbox_pad.value() == 2,
         "CLI must parse -R segment bbox pad");
 
+    const auto time_limit = parse_test_ilp_cli({
+        "test/config/case7", "--ilp-optimize", "-L", "10", "--time-limit", "2.5"});
+    require(
+        time_limit.ilp_time_limit_hours.has_value()
+            && time_limit.ilp_time_limit_hours.value() == 2.5,
+        "CLI must parse --time-limit hours");
+
+    const auto unlimited = parse_test_ilp_cli({
+        "test/config/case7", "--ilp-optimize", "-L", "10"});
+    require(
+        !unlimited.ilp_time_limit_hours.has_value(),
+        "missing --time-limit must leave ILP time unlimited");
+
     const auto require_invalid = [](std::initializer_list<std::string_view> args) {
         try {
             (void)parse_test_ilp_cli(args);
@@ -2361,6 +2374,11 @@ auto test_cli_v15_ilp_options() -> void {
     require_invalid({"test/config/case7", "--ilp-optimize", "-L", "ten"});
     require_invalid({"test/config/case7", "--ilp-optimize", "-L", "10", "-R", "-1"});
     require_invalid({"test/config/case7", "-R", "1"});
+    require_invalid({"test/config/case7", "--time-limit", "1"});
+    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "10", "--time-limit"});
+    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "10", "--time-limit", "0"});
+    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "10", "--time-limit", "-1"});
+    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "10", "--time-limit", "nan"});
 }
 
 auto test_initial_search_padding_scope() -> void {

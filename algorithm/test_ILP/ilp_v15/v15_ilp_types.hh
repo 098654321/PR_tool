@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <map>
+#include <optional>
 #include <set>
 #include <std/collection.hh>
 #include <std/string.hh>
@@ -16,6 +17,8 @@ struct V15IlpOptimizeOptions {
     int segment_bbox_pad{0};
     int verbose_level{0};
     std::String gurobi_log_dir{"./gurobi"};
+    // Gurobi optimize wall time; unset means unlimited.
+    std::optional<double> time_limit_hours;
 };
 
 struct V15SegmentScope {
@@ -93,6 +96,10 @@ struct V15IlpStats {
     std::size_t nonzeros{0};
     long long model_build_ms{0};
     long long solve_ms{0};
+    // Full optimize_v15_routes wall time.
+    long long total_ms{0};
+    // Wall time from ILP begin until model.optimize() starts (prep + model build).
+    long long pre_ms{0};
     double objective{0.0};
     double best_bound{0.0};
     double mip_gap{0.0};

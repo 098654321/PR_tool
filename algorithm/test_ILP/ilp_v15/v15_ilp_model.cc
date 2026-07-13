@@ -87,12 +87,17 @@ auto solve_v15_ilp_model(
         env.set(GRB_IntParam_Threads, 1);
         // Large segment models already have a feasible SAT-derived MIP start.
         // Favor finding and improving incumbents over an expensive aggressive
-        // presolve/proof phase, while retaining Gurobi's default no-limit run.
+        // presolve/proof phase. TimeLimit is optional via --time-limit (hours).
         env.set(GRB_IntParam_Presolve, -1);
         env.set(GRB_IntParam_PreSparsify, -1);
         env.set(GRB_IntParam_Symmetry, -1);
         env.set(GRB_IntParam_MIPFocus, 1);
         env.set(GRB_IntParam_Cuts, -1);
+        if (options.time_limit_hours.has_value()) {
+            env.set(
+                GRB_DoubleParam_TimeLimit,
+                options.time_limit_hours.value() * 3600.0);
+        }
         env.set(GRB_StringParam_LogFile, log_path.string());
         env.start();
         auto model = GRBModel {env};
@@ -440,11 +445,19 @@ auto solve_v15_ilp_model(
             solve_done - solve_begin).count();
         const int status = model.get(GRB_IntAttr_Status);
         out.stats.solution_count = model.get(GRB_IntAttr_SolCount);
-        out.status = status == GRB_OPTIMAL
-            ? V15IlpStatus::Optimal
-            : status == GRB_SUBOPTIMAL && out.stats.solution_count > 0
-                ? V15IlpStatus::Suboptimal
-                : V15IlpStatus::Failed;
+        const bool has_incumbent = out.stats.solution_count > 0;
+        if (status == GRB_OPTIMAL) {
+            out.status = V15IlpStatus::Optimal;
+        } else if (has_incumbent
+            && (status == GRB_SUBOPTIMAL
+                || status == GRB_TIME_LIMIT
+                || status == GRB_INTERRUPTED)) {
+            // Time-limit / interrupt with a feasible incumbent: keep the best
+            // found solution instead of falling back to the SAT routing.
+            out.status = V15IlpStatus::Suboptimal;
+        } else {
+            out.status = V15IlpStatus::Failed;
+        }
         out.message = gurobi_status_name(status);
         out.ok = out.status == V15IlpStatus::Optimal || out.status == V15IlpStatus::Suboptimal;
         out.stats.constraints = static_cast<std::size_t>(model.get(GRB_IntAttr_NumConstrs));

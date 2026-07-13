@@ -153,6 +153,7 @@ auto solve_with_feedback(
     circuit::BaseDie& basedie,
     const UnifiedSatSolveOptions& options
 ) -> SatRoutingResult {
+    const auto sat_begin = std::chrono::steady_clock::now();
     auto out = SatRoutingResult {};
     auto nets = build_routing_nets(basedie.nets_to_vector());
     auto problem_state = init_routing_problem_state(nets);
@@ -180,6 +181,16 @@ auto solve_with_feedback(
             log_scope_bboxes(nets, options.verbose_level);
         }
     }
+
+    const auto stamp_sat_timing = [&](SatRoutingResult& result) {
+        const auto sat_end = std::chrono::steady_clock::now();
+        result.sat_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            sat_end - sat_begin).count();
+        result.sat_pre_ms = result.sat_total_ms - result.solve_ms;
+        if (result.sat_pre_ms < 0) {
+            result.sat_pre_ms = 0;
+        }
+    };
 
     for (std::size_t round = 0; round < options.max_feedback_rounds; ++round) {
         log_feedback_round_begin(round);
@@ -256,6 +267,7 @@ auto solve_with_feedback(
                     out.num_clauses,
                     round);
                 log_feedback_round_end(round, FeedbackRoundStatus::MemoryLimit);
+                stamp_sat_timing(out);
                 return out;
             }
 
@@ -280,7 +292,11 @@ auto solve_with_feedback(
                     out.total_wirelength,
                     round);
                 log_non_shortest_nets(interposer, graph, nets, delays, out);
+                stamp_sat_timing(out);
                 if (options.ilp_optimize.enabled) {
+                    const auto sat_total_ms = out.sat_total_ms;
+                    const auto sat_pre_ms = out.sat_pre_ms;
+                    const auto sat_solve_ms = out.solve_ms;
                     const auto ilp = optimize_v15_routes(
                         interposer,
                         graph,
@@ -290,16 +306,21 @@ auto solve_with_feedback(
                         out,
                         options.ilp_optimize);
                     out = ilp.routing;
+                    out.solve_ms = sat_solve_ms;
+                    out.sat_total_ms = sat_total_ms;
+                    out.sat_pre_ms = sat_pre_ms;
                     out.ilp_optimization_requested = true;
                     out.ilp_optimization_applied = ilp.status == V15IlpStatus::Optimal
                         || ilp.status == V15IlpStatus::Suboptimal;
-                    out.ilp_fallback_to_v14 = ilp.status == V15IlpStatus::Failed;
+                    out.ilp_fallback_to_sat = ilp.status == V15IlpStatus::Failed;
                     out.ilp_status = ilp.message;
                     out.ilp_model_vars = ilp.stats.f_vars + ilp.stats.x_vars
                         + ilp.stats.y_vars + ilp.stats.mode_vars;
                     out.ilp_model_constraints = ilp.stats.constraints;
                     out.ilp_model_build_ms = ilp.stats.model_build_ms;
                     out.ilp_solve_ms = ilp.stats.solve_ms;
+                    out.ilp_total_ms = ilp.stats.total_ms;
+                    out.ilp_pre_ms = ilp.stats.pre_ms;
                     if (ilp.status == V15IlpStatus::Optimal
                         || ilp.status == V15IlpStatus::Suboptimal) {
                         log_routing_paths(graph, nets, out);
@@ -319,6 +340,7 @@ auto solve_with_feedback(
                     out.num_clauses,
                     round);
                 log_feedback_round_end(round, FeedbackRoundStatus::SolverError);
+                stamp_sat_timing(out);
                 return out;
             }
 
@@ -355,6 +377,7 @@ auto solve_with_feedback(
                     "unified SAT failed: UNSAT after full-chip bbox expansion (round={})",
                     round);
                 log_feedback_round_end(round, FeedbackRoundStatus::UnsatExhausted);
+                stamp_sat_timing(out);
                 return out;
             }
             log_feedback_round_end(round, FeedbackRoundStatus::UnsatExpand);
@@ -365,6 +388,7 @@ auto solve_with_feedback(
             out.num_clauses = session.num_clauses();
             out.feedback_rounds = round;
             log_feedback_round_end(round, FeedbackRoundStatus::MemoryLimit);
+            stamp_sat_timing(out);
             return out;
         }
     }
@@ -377,6 +401,7 @@ auto solve_with_feedback(
     log_feedback_round_end(
         options.max_feedback_rounds,
         FeedbackRoundStatus::MaxRoundsExceeded);
+    stamp_sat_timing(out);
     return out;
 }
 

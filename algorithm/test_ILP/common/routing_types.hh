@@ -77,8 +77,12 @@ struct SatRoutingResult {
     std::String message;
     std::size_t num_vars{0};
     std::size_t num_clauses{0};
-    // Sum of CaDiCal solve time across all feedback rounds.
+    // Sum of CaDiCal solve() wall time across all feedback rounds.
     long long solve_ms{0};
+    // Wall time of the whole SAT phase (graph/padding/feedback/extract), excluding ILP.
+    long long sat_total_ms{0};
+    // sat_total_ms - solve_ms (precompute, model build, extract, diagnostics, ...).
+    long long sat_pre_ms{0};
     std::size_t feedback_rounds{0};
     // Sum of per-net deduplicated bump+track resource counts (post-solve stat only).
     std::size_t total_wirelength{0};
@@ -89,12 +93,16 @@ struct SatRoutingResult {
     // their v14 meanings even when Gurobi is enabled.
     bool ilp_optimization_requested{false};
     bool ilp_optimization_applied{false};
-    bool ilp_fallback_to_v14{false};
+    bool ilp_fallback_to_sat{false};
     std::String ilp_status;
     std::size_t ilp_model_vars{0};
     std::size_t ilp_model_constraints{0};
     long long ilp_model_build_ms{0};
     long long ilp_solve_ms{0};
+    // Wall time of optimize_v15_routes (prep + model + optimize + extract).
+    long long ilp_total_ms{0};
+    // Wall time from ILP begin until model.optimize() starts (prep + model build).
+    long long ilp_pre_ms{0};
 };
 
 } // namespace PR_tool

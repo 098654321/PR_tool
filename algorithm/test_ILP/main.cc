@@ -19,7 +19,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--ilp-optimize -L percent [-R pad]]";
+    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--ilp-optimize -L percent [-R pad] [--time-limit hours]]";
 
 auto get_peak_rss_mb() -> double {
     rusage usage {};
@@ -72,6 +72,7 @@ auto run_main(int argc, char** argv) -> int {
         cli.ilp_stretch_threshold_percent.value_or(0.0);
     options.ilp_optimize.segment_bbox_pad =
         cli.ilp_segment_bbox_pad.value_or(0);
+    options.ilp_optimize.time_limit_hours = cli.ilp_time_limit_hours;
     options.ilp_optimize.verbose_level = cli.verbose_level;
     if (cli.enable_sat_log) {
         debug::info_fmt("CaDiCal solver logs enabled: directory={}", options.cadical.log_dir);
@@ -87,11 +88,20 @@ auto run_main(int argc, char** argv) -> int {
             cli.initial_delay_pad);
     }
     if (cli.enable_ilp_optimize) {
-        debug::info_fmt(
-            "v15 ILP optimization enabled: threshold={:.2f}% segment_bbox_pad={} gurobi_log_dir={}",
-            options.ilp_optimize.stretch_threshold_percent,
-            options.ilp_optimize.segment_bbox_pad,
-            options.ilp_optimize.gurobi_log_dir);
+        if (options.ilp_optimize.time_limit_hours.has_value()) {
+            debug::info_fmt(
+                "v15 ILP optimization enabled: threshold={:.2f}% segment_bbox_pad={} time_limit_hours={} gurobi_log_dir={}",
+                options.ilp_optimize.stretch_threshold_percent,
+                options.ilp_optimize.segment_bbox_pad,
+                options.ilp_optimize.time_limit_hours.value(),
+                options.ilp_optimize.gurobi_log_dir);
+        } else {
+            debug::info_fmt(
+                "v15 ILP optimization enabled: threshold={:.2f}% segment_bbox_pad={} time_limit=unlimited gurobi_log_dir={}",
+                options.ilp_optimize.stretch_threshold_percent,
+                options.ilp_optimize.segment_bbox_pad,
+                options.ilp_optimize.gurobi_log_dir);
+        }
     }
 
     const auto result = solve_unified_sat(interposer.get(), *basedie.get(), options);
@@ -107,20 +117,26 @@ auto run_main(int argc, char** argv) -> int {
         return 1;
     }
     debug::info_fmt(
-        "unified SAT routing succeeded: paths={} vars={} clauses={} total_solve_ms={} total_wirelength={} ilp_requested={} ilp_applied={} ilp_fallback_to_v14={} ilp_status={} ilp_vars={} ilp_constraints={} ilp_model_build_ms={} ilp_solve_ms={}",
+        "unified SAT: paths={} vars={} clauses={} total_ms={} pre_ms={} solve_ms={}",
         result.paths.size(),
         result.num_vars,
         result.num_clauses,
-        result.solve_ms,
-        result.total_wirelength,
+        result.sat_total_ms,
+        result.sat_pre_ms,
+        result.solve_ms);
+    debug::info_fmt(
+        "unified ILP: requested={} status={} fallback_to_SAT={} vars={} constraints={} total_ms={} pre_ms={} solve_ms={}",
         result.ilp_optimization_requested,
-        result.ilp_optimization_applied,
-        result.ilp_fallback_to_v14,
-        result.ilp_status,
+        result.ilp_optimization_requested ? result.ilp_status : "n/a",
+        result.ilp_fallback_to_sat,
         result.ilp_model_vars,
         result.ilp_model_constraints,
-        result.ilp_model_build_ms,
+        result.ilp_total_ms,
+        result.ilp_pre_ms,
         result.ilp_solve_ms);
+    debug::info_fmt(
+        "routing result: total_wirelength={}",
+        result.total_wirelength);
     return 0;
 }
 

@@ -93,12 +93,30 @@ auto optimize_v15_routes(
         return out;
     }
 
+    const auto ilp_begin = std::chrono::steady_clock::now();
+    const auto elapsed_since_ilp_begin_ms = [&]() -> long long {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - ilp_begin).count();
+    };
+    const auto stamp_ilp_total = [&](V15IlpOptimizeResult& result) {
+        result.stats.total_ms = elapsed_since_ilp_begin_ms();
+    };
+
     debug::info(kV15Banner);
-    debug::info_fmt(
-        "v15 ILP optimization begin: threshold={:.2f}% segment_bbox_pad={} gurobi_log={}/v15_ilp.log",
-        options.stretch_threshold_percent,
-        options.segment_bbox_pad,
-        options.gurobi_log_dir);
+    if (options.time_limit_hours.has_value()) {
+        debug::info_fmt(
+            "v15 ILP optimization begin: threshold={:.2f}% segment_bbox_pad={} time_limit_hours={} gurobi_log={}/v15_ilp.log",
+            options.stretch_threshold_percent,
+            options.segment_bbox_pad,
+            options.time_limit_hours.value(),
+            options.gurobi_log_dir);
+    } else {
+        debug::info_fmt(
+            "v15 ILP optimization begin: threshold={:.2f}% segment_bbox_pad={} time_limit=unlimited gurobi_log={}/v15_ilp.log",
+            options.stretch_threshold_percent,
+            options.segment_bbox_pad,
+            options.gurobi_log_dir);
+    }
 
     const auto stretch = collect_net_stretch_info(interposer, graph, nets, delays, sat_result);
     for (const auto& entry : stretch) {
@@ -133,6 +151,8 @@ auto optimize_v15_routes(
     if (out.selected_net_ids.empty()) {
         out.status = V15IlpStatus::SkippedNoCandidates;
         out.message = "SKIPPED_NO_CANDIDATES";
+        out.stats.pre_ms = elapsed_since_ilp_begin_ms();
+        stamp_ilp_total(out);
         debug::info("v15 ILP optimization end: status=SKIPPED_NO_CANDIDATES");
         debug::info(kV15Banner);
         return out;
@@ -227,6 +247,12 @@ auto optimize_v15_routes(
             out.stats.model_build_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 model_end - model_begin).count() - out.stats.solve_ms;
         }
+        // prep + model build = wall until optimize returns, minus Gurobi solve.
+        out.stats.pre_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            model_end - ilp_begin).count() - out.stats.solve_ms;
+        if (out.stats.pre_ms < 0) {
+            out.stats.pre_ms = 0;
+        }
         out.status = model_result.status;
         out.message = model_result.message;
         debug::info_fmt(
@@ -245,8 +271,9 @@ auto optimize_v15_routes(
         if (!model_result.ok) {
             out.status = V15IlpStatus::Failed;
             out.routing = sat_result;
+            stamp_ilp_total(out);
             debug::warning_fmt(
-                "v15 ILP optimization failed: {} fallback_to_v14=true",
+                "v15 ILP optimization failed: {} fallback_to_SAT=true",
                 model_result.message);
             debug::info(kV15Banner);
             return out;
@@ -272,8 +299,9 @@ auto optimize_v15_routes(
             out.status = V15IlpStatus::Failed;
             out.message = extracted.ok ? "V15_VALIDATION_FAILED" : extracted.message;
             out.routing = sat_result;
+            stamp_ilp_total(out);
             debug::warning_fmt(
-                "v15 ILP optimization failed: {} fallback_to_v14=true",
+                "v15 ILP optimization failed: {} fallback_to_SAT=true",
                 out.message);
             debug::info(kV15Banner);
             return out;
@@ -300,6 +328,7 @@ auto optimize_v15_routes(
             sat_result.total_wirelength,
             extracted.total_wirelength);
         out.routing = extracted;
+        stamp_ilp_total(out);
         debug::info_fmt("v15 ILP optimization end: status={}", status_name(out.status));
         debug::info(kV15Banner);
         return out;
@@ -315,8 +344,10 @@ auto optimize_v15_routes(
         out.status = V15IlpStatus::Failed;
         out.message = error.what();
         out.routing = sat_result;
+        out.stats.pre_ms = elapsed_since_ilp_begin_ms();
+        stamp_ilp_total(out);
         debug::warning_fmt(
-            "v15 ILP optimization exception: {} fallback_to_v14=true",
+            "v15 ILP optimization exception: {} fallback_to_SAT=true",
             out.message);
         debug::info(kV15Banner);
         return out;

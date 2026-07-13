@@ -80,9 +80,9 @@ algorithm/test_ILP/
 
 ### v15 可选后优化
 
-- 仅当同时给出 `--ilp-optimize -L <非负百分比>` 时启动；`-R <非负整数>` 也只能与该组合一起使用，省略时默认 `R=0`；未启用时不会创建 Gurobi 环境或 `./gurobi/`。
+- 仅当同时给出 `--ilp-optimize -L <非负百分比>` 时启动；`-R <非负整数>` 与 `--time-limit <正数小时>` 也只能与该组合一起使用，省略时分别默认 `R=0`、Gurobi 不限时；未启用时不会创建 Gurobi 环境或 `./gurobi/`。
 - 对增长率 `actual/shortest-1 >= L` 的整网重布。普通 2-pin、SyncBus member 各为一个 parent+segment；TrackToBumps / PNnet 多扇出先拆 segment，ILP 用 parent 级 `x/y` 与 segment 级 `f` 建模。SyncBus 以 parent 线长等长约束连接。
-- 未选 net 的物理节点与 TOB 开关被锁定；模型包含 TOB physical-switch 唯一性、Bump-HLine/HLine-VLine partial matching 和最后一级 straight/swap mode 约束。Gurobi 异常、无可用解或提取校验失败会记录 `fallback_to_v14=true` 并完整回退 SAT 解。
+- 未选 net 的物理节点与 TOB 开关被锁定；模型包含 TOB physical-switch 唯一性、Bump-HLine/HLine-VLine partial matching 和最后一级 straight/swap mode 约束。Gurobi 异常、无可用解或提取校验失败会记录 `fallback_to_SAT=true` 并完整回退 SAT 解。`--time-limit` 触发 `TIME_LIMIT`（或中断）且已有可行 incumbent 时按 Suboptimal 接受当前最优解，不回退 SAT。
 - `--ilp-optimize` 的 MIP start 来自 SAT 恢复树 / segment `guide` 弧，填 `f`（segment）与 `x/y`（parent）；`M_g` 仍来自 SAT `vline_mode_straight_by_group`。PNnet 固定**全部** SAT 实际选中的 candidate track，每个 track 保留唯一 `r_n→track` 虚拟首跳；普通 segment 禁止虚拟节点。若 BFS 去除多 source 重汇合后会使任一已选 track 脱离所有 sink，当前单入边 parent-tree 表达不了该结构，会作为不变量错误终止而非静默改源。多扇出 / PNnet 按 BFS 父树剪除死支后拆成 2-pin segment（`-R` 控制 bbox 外推，默认 0）；guide 自洽或覆盖检查失败同样终止，不回退 SAT。`-v` 额外记录已选 track、剪枝前后树规模和 guide coverage。
 - 原生日志固定覆盖 `./gurobi/v15_ilp.log`（不输出到控制台）；`debug.log` 记录筛选、模型规模、耗时、状态、前后线长及校验结果。
 
@@ -105,15 +105,18 @@ xmake build test_ILP_unit
 ./output/test_ILP test/config/case7 -v
 ./output/test_ILP test/config/case7 -v -o output/case7_run
 ./output/test_ILP test/config/case7 -v --ilp-optimize -L 10
+./output/test_ILP test/config/case7 -v --ilp-optimize -L 10 --time-limit 2
 ```
 
 **输出目录**（可选）：`-o DIR` / `--output DIR` 将 `debug.log` 写到 `DIR/debug.log`（目录不存在时创建）；省略时仍为 `./debug.log`。`--sat-log` 的 `./cadical-log` 与 `--ilp-optimize` 的 `./gurobi/` 路径不受 `-o` 影响。
+
+**ILP 时限**（可选）：`--time-limit H` 仅限制 Gurobi `optimize()` 墙钟（单位小时，须 `H>0`，可小数）；须与 `--ilp-optimize` 联用。超时且已有可行解时接受 incumbent（日志 status 可为 `TIME_LIMIT`，内部按 Suboptimal）。省略则不限时。
 
 **首轮扩展**（可选，与反馈扩边独立）：`-s S` 外扩 pair bbox；`-d D` 初始 delay 集合 `{d_min,…,d_min+D}`。`-v` 时 `main.cc` 打印 `initial search padding: scope_pad=… delay_pad=…`；初始 scope 与 `scope after initial search padding` 分别展示扩展前后范围，round 0 的 `delay net=… delays=[…]` 展示最终 pair delay。
 
 集成 case：`case_2btb`、`case_2btt`、`case_2fanout`、`case_bus2btb`、`case_bus2btt`（各验证基线、`-s 0 -d 1`、`-s 1 -d 1` 三组）；`test/config/case5`（PNnet）；`test/module_test/test_function/testlength` 下 `testiosimple`/`testchipletsimple`/`testchipletbus`/`testiobus` 的 `total_wirelength` 须与各自 `golden.txt` 一致（`testpn` 仅要求 SAT 成功，线长允许与 golden 不同）；建议 `--max-rss-mb 8192`。
 
-`-v` 日志含 scope、delay、`feedback round=`、`feedback critical`、`unified SAT encoding stats`（D/A 的 dense、unit-eligible、active 数量与比例，Q/aux 变量，8 类 CNF）、路径（PNnet 含选中 track；每个 net 末行 `net_wirelength=` 为 net 内 bump+track 去重计数）；成功时 `unified SAT ok` / `unified SAT routing succeeded` 含 `total_wirelength=`（各 net 的 `net_wirelength` 之和，net 内共享 track/bump 只计一次）；`delay_precompute_ms` 是当前轮 scope 构建、最短路和稀疏 mask 预计算时间，`model_build_ms` 是当前轮 CNF 构建并流入 CaDiCaL 的时间，`round_solve_ms` 是当前轮 CaDiCaL 求解时间，`total_solve_ms` 是所有反馈轮累计 CaDiCaL 时间，`run_main total elapsed` 是完整端到端时间。
+`-v` 日志含 scope、delay、`feedback round=`、`feedback critical`、`unified SAT encoding stats`（D/A 的 dense、unit-eligible、active 数量与比例，Q/aux 变量，8 类 CNF）、路径（PNnet 含选中 track；每个 net 末行 `net_wirelength=` 为 net 内 bump+track 去重计数）；成功时末尾分三行汇总：`unified SAT:`（`paths/vars/clauses`，`total_ms` 为整个 SAT 阶段墙钟，`solve_ms` 为各轮 CaDiCaL `solve()` 累计，`pre_ms=total_ms-solve_ms`）、`unified ILP:`（`requested/status/fallback_to_SAT/vars/constraints`，`total_ms` 为整个 ILP 阶段，`pre_ms` 为进入 `optimize()` 前的准备+建模，`solve_ms` 为 Gurobi 求解）、`routing result:`（`total_wirelength`）；轮次内仍有 `delay_precompute_ms`、`model_build_ms`、`round_solve_ms`；`run_main total elapsed` 是完整端到端时间。
 
 反馈扩边示例：`feedback round=2 critical net=3 demand=1 delays=10->10,11 bbox=(2,5,0,6)->(2,5,0,6)`（奇数次）；`feedback round=3 ... delays=10,11->10,11,12 bbox=(2,5,0,6)->(1,6,0,7)`（偶数次）。
 

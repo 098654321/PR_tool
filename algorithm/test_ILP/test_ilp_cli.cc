@@ -34,6 +34,15 @@ auto parse_non_negative_double(std::string_view value, const char* option_name) 
     return parsed;
 }
 
+auto parse_positive_double(std::string_view value, const char* option_name) -> double {
+    const auto parsed = parse_non_negative_double(value, option_name);
+    if (parsed <= 0.0) {
+        throw std::invalid_argument(
+            std::format("{} requires a positive finite number", option_name));
+    }
+    return parsed;
+}
+
 } // namespace
 
 auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlpCliOptions {
@@ -106,6 +115,14 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
             options.ilp_segment_bbox_pad = parse_non_negative_int(args[i], "-R");
             continue;
         }
+        if (arg == "--time-limit") {
+            if (++i >= args.size()) {
+                throw std::invalid_argument(
+                    "--time-limit requires a positive finite number of hours");
+            }
+            options.ilp_time_limit_hours = parse_positive_double(args[i], "--time-limit");
+            continue;
+        }
         if (arg.size() >= 2 && arg[0] == '-' && arg[1] == 'v') {
             bool all_v = true;
             for (std::size_t char_index = 1; char_index < arg.size(); ++char_index) {
@@ -129,6 +146,9 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
     }
     if (!options.enable_ilp_optimize && options.ilp_segment_bbox_pad.has_value()) {
         throw std::invalid_argument("-R requires --ilp-optimize");
+    }
+    if (!options.enable_ilp_optimize && options.ilp_time_limit_hours.has_value()) {
+        throw std::invalid_argument("--time-limit requires --ilp-optimize");
     }
     return options;
 }
