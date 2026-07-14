@@ -74,6 +74,7 @@ auto run_main(int argc, char** argv) -> int {
         cli.ilp_segment_bbox_pad.value_or(0);
     options.ilp_optimize.time_limit_hours = cli.ilp_time_limit_hours;
     options.ilp_optimize.verbose_level = cli.verbose_level;
+    options.ilp_optimize.gurobi_log_dir = (log_dir / "gurobi").string();
     if (cli.enable_sat_log) {
         debug::info_fmt("CaDiCal solver logs enabled: directory={}", options.cadical.log_dir);
     }
