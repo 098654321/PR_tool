@@ -11,6 +11,10 @@
 
 namespace PR_tool::parse {
 
+    using RegisterAddress = std::String;
+    using RegisterFileMap = std::HashMap<std::String, RegisterAddress>;      // reg_name -> address
+    using RegisterMapConfig = std::HashMap<std::String, RegisterFileMap>;     // filename -> regs
+
     struct Config {
         InterposerConfig interposer;
         std::HashMap<std::String, TopDieConfig> topdies;
@@ -18,6 +22,7 @@ namespace PR_tool::parse {
         std::HashMap<std::String, ExternalPortConfig> external_ports;
         std::HashMap<int, std::HashMap<int, std::Vector<ConnectionConfig>>> connections;
         std::HashMap<std::String, std::HashMap<std::String, hardware::TrackCoord>> ports_01;
+        RegisterMapConfig register_map;
     };
 
     auto load_config(const std::FilePath& config_folder, int mode, bool try_all_modes) -> Config;
