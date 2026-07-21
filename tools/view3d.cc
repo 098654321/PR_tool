@@ -27,7 +27,8 @@ auto main(int argc, char** argv) -> int {
     PR_tool::debug::set_debug_level(PR_tool::debug::DebugLevel::Debug);
 
     auto config_path = std::StringView{argv[1]};
-    auto [interposer, basedie] = PR_tool::parse::read_config(config_path);
+    auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, 0, false);
+    (void)register_map;
 
     PR_tool::algo::NetBuilder{basedie.get(), interposer.get()}.build();
     auto len = PR_tool::algo::route_nets(interposer.get(), basedie.get(), PR_tool::algo::MazeRouteStrategy{});

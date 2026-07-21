@@ -136,11 +136,12 @@ namespace PR_tool::parse {
         }
 
         static auto pin_to_numbers(const std::String& pin, const Config& config) -> std::Array<int, 5> {
-            // Mirror parse_txt_line in config.cc: -1 -> nege, -2 -> pose
-            if (pin == "nege") {
+            // Mirror Reader::parse_connection_pin: names ending with nege/pose
+            // (e.g. xinzhai_nege) map to TXT magic bump_x -1/-2.
+            if (pin.ends_with("nege")) {
                 return {0, 0, 0, -1, 0};
             }
-            if (pin == "pose") {
+            if (pin.ends_with("pose")) {
                 return {0, 0, 0, -2, 0};
             }
             if (pin.find('.') == std::String::npos) {
@@ -166,7 +167,7 @@ namespace PR_tool::parse {
         }
 
         static auto pin_topdie_type(const std::String& pin, const Config& config) -> std::String {
-            if (pin == "pose" || pin == "nege") {
+            if (pin.ends_with("pose") || pin.ends_with("nege")) {
                 return "0/1";
             }
             auto dot = pin.find('.');

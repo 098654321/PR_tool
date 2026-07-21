@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-21-split-register-output-design.md`
 
+**Git policy:** Do **not** run `git add` or `git commit` in any task. Leave changes unstaged/uncommitted for the human to review and commit.
+
 ---
 
 ## File map
@@ -26,10 +28,10 @@
 | `test/**` callers of `read_config` / `output_from_routing_results` | Modify | Destructure third value / pass map |
 | `test/config/**/reigster_adder.json` (and `register_adder.json`) | Modify | Copy full map from `tools/register_map.json` |
 | `test/module_test/test_writer/**/reigster_adder.json` | Modify | Same copy where writer cases write |
-| `test/module_test/test_writer/compare_controlbits.py` | Modify | Count check before hex compare |
-| `test/module_test/test_writer/verify_simplify_split.py` | Create | T1: full vs simplified four-file check |
+| `test/module_test/test_writer/check-controlbits-file/scripts/compare_controlbits.py` | Modify | Count check before hex compare |
+| `test/module_test/test_writer/check-controlbits-file/scripts/verify_simplify_split.py` | Create | T1: full vs simplified four-file check |
 | `test/module_test/test_writer/check-controlbits-file/SKILL.md` | Modify | Remove split bridge; direct four-file compare |
-| `test/module_test/test_writer/test_writer.cc` | Modify | Pass register_map; pair dirs under `regnamecontrolbit_4part/` |
+| `test/module_test/test_writer/check-controlbits-file/scripts/test_writer.cc` | Modify | Pass register_map; pair dirs under `regnamecontrolbit_4part/` |
 | `source/parse/reader/controlbits/controlbits.cc` (+ related) | Modify | TODO comments only |
 | `tools/split_regs.py` docstring / `tools/AGENTS.md` | Modify | Legacy offline positioning (A1) |
 | `source/AGENTS.md`, `test/AGENTS.md`, `README.md`, `TODO.md` | Modify | Align with spec |
@@ -134,18 +136,9 @@ python3 -c "import json; d=json.load(open('test/config/case1/reigster_adder.json
 
 Expected: no assertion error.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Stop — do not `git add` or `git commit`**
 
-```bash
-git add source/parse/reader/config/config.hh source/parse/reader/config/config.cc test/config test/module_test/test_writer
-git commit -m "$(cat <<'EOF'
-feat(config): load reigster_adder register map into Config
-
-Copy full register_map into case configs so Writer can emit split files.
-
-EOF
-)"
-```
+Leave Task 1 changes in the working tree for human review.
 
 ---
 
@@ -205,7 +198,7 @@ auto [interposer, basedie, register_map] = parse::read_config(...);
 
 GUI: store `RegisterMapConfig _register_map` on `Window`; assign from in-place `read_config` return; pass into `write_control_bits`. Add TODO comment near save-as that directory UX is deferred (spec §5 out-of-scope).
 
-**Note:** Task 2 may not compile until Task 3 updates `output_from_routing_results` / `write_control_bits` signatures. Prefer landing Task 2+3 in one commit if needed, or add temporary unused parameters in Task 2 then implement bodies in Task 3.
+**Note:** Task 2 may not compile until Task 3 updates `output_from_routing_results` / `write_control_bits` signatures. Prefer implementing Task 2+3 together in the working tree if needed, or add temporary unused parameters in Task 2 then implement bodies in Task 3. Still **do not** commit.
 
 - [ ] **Step 3: Build**
 
@@ -215,18 +208,9 @@ xmake build PR_tool module_test regression_test
 
 Expected: compile succeeds after Task 3 wired (or interim stubs).
 
-- [ ] **Step 4: Commit** (combine with Task 3 if split commit fails to compile)
+- [ ] **Step 4: Stop — do not `git add` or `git commit`**
 
-```bash
-git add source/parse/reader/module.hh source/parse/reader/module.cc source/app/cli/cli.cc source/widget test
-git commit -m "$(cat <<'EOF'
-refactor(parse): return RegisterMapConfig from read_config
-
-Thread register map to CLI/GUI/tests for split controlbits output.
-
-EOF
-)"
-```
+Leave Task 2 changes in the working tree for human review.
 
 ---
 
@@ -397,28 +381,19 @@ head -n 1 writer_out_test2/regnamecontrolbit_4part/botleft_REG0.txt
 
 Expected: three whitespace-separated fields (`hex`, address like `32'h...`, `reg_name`).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Stop — do not `git add` or `git commit`**
 
-```bash
-git add source/parse/writer source/app/cli/cli.cc source/widget
-git commit -m "$(cat <<'EOF'
-feat(writer): emit regnamecontrolbit_4part split files
-
-Replace single controlbits_<mode>.txt with four address-mapped REG files; honor -s.
-
-EOF
-)"
-```
+Leave Task 3 changes in the working tree for human review.
 
 ---
 
 ### Task 4: `compare_controlbits.py` count check + SKILL + `test_writer` pair dirs
 
 **Files:**
-- Modify: `test/module_test/test_writer/compare_controlbits.py`
+- Modify: `test/module_test/test_writer/check-controlbits-file/scripts/compare_controlbits.py`
 - Modify: `test/module_test/test_writer/check-controlbits-file/SKILL.md`
-- Modify: `test/module_test/test_writer/test_writer.cc`
-- Create: `test/module_test/test_writer/verify_simplify_split.py`
+- Modify: `test/module_test/test_writer/check-controlbits-file/scripts/test_writer.cc`
+- Create: `test/module_test/test_writer/check-controlbits-file/scripts/verify_simplify_split.py`
 
 - [ ] **Step 1: Update `compare_controlbits.py`**
 
@@ -480,7 +455,7 @@ xmake build module_test
 cd output
 ./module_test writer ../test/module_test/test_writer/test2_chiplet_IO \
   <path_to_net_path_info_new.txt> ./check_run 0
-python3 ../test/module_test/test_writer/compare_controlbits.py \
+python3 ../test/module_test/test_writer/check-controlbits-file/scripts/compare_controlbits.py \
   --golden-dir ../test/module_test/test_writer/test2_chiplet_IO/golden/regnamecontrolbit_4part \
   --split-dir ./check_run/regnamecontrolbit_4part
 ```
@@ -493,25 +468,16 @@ Adjust golden path if the repo layout differs; discover with `find test/module_t
 
 ```bash
 ./module_test writer ... ./check_run_full 0 --simplified-output-dir ./check_run_simplified
-python3 ../test/module_test/test_writer/verify_simplify_split.py \
+python3 ../test/module_test/test_writer/check-controlbits-file/scripts/verify_simplify_split.py \
   --full-dir ./check_run_full/regnamecontrolbit_4part \
   --simplified-dir ./check_run_simplified/regnamecontrolbit_4part
 ```
 
 Expected: exit 0.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Stop — do not `git add` or `git commit`**
 
-```bash
-git add test/module_test/test_writer
-git commit -m "$(cat <<'EOF'
-test(writer): compare four-file output and verify -s omit rules
-
-Drop split_regs bridge from SKILL; add count check and pair-dir verifier.
-
-EOF
-)"
-```
+Leave Task 4 changes in the working tree for human review.
 
 ---
 
@@ -545,18 +511,9 @@ EOF
 - `test/AGENTS.md`: one short note on writer golden four-file flow.
 - `README.md` + `TODO.md`: sync.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Stop — do not `git add` or `git commit`**
 
-```bash
-git add source tools README.md TODO.md test/AGENTS.md
-git commit -m "$(cat <<'EOF'
-docs: align AGENTS/README/TODO with split register output
-
-Mark legacy controlbits readback paths and demote split_regs to offline use.
-
-EOF
-)"
-```
+Leave Task 5 changes in the working tree for human review.
 
 ---
 
@@ -577,7 +534,9 @@ cd output
 
 Expected: no fatal about empty `register_map`; runs complete under normal project criteria (routing failure rules unchanged). Confirm `./regnamecontrolbit_4part/` exists after a normal `./PR_tool ../test/config/case1 -o .` smoke if iterative tests do not leave artifacts.
 
-- [ ] **Step 3: Commit only if docs/scripts tweaked during smoke; otherwise no empty commit**
+- [ ] **Step 3: Stop — do not `git add` or `git commit`**
+
+If smoke requires tiny docs/script tweaks, leave them uncommitted with the rest of the working tree.
 
 ---
 
@@ -604,5 +563,6 @@ Expected: no fatal about empty `register_map`; runs complete under normal projec
 
 - No TBD placeholders in steps.
 - Types named consistently: `RegisterMapConfig`, `write_split_files`, `fetch_and_write_split_pair`.
-- Task 2+3 may need a single commit if intermediate compile breaks — called out explicitly.
+- Task 2+3 may need to land together in the working tree if intermediate compile breaks — called out explicitly; still no git commit.
 - Golden path for test2 must be discovered on disk; plan does not invent a missing golden tree.
+- No task step runs `git add` / `git commit`.

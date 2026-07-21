@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare golden regnamecontrolbit_4part files with split_regs output by register name."""
+"""Compare golden regnamecontrolbit_4part files with PR Writer four-file output by register name."""
 
 from __future__ import annotations
 
@@ -54,9 +54,21 @@ def load_split(path: Path) -> dict[str, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Compare golden and split controlbit files.")
-    parser.add_argument("--golden-dir", required=True, type=Path)
-    parser.add_argument("--split-dir", required=True, type=Path)
+    parser = argparse.ArgumentParser(
+        description="Compare golden and PR Writer regnamecontrolbit_4part files."
+    )
+    parser.add_argument(
+        "--golden-dir",
+        required=True,
+        type=Path,
+        help="Directory with golden botleft/botright/topleft/topright_controlbit.txt files",
+    )
+    parser.add_argument(
+        "--split-dir",
+        required=True,
+        type=Path,
+        help="PR Writer output regnamecontrolbit_4part/ (four *_REG*.txt files)",
+    )
     args = parser.parse_args()
 
     total_diff = 0
@@ -73,6 +85,15 @@ def main() -> int:
 
         golden_regs = load_golden(golden_path)
         split_regs = load_split(split_path)
+
+        if len(split_regs) != len(golden_regs):
+            print(
+                f"ERROR: register count mismatch in {split_name} "
+                f"({len(split_regs)} vs golden {len(golden_regs)})."
+            )
+            print("Hint: golden compare requires full output; disable -s/--simplify-controlbits-file.")
+            return 1
+
         all_names = sorted(set(golden_regs) | set(split_regs))
         file_diff = 0
         for name in all_names:

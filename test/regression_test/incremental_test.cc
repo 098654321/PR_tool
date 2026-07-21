@@ -133,7 +133,7 @@ namespace PR_tool::test {
     void test_case(std::usize id, std::usize mode, bool try_all_modes, algo::RouteData& data, std::usize cycle) {
         std::FilePath config_path{"../test/config/case" + std::to_string(id)};
                 
-        auto [interposer, basedie] = PR_tool::parse::read_config(config_path, mode, try_all_modes);
+        auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, mode, try_all_modes);
         algo::build_nets(basedie.get(), interposer.get());
         basedie->merge_same_mode_nets();
         auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer.get(), basedie.get(), mode, try_all_modes);
@@ -142,7 +142,7 @@ namespace PR_tool::test {
             data.collect_data_in_cycle(cycle, data_per_cycle);
 
             std::string controlbits_file{"./" + std::to_string(cycle + 1)};
-            parse::output_from_routing_results(interposer.get(), controlbits_file, basedie.get(), mode, try_all_modes);
+            parse::output_from_routing_results(interposer.get(), controlbits_file, basedie.get(), mode, try_all_modes, false, register_map);
         }
         else {
             debug::info("Already has control bits, skip the routing process");

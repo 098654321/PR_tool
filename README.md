@@ -41,13 +41,14 @@ xmake run regression_test
 ### 端到端数据流
 
 ```
-config JSON
-  → parse::read_config          # 构建 Interposer + BaseDie
+config JSON (+ optional reigster_adder → register_map)
+  → parse::read_config          # Interposer + BaseDie + RegisterMapConfig
   → algo::build_nets            # Connection → Net / SyncNet
   → algo::place (可选)          # 模拟退火布局
   → algo::route_nets            # Maze / 增量布线
   → parse::output_from_routing_results
-  → controlbits_<mode>.txt
+  → {output}/regnamecontrolbit_4part/
+       botleft_REG0.txt … topright_REG3.txt   # hex address reg_name
 ```
 
 CLI 主流程在 [`source/app/cli/cli.cc`](./source/app/cli/cli.cc)；入口参数解析在 [`source/app/PR_tool.cc`](./source/app/PR_tool.cc)。
@@ -89,7 +90,8 @@ CLI 主流程在 [`source/app/cli/cli.cc`](./source/app/cli/cli.cc)；入口参�
 | `external_ports.json` | 外部 I/O 端口 |
 | `connections.json` | 线网连接（按 mode / sync 分组） |
 | `01_ports.json` | VDD/GND（pose/nege）端口 |
-| `controlbits_<mode>.txt` | （可选）已有布线结果，用于跳过布线或增量 warm-start |
+| `reigster_adder.json`（或 `register_adder.json`） | 寄存器名 → 地址 map（写出四文件用；由 `config.json` 指向） |
+| `controlbits_<mode>.txt` | （可选、legacy）旧单文件布线结果；读回尚未适配四文件输出 |
 
 Pin 名解析规则、连接器状态机、增量代价模型等细节见 [`source/AGENTS.md`](./source/AGENTS.md)。
 
@@ -209,11 +211,12 @@ PR_tool <input folder path> [OPTIONS]
 
 | 选项 | 说明 |
 |------|------|
-| `-o, --output <PATH>` | controlbits 输出目录 |
+| `-o, --output <PATH>` | 输出根目录；其下生成 `regnamecontrolbit_4part/` |
 | `-g, --gui` | GUI 模式 |
 | `-p, --placement` | 启用布局（模拟退火） |
 | `-i, --incremental [MODE]` | 增量布线；可跟正整数 mode，省略则尝试所有 mode |
-| `-c, --compare <MODE>` | 与指定 mode 的 controlbits 对比（需配合 `-i`） |
+| `-c, --compare <MODE>` | 与指定 mode 的 controlbits 对比（需配合 `-i`；仍假设旧单文件，待适配） |
+| `-s, --simplify-controlbits-file` | 写出四文件时省略等于默认 hex 的行（稀疏输出） |
 | `-v, --verbose` | 输出 Debug 日志 |
 | `-h, --help` | 帮助 |
 | `-V, --version` | 版本信息 |
@@ -230,14 +233,14 @@ xmake run PR_tool -g
 
 ## 工具程序
 
-`tools/` 与 `test/transform_format/` 提供辅助程序，通过 xmake target 构建：
+`tools/` 与 `test/transform_format/` 提供辅助程序。正式产品输出由 Writer 写四文件；`split_regs.py` 仅 legacy 旧单文件离线拆分（详见 [`tools/AGENTS.md`](./tools/AGENTS.md)）。
 
 | target | 说明 |
 |--------|------|
 | `cobmap` | 计算 COB 端口映射 |
 | `view2d` | 加载配置、执行 P&R、2D 可视化 |
 | `view3d` | 加载配置、执行 P&R、3D 可视化 |
-| `parse_controlbits` | 解析 controlbits 文件 |
+| `parse_controlbits` | 解析旧单文件 controlbits（读回未跟四文件） |
 | `txt2json` | 旧版 txt 配置转 JSON |
 | `json2txt` | JSON 配置转旧版 txt 连接格式 |
 

@@ -6,6 +6,7 @@
 #include <circuit/net/types/bbsnet.hh>
 #include <circuit/net/types/btnet.hh>
 #include <circuit/net/types/tbnet.hh>
+#include <circuit/net/types/tsbsnet.hh>
 #include <circuit/net/types/syncnet.hh>
 #include <circuit/path/pathpackage.hh>
 #include <debug/debug.hh>
@@ -26,17 +27,29 @@ using namespace PR_tool;
 
 namespace {
 
+struct PathSegment {
+    std::Option<hardware::BumpCoord> begin_bump {};
+    std::Option<hardware::TrackCoord> begin_track {};
+    std::Option<hardware::BumpCoord> end_bump {};
+    std::Option<hardware::TrackCoord> end_track {};
+    std::Vector<hardware::TrackCoord> tracks {};
+};
+
 struct ParsedPathBlock {
     int net_index {-1};
     std::Option<hardware::BumpCoord> source_bump {};
     std::Option<hardware::TrackCoord> source_track {};
     std::Vector<hardware::BumpCoord> sink_bumps {};
     std::Vector<hardware::TrackCoord> sink_tracks {};
+    // Legacy single-path fields (filled when there is exactly one segment).
     std::Option<hardware::BumpCoord> begin_bump {};
     std::Option<hardware::TrackCoord> begin_track {};
     std::Option<hardware::BumpCoord> end_bump {};
     std::Option<hardware::TrackCoord> end_track {};
     std::Vector<hardware::TrackCoord> tracks {};
+    // Power rail nets (nege/pose) emit multiple Printing path... segments.
+    std::String power_rail {};  // "", "nege", or "pose"
+    std::Vector<PathSegment> segments {};
 };
 
 auto parse_i64(const std::String& key, const std::String& text) -> std::i64 {
@@ -88,13 +101,53 @@ auto parse_path_file(const std::FilePath& path) -> std::Vector<ParsedPathBlock> 
 
     std::Vector<ParsedPathBlock> blocks {};
     ParsedPathBlock current {};
+    PathSegment current_seg {};
+    bool have_seg = false;
     std::String line {};
 
+    auto flush_segment = [&]() {
+        if (!have_seg) {
+            return;
+        }
+        if (current_seg.tracks.empty() && !current_seg.begin_bump.has_value()
+            && !current_seg.begin_track.has_value()) {
+            current_seg = PathSegment{};
+            have_seg = false;
+            return;
+        }
+        current.segments.emplace_back(current_seg);
+        current_seg = PathSegment{};
+        have_seg = false;
+    };
+
+    auto finalize_legacy_fields = [&]() {
+        if (current.segments.size() == 1) {
+            const auto& seg = current.segments.front();
+            current.begin_bump = seg.begin_bump;
+            current.begin_track = seg.begin_track;
+            current.end_bump = seg.end_bump;
+            current.end_track = seg.end_track;
+            current.tracks = seg.tracks;
+            if (seg.begin_track.has_value() && !current.source_track.has_value()
+                && current.power_rail.empty()) {
+                current.source_track = seg.begin_track;
+            }
+        } else if (current.segments.size() > 1) {
+            for (const auto& seg : current.segments) {
+                current.tracks.insert(current.tracks.end(), seg.tracks.begin(), seg.tracks.end());
+            }
+        }
+    };
+
     auto flush_block = [&]() {
+        flush_segment();
         if (current.net_index >= 0) {
+            finalize_legacy_fields();
             blocks.emplace_back(current);
         }
         current = ParsedPathBlock{};
+        current_seg = PathSegment{};
+        have_seg = false;
     };
 
     while (std::getline(in, line)) {
@@ -108,7 +161,13 @@ auto parse_path_file(const std::FilePath& path) -> std::Vector<ParsedPathBlock> 
             continue;
         }
         if (line.find("Source:") != std::String::npos) {
-            if (is_track_line(line)) {
+            if (line.find("endpoint:") != std::String::npos) {
+                if (line.find("nege") != std::String::npos) {
+                    current.power_rail = "nege";
+                } else if (line.find("pose") != std::String::npos) {
+                    current.power_rail = "pose";
+                }
+            } else if (is_track_line(line)) {
                 current.source_track = parse_track_coord(line);
             } else {
                 current.source_bump = parse_bump_coord(line);
@@ -118,30 +177,40 @@ auto parse_path_file(const std::FilePath& path) -> std::Vector<ParsedPathBlock> 
         if (line.find("Sink") != std::String::npos && line.find('{') != std::String::npos) {
             if (is_track_line(line)) {
                 current.sink_tracks.emplace_back(parse_track_coord(line));
-            } else {
+            } else if (line.find("endpoint:") == std::String::npos) {
                 current.sink_bumps.emplace_back(parse_bump_coord(line));
             }
             continue;
         }
+        if (line.find("Printing path...") != std::String::npos) {
+            flush_segment();
+            have_seg = true;
+            continue;
+        }
         if (line.find("Begin_bump:") != std::String::npos) {
-            current.begin_bump = parse_bump_coord(line);
+            have_seg = true;
+            current_seg.begin_bump = parse_bump_coord(line);
             continue;
         }
         if (line.find("Begin_track:") != std::String::npos) {
-            current.begin_track = parse_track_coord(line);
+            have_seg = true;
+            current_seg.begin_track = parse_track_coord(line);
             continue;
         }
         if (line.find("End_bump:") != std::String::npos) {
-            current.end_bump = parse_bump_coord(line);
+            current_seg.end_bump = parse_bump_coord(line);
+            flush_segment();
             continue;
         }
         if (line.find("End_track:") != std::String::npos) {
-            current.end_track = parse_track_coord(line);
+            current_seg.end_track = parse_track_coord(line);
+            flush_segment();
             continue;
         }
         if (line.find('{') != std::String::npos) {
             if (is_track_line(line)) {
-                current.tracks.emplace_back(parse_track_coord(line));
+                have_seg = true;
+                current_seg.tracks.emplace_back(parse_track_coord(line));
             } else if (is_bump_line(line)) {
                 // ignore standalone bump coord lines in metadata
             }
@@ -202,59 +271,91 @@ auto build_history_package(hardware::Interposer* interposer, const ParsedPathBlo
     circuit::PathPackage empty_package {};
     circuit::HistoryPathPackage history{empty_package};
     history.clear_all();
-    if (block.tracks.empty()) {
-        throw std::runtime_error(std::format("net {} has empty track list", block.net_index));
-    }
 
-    auto track_ptrs = std::Vector<hardware::Track*> {};
-    for (const auto& coord : block.tracks) {
-        track_ptrs.emplace_back(track_ptr(interposer, coord));
-    }
-
-    for (std::usize i = 0; i < track_ptrs.size(); ++i) {
-        std::Option<circuit::COBConnectorInfo> connector_info {std::nullopt};
-        if (i + 1 < track_ptrs.size()) {
-            connector_info =
-                find_cob_info(interposer, track_ptrs[i], track_ptrs[i + 1]);
-            if (!connector_info.has_value()) {
-                throw std::runtime_error(std::format(
-                    "missing COB connector between {} and {}",
-                    track_ptrs[i]->coord().to_string(), track_ptrs[i + 1]->coord().to_string()));
-            }
+    auto append_track_chain = [&](const std::Vector<hardware::TrackCoord>& tracks) {
+        if (tracks.empty()) {
+            return;
         }
-        history._regular_path.emplace_back(track_ptrs[i]->coord(), connector_info);
-    }
+        auto track_ptrs = std::Vector<hardware::Track*> {};
+        for (const auto& coord : tracks) {
+            track_ptrs.emplace_back(track_ptr(interposer, coord));
+        }
+        for (std::usize i = 0; i < track_ptrs.size(); ++i) {
+            std::Option<circuit::COBConnectorInfo> connector_info {std::nullopt};
+            if (i + 1 < track_ptrs.size()) {
+                connector_info =
+                    find_cob_info(interposer, track_ptrs[i], track_ptrs[i + 1]);
+                if (!connector_info.has_value()) {
+                    throw std::runtime_error(std::format(
+                        "missing COB connector between {} and {}",
+                        track_ptrs[i]->coord().to_string(), track_ptrs[i + 1]->coord().to_string()));
+                }
+            }
+            history._regular_path.emplace_back(track_ptrs[i]->coord(), connector_info);
+        }
+        history._length += algo::path_length(track_ptrs);
+    };
 
-    history._length = algo::path_length(track_ptrs);
-
-    if (block.begin_bump.has_value()) {
-        auto* bump = bump_ptr(interposer, block.begin_bump.value());
+    auto append_begin_bump = [&](const hardware::BumpCoord& bump_coord,
+                                 const hardware::TrackCoord& first_track) {
+        auto* bump = bump_ptr(interposer, bump_coord);
+        auto* first = track_ptr(interposer, first_track);
         auto tracks_map = interposer->available_tracks_bump_to_track(bump, true);
-        auto iter = tracks_map.find(track_ptrs.front());
+        auto iter = tracks_map.find(first);
         if (iter == tracks_map.end()) {
             throw std::runtime_error(std::format(
                 "cannot find bump_to_track connector for bump {} -> track {}",
-                bump->coord().to_string(), track_ptrs.front()->coord().to_string()));
+                bump->coord().to_string(), first->coord().to_string()));
         }
         history._tob_to_track.emplace_back(
-            bump->coord(), tob_info_from(bump, iter->second), track_ptrs.front()->coord());
+            bump->coord(), tob_info_from(bump, iter->second), first->coord());
         history._length += 1;
-    }
+    };
 
-    if (block.end_bump.has_value()) {
-        auto* bump = bump_ptr(interposer, block.end_bump.value());
+    auto append_end_bump = [&](const hardware::BumpCoord& bump_coord,
+                               const hardware::TrackCoord& last_track) {
+        auto* bump = bump_ptr(interposer, bump_coord);
+        auto* last = track_ptr(interposer, last_track);
         auto tracks_map = interposer->available_tracks_track_to_bump(bump, true);
-        auto iter = tracks_map.find(track_ptrs.back());
+        auto iter = tracks_map.find(last);
         if (iter == tracks_map.end()) {
             throw std::runtime_error(std::format(
                 "cannot find track_to_bump connector for track {} -> bump {}",
-                track_ptrs.back()->coord().to_string(), bump->coord().to_string()));
+                last->coord().to_string(), bump->coord().to_string()));
         }
         history._track_to_tob.emplace_back(
-            bump->coord(), tob_info_from(bump, iter->second), track_ptrs.back()->coord());
+            bump->coord(), tob_info_from(bump, iter->second), last->coord());
         history._length += 1;
+    };
+
+    const auto& segments = block.segments;
+    if (!segments.empty()) {
+        for (const auto& seg : segments) {
+            if (seg.tracks.empty()) {
+                throw std::runtime_error(std::format(
+                    "net {} has empty track list in a path segment", block.net_index));
+            }
+            append_track_chain(seg.tracks);
+            if (seg.begin_bump.has_value()) {
+                append_begin_bump(seg.begin_bump.value(), seg.tracks.front());
+            }
+            if (seg.end_bump.has_value()) {
+                append_end_bump(seg.end_bump.value(), seg.tracks.back());
+            }
+        }
+        return history;
     }
 
+    if (block.tracks.empty()) {
+        throw std::runtime_error(std::format("net {} has empty track list", block.net_index));
+    }
+    append_track_chain(block.tracks);
+    if (block.begin_bump.has_value()) {
+        append_begin_bump(block.begin_bump.value(), block.tracks.front());
+    }
+    if (block.end_bump.has_value()) {
+        append_end_bump(block.end_bump.value(), block.tracks.back());
+    }
     return history;
 }
 
@@ -322,6 +423,34 @@ auto match_block_to_net(const ParsedPathBlock& block, circuit::Net* net) -> bool
         return btt->begin_bump()->coord() == block.source_bump.value()
                && btt->end_track()->coord() == block.sink_tracks.front();
     }
+    if (auto* tsbs = dynamic_cast<circuit::TracksToBumpsNet*>(net)) {
+        if (block.power_rail.empty() || block.sink_bumps.empty()) {
+            return false;
+        }
+        const auto& name = tsbs->name();
+        if (block.power_rail == "nege" && name.find("Nege") == std::String::npos
+            && name.find("nege") == std::String::npos) {
+            return false;
+        }
+        if (block.power_rail == "pose" && name.find("Pose") == std::String::npos
+            && name.find("pose") == std::String::npos) {
+            return false;
+        }
+        if (tsbs->end_bumps().size() != block.sink_bumps.size()) {
+            return false;
+        }
+        // Order of sinks in path vs NetBuilder may differ; match as a set.
+        std::HashSet<hardware::BumpCoord> want {};
+        for (const auto& c : block.sink_bumps) {
+            want.emplace(c);
+        }
+        for (auto* bump : tsbs->end_bumps()) {
+            if (!want.contains(bump->coord())) {
+                return false;
+            }
+        }
+        return true;
+    }
     throw std::runtime_error(std::format("unsupported net type for writer test: {}", net->name()));
 }
 
@@ -373,7 +502,7 @@ void test_writer_main(int argc, char** argv) {
 
     auto blocks = parse_path_file(path_file);
 
-    auto [interposer_box, basedie_box] = parse::read_config(config_folder, mode, false);
+    auto [interposer_box, basedie_box, register_map] = parse::read_config(config_folder, mode, false);
     auto* interposer = interposer_box.get();
     auto* basedie = basedie_box.get();
     algo::build_nets(basedie, interposer);
@@ -415,6 +544,24 @@ void test_writer_main(int argc, char** argv) {
         net->set_pathpackage(package);
     }
 
+    // Golden path may list more ExtIO blocks than leaf nets from connections.json.
+    // Apply leftovers so COB/TOB bits match golden (connect before matched nets so
+    // connect_registers overwrites shared bump dirs in net order).
+    std::usize unused_blocks_applied = 0;
+    for (std::usize i = 0; i < blocks.size(); ++i) {
+        if (block_used[i]) {
+            continue;
+        }
+        circuit::PathPackage package{build_history_package(interposer, blocks[i]), interposer};
+        package.occupy_all();
+        package.connect_all();
+        ++unused_blocks_applied;
+    }
+    if (unused_blocks_applied > 0) {
+        debug::warning_fmt(
+            "applied {} unused path blocks not matched to leaf nets", unused_blocks_applied);
+    }
+
     for (auto& net_rc : nets) {
         if (auto* sync = dynamic_cast<circuit::SyncNet*>(net_rc.get())) {
             sync->collect_package();
@@ -425,8 +572,8 @@ void test_writer_main(int argc, char** argv) {
     if (simplified_output_dir.has_value()) {
         std::filesystem::create_directories(*simplified_output_dir);
         parse::connect_registers(interposer, basedie, mode);
-        parse::write_control_bits_pair(interposer, output_dir, *simplified_output_dir, mode);
+        parse::write_control_bits_pair(interposer, output_dir, *simplified_output_dir, mode, register_map);
     } else {
-        parse::output_from_routing_results(interposer, output_dir, basedie, mode, false, simplify_controlbits);
+        parse::output_from_routing_results(interposer, output_dir, basedie, mode, false, simplify_controlbits, register_map);
     }
 }

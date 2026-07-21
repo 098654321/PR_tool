@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Split controlbits into register files; optionally omit default-valued registers (-s).
+"""Legacy offline splitter: single-file controlbits_*.txt → four REG files.
 
-Typical workflow:
-  1. PR_tool writes full controlbits_0.txt (without -s).
-  2. split_regs.py reads that full file and, with -s, omits registers whose hex
-     equals the hardware default when writing the split output files.
+Formal PR_tool product output is Writer → regnamecontrolbit_4part/ (see source/).
+Keep this script for legacy/external two-column controlbits only (design A1).
+Recommended -s path is PR_tool -s (sparse four-file write), not this script as primary.
 
 Default hex rules (mirrors source/parse/writer/register_defaults.hh):
   - tob_{r}_{c}_track2tob_{0..3} and tob_{r}_{c}_tob2bump_bank{0,1}_en_{0,1}: ffffffff

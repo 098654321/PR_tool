@@ -19,10 +19,10 @@
 
 | 文件 | 作用 |
 |------|------|
-| `split_regs.py` | 全量 controlbits → 4 个 REG 文件 |
-| `register_map.json` | 寄存器名 → 地址/分区 map（供 split 使用） |
+| `split_regs.py` | **Legacy**：旧单文件 `controlbits_*.txt` → 4 个 REG（离线；非正式 Writer） |
+| `register_map.json` | 寄存器名 → 地址/分区 map（case `reigster_adder` 模板 / split 对照） |
 | `port_allocator.py` | 约束目录中的 `connection.txt` → `connections.json` |
-| `parse_controlbits.cc` | 从 controlbits 反推路径/连通（调试） |
+| `parse_controlbits.cc` | 从旧单文件 controlbits 反推路径（调试；读回未跟四文件） |
 | `view2d.cc` / `view3d.cc` | 加载配置并 P&R 后 2D/3D 可视化（低频） |
 | `cobmap.cc` | COB 方向索引映射查询（低频） |
 | `count_lines.py` | 统计 `./source` 代码行数 |
@@ -31,24 +31,21 @@
 
 - 主程序 CLI/GUI、Writer/Reader、P&R → `source/`
 - 集成测例、module/regression → `test/`
-- `tools/` **不替代**正式 Writer 输出链路；当前是下游桥接与测例准备
+- 正式产品输出是 Writer 的 `regnamecontrolbit_4part/`；`tools/` 不替代该链路
 
 ---
 
-## 2. split_regs + register_map（主工作流）
+## 2. split_regs + register_map（legacy 离线）
 
 ### 2.1 用途
 
-PR_tool 写出全量 `controlbits_<mode>.txt`（两列：`hex reg_name`）后，本脚本按 `register_map.json` 拆成 4 个文件（三列：`hex address reg_name`）：
+**不是**正式产品路径。PR_tool Writer 已直接写出 `{output}/regnamecontrolbit_4part/` 下 4 个文件（三列 `hex address reg_name`）。
 
-- `botleft_REG0.txt`
-- `botright_REG1.txt`
-- `topleft_REG2.txt`
-- `topright_REG3.txt`
+本脚本仅用于 **legacy / 外部** 旧单文件 `controlbits_<mode>.txt`（两列 `hex reg_name`）→ 同上 4 文件：
+
+- `botleft_REG0.txt` / `botright_REG1.txt` / `topleft_REG2.txt` / `topright_REG3.txt`
 
 ### 2.2 命令
-
-在仓库根目录：
 
 ```bash
 python3 tools/split_regs.py \
@@ -58,28 +55,16 @@ python3 tools/split_regs.py \
   [-s]
 ```
 
-- `-c/--controlbits`：输入 controlbits（**推荐全量**，即 PR_tool 未加 `-s` 的输出）
-- `-j/--json_map`：寄存器 map（默认对照用 `tools/register_map.json`）
+- `-c/--controlbits`：旧单文件输入
+- `-j/--json_map`：map（模板 `tools/register_map.json`）
 - `-o/--output_dir`：输出目录；省略则写到 controlbits 所在目录
-- `-s/--simplify-controlbits-file`：在 **split 写出阶段** 省略默认 hex 行
+- `-s`：split 写出时省略默认 hex 行（规则同 `register_defaults.hh`）
 
-### 2.3 `-s` 与默认规则
+### 2.3 `-s` 与推荐入口
 
-- 省略规则与 `source/parse/writer/register_defaults.hh` 一致（`tob_*_track2tob_*` 与部分 `tob2bump_bank*_en_*` 默认 `ffffffff`，其余默认 `00000000`）
-- 推荐工作流：PR_tool **全量**写出 → `split_regs.py -s` 做下游简化
-- 不要用「已简化的 controlbits」再跑 `-s` 当作完整对照
-
-### 2.4 报告与踩坑
-
-脚本结束打印 REPORT：
-
-- map 有、controlbits 无 → missing
-- controlbits 有、map 未用到 → extra
-- `-s` 时统计 omitted / written 行数
-
-改默认省略逻辑时：**必须**同步 C++ `register_defaults.hh` 与本脚本。
-
-前瞻：根目录 `TODO.md` 计划让 PR_tool 直接写 4 个 split 文件；在落地前，本脚本仍是正式下游桥接。
+- **推荐**：`PR_tool` 全量四文件，或 `PR_tool -s` 稀疏四文件（见 `source/AGENTS.md`）
+- **不要**把 `split_regs.py -s` 当作主 `-s` 入口
+- 改默认省略逻辑时：同步 C++ `register_defaults.hh` 与本脚本
 
 ---
 
@@ -121,7 +106,7 @@ python3 tools/port_allocator.py <constraint_dir> \
 
 ### 4.1 用途
 
-从已有 `controlbits_<mode>.txt` 加载寄存器，反推 bump/track 端点与路径，打印 net 信息。用于调试/对照，**不是**主输出链路。
+从已有 **旧单文件** `controlbits_<mode>.txt` 加载寄存器，反推 bump/track 端点与路径。调试用；**不是**主输出链路。读回尚未适配 `regnamecontrolbit_4part/`。
 
 ### 4.2 构建与运行
 
@@ -188,7 +173,7 @@ python3 tools/count_lines.py   # 从仓库根目录运行；统计 ./source
 ### 6.2 常见修改
 
 - 改 split 简化规则 → 同步 `tools/split_regs.py` 与 `source/parse/writer/register_defaults.hh`
-- 改寄存器分区/地址 → 更新 `tools/register_map.json`，并核对该 map 的下游比对流程
+- 改寄存器分区/地址 → 更新 `tools/register_map.json` 与各 case 的 `reigster_adder`；正式写出走 Writer
 - 改 `port_allocator` 语法 → 更新脚本 docstring，并回归相关约束目录生成的 `connections.json`
 - 核心 P&R / Writer 行为 → 改 `source/`，并维护 `source/AGENTS.md`
 

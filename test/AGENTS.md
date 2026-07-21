@@ -15,6 +15,7 @@ This document provides an overview of the `test/` directory for AI agents. It de
 *   **`module_test/`**: Unit tests.
     *   Target specific modules or classes (e.g., `test_router.cc`, `test_cob.cc`).
     *   Used for verifying isolated functionality.
+    *   **Writer golden**: `test_writer/` compares PR `regnamecontrolbit_4part/` (four files, no `-s`) to golden via `check-controlbits-file/scripts/compare_controlbits.py` — no `split_regs` bridge. See `check-controlbits-file/SKILL.md`. Iterative smoke (`placer_iteratively` / `router_iteratively`) does not assert controlbits content.
 *   **`regression_test/`**: End-to-end regression testing.
     *   Uses the **Catch2** testing framework (`compile_catch2.cc`).
     *   `test.cc`: Main entry point for regression tests.

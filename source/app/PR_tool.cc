@@ -35,7 +35,7 @@ namespace PR_tool {
         console::println_with_color("Options: ", Color::Green);
 
         console::print_with_color("\t-o, --output <OUTPUT_PATH>  ", Color::Cyan);
-        console::println("Indicate output directory for controlbit file");
+        console::println("Output root; writes regnamecontrolbit_4part/ under it");
 
         console::print_with_color("\t-g, --gui                   ", Color::Cyan);
         console::println("Work in gui");
@@ -56,7 +56,7 @@ namespace PR_tool {
         console::println("Work in incremental routing mode.");
 
         console::print_with_color("\t-s, --simplify-controlbits-file ", Color::Cyan);
-        console::println("Omit default-valued COB and TOB dly/drv registers from output.");
+        console::println("Omit default-valued registers when writing the four REG files.");
     }
 
     auto print_verion() -> void {

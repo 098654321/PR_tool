@@ -36,7 +36,7 @@ namespace PR_tool::test {
             debug::initial_log("debug_flow_case" + std::to_string(id) + ".log");
 
             // 1. Read config
-            auto [interposer, basedie] = PR_tool::parse::read_config(config_path, 0, false);
+            auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, 0, false);
             
             // 2. Build nets
             algo::build_nets(basedie.get(), interposer.get());
@@ -65,7 +65,7 @@ namespace PR_tool::test {
             debug::info("Starting Routing...");
             auto data = algo::route_nets(interposer.get(), basedie.get(), algo::MazeRouteStrategy{}, algo::HK{}, 0, false, false);
 
-            parse::output_from_routing_results(interposer.get(), ".", basedie.get(), 0, false);
+            parse::output_from_routing_results(interposer.get(), ".", basedie.get(), 0, false, false, register_map);
             
             // 5. Verify
             THEN("Routing should succeed"){
@@ -80,7 +80,7 @@ namespace PR_tool::test {
             debug::initial_log("debug_flow_incre_case" + std::to_string(id) + ".log");
 
             // 1. Read config
-            auto [interposer, basedie] = PR_tool::parse::read_config(config_path, mode, false);
+            auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, mode, false);
             
             // 2. Build nets
             algo::build_nets(basedie.get(), interposer.get());
@@ -98,7 +98,7 @@ namespace PR_tool::test {
             debug::info("Starting Incremental Routing...");
             // mode = 2, incremental = true, try_all_modes = false
             auto data_per_cycle = algo::route_nets(interposer.get(), basedie.get(), algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, false, has_other_bits);
-            parse::output_from_routing_results(interposer.get(), ".", basedie.get(), mode, false);
+            parse::output_from_routing_results(interposer.get(), ".", basedie.get(), mode, false, false, register_map);
             
             // 5. Verify
             THEN("Routing should succeed"){

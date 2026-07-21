@@ -12,17 +12,17 @@
 namespace PR_tool::parse {
 
     auto read_config(const std::FilePath& config_folder, int mode, bool try_all_modes)
-        -> std::Tuple<std::Box<hardware::Interposer>, std::Box<circuit::BaseDie>> 
+        -> std::Tuple<std::Box<hardware::Interposer>, std::Box<circuit::BaseDie>, RegisterMapConfig> 
     {
         debug::info_fmt("Read config in '{}'", config_folder.string());
 
         auto interposer = std::make_unique<hardware::Interposer>();
         auto basedie = std::make_unique<circuit::BaseDie>();
 
-        read_config(config_folder, interposer.get(), basedie.get(), mode, try_all_modes);
+        auto map = read_config(config_folder, interposer.get(), basedie.get(), mode, try_all_modes);
         
         debug::info("Read config done.");
-        return {std::move(interposer), std::move(basedie)};
+        return {std::move(interposer), std::move(basedie), std::move(map)};
     }
 
     auto read_config(
@@ -31,14 +31,17 @@ namespace PR_tool::parse {
         circuit::BaseDie* basedie,
         int mode,
         bool try_all_modes
-    ) -> void
+    ) -> RegisterMapConfig
     {
         auto config = load_config(config_folder, mode, try_all_modes);
         auto reader = Reader{config, interposer, basedie};
         reader.build();
+        return std::move(config.register_map);
     }
 
     // TODO: 改一下返回值，需要能够判断是否需要做增量布线，以及如果要做的情况下是否读入了 controlbits
+    // TODO(split-output): still assumes controlbits_<mode>.txt; formal output is now
+    // regnamecontrolbit_4part/; readback / compare not updated yet.
     auto read_controlbits(
         const std::FilePath& config_folder,
         hardware::Interposer* interposer,

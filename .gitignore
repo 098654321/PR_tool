@@ -30,5 +30,9 @@ schedule*
 local/
 third/
 
-/test/module_test/test_writer/check-controlbits-file/
-/test/module_test/test_writer/*/check_run
+# Writer golden-check local artifacts (per case)
+/test/module_test/test_writer/*/check_run/
+
+# check-controlbits-file: track SKILL + scripts + references; ignore caches only
+/test/module_test/test_writer/check-controlbits-file/**/__pycache__/
+/tools/vis_sat/

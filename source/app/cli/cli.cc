@@ -32,7 +32,7 @@ namespace PR_tool {
         debug::initial_log("./debug.log");
         std::FilePath output_file = std::FilePath(output_path.has_value() ? *output_path : ".");
 
-        auto [interposer, basedie] = PR_tool::parse::read_config(config_path, mode, try_all_modes); 
+        auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, mode, try_all_modes); 
         algo::build_nets(basedie.get(), interposer.get());
 
         if (placement) {
@@ -49,7 +49,7 @@ namespace PR_tool {
         
         bool has_route = route(interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes);
         if (has_route) {
-            parse::output_from_routing_results(interposer.get(), output_file, basedie.get(), mode, try_all_modes, simplify_controlbits);
+            parse::output_from_routing_results(interposer.get(), output_file, basedie.get(), mode, try_all_modes, simplify_controlbits, register_map);
         }
 
         return 0;
@@ -111,6 +111,8 @@ debug::info_fmt("Layout time: {} milliseconds", duration.count());
         }
 
         if (!try_all_modes && compare.has_value()) {
+            // TODO(split-output): still assumes controlbits_<mode>.txt; formal output is now
+            // regnamecontrolbit_4part/; readback / compare not updated yet.
             std::string current_file {"controlbits_" + std::to_string(mode) + ".txt"};
             std::string target_file {"controlbits_" + std::to_string(compare.value()) + ".txt"};
             parse::compare(current_file, target_file);

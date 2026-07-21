@@ -6,12 +6,11 @@ PR_tool 是面向 chiplet interposer 的布局布线工具：输入一份系统�
 
 ---
 
-## 0. 2个工作规则
+## 0. 3个工作规则
 
 - 必须深入理解我给你的材料，在理解的基础上进行后续动作
 - 完成修改之后，评估是否需要维护相应的 AGENTS.md文件。
 - 如果改动比超过100行，需要在项目根目录的.plan目录下生成改动记录文件，内容可以参考该目录下已有的改动记录。同时必须启动一个独立的子agent审核代码，判断改动结果是否完整、正确、符合需求
-- 
 
 ## 1. 快速上手（构建 / 运行 / 测试）
 
@@ -57,7 +56,8 @@ CLI 模式的端到端流程在 `source/app/cli/cli.cc`：
 
 5) 输出 controlbits（`parse::output_from_routing_results`，`source/parse/writer/`）  
    - `PathPackage::connect_all()` 将路径绑定到 TOB/COB 寄存器对象  
-   - `parse::Writer` 从硬件对象抓取寄存器值并写入 `controlbits_<mode>.txt`
+   - `parse::Writer` 抓取寄存器值，写入 `{output}/regnamecontrolbit_4part/` 下 4 个文件（`hex address reg_name`）  
+   - CLI 写一棵树：默认全量；`-s` 稀疏（省略等于默认 hex 的行）
 
 ---
 
@@ -157,6 +157,8 @@ Pin 名的解析规则（`Reader::parse_connection_pin`）：
 
 入口：`parse::read_controlbits`（`source/parse/reader/module.cc`）
 
+> **TODO(split-output)**：仍假设旧单文件 `controlbits_<mode>.txt`；正式写出已是 `regnamecontrolbit_4part/`，读回 / 增量 warm-start **尚未**适配。
+
 - 若存在 `controlbits_<mode>.txt`：
   - `load_controlbits` 解析到 `parse::Controlbits`（`source/parse/reader/controlbits/controlbits.hh`）
   - `bits_to_paths(interposer, basedie, controlbits, mode)` 将 bit 反推回 `PathPackage`
@@ -167,25 +169,28 @@ Pin 名的解析规则（`Reader::parse_connection_pin`）：
 - 第一个 bool：当前 mode 的 controlbits 是否存在并被加载
 - 第二个 bool：是否加载到了任意旧路径（可能是当前 mode，也可能是其它 mode）
 
-### 4.3 写出 controlbits（从 PathPackage 到寄存器文件）
+### 4.3 写出 controlbits（从 PathPackage 到四文件）
 
 入口：`parse::output_from_routing_results`（`source/parse/writer/module.cc`）
 
 - `connect_registers(interposer, basedie, mode)`：
   - 遍历 `basedie->nets_to_vector()`
   - 对属于该 mode 的 net 调用 `net->pathpackage().connect_all()`
-- `write_control_bits(interposer, output_path, mode, simplify_controlbits)`：
-  - `parse::Writer::fetch_and_write(...)`（`source/parse/writer/writer.hh`）
-  - Writer 会从 interposer 的寄存器对象抓取 bit，并写成文本格式
+- `write_control_bits(..., register_map)`：
+  - `parse::Writer` 一次 fetch → `write_split_files`
+  - 输出 `{output}/regnamecontrolbit_4part/{botleft_REG0,botright_REG1,topleft_REG2,topright_REG3}.txt`
+  - 每行：`hex address reg_name`；**不再**写 `controlbits_<mode>.txt`
+- `register_map` 来自 case 的 `reigster_adder`（经 `read_config`）；空 map → fatal
 
 CLI 可选开关 `-s/--simplify-controlbits-file`（默认关闭）：
 
-- 在 **write 阶段**省略「实际 hex 等于该寄存器默认值」的行（hex 与寄存器名均不输出）
-- 默认值规则（内置于 `parse/writer/register_defaults.hh`，不读外部文件）：
-  - `tob_{r}_{c}_track2tob_{0..3}` 与 `tob_{r}_{c}_tob2bump_bank{0,1}_en_{0,1}`（共 128 个）：默认 `ffffffff`
-  - 其余全部寄存器（COB、TOB dly/drv/mux、tob2track、bump2tob、xinzhai 等）：默认 `00000000`
-- `fetch` 逻辑不变；`load_controlbits` 不自动补全缺失行（简化格式不作为 PR_tool 读回输入）
-- **推荐工作流**：PR_tool 默认写出全量 `controlbits_<mode>.txt`；对下游 split 文件做简化时，使用 `tools/split_regs.py -s` 读取全量 controlbits，在 split 输出阶段按相同默认规则省略（不修改 PR_tool 输入文件）
+- 在 **Writer 写出阶段**省略「实际 hex 等于该寄存器默认值」的行
+- 默认值规则（`parse/writer/register_defaults.hh`）：
+  - `tob_{r}_{c}_track2tob_{0..3}` 与 `tob_{r}_{c}_tob2bump_bank{0,1}_en_{0,1}`：默认 `ffffffff`
+  - 其余：默认 `00000000`
+- CLI 只写一棵树（全量或稀疏）；pair 写（full + simplified）仅测试用
+- `load_controlbits` / `-c` compare / GUI save-as **尚未**跟四文件格式（见代码 TODO）
+- **推荐工作流**：`PR_tool` 全量四文件，或 `PR_tool -s` 稀疏四文件。`tools/split_regs.py` 仅作 legacy 旧单文件离线拆分（含其 `-s`），**不是**正式产品或主 `-s` 入口
 
 ---
 
@@ -536,11 +541,12 @@ GUI 入口在 `source/app/gui/gui.cc`，创建 `QApplication` 后启动 `widget:
 
 需要同时改：
 
-- `parse/writer/writer.*`：写出格式
-- `parse/reader/controlbits/*`：解析格式 + bits_to_paths 反推逻辑（若简化格式需被 PR_tool 读回）
-- 回归测试：确保 `read_controlbits → bits_to_paths → connect_all → write_control_bits` 能闭环（完整格式）
+- `parse/writer/writer.*`：四文件写出（`write_split_files`）与 `-s` 省略
+- `parse/reader/config/*`：`reigster_adder` → `RegisterMapConfig`
+- `parse/reader/controlbits/*`：读回 / `bits_to_paths`（若四文件或稀疏格式需被 PR_tool 读回；**当前未完成**）
+- 回归 / writer 金标准：全量四文件 vs golden（无 split 桥接）；`-s` 用 pair 目录 + `test_writer/check-controlbits-file/scripts/verify_simplify_split.py`（见该目录 `SKILL.md`）
 
-`-s/--simplify-controlbits-file` 仅影响 Writer 的 write 阶段；默认关闭时输出应与改动前逐行一致。简化规则见 §4.3（按寄存器名查默认 hex）。对全量 controlbits 做 split 输出简化时，使用 `tools/split_regs.py -s`（规则与 `register_defaults.hh` 一致）。
+`-s/--simplify-controlbits-file` 仅影响 Writer 写出；默认关闭时为全量四文件。规则见 §4.3。推荐入口是 `PR_tool` 或 `PR_tool -s`；`tools/split_regs.py -s` 仅 legacy。
 
 ---
 

@@ -79,7 +79,8 @@ static void test_placement_from_config(const std::String& case_path, int mode, b
     debug::debug_fmt("Configuration file test layout: {}", case_path);
     auto start_time = clock();
     try {
-        auto [interposer, basedie] = read_config(case_path, mode, try_all_modes);
+        auto [interposer, basedie, register_map] = read_config(case_path, mode, try_all_modes);
+        (void)register_map;
 
         auto total_connections{0};
         for (const auto& [sync, connection]: basedie->connections()) {
