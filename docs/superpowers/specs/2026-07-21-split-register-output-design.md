@@ -1,7 +1,7 @@
 # Design: PR_tool 直接写出 4 个 split 寄存器文件
 
 Date: 2026-07-21  
-Status: pending user review of this spec
+Status: approved; implementation plan written
 
 ## 1. Goal
 
