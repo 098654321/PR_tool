@@ -18,6 +18,7 @@
 #include <cassert>
 #include <parse/reader/module.hh>
 #include <widget/frame/msgexception.h>
+#include <widget/frame/controlbitexportdialog.h>
 
 #include <hardware/interposer.hh>
 #include <circuit/basedie.hh>
@@ -238,7 +239,7 @@ namespace PR_tool::widget {
                 this->_basedie->clear();
             }
 
-            parse::read_config(configPath, this->_interposer.get(), this->_basedie.get(), 0, false);
+            this->_register_map = parse::read_config(configPath, this->_interposer.get(), this->_basedie.get(), 0, false);
 
             this->_schematicWidget->reload();
             this->_layoutWidget->reload();
@@ -307,20 +308,33 @@ namespace PR_tool::widget {
 
     void Window::generateControlBitAs() try {
         assert(this->_finishPR == true);
-        auto filePath = QFileDialog::getSaveFileName(
-            this,
-            "Generate Control Bit File",
-            QDir::currentPath() + "/output.ctb",
-            "Control Bit Files (*.ctb);;All Files (*.*)"
-        );
 
-        if (filePath.isEmpty()) {
-            QMessageBox::information(this, "Cancelled", "Save operation cancelled.");
+        ControlBitExportDialog dialog{this};
+        if (dialog.exec() != QDialog::Accepted) {
             return;
         }
 
+        auto output_root = dialog.outputDir().trimmed();
+        if (output_root.isEmpty()) {
+            QMessageBox::warning(this, QStringLiteral("导出控制位"), QStringLiteral("请选择输出目录"));
+            return;
+        }
+
+        const bool simplify = dialog.simplify();
         parse::connect_registers(this->_interposer.get(), this->_basedie.get(), 0);
-        parse::write_control_bits(this->_interposer.get(), filePath.toStdString(), 0);
+        parse::write_control_bits(
+            this->_interposer.get(),
+            output_root.toStdString(),
+            0,
+            simplify,
+            this->_register_map);
+
+        const auto out_dir =
+            QDir{output_root}.filePath(QStringLiteral("regnamecontrolbit_4part"));
+        QMessageBox::information(
+            this,
+            QStringLiteral("导出控制位"),
+            QStringLiteral("已写出控制位到：\n%1").arg(out_dir));
     }
     QMESSAGEBOX_REPORT_EXCEPTION("Generate control bit file")
 
