@@ -42,6 +42,7 @@ namespace PR_tool::parse {
     // TODO: 改一下返回值，需要能够判断是否需要做增量布线，以及如果要做的情况下是否读入了 controlbits
     // TODO(split-output): still assumes controlbits_<mode>.txt; formal output is now
     // regnamecontrolbit_4part/; readback / compare not updated yet.
+    // CLI v1.0.0 does not call read_controlbits for skip-route (always re-routes mode 0).
     auto read_controlbits(
         const std::FilePath& config_folder,
         hardware::Interposer* interposer,

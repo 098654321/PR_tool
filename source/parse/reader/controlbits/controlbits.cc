@@ -62,6 +62,7 @@ namespace PR_tool::parse {
 
     // TODO(split-output): still assumes controlbits_<mode>.txt; formal output is now
     // regnamecontrolbit_4part/; readback / compare not updated yet.
+    // CLI v1.0.0 does not call load_controlbits for skip-route (always re-routes mode 0).
     auto load_controlbits(const std::FilePath& path, int mode) -> std::Option<Controlbits> {
     try {
         auto controlbits_path = path / ("controlbits_" + std::to_string(mode) + ".txt");

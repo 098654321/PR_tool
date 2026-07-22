@@ -92,23 +92,19 @@ debug::info_fmt("Layout time: {} milliseconds", duration.count());
         int mode, std::optional<int> compare, bool try_all_modes
     ) -> RouteStatus {
         debug::debug("Start routing ...");
-        if (!try_all_modes && mode == 0) {  // not incremental routing 
-            auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer, basedie, mode, try_all_modes);
-            if (!has_bits) {
-                auto result = algo::route_nets(interposer, basedie, algo::MazeRouteStrategy{false}, algo::HK{}, mode, false, try_all_modes);
-                if (!result.failed_net_names.empty()) {
-                    debug::error("Routing failed for:");
-                    for (const auto& name : result.failed_net_names) {
-                        debug::error(name);
-                    }
-                    return RouteStatus::Failed;
+        if (!try_all_modes && mode == 0) {
+            // v1.0.0: ignore legacy controlbits_<mode>.txt warm-start / skip-route.
+            auto result = algo::route_nets(
+                interposer, basedie, algo::MazeRouteStrategy{false}, algo::HK{},
+                mode, false, try_all_modes);
+            if (!result.failed_net_names.empty()) {
+                debug::error("Routing failed for:");
+                for (const auto& name : result.failed_net_names) {
+                    debug::error(name);
                 }
-                return RouteStatus::Ok;
+                return RouteStatus::Failed;
             }
-            if (has_other_bits) {
-                debug::info("Has other control bits, skip the routing process");
-            }
-            return RouteStatus::Skipped;
+            return RouteStatus::Ok;
         }
 
         // incremental routing: route all modes (try_all_modes) or single mode (mode > 0)
