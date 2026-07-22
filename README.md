@@ -16,14 +16,19 @@
 - [xmake](https://xmake.io/mirror/zh-cn/guide/installation.html)
 - 支持 **C++23** 的编译器（`xmake.lua` 中 `set_languages("c++23")`）
 - 构建 `PR_tool` / `view2d` / `view3d` 需要 **Qt**（含 OpenGL）
+- `PR_tool_cli` 是无 Qt 的 headless CLI target
 - 构建 `regression_test` 需要 **Catch2**（macOS / Windows 由 xmake 自动拉取；Linux 需通过 conda 等方式安装并设置 `CONDA_PREFIX`）
 
 ### 构建与运行
 
 ```bash
-# 主程序
+# Qt GUI 程序
 xmake build PR_tool
 xmake run PR_tool <config_folder> [OPTIONS]
+
+# 无 Qt 的 CLI 程序
+xmake build PR_tool_cli
+xmake run PR_tool_cli <config_folder> [OPTIONS]
 
 # 默认 target 为 regression_test
 xmake build regression_test

@@ -143,7 +143,7 @@ SCENARIO("Flow regression: place+route, route-only, writer controlbits", "[flow]
 
         // xmake accepts only one target name per `xmake build` invocation.
         const std::string cd_repo = "cd " + quote_shell(repo.string()) + " && ";
-        REQUIRE(shell_ok(run_shell(cd_repo + "xmake build PR_tool")));
+        REQUIRE(shell_ok(run_shell(cd_repo + "xmake build PR_tool_cli")));
         REQUIRE(shell_ok(run_shell(cd_repo + "xmake build module_test")));
         REQUIRE(shell_ok(run_shell(cd_repo + "xmake build json2txt")));
         REQUIRE(fs::exists(module_test));

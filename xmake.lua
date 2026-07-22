@@ -34,6 +34,25 @@ target("PR_tool")
     add_files("source/**.cc", "source/widget/**.h", "resource/resource.qrc")
     add_rules("qt.widgetapp", "qt.opengl")
 
+target("PR_tool_cli")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_basename("PR_tool_cli")
+    set_default(false)
+    add_defines("PR_TOOL_CLI_ONLY")
+    add_includedirs("source", "source/global")
+    add_files(
+        "source/app/main.cc",
+        "source/app/PR_tool.cc",
+        "source/app/cli/**.cc",
+        "source/algo/**.cc",
+        "source/circuit/**.cc",
+        "source/global/**.cc",
+        "source/hardware/**.cc",
+        "source/parse/**.cc",
+        "source/serde/**.cc"
+    )
+
 -- Tool Application 
 
 -- Simple tool for get cob index map 
@@ -97,7 +116,7 @@ target("module_test")
     set_kind("binary")
     set_targetdir("./output")
     set_default(false)
-    add_deps("PR_tool")
+    add_deps("PR_tool_cli")
     -- add_packages("xlnt")
     add_includedirs("source", "source/global", "test/module_test")
     add_files("test/module_test/**.cc")

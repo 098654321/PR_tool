@@ -105,9 +105,13 @@ source/
 构建系统：仓库根目录 `xmake.lua`（C++23；Linux 另有平台标准设置）。
 
 ```bash
-# 主程序
+# Qt GUI 程序
 xmake build PR_tool
 xmake run PR_tool <config_folder> [OPTIONS]
+
+# 无 Qt 的 CLI 程序
+xmake build PR_tool_cli
+xmake run PR_tool_cli <config_folder> [OPTIONS]
 
 # 测试
 xmake build module_test      && xmake run module_test

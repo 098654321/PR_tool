@@ -1,6 +1,8 @@
 
 #include "cli/cli.hh"
+#ifndef PR_TOOL_CLI_ONLY
 #include "gui/gui.hh"
+#endif
 
 #include "debug/console.hh"
 #include "std/integer.hh"
@@ -105,11 +107,15 @@ namespace PR_tool {
         }
 
         if (argument_index("-g", "--gui").has_value()) {
+#ifdef PR_TOOL_CLI_ONLY
+            debug::fatal("GUI is not available in PR_tool_cli; build/run PR_tool for GUI");
+#else
             // gui mode
             if (arguments[0] != "-g" && arguments[0] != "--gui") {
                 debug::warning_fmt("Use gui model but indicate input config '{}', it will be ignored", arguments[0]);
             }
             return gui_main(argc, argv);
+#endif
         } 
         else if (arguments[0] == "-h" || arguments[0] == "--help") {
             print_help();

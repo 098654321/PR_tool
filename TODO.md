@@ -67,19 +67,19 @@ GUI 工具栏导出已改为选输出根目录 +「智能简化寄存器输出�
 
 ### P0：发布阻断
 
-- [ ] **禁用增量布线功能。** 当前版本不支持增量布线；CLI 应拒绝 `-i` / `--incremental` 以及关联的 `-c` / `--compare` 参数，并在帮助文本中明确该限制。
+- [x] **禁用增量布线功能。** 当前版本不支持增量布线；CLI 应拒绝 `-i` / `--incremental` 以及关联的 `-c` / `--compare` 参数，并在帮助文本中明确该限制。
 
-- [ ] **普通布线失败必须失败退出，禁止写出成功制品。** `route_nets` 捕获 `RetryExpt` 后只记录日志，补救逻辑被注释；当前命令已出队，剩余 net 不会继续路由。随后 CLI 仍可能写控制位并返回 0。涉及 `source/algo/router/route_nets.cc`、`source/algo/router/command_mode/invoker.cc`、`source/app/cli/cli.cc`。修复：将失败状态传播到 CLI；只在所有目标 net 均成功且输出校验通过后返回 0。
+- [x] **普通布线失败必须失败退出，禁止写出成功制品。** `route_nets` 捕获 `RetryExpt` 后只记录日志，补救逻辑被注释；当前命令已出队，剩余 net 不会继续路由。随后 CLI 仍可能写控制位并返回 0。涉及 `source/algo/router/route_nets.cc`、`source/algo/router/command_mode/invoker.cc`、`source/app/cli/cli.cc`。修复：将失败状态传播到 CLI；只在所有目标 net 均成功且输出校验通过后返回 0。
 
 - [ ] **初始化 TOB COB-unit 资源计数。** `TOB::_cobunit_resources` 未初始化，却被 `collect_cobunit_usage()` 以 `+=` 更新，并作为 maze 起始轨道排序依据。涉及 `source/hardware/tob/tob.hh`、`source/hardware/tob/tob.cc`、`source/algo/router/common/maze/mazeroutestrategy.cc`。修复：值初始化，并明确每轮资源统计是否需要清零。
 
-- [ ] **修复 TXT 配置解析的越界与未初始化读取。** `numbers[11]` 无初始化、无字段数检查，长行可越界写，短行会读取残留值；`externs[info[4]]` 也没有范围检查。涉及 `source/parse/reader/config/config.cc`。修复：逐行严格要求 11 个字段，拒绝多/少字段，并验证所有索引与坐标。
+- [x] **修复 TXT 配置解析的越界与未初始化读取。** `numbers[11]` 无初始化、无字段数检查，长行可越界写，短行会读取残留值；`externs[info[4]]` 也没有范围检查。涉及 `source/parse/reader/config/config.cc`。修复：逐行严格要求 11 个字段，拒绝多/少字段，并验证所有索引与坐标。
 
-- [ ] **移除 JSON 连接对** `assert` **的依赖。** 连接 pair 仅通过 `assert(net.size() == 2)` 验证，Release 构建下会直接访问越界元素。涉及 `source/parse/reader/config/config.cc`。修复：使用运行时异常并附带文件、mode、连接位置。
+- [x] **移除 JSON 连接对** `assert` **的依赖。** 连接 pair 仅通过 `assert(net.size() == 2)` 验证，Release 构建下会直接访问越界元素。涉及 `source/parse/reader/config/config.cc`。修复：使用运行时异常并附带文件、mode、连接位置。
 
-- [ ] **闭合四文件输出与回读/比较。** 当前正式输出为 `regnamecontrolbit_4part/`，但 `read_controlbits` 和比较功能仍只读取 `controlbits_<mode>.txt`；比较失败只记日志，不影响退出码。涉及 `source/parse/reader/controlbits/controlbits.cc`、`source/parse/comparator/controlbits_parser.cc`、`source/app/cli/cli.cc`。修复：支持四文件读回、比较与路径参数；删除或明确隔离 legacy 单文件路径。
+- [x] **闭合四文件输出与回读/比较。** 当前正式输出为 `regnamecontrolbit_4part/`，但 `read_controlbits` 和比较功能仍只读取 `controlbits_<mode>.txt`；比较失败只记日志，不影响退出码。涉及 `source/parse/reader/controlbits/controlbits.cc`、`source/parse/comparator/controlbits_parser.cc`、`source/app/cli/cli.cc`。修复：支持四文件读回、比较与路径参数；删除或明确隔离 legacy 单文件路径。
 
-- [ ] **拆分 CLI 与 GUI 构建目标。** 当前 `PR_tool` 目标包含全部 `source/**.cc`、Qt Widget/OpenGL 规则与资源；生成的 CLI 二进制依赖 QtCore/Gui/Widgets/OpenGL。涉及 `xmake.lua`。修复：创建无 Qt 的 `PR_tool_cli` 目标，只编译 CLI 必需源码，并提供可发布的 headless 包。
+- [x] **拆分 CLI 与 GUI 构建目标。** 当前 `PR_tool` 目标包含全部 `source/**.cc`、Qt Widget/OpenGL 规则与资源；生成的 CLI 二进制依赖 QtCore/Gui/Widgets/OpenGL。涉及 `xmake.lua`。修复：创建无 Qt 的 `PR_tool_cli` 目标，只编译 CLI 必需源码，并提供可发布的 headless 包。
 
 
 

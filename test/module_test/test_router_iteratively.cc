@@ -16,7 +16,7 @@ constexpr const char* kDefaultConfigPath = "../test/config/case1";
 constexpr const char* kDebugLogPath = "./debug.log";
 
 auto build_pr_tool_cmd(const std::string& config_path) -> std::string {
-    return "./PR_tool " + config_path + " > /dev/null 2>&1";
+    return "./PR_tool_cli " + config_path + " > /dev/null 2>&1";
 }
 
 [[noreturn]] auto fail_iteration(int iteration, const std::string& reason) -> void {
