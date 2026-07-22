@@ -214,8 +214,6 @@ PR_tool <input folder path> [OPTIONS]
 | `-o, --output <PATH>` | 输出根目录；其下生成 `regnamecontrolbit_4part/` |
 | `-g, --gui` | GUI 模式 |
 | `-p, --placement` | 启用布局（模拟退火） |
-| `-i, --incremental [MODE]` | 增量布线；可跟正整数 mode，省略则尝试所有 mode |
-| `-c, --compare <MODE>` | 与指定 mode 的 controlbits 对比（需配合 `-i`；仍假设旧单文件，待适配） |
 | `-s, --simplify-controlbits-file` | 写出四文件时省略等于默认 hex 的行（稀疏输出） |
 | `-v, --verbose` | 输出 Debug 日志 |
 | `-h, --help` | 帮助 |
@@ -225,9 +223,10 @@ PR_tool <input folder path> [OPTIONS]
 
 ```bash
 xmake run PR_tool test/config/case1 -v
-xmake run PR_tool test/config/case20 -i 2 -o ./output
 xmake run PR_tool -g
 ```
+
+**v1.0.0 不支持**：`-i/--incremental` 与 `-c/--compare` 已从 CLI 移除；传入会 FATAL 退出。
 
 ---
 

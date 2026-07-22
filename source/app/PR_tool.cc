@@ -52,9 +52,6 @@ namespace PR_tool {
         console::print_with_color("\t-p, --placement             ", Color::Cyan);
         console::println("Work in placement mode.");
 
-        console::print_with_color("\t-i, --incremental           ", Color::Cyan);
-        console::println("Work in incremental routing mode.");
-
         console::print_with_color("\t-s, --simplify-controlbits-file ", Color::Cyan);
         console::println("Omit default-valued registers when writing the four REG files.");
     }
@@ -99,6 +96,14 @@ namespace PR_tool {
             debug::set_debug_level(debug::DebugLevel::Debug);
         }
 
+        constexpr auto kIncrementalUnsupported =
+            "Incremental routing and the relative functions is not supported in version 1.0.0";
+
+        if (argument_index("-i", "--incremental").has_value()
+            || argument_index("-c", "--compare").has_value()) {
+            debug::fatal(kIncrementalUnsupported);
+        }
+
         if (argument_index("-g", "--gui").has_value()) {
             // gui mode
             if (arguments[0] != "-g" && arguments[0] != "--gui") {
@@ -136,40 +141,8 @@ namespace PR_tool {
                 simplify_controlbits = true;
             }
 
-            // command for incremental mode
-            auto incre_opt = argument_index("-i", "--incremental");
-            auto comp_opt = argument_index("-c", "--compare");
-            int incre_mode = 0;
-            bool try_all_modes = false;
-            std::optional<int> compare = std::nullopt;
-            if (incre_opt.has_value()) {
-                auto index = incre_opt.value();
-                if (index >= (arguments.size() - 1) || arguments[index + 1].at(0) == '-') {
-                    try_all_modes = true;
-                } 
-                else {
-                    incre_mode = std::stoi(arguments[index + 1]);
-                    if (incre_mode <= 0) {
-                        debug::fatal("incremental mode should be a positive integer");
-                    }
-                }
-
-                // check if comparation is needed
-                if (comp_opt.has_value()) {
-                    auto index = comp_opt.value();
-                    if (index >= (arguments.size() - 1) || arguments[index + 1].at(0) == '-') {
-                        debug::fatal("Use '-c/--compare' but not indicate the compare target!");
-                    }
-                    else {
-                        compare = std::stoi(arguments[index + 1]);
-                        if (compare.value() <= 0) {
-                            debug::fatal("compare target should be a positive integer");
-                        }
-                    }
-                }
-            }
-
-            return cli_main(arguments[0], std::move(output_path), incre_mode, compare, try_all_modes, placement, simplify_controlbits);
+            return cli_main(arguments[0], std::move(output_path), /*mode=*/0, /*compare=*/std::nullopt,
+                            /*try_all_modes=*/false, placement, simplify_controlbits);
         }
 
         return 0;

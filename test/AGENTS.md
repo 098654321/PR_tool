@@ -64,3 +64,4 @@ A typical test case directory (e.g., `test/config/case4/`) contains:
     *   Custom case / iterations: `cd output && ./module_test router_iteratively ../test/config/case5 10`
 *   **`[flow]` regression** (`test/regression_test/flow_test.cc`): Ensures `COB_ARRAY_WIDTH=12`, rebuilds `PR_tool` / `module_test` / `json2txt`, then runs (1) `placer_iteratively` on `case5` ×10, (2) `router_iteratively` on `case5` ×10, (3) `check-controlbits-file/scripts/run_case.sh` for `test_writer/test1`…`test5`. If kiwi is missing, `run_case.sh` prints WARNING and exits 0 (SKIP).
 *   **Regression**: The `regression_test` target runs the Catch2 suite over `config/` cases and the `[flow]` orchestrator above.
+*   **`[incremental]` tests** (`incremental_test.cc`): tagged `[incremental][.]` — excluded from default Catch runs; run explicitly with `./regression_test '[incremental]'` if needed.

@@ -48,7 +48,8 @@ namespace PR_tool::test {
     }
 
     
-    SCENARIO("Regression test for incremental routing", "[incremental]"){
+    // v1.0.0: incremental unsupported in CLI; run explicitly with [incremental] if needed later.
+    SCENARIO("Regression test for incremental routing", "[incremental][.]"){
         
         GIVEN("Configs, describing connections, external_ports, topdies and topdie_insts"){
             //! notice: cob array here is 9*12

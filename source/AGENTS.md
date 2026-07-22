@@ -17,7 +17,7 @@ PR_tool 面向 chiplet interposer 的布局布线：输入系统配置（topdie 
 
 ## 1. 项目概况
 
-端到端流水线（CLI：`source/app/cli/cli.cc`）：
+端到端流水线（CLI：`source/app/cli/cli.cc`；v1.0.0 CLI 不支持增量 `-i/-c`）：
 
 1. `parse::read_config` → `hardware::Interposer` + `circuit::BaseDie`
 2. `algo::build_nets` → `Connection` 转为 `circuit::Net` / `SyncNet`
