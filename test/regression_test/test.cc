@@ -24,8 +24,9 @@ namespace PR_tool::test{
             auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, 0, false);
             (void)register_map;
             algo::build_nets(basedie.get(), interposer.get());
-            auto data = algo::route_nets(interposer.get(), basedie.get(), algo::MazeRouteStrategy{}, algo::HK{}, 0, false, false);
+            auto result = algo::route_nets(interposer.get(), basedie.get(), algo::MazeRouteStrategy{}, algo::HK{}, 0, false, false);
             THEN("The total length should be within a limit"){
+                CHECK(result.failed_net_names.empty());
                 std::ifstream golden_file(config_path / "golden.txt");
                 if (!golden_file.is_open()){
                     debug::exception_in("regression test case " + std::to_string(id), "golden file open failure");
@@ -35,7 +36,7 @@ namespace PR_tool::test{
                     debug::info("golden file is empty in regression test case " + std::to_string(id));
                 }
                 else {
-                    CHECK(data._total_length <= std::stoi(golden_length));
+                    CHECK(result.data._total_length <= std::stoi(golden_length));
                 }
             }
         }

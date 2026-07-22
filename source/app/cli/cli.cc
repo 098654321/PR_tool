@@ -47,8 +47,11 @@ namespace PR_tool {
             place(interposer.get(), basedie.get(), topdies);
         }
         
-        bool has_route = route(interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes);
-        if (has_route) {
+        auto route_status = route(interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes);
+        if (route_status == RouteStatus::Failed) {
+            return 1;
+        }
+        if (route_status == RouteStatus::Ok) {
             parse::output_from_routing_results(interposer.get(), output_file, basedie.get(), mode, try_all_modes, simplify_controlbits, register_map);
         }
 
@@ -56,6 +59,7 @@ namespace PR_tool {
     }
     catch (const Exception& err){
         debug::exception("Unexpected exception");
+        return 1;
     }
     }
 
@@ -86,25 +90,39 @@ debug::info_fmt("Layout time: {} milliseconds", duration.count());
         PR_tool::hardware::Interposer* interposer, PR_tool::circuit::BaseDie* basedie,
         std::StringView config_path,
         int mode, std::optional<int> compare, bool try_all_modes
-    ) -> bool {
+    ) -> RouteStatus {
         debug::debug("Start routing ...");
         if (!try_all_modes && mode == 0) {  // not incremental routing 
             auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer, basedie, mode, try_all_modes);
             if (!has_bits) {
-                algo::route_nets(interposer, basedie, algo::MazeRouteStrategy{false}, algo::HK{}, mode, false, try_all_modes);
-                return true;
+                auto result = algo::route_nets(interposer, basedie, algo::MazeRouteStrategy{false}, algo::HK{}, mode, false, try_all_modes);
+                if (!result.failed_net_names.empty()) {
+                    debug::error("Routing failed for:");
+                    for (const auto& name : result.failed_net_names) {
+                        debug::error(name);
+                    }
+                    return RouteStatus::Failed;
+                }
+                return RouteStatus::Ok;
             }
             if (has_other_bits) {
                 debug::info("Has other control bits, skip the routing process");
             }
-            return false;
+            return RouteStatus::Skipped;
         }
 
         // incremental routing: route all modes (try_all_modes) or single mode (mode > 0)
         basedie->merge_same_mode_nets();
         auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer, basedie, mode, try_all_modes);
         if (!has_bits) {
-            algo::route_nets(interposer, basedie, algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, try_all_modes, has_other_bits);
+            auto result = algo::route_nets(interposer, basedie, algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, try_all_modes, has_other_bits);
+            if (!result.failed_net_names.empty()) {
+                debug::error("Routing failed for:");
+                for (const auto& name : result.failed_net_names) {
+                    debug::error(name);
+                }
+                return RouteStatus::Failed;
+            }
         }
         else {
             debug::info("Already has control bits, skip the routing process");
@@ -118,7 +136,7 @@ debug::info_fmt("Layout time: {} milliseconds", duration.count());
             parse::compare(current_file, target_file);
         }
 
-        return !has_bits;
+        return has_bits ? RouteStatus::Skipped : RouteStatus::Ok;
     }
     
 

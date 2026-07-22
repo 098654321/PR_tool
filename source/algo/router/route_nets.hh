@@ -21,6 +21,11 @@ namespace PR_tool::algo {
 
     class RouteStrategy;
     class AllocateStrategy;
+
+    struct RouteNetsResult {
+        DataPerCycle data;
+        std::Vector<std::String> failed_net_names;
+    };
     
     auto route_nets(
         hardware::Interposer* interposer,
@@ -31,7 +36,7 @@ namespace PR_tool::algo {
         bool incremental,
         bool try_all_modes, 
         bool path_exists = false
-    ) -> DataPerCycle;
+    ) -> RouteNetsResult;
 
     auto analyze_results(
         hardware::Interposer* interposer,

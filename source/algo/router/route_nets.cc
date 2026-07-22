@@ -21,7 +21,7 @@ namespace PR_tool::algo {
         bool incremental,
         bool try_all_modes, 
         bool path_exists
-    ) -> DataPerCycle {
+    ) -> RouteNetsResult {
         debug::info(
             "\n\
             **********************************************************************************\n\
@@ -33,31 +33,24 @@ namespace PR_tool::algo {
         auto engine = RouteEngine{basedie->nets(), strateg, allocator, m, incremental, try_all_modes, path_exists, interposer};
         invoker.set_route_commands(incremental, try_all_modes, path_exists);
         
-        while (!invoker.check_command())
-        try {
-            invoker.invoke(interposer, engine);
-        } 
-        catch (const RetryExpt& err) {
-            assert (err.net() != nullptr);
-
-            debug::info(err.what());
-            show_retry_expt(err.net(), engine, interposer);
-
-            // bool call = invoker.call_remediation(invoker.current_command());
-            // if (!call) {
-            //     debug::info("routing failed");
-            // }
-        }
-        catch (const FinalError& err){
-            debug::info_fmt("route_nets(): {}", err.what());
-            throw err;
-        }
-        catch (const std::exception& err){
-            throw std::runtime_error("route_nets() >> " + std::String(err.what()));
+        while (!invoker.check_command()) {
+            try {
+                invoker.invoke(interposer, engine);
+            } 
+            catch (const RetryExpt& err) {
+                throw FinalError(err.what());
+            }
+            catch (const FinalError& err){
+                debug::info_fmt("route_nets(): {}", err.what());
+                throw err;
+            }
+            catch (const std::exception& err){
+                throw std::runtime_error("route_nets() >> " + std::String(err.what()));
+            }
         }
 
         auto route_data = analyze_results(interposer, engine, incremental, try_all_modes);
-        return route_data;
+        return RouteNetsResult{route_data, engine.failed_net_names()};
     }
 
     // return total length of all nets

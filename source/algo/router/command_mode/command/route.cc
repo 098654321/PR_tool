@@ -1,4 +1,6 @@
 #include "./route.hh"
+#include <algo/router/route_nets.hh>
+#include <algo/router/routeerror.hh>
 #include <global/debug/debug.hh>
 #include "./clear.hh"
 
@@ -22,8 +24,15 @@ auto Route::execute(hardware::Interposer* interposer, RouteEngine& engine) const
         auto routed_nets = engine.routed_nets();
         net->search_related_nets(routed_nets);
 
-        // route
-        net->route(interposer, engine.routestrategy());
+        try {
+            net->route(interposer, engine.routestrategy());
+        }
+        catch (const RetryExpt& err) {
+            debug::info(err.what());
+            show_retry_expt(net, engine, interposer);
+            net->clear_path();
+            engine.record_failed_net(net->name());
+        }
         engine.move_on();
     }
 }

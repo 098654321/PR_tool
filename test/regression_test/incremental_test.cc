@@ -139,8 +139,8 @@ namespace PR_tool::test {
         basedie->merge_same_mode_nets();
         auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer.get(), basedie.get(), mode, try_all_modes);
         if (!has_bits) {
-            auto data_per_cycle = algo::route_nets(interposer.get(), basedie.get(), algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, try_all_modes, has_other_bits);
-            data.collect_data_in_cycle(cycle, data_per_cycle);
+            auto result = algo::route_nets(interposer.get(), basedie.get(), algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, try_all_modes, has_other_bits);
+            data.collect_data_in_cycle(cycle, result.data);
 
             std::string controlbits_file{"./" + std::to_string(cycle + 1)};
             parse::output_from_routing_results(interposer.get(), controlbits_file, basedie.get(), mode, try_all_modes, false, register_map);

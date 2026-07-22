@@ -6,6 +6,7 @@
 #include <algo/netbuilder/netbuilder.hh>
 #include <algo/router/route_nets.hh>
 #include <algo/router/common/maze/mazeroutestrategy.hh>
+#include <algo/router/common/allocate/hopcroft_karp.hh>
 
 #include <widget/view2d/view2dview.h>
 
@@ -31,8 +32,11 @@ auto main(int argc, char** argv) -> int {
     (void)register_map;
 
     PR_tool::algo::NetBuilder{basedie.get(), interposer.get()}.build();
-    auto len = PR_tool::algo::route_nets(interposer.get(), basedie.get(), PR_tool::algo::MazeRouteStrategy{});
-    PR_tool::debug::info_fmt("Length: '{}'", len);
+    auto result = PR_tool::algo::route_nets(
+        interposer.get(), basedie.get(), PR_tool::algo::MazeRouteStrategy{},
+        PR_tool::algo::HK{}, 0, false, false
+    );
+    PR_tool::debug::info_fmt("Length: '{}'", result.data._total_length);
 
     interposer->randomly_map_remain_indexes();
 
