@@ -11,8 +11,7 @@
 
 namespace {
 
-constexpr int kIterations = 100;
-constexpr int kMaxAllowedTotalLength = 1100;
+constexpr int kDefaultIterations = 100;
 constexpr const char* kDefaultConfigPath = "../test/config/case1";
 constexpr const char* kDebugLogPath = "./debug.log";
 
@@ -58,7 +57,7 @@ auto run_pr_tool_subprocess(int iteration, const std::string& cmd) -> void {
     }
 }
 
-auto check_debug_log(int iteration) -> void {
+auto check_debug_log(int iteration, int total_iterations) -> void {
     const auto content = read_file(kDebugLogPath);
     if (content.empty()) {
         fail_iteration(iteration, std::string {"unable to read "} + kDebugLogPath);
@@ -77,8 +76,6 @@ auto check_debug_log(int iteration) -> void {
         fail_iteration(iteration, "Failed routing nubmer not found in debug.log");
     }
 
-    const bool exceeds_max_length = *total_length >= kMaxAllowedTotalLength;
-
     if (*failed_routing != 0) {
         fail_iteration(
             iteration,
@@ -90,13 +87,9 @@ auto check_debug_log(int iteration) -> void {
         fail_iteration(iteration, "found per-net routing failure in debug.log");
     }
 
-    std::cout << "Iteration " << iteration << "/" << kIterations
+    std::cout << "Iteration " << iteration << "/" << total_iterations
               << ", Total Length=" << *total_length
-              << ", Failed routing nubmer=" << *failed_routing;
-    if (exceeds_max_length) {
-        std::cout << " (warning: exceeds max allowed " << kMaxAllowedTotalLength << ")";
-    }
-    std::cout << std::endl;
+              << ", Failed routing nubmer=" << *failed_routing << std::endl;
 }
 
 } // namespace
@@ -104,14 +97,23 @@ auto check_debug_log(int iteration) -> void {
 void test_router_iteratively_main(int argc, char** argv) {
     const std::string config_path =
         (argc >= 3) ? argv[2] : kDefaultConfigPath;
+    int iterations = kDefaultIterations;
+    if (argc >= 4) {
+        iterations = std::stoi(argv[3]);
+    }
+    if (iterations <= 0) {
+        std::cout << "router_iteratively: iterations must be > 0, got " << iterations << std::endl;
+        std::exit(-1);
+    }
+
     const std::string pr_tool_cmd = build_pr_tool_cmd(config_path);
 
     std::cout << "router_iteratively: config=" << config_path
-              << ", iterations=" << kIterations << std::endl;
+              << ", iterations=" << iterations << std::endl;
 
-    for (int i = 1; i <= kIterations; ++i) {
+    for (int i = 1; i <= iterations; ++i) {
         run_pr_tool_subprocess(i, pr_tool_cmd);
-        check_debug_log(i);
+        check_debug_log(i, iterations);
     }
-    std::cout << "All " << kIterations << " iterations passed" << std::endl;
+    std::cout << "All " << iterations << " iterations passed" << std::endl;
 }

@@ -1,114 +1,181 @@
-#include "algo/netbuilder/netbuilder.hh"
-#include <algo/route_data.hh>
 #include <catch2/catch_test_macros.hpp>
-#include <std/string.hh>
-#include <std/file.hh>
-#include <utility/file.hh>
-#include <debug/debug.hh>
-#include <parse/reader/module.hh>
-#include <algo/router/route_nets.hh>
-#include <algo/router/common/maze/mazeroutestrategy.hh>
-#include <algo/router/common/allocate/hopcroft_karp.hh>
-#include <algo/placer/place.hh>
-#include <algo/placer/sa/saplacestrategy.hh>
-#include <hardware/interposer.hh>
-#include <circuit/basedie.hh>
-#include <circuit/net/types/syncnet.hh>
-#include <circuit/net/types/bbnet.hh>
-#include <hardware/tob/tob.hh>
-#include <parse/comparator/controlbits_parser.hh>
-#include <parse/writer/module.hh>
+
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <sys/wait.h>
+
+namespace fs = std::filesystem;
 
 namespace PR_tool::test {
+namespace {
 
-    // Helper to extract topdie instances from basedie
-    std::Vector<circuit::TopDieInstance*> get_topdie_insts(circuit::BaseDie* basedie) {
-        std::Vector<circuit::TopDieInstance*> insts;
-        for (const auto& pair : basedie->topdie_insts()) {
-            insts.push_back(pair.second.get());
+constexpr int kFlowIterations = 10;
+constexpr int kTargetCobWidth = 12;
+
+constexpr const char* kWriterCases[] = {
+    "test1_neighbouring_chiplet",
+    "test2_chiplet_IO",
+    "test3_chiplet_nege",
+    "test4_chiplet_pose",
+    "test5_muyan0_spi_uart_jtag",
+};
+
+auto shell_ok(int status) -> bool {
+    return status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+auto run_shell(const std::string& cmd) -> int {
+    std::cout << "==> " << cmd << std::endl;
+    return std::system(cmd.c_str());
+}
+
+auto find_repo_root() -> fs::path {
+    auto cwd = fs::current_path();
+    for (auto p = cwd;; p = p.parent_path()) {
+        if (fs::exists(p / "xmake.lua")
+            && fs::exists(p / "source" / "hardware" / "interposer.hh")) {
+            return p;
         }
-        return insts;
-    }
-
-    void PLEASE_DO_NOT_FAIL_FLOW(std::usize id, std::String info) {
-        WHEN("Case " + std::to_string(id) + " (Placement + Routing): " + info) {
-            std::FilePath config_path{"../test/config/case" + std::to_string(id)};
-            debug::initial_log("debug_flow_case" + std::to_string(id) + ".log");
-
-            // 1. Read config
-            auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, 0, false);
-            
-            // 2. Build nets
-            algo::build_nets(basedie.get(), interposer.get());
-
-            // 3. Run Placement
-            debug::info("Starting Placement...");
-            auto topdies = get_topdie_insts(basedie.get());
-            algo::SAPlaceStrategy place_strategy{}; 
-            algo::place(interposer.get(), topdies, basedie.get(), place_strategy);
-
-            // DEBUG: Check TOB locations
-            for (auto& [mode, net_list] : basedie->nets()) {
-                for (auto& net : net_list) {
-                    if (auto sync_net = dynamic_cast<circuit::SyncNet*>(net.get())) {
-                        for (auto& btb : sync_net->btbnets()) {
-                             if (btb->begin_bump()->tob()->coord() == btb->end_bump()->tob()->coord()) {
-                                 auto c = btb->begin_bump()->tob()->coord();
-                                 debug::error("Net " + btb->name() + " has same TOB: " + std::to_string(c.row) + "," + std::to_string(c.col));
-                             }
-                        }
-                    }
-                }
-            }
-
-            // 4. Run Routing (Standard)
-            debug::info("Starting Routing...");
-            auto data = algo::route_nets(interposer.get(), basedie.get(), algo::MazeRouteStrategy{}, algo::HK{}, 0, false, false);
-
-            parse::output_from_routing_results(interposer.get(), ".", basedie.get(), 0, false, false, register_map);
-            
-            // 5. Verify
-            THEN("Routing should succeed"){
-                 CHECK(data._failed_net == 0);
-            }
+        if (p == p.root_path()) {
+            break;
         }
     }
+    if (cwd.filename() == "output") {
+        return cwd.parent_path();
+    }
+    return cwd;
+}
 
-    void PLEASE_DO_NOT_FAIL_FLOW_INCRE(std::usize id, std::usize mode, std::String info) {
-        WHEN("Case " + std::to_string(id) + " Mode " + std::to_string(mode) + " (Placement + Incremental Routing): " + info) {
-            std::FilePath config_path{"../test/config/case" + std::to_string(id)};
-            debug::initial_log("debug_flow_incre_case" + std::to_string(id) + ".log");
+auto read_text(const fs::path& path) -> std::string {
+    std::ifstream in {path};
+    REQUIRE(in.is_open());
+    std::ostringstream buf;
+    buf << in.rdbuf();
+    return buf.str();
+}
 
-            // 1. Read config
-            auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, mode, false);
-            
-            // 2. Build nets
-            algo::build_nets(basedie.get(), interposer.get());
-            basedie->merge_same_mode_nets();
+auto write_text(const fs::path& path, const std::string& content) -> void {
+    std::ofstream out {path, std::ios::trunc};
+    REQUIRE(out.is_open());
+    out << content;
+}
 
-            // 3. Run Placement
-            debug::info("Starting Placement...");
-            auto topdies = get_topdie_insts(basedie.get());
-            algo::SAPlaceStrategy place_strategy{};
-            algo::place(interposer.get(), topdies, basedie.get(), place_strategy);
+struct CwdGuard {
+    fs::path previous;
+    explicit CwdGuard(const fs::path& next) : previous(fs::current_path()) {
+        fs::current_path(next);
+    }
+    ~CwdGuard() { fs::current_path(previous); }
+    CwdGuard(const CwdGuard&) = delete;
+    auto operator=(const CwdGuard&) -> CwdGuard& = delete;
+};
 
-            // 4. Run Incremental Routing
-            auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer.get(), basedie.get(), mode, false);
-            
-            debug::info("Starting Incremental Routing...");
-            // mode = 2, incremental = true, try_all_modes = false
-            auto data_per_cycle = algo::route_nets(interposer.get(), basedie.get(), algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, false, has_other_bits);
-            parse::output_from_routing_results(interposer.get(), ".", basedie.get(), mode, false, false, register_map);
-            
-            // 5. Verify
-            THEN("Routing should succeed"){
-                 CHECK(data_per_cycle._failed_net == 0);
-            }
+/// Ensures COB_ARRAY_WIDTH == target; restores previous content if changed.
+struct CobArrayWidthGuard {
+    fs::path header_path;
+    std::string original;
+    bool changed = false;
+
+    explicit CobArrayWidthGuard(fs::path path, int target_width)
+        : header_path(std::move(path))
+        , original(read_text(header_path)) {
+        static const std::regex re {R"(COB_ARRAY_WIDTH\s*=\s*\d+)"};
+        const std::string replacement =
+            "COB_ARRAY_WIDTH   = " + std::to_string(target_width);
+        const auto updated = std::regex_replace(original, re, replacement);
+        std::smatch match;
+        REQUIRE(std::regex_search(original, match, re));
+        if (updated == original) {
+            return;
+        }
+        write_text(header_path, updated);
+        changed = true;
+        std::cout << "Set COB_ARRAY_WIDTH=" << target_width << " in " << header_path
+                  << std::endl;
+    }
+
+    ~CobArrayWidthGuard() {
+        if (changed) {
+            write_text(header_path, original);
+            std::cout << "Restored " << header_path << std::endl;
         }
     }
 
-    SCENARIO("Regression test for Placement -> Routing Flow", "[flow]"){
-        PLEASE_DO_NOT_FAIL_FLOW(10, "Placement + Standard Routing (Case 10)");
-        // PLEASE_DO_NOT_FAIL_FLOW_INCRE(20, 2, "Placement + Incremental Routing (Case 20, Mode 2)");
+    CobArrayWidthGuard(const CobArrayWidthGuard&) = delete;
+    auto operator=(const CobArrayWidthGuard&) -> CobArrayWidthGuard& = delete;
+};
+
+auto quote_shell(std::string_view s) -> std::string {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') {
+            out += "'\\''";
+        } else {
+            out += c;
+        }
+    }
+    out += "'";
+    return out;
+}
+
+} // namespace
+
+SCENARIO("Flow regression: place+route, route-only, writer controlbits", "[flow]") {
+    const auto repo = find_repo_root();
+    const auto header = repo / "source" / "hardware" / "interposer.hh";
+    const auto output_dir = repo / "output";
+    const auto module_test = output_dir / "module_test";
+    const auto run_case = repo / "test" / "module_test" / "test_writer"
+        / "check-controlbits-file" / "scripts" / "run_case.sh";
+    const auto case5 = std::string {"../test/config/case5"};
+
+    REQUIRE(fs::exists(header));
+    REQUIRE(fs::exists(run_case));
+
+    WHEN("COB_ARRAY_WIDTH=12, rebuild, then run three checks") {
+        CobArrayWidthGuard cob_guard {header, kTargetCobWidth};
+
+        // xmake accepts only one target name per `xmake build` invocation.
+        const std::string cd_repo = "cd " + quote_shell(repo.string()) + " && ";
+        REQUIRE(shell_ok(run_shell(cd_repo + "xmake build PR_tool")));
+        REQUIRE(shell_ok(run_shell(cd_repo + "xmake build module_test")));
+        REQUIRE(shell_ok(run_shell(cd_repo + "xmake build json2txt")));
+        REQUIRE(fs::exists(module_test));
+
+        CwdGuard cwd_guard {output_dir};
+
+        // 1) 自动布局布线
+        {
+            const std::string cmd =
+                "./module_test placer_iteratively " + case5 + " "
+                + std::to_string(kFlowIterations);
+            REQUIRE(shell_ok(run_shell(cmd)));
+        }
+
+        // 2) 自动布线
+        {
+            const std::string cmd =
+                "./module_test router_iteratively " + case5 + " "
+                + std::to_string(kFlowIterations);
+            REQUIRE(shell_ok(run_shell(cmd)));
+        }
+
+        // 3) 输出正确性（无 kiwi 时 run_case.sh WARNING + exit 0 SKIP）
+        for (const char* name : kWriterCases) {
+            const std::string case_rel =
+                std::string {"test/module_test/test_writer/"} + name;
+            const std::string cmd =
+                "bash " + quote_shell(run_case.string()) + " "
+                + quote_shell(case_rel);
+            REQUIRE(shell_ok(run_shell(cmd)));
+        }
     }
 }
+
+} // namespace PR_tool::test

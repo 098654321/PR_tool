@@ -4,7 +4,7 @@
 
 更详细的工程说明见：
 
-- [`source/AGENTS.md`](./source/AGENTS.md)：源码架构、数据流、算法与修改指南
+- [`source/AGENTS.md`](./source/AGENTS.md)：源码概况、目录结构、核心索引与构建/测试入口
 - [`test/AGENTS.md`](./test/AGENTS.md)：测试目录结构与用例格式
 
 ---
@@ -129,8 +129,8 @@ cd output
 | `path_length` | 路径长度计算 |
 | `debug` | 日志系统 |
 | `all` | 运行上表全部快速测试 |
-| `placer_iteratively [config]` | 慢速稳定性测试（100 次放置+布线，不在 `all` 中；默认 `../test/config/case1`） |
-| `router_iteratively [config]` | 慢速稳定性测试（100 次仅布线，不在 `all` 中；默认 `../test/config/case1`） |
+| `placer_iteratively [config] [iterations]` | 慢速稳定性测试（放置+布线；默认 case1、100 次；不在 `all` 中） |
+| `router_iteratively [config] [iterations]` | 慢速稳定性测试（仅布线；默认 case1、100 次；不在 `all` 中） |
 
 `module_test/test_function/` 与 `module_test/test_writer/` 下还有带独立数据集的专项测试（线长、writer、bbox 等），由对应 `*.cc` 编译进 `module_test` target。
 
@@ -142,7 +142,7 @@ cd output
 |------|------|------|
 | `test.cc` | `[basic]` `[CPU_MEM_AI]` `[CPU_MEM]` `[AI_core]` | 读配置 → build_nets → route，校验总线长 ≤ `golden.txt` |
 | `incremental_test.cc` | `[incremental]` | 增量布线统计与循环测试 |
-| `flow_test.cc` | `[flow]` | 放置 + 布线完整流程 |
+| `flow_test.cc` | `[flow]` | 编排：COB=12 → rebuild → case5 布局/布线×10 → writer test1–5 |
 
 ```bash
 xmake build regression_test
@@ -179,7 +179,7 @@ Linux 上需确保 `CONDA_PREFIX` 指向已安装 Catch2 的环境。
 
 | case | 规模 |
 |:----:|------|
-| case 10 | 最少 bus（`flow_test` 放置+布线用例） |
+| case 10 | 最少 bus |
 | case 11 | 中等 bus |
 | case 12 | 最多 bus |
 

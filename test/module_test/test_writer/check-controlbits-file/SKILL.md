@@ -57,6 +57,8 @@ bash test/module_test/test_writer/check-controlbits-file/scripts/run_case.sh \
   test/module_test/test_writer/<testcase>
 ```
 
+If `KIWI` is missing/non-executable, `run_case.sh` prints a WARNING and exits 0 (SKIP).
+
 ## References
 
 - Tools, paths, cases: [references/tools-and-paths.md](references/tools-and-paths.md)
