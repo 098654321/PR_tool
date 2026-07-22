@@ -37,37 +37,72 @@ namespace PR_tool::parse {
 
     }  // namespace
 
-    auto output_from_routing_results(hardware::Interposer* interposer, const std::FilePath& output_path, circuit::BaseDie* basedie, int mode, bool try_all_modes) -> void {
+    auto output_from_routing_results(
+        hardware::Interposer* interposer,
+        const std::FilePath& output_path,
+        circuit::BaseDie* basedie,
+        int mode,
+        bool try_all_modes,
+        bool simplify_controlbits,
+        const RegisterMapConfig& register_map
+    ) -> void {
         if (!try_all_modes) {
             connect_registers(interposer, basedie, mode);
-            write_control_bits(interposer, output_path, mode);
+            write_control_bits(interposer, output_path, mode, simplify_controlbits, register_map);
             interposer->reset_regs();
         }
         else {
+            // TODO(split-output): try_all_modes needs mode_<m>/regnamecontrolbit_4part/ to avoid overwrite
             std::set<int> modes;
             for(const auto& [m, _]: basedie->nets()) {
                 modes.insert(m);
             }
             for(const auto& m: modes) {
                 connect_registers(interposer, basedie, m);
-                write_control_bits(interposer, output_path, m);
+                write_control_bits(interposer, output_path, m, simplify_controlbits, register_map);
                 interposer->reset_regs();
             }
         }
     }
 
-    auto write_control_bits(hardware::Interposer* interposer, const std::FilePath& output_path, int mode) -> void {
-        std::FilePath control_bits_path = output_path / ("controlbits_" + std::to_string(mode) + ".txt");
+    auto write_control_bits(
+        hardware::Interposer* interposer,
+        const std::FilePath& output_path,
+        int mode,
+        bool simplify_controlbits,
+        const RegisterMapConfig& register_map
+    ) -> void {
+        (void)mode;
         debug::info_fmt(
             "\n\
             **********************************************************************************\n\
-                            Write control bits into '{}'\n\
+                            Write split control bits under '{}'\n\
             **********************************************************************************\
-            ", control_bits_path.string()
-        );
-        auto writer = parse::Writer{interposer};
-        writer.fetch_and_write(control_bits_path);
+            ",
+            (output_path / "regnamecontrolbit_4part").string());
+        // TODO(split-output): try_all_modes needs mode_<m>/regnamecontrolbit_4part/ to avoid overwrite
+        Writer{interposer}.fetch_and_write_split(register_map, output_path, simplify_controlbits);
 
+        debug::info_fmt("END\n\n");
+    }
+
+    auto write_control_bits_pair(
+        hardware::Interposer* interposer,
+        const std::FilePath& full_output_path,
+        const std::FilePath& simplified_output_path,
+        int mode,
+        const RegisterMapConfig& register_map
+    ) -> void {
+        (void)mode;
+        debug::info_fmt(
+            "\n\
+            **********************************************************************************\n\
+                            Write full and simplified split control bits under '{}' and '{}'\n\
+            **********************************************************************************\
+            ", (full_output_path / "regnamecontrolbit_4part").string(),
+               (simplified_output_path / "regnamecontrolbit_4part").string()
+        );
+        Writer{interposer}.fetch_and_write_split_pair(register_map, full_output_path, simplified_output_path);
         debug::info_fmt("END\n\n");
     }
 
@@ -78,7 +113,7 @@ namespace PR_tool::parse {
             if (net->modes().contains(mode)) {
                 debug::debug_fmt("{} is connecting paths ...", net->name());
 
-                auto& path_package = net->pathpackage();    
+                auto& path_package = net->pathpackage();
                 path_package.connect_all();
             }
             // else {

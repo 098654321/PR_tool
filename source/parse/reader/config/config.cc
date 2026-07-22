@@ -23,6 +23,7 @@ namespace PR_tool::parse {
         std::FilePath external_ports;
         std::FilePath connections;
         std::FilePath ports_01;
+        std::Option<std::FilePath> reigster_adder;  // optional
     };
 
 }
@@ -34,6 +35,7 @@ DESERIALIZE_STRUCT(PR_tool::parse::ConfigFilepaths,
     DE_FILED(external_ports)
     DE_FILED(connections)
     DE_FILED(ports_01)
+    DE_OPTION_FILED(reigster_adder)
 )
 
 template <class ConnectionConfig>
@@ -45,9 +47,13 @@ struct PR_tool::serde::Deserialize<PR_tool::serde::Json, std::HashMap<int, std::
             PR_tool::serde::Deserialize<PR_tool::serde::Json, std::Vector<std::Vector<std::String>>>::from(j, vec);
 
             std::Vector<ConnectionConfig> nets {};
-            for (auto& net: vec)
-            {
-                assert (net.size() == 2);
+            for (std::usize i = 0; i < vec.size(); ++i) {
+                auto& net = vec[i];
+                if (net.size() != 2) {
+                    throw std::runtime_error(std::format(
+                        "Connection pair under sync key '{}' at index {} must have exactly 2 endpoints, got {}",
+                        key, i, net.size()));
+                }
                 nets.emplace_back(ConnectionConfig{net[0], net[1]});
             }
             value.emplace(std::stoi(key), nets);
@@ -75,6 +81,7 @@ namespace PR_tool::parse {
     static auto load_external_ports_config(const std::FilePath& path, std::HashMap<std::String, ExternalPortConfig>& exports) -> void;
     static auto load_connections_config(const std::FilePath& path, std::HashMap<int, std::HashMap<int, std::Vector<ConnectionConfig>>>& connections, int mode, bool try_all_modes) -> void;
     static auto load_ports_01_config(const std::FilePath& path, std::HashMap<std::String, std::HashMap<std::String, hardware::TrackCoord>>& ports_01) -> void;
+    static auto load_register_map_config(const std::FilePath& path, RegisterMapConfig& register_map) -> void;
 
     static auto load_from_txt(const std::FilePath& path, Config& config, int mode, bool try_all_modes) -> void;
     static auto parse_txt_line(const std::String& topdie1, const std::String& topdie2, const std::Array<int, 11>& numbers, Config& config, int mode, bool try_all_modes) -> void;
@@ -99,6 +106,10 @@ namespace PR_tool::parse {
         }
         else{
             debug::exception_fmt("Unspport extension '{}' for connections config", config_paths.connections.filename().extension().string());
+        }
+
+        if (config_paths.reigster_adder) {
+            load_register_map_config(config_folder / *config_paths.reigster_adder, config.register_map);
         }
 
         return config;
@@ -224,7 +235,6 @@ namespace PR_tool::parse {
             debug::exception_fmt("Cannot open file '{}'", path.string());
         }
 
-        std::Array<int, 11> numbers;  // input[dir, x, y, bump_x, bump_y], output[dir, x, y, bump_x, bump_y], net_tag
         std::string line, topdie_name1, topdie_name2;
         while (std::getline(file, line)) {
             // skip empty line
@@ -244,13 +254,23 @@ namespace PR_tool::parse {
                 continue;  
             }
 
-            // parse line
-            std::stringstream ss(line);  
-            int num, pos=0;
+            std::Array<int, 11> numbers{};
+            std::stringstream ss(line);
+            int num = 0;
+            int pos = 0;
             while (ss >> num) {
-                numbers[pos++] = num;
+                if (pos >= 11) {
+                    throw std::runtime_error(std::format(
+                        "TXT connections line has more than 11 integers: '{}'", line));
+                }
+                numbers[static_cast<std::usize>(pos++)] = num;
             }
-            
+            if (pos != 11) {
+                throw std::runtime_error(std::format(
+                    "TXT connections line must have exactly 11 integers (got {}): '{}'",
+                    pos, line));
+            }
+
             parse_txt_line(topdie_name1, topdie_name2, numbers, config, mode, try_all_modes);
         }
 
@@ -278,6 +298,10 @@ namespace PR_tool::parse {
                 case -2: node = "pose";
                     break;
                 case -3: {
+                    if (info[4] < 0 || static_cast<std::usize>(info[4]) >= externs.size()) {
+                        throw std::runtime_error(std::format(
+                            "TXT external port index out of range: {}", info[4]));
+                    }
                     auto trackcoord = info[0] == 0?\
                         hardware::TrackCoord(hardware::Interposer::COB_ARRAY_HEIGHT-info[1], info[2], hardware::TrackDirection::Vertical, externs[info[4]]):\
                         hardware::TrackCoord(hardware::Interposer::COB_ARRAY_HEIGHT-info[1], info[2], hardware::TrackDirection::Horizontal, externs[info[4]]);
@@ -338,5 +362,45 @@ namespace PR_tool::parse {
         }
     }
     THROW_UP_WITH("Load 0/1 ports config")
+
+    static auto load_register_map_config(const std::FilePath& path, RegisterMapConfig& register_map) -> void
+    try {
+        debug::info("Load register map config");
+
+        serde::deserialize(serde::Json::load_from(path), register_map);
+
+        static const std::Array<std::String, 4> expected_files = {
+            "botleft_REG0.txt",
+            "botright_REG1.txt",
+            "topleft_REG2.txt",
+            "topright_REG3.txt",
+        };
+
+        for (const auto& filename : expected_files) {
+            if (!register_map.contains(filename)) {
+                debug::fatal_fmt(
+                    "Register map '{}' missing required file key '{}'",
+                    path.string(),
+                    filename
+                );
+            }
+        }
+
+        std::HashSet<std::String> seen_names {};
+        for (const auto& [filename, regs] : register_map) {
+            for (const auto& [reg_name, _address] : regs) {
+                if (seen_names.contains(reg_name)) {
+                    debug::fatal_fmt(
+                        "Register map '{}' has duplicate reg_name '{}' (seen in '{}')",
+                        path.string(),
+                        reg_name,
+                        filename
+                    );
+                }
+                seen_names.insert(reg_name);
+            }
+        }
+    }
+    THROW_UP_WITH("Load register map config")
 
 }

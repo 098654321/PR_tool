@@ -3,6 +3,7 @@
 #include "std/file.hh"
 #include "std/memory.hh"
 #include "std/utility.hh"
+#include <parse/reader/config/config.hh>
 #include <QMainWindow>
 
 namespace PR_tool::hardware {
@@ -69,6 +70,7 @@ namespace PR_tool::widget {
     private:
         std::Box<hardware::Interposer> _interposer {nullptr};
         std::Box<circuit::BaseDie> _basedie {nullptr};
+        parse::RegisterMapConfig _register_map {};
 
         std::Option<std::FilePath> _configPath {}; 
         bool _finishPR {false};

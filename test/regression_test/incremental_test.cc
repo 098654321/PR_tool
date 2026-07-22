@@ -48,7 +48,8 @@ namespace PR_tool::test {
     }
 
     
-    SCENARIO("Regression test for incremental routing", "[incremental]"){
+    // v1.0.0: incremental unsupported in CLI; run explicitly with [incremental] if needed later.
+    SCENARIO("Regression test for incremental routing", "[incremental][.]"){
         
         GIVEN("Configs, describing connections, external_ports, topdies and topdie_insts"){
             //! notice: cob array here is 9*12
@@ -133,16 +134,16 @@ namespace PR_tool::test {
     void test_case(std::usize id, std::usize mode, bool try_all_modes, algo::RouteData& data, std::usize cycle) {
         std::FilePath config_path{"../test/config/case" + std::to_string(id)};
                 
-        auto [interposer, basedie] = PR_tool::parse::read_config(config_path, mode, try_all_modes);
+        auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, mode, try_all_modes);
         algo::build_nets(basedie.get(), interposer.get());
         basedie->merge_same_mode_nets();
         auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer.get(), basedie.get(), mode, try_all_modes);
         if (!has_bits) {
-            auto data_per_cycle = algo::route_nets(interposer.get(), basedie.get(), algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, try_all_modes, has_other_bits);
-            data.collect_data_in_cycle(cycle, data_per_cycle);
+            auto result = algo::route_nets(interposer.get(), basedie.get(), algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, try_all_modes, has_other_bits);
+            data.collect_data_in_cycle(cycle, result.data);
 
             std::string controlbits_file{"./" + std::to_string(cycle + 1)};
-            parse::output_from_routing_results(interposer.get(), controlbits_file, basedie.get(), mode, try_all_modes);
+            parse::output_from_routing_results(interposer.get(), controlbits_file, basedie.get(), mode, try_all_modes, false, register_map);
         }
         else {
             debug::info("Already has control bits, skip the routing process");

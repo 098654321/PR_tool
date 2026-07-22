@@ -4,8 +4,9 @@
 #include "./registers/xinzhai_register.hh"
 #include <hardware/interposer.hh>
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 
-#include <algorithm>
 #include <sstream>
 #include <iomanip>
 #include <iostream>
@@ -17,14 +18,94 @@ namespace PR_tool::parse
     Writer::Writer(hardware::Interposer* pinterposer):
             _rv{},
             _regs{},
-            _pinterposer{pinterposer}
+            _pinterposer{pinterposer},
+            _values{}
         {}
 
-    auto Writer::fetch_and_write(const std::FilePath& file) -> void
+    auto Writer::store_line(const std::String& hex, const std::String& name) -> void
+    {
+        _values[name] = hex;
+    }
+
+    auto Writer::fetch_and_write_split(
+        const RegisterMapConfig& register_map,
+        const std::FilePath& output_root,
+        bool simplify
+    ) -> void
     {
         build_regs();
-        fetch();                
-        write(file);            // MSB on the left
+        fetch();
+        collect_values();
+        write_split_files(register_map, output_root, simplify);
+    }
+
+    auto Writer::fetch_and_write_split_pair(
+        const RegisterMapConfig& register_map,
+        const std::FilePath& full_output_root,
+        const std::FilePath& simplified_output_root
+    ) -> void
+    {
+        build_regs();
+        fetch();
+        collect_values();
+        write_split_files(register_map, full_output_root, false);
+        write_split_files(register_map, simplified_output_root, true);
+    }
+
+    auto Writer::collect_values() -> void
+    {
+        _values.clear();
+        write_cob();
+        write_tob();
+        write_xinzhai();
+    }
+
+    auto Writer::write_split_files(
+        const RegisterMapConfig& register_map,
+        const std::FilePath& output_root,
+        bool simplify
+    ) -> void
+    {
+        if (register_map.empty()) {
+            debug::fatal("register_map is empty; configure reigster_adder in config.json");
+        }
+        auto out_dir = output_root / "regnamecontrolbit_4part";
+        std::filesystem::create_directories(out_dir);
+
+        std::HashSet<std::String> used;
+        std::usize omitted = 0;
+        std::usize written = 0;
+
+        for (const auto& [filename, regs] : register_map) {
+            auto path = out_dir / filename;
+            std::ofstream out(path);
+            if (!out.is_open()) {
+                throw std::runtime_error(std::format("cannot open {}", path.string()));
+            }
+            for (const auto& [reg_name, address] : regs) {
+                auto it = _values.find(reg_name);
+                if (it == _values.end()) {
+                    debug::warning_fmt("register '{}' in map file '{}' missing from fetch", reg_name, filename);
+                    continue;
+                }
+                used.insert(reg_name);
+                const auto& hex = it->second;
+                if (simplify && should_omit_simplified_line(hex, reg_name)) {
+                    ++omitted;
+                    continue;
+                }
+                out << hex << " " << address << " " << reg_name << "\n";
+                ++written;
+            }
+        }
+        for (const auto& [name, _] : _values) {
+            if (!used.contains(name)) {
+                debug::warning_fmt("register '{}' fetched but not present in register_map", name);
+            }
+        }
+        if (simplify) {
+            debug::info_fmt("split write: wrote {} line(s), omitted {} default line(s)", written, omitted);
+        }
     }
 
     auto Writer::build_regs() -> void
@@ -45,19 +126,7 @@ namespace PR_tool::parse
         }
     }
 
-    auto Writer::write(const std::FilePath& filepath) -> void
-    {
-        std::ofstream file(filepath);
-        if (!file.is_open()) {
-            throw std::runtime_error(std::format("cannon open file {}", filepath.string()));
-        }
-
-        write_cob(file);
-        write_tob(file);
-        write_xinzhai(file);
-    }
-
-    auto Writer::write_cob(std::ofstream& file) -> void
+    auto Writer::write_cob() -> void
     {
         for(std::i64 row = 0; row < hardware::Interposer::COB_ARRAY_HEIGHT; ++row)
         {
@@ -68,16 +137,16 @@ namespace PR_tool::parse
                 {
                     auto& cob_value = _rv.cobs.at(cobcoord);
 
-                    write_cob_template(file, cob_value.right_sel, "right_sel", row, col);
-                    write_cob_template(file, cob_value.left_sel, "left_sel", row, col);
-                    write_cob_template(file, cob_value.up_sel, "up_sel", row, col);
-                    write_cob_template(file, cob_value.down_sel, "down_sel", row, col);
-                    write_cob_template(file, cob_value.sw_ru, "sw_ru", row, col);
-                    write_cob_template(file, cob_value.sw_lu, "sw_lu", row, col);
-                    write_cob_template(file, cob_value.sw_rd, "sw_rd", row, col);
-                    write_cob_template(file, cob_value.sw_ld, "sw_ld", row, col);
-                    write_cob_template(file, cob_value.sw_v, "sw_v", row, col);
-                    write_cob_template(file, cob_value.sw_h, "sw_h", row, col);
+                    write_cob_template(cob_value.right_sel, "right_sel", row, col);
+                    write_cob_template(cob_value.left_sel, "left_sel", row, col);
+                    write_cob_template(cob_value.up_sel, "up_sel", row, col);
+                    write_cob_template(cob_value.down_sel, "down_sel", row, col);
+                    write_cob_template(cob_value.sw_ru, "sw_ru", row, col);
+                    write_cob_template(cob_value.sw_lu, "sw_lu", row, col);
+                    write_cob_template(cob_value.sw_rd, "sw_rd", row, col);
+                    write_cob_template(cob_value.sw_ld, "sw_ld", row, col);
+                    write_cob_template(cob_value.sw_v, "sw_v", row, col);
+                    write_cob_template(cob_value.sw_h, "sw_h", row, col);
                 }
                 else
                 {
@@ -87,7 +156,7 @@ namespace PR_tool::parse
         }
     }
 
-    auto Writer::write_tob(std::ofstream& file) -> void
+    auto Writer::write_tob() -> void
     {
         for(std::i64 row = 0; row < hardware::Interposer::TOB_ARRAY_HEIGHT; ++row)
         {
@@ -98,15 +167,15 @@ namespace PR_tool::parse
                 {
                     auto& tob_value {_rv.tobs.at(tobcoord)};
 
-                    only_this_one_looks_f__king_different_from_others(file, tob_value.tob2bump, "tob2bump", row, col);
-                    write_tob_template64(file, tob_value.dly, "dly", row, col);
-                    write_tob_template64(file, tob_value.dly, "drv", row, col);
-                    write_tob_template_mux(file, tob_value.hctrl, "hctrl", row, col);
-                    write_tob_template_mux(file, tob_value.vctrl, "vctrl", row, col);
-                    write_tob_template64(file, tob_value.bank_mux, "bank_sel", row, col);
-                    write_tob_template128(file, tob_value.tob2track, "tob2track", row, col);
-                    only_this_one_looks_f__king_different_from_others(file, tob_value.bump2tob, "bump2tob", row, col);
-                    write_tob_template128(file, tob_value.track2tob, "track2tob", row, col);
+                    only_this_one_looks_f__king_different_from_others(tob_value.tob2bump, "tob2bump", row, col);
+                    write_tob_template64(tob_value.dly, "dly", row, col);
+                    write_tob_template64(tob_value.drv, "drv", row, col);
+                    write_tob_template_mux(tob_value.hctrl, "hctrl", row, col);
+                    write_tob_template_mux(tob_value.vctrl, "vctrl", row, col);
+                    write_tob_template64(tob_value.bank_mux, "bank_sel", row, col);
+                    write_tob_template128(tob_value.tob2track, "tob2track", row, col);
+                    only_this_one_looks_f__king_different_from_others(tob_value.bump2tob, "bump2tob", row, col);
+                    write_tob_template128(tob_value.track2tob, "track2tob", row, col);
                 }
                 else
                 {
@@ -116,19 +185,19 @@ namespace PR_tool::parse
         }
     }
 
-    auto Writer::write_xinzhai(std::ofstream& file) -> void {
-        write_xinzhai_template(file, _rv.xinzhai.padctrl_right, "xinzhai_C4_noi_right_pad_ctrl");
-        write_xinzhai_template(file, _rv.xinzhai.padctrl_left, "xinzhai_C4_noi_left_pad_ctrl");
-        write_xinzhai_template(file, _rv.xinzhai.padctrl_up, "xinzhai_C4_noi_up_pad_ctrl");
-        write_xinzhai_template(file, _rv.xinzhai.padctrl_down, "xinzhai_C4_noi_down_pad_ctrl");
+    auto Writer::write_xinzhai() -> void {
+        write_xinzhai_template(_rv.xinzhai.padctrl_right, "xinzhai_C4_noi_right_pad_ctrl");
+        write_xinzhai_template(_rv.xinzhai.padctrl_left, "xinzhai_C4_noi_left_pad_ctrl");
+        write_xinzhai_template(_rv.xinzhai.padctrl_up, "xinzhai_C4_noi_up_pad_ctrl");
+        write_xinzhai_template(_rv.xinzhai.padctrl_down, "xinzhai_C4_noi_down_pad_ctrl");
 
-        write_xinzhai_template(file, _rv.xinzhai.SiPpadctrl_right, "xinzhai_C4_noi_SiP_right_pad_ctrl");
-        write_xinzhai_template(file, _rv.xinzhai.SiPpadctrl_left, "xinzhai_C4_noi_SiP_left_pad_ctrl");
-        write_xinzhai_template(file, _rv.xinzhai.SiPpadctrl_up, "xinzhai_C4_noi_SiP_up_pad_ctrl");
-        write_xinzhai_template(file, _rv.xinzhai.SiPpadctrl_down, "xinzhai_C4_noi_SiP_down_pad_ctrl");
+        write_xinzhai_template(_rv.xinzhai.SiPpadctrl_right, "xinzhai_C4_noi_SiP_right_pad_ctrl");
+        write_xinzhai_template(_rv.xinzhai.SiPpadctrl_left, "xinzhai_C4_noi_SiP_left_pad_ctrl");
+        write_xinzhai_template(_rv.xinzhai.SiPpadctrl_up, "xinzhai_C4_noi_SiP_up_pad_ctrl");
+        write_xinzhai_template(_rv.xinzhai.SiPpadctrl_down, "xinzhai_C4_noi_SiP_down_pad_ctrl");
     }
 
-    auto Writer::write_xinzhai_template(std::ofstream& file, const std::Bits<128>& bits, const std::string& name) -> void {
+    auto Writer::write_xinzhai_template(const std::Bits<128>& bits, const std::string& name) -> void {
         // reverse the bits and make the MSB on the right
         auto reverse_bits = std::Bits<128>{};
         for (std::size_t i = 0; i < 128; ++i) {
@@ -140,7 +209,7 @@ namespace PR_tool::parse
         for (std::usize i = 0; i < 4; i++)
         {
             std::String output_name = name + "_" + std::to_string(i);
-            file << to_hex(splitted_bits[i]) << " " << output_name << std::endl;    // MSB is on the left
+            store_line(to_hex(splitted_bits[i]), output_name);
         }
     }
 
@@ -178,40 +247,40 @@ namespace PR_tool::parse
         return result;
     }
 
-    auto Writer::write_cob_template(std::ofstream& file, const std::Bits<128>& bits, \
+    auto Writer::write_cob_template(const std::Bits<128>& bits, \
                                     std::String reg_name, std::usize row, std::usize col) -> void
     {
         auto splitted_bits = split_bits<128, 4>(bits);
         for (std::usize i = 0; i < 4; i++)
         {
             std::String name = std::format("cob_{}_{}_{}_{}", row, col, reg_name, i);
-            file << to_hex(splitted_bits[i]) << " " << name << std::endl;
+            store_line(to_hex(splitted_bits[i]), name);
         }
     }
 
-    auto Writer::write_tob_template64(std::ofstream& file, const std::Bits<64>& bits, \
+    auto Writer::write_tob_template64(const std::Bits<64>& bits, \
                                     std::String reg_name, std::usize row, std::usize col) -> void
     {
         auto splitted_bits = split_bits<64, 2>(bits);
         for (std::usize i = 0; i < 2; i++)
         {
             std::String name = std::format("tob_{}_{}_{}_{}", row, col, reg_name, i);
-            file << to_hex(splitted_bits[i]) << " " << name << std::endl;
+            store_line(to_hex(splitted_bits[i]), name);
         }
     }
 
-    auto Writer::write_tob_template128(std::ofstream& file, const std::Bits<128>& bits, \
+    auto Writer::write_tob_template128(const std::Bits<128>& bits, \
                                     std::String reg_name, std::usize row, std::usize col) -> void
     {
         auto splitted_bits = split_bits<128, 4>(bits);
         for (std::usize i = 0; i < 4; i++)
         {
             std::String name = std::format("tob_{}_{}_{}_{}", row, col, reg_name, i);
-            file << to_hex(splitted_bits[i]) << " " << name << std::endl;
+            store_line(to_hex(splitted_bits[i]), name);
         }
     }
 
-    auto Writer::write_tob_template_mux(std::ofstream& file, const std::Array<std::usize, 128>& bits, \
+    auto Writer::write_tob_template_mux(const std::Array<std::usize, 128>& bits, \
                                         std::String reg_name, std::usize row, std::usize col) -> void
     {   
         auto splitted_bits = split_array<128, 16>(bits);
@@ -232,11 +301,11 @@ namespace PR_tool::parse
         {
             std::usize bank{i/8}, bank_index{i%8};
             std::String name = std::format("tob_{}_{}_{}_bank{}_{}", row, col, reg_name, bank, bank_index);
-            file << to_hex(result[i]) << " " << name << std::endl;  
+            store_line(to_hex(result[i]), name);
         }
     }
 
-    auto Writer::only_this_one_looks_f__king_different_from_others(std::ofstream& file, const std::Bits<128>& bits,\
+    auto Writer::only_this_one_looks_f__king_different_from_others(const std::Bits<128>& bits,\
                                         std::String reg_name, std::usize row, std::usize col) -> void
     {
         auto splitted_bits = split_bits<128, 4>(bits);
@@ -244,7 +313,7 @@ namespace PR_tool::parse
         {
             std::usize bank{i/2}, bank_index{i%2};
             std::String name = std::format("tob_{}_{}_{}_bank{}_en_{}", row, col, reg_name, bank, bank_index);
-            file << to_hex(splitted_bits[i]) << " " << name << std::endl;
+            store_line(to_hex(splitted_bits[i]), name);
         }
     }
 
@@ -266,6 +335,3 @@ namespace PR_tool::parse
         }
     }
 } 
-
-
-

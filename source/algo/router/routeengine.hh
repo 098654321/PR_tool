@@ -58,6 +58,15 @@ public:
     auto recorder() -> HardwareRecorder& {return this->_recorder;}
     auto route_data() -> RouteData& {return this->_route_data;}
     auto init_route_data() -> void {this->_route_data.clear_data();}
+    auto record_failed_net(const std::String& name) -> void {
+        this->_failed_net_names.emplace_back(name);
+    }
+    auto failed_net_names() const -> const std::Vector<std::String>& {
+        return this->_failed_net_names;
+    }
+    auto clear_failed_net_names() -> void {
+        this->_failed_net_names.clear();
+    }
     auto collect_data_when_fail(const std::Vector<circuit::Net*>& nets, bool incremental) -> void {
         this->_route_data.collect_data(nets, incremental);
     }
@@ -81,6 +90,7 @@ private:
     bool _incremental;
     bool _try_all_modes;
     bool _path_exists;
+    std::Vector<std::String> _failed_net_names {};
 };
 
 }

@@ -4,8 +4,9 @@
 #include <parse/reader/module.hh>
 
 #include <algo/netbuilder/netbuilder.hh>
-#include <algo/router/route.hh>
-#include <algo/router/maze/mazeroutestrategy.hh>
+#include <algo/router/route_nets.hh>
+#include <algo/router/common/maze/mazeroutestrategy.hh>
+#include <algo/router/common/allocate/hopcroft_karp.hh>
 
 #include <widget/view3d/view3dwidget.h>
 
@@ -27,11 +28,15 @@ auto main(int argc, char** argv) -> int {
     PR_tool::debug::set_debug_level(PR_tool::debug::DebugLevel::Debug);
 
     auto config_path = std::StringView{argv[1]};
-    auto [interposer, basedie] = PR_tool::parse::read_config(config_path);
+    auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, 0, false);
+    (void)register_map;
 
     PR_tool::algo::NetBuilder{basedie.get(), interposer.get()}.build();
-    auto len = PR_tool::algo::route_nets(interposer.get(), basedie.get(), PR_tool::algo::MazeRouteStrategy{});
-    PR_tool::debug::info_fmt("Length: '{}'", len);
+    auto result = PR_tool::algo::route_nets(
+        interposer.get(), basedie.get(), PR_tool::algo::MazeRouteStrategy{},
+        PR_tool::algo::HK{}, 0, false, false
+    );
+    PR_tool::debug::info_fmt("Length: '{}'", result.data._total_length);
 
     interposer->randomly_map_remain_indexes();
 

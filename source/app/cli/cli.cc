@@ -25,13 +25,14 @@ namespace PR_tool {
 
     auto cli_main(
         std::StringView config_path, std::Option<std::StringView> output_path, 
-        int mode, std::optional<int> compare, bool try_all_modes, bool placement
+        int mode, std::optional<int> compare, bool try_all_modes, bool placement,
+        bool simplify_controlbits
     ) -> int {
     try {
         debug::initial_log("./debug.log");
         std::FilePath output_file = std::FilePath(output_path.has_value() ? *output_path : ".");
 
-        auto [interposer, basedie] = PR_tool::parse::read_config(config_path, mode, try_all_modes); 
+        auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, mode, try_all_modes); 
         algo::build_nets(basedie.get(), interposer.get());
 
         if (placement) {
@@ -46,15 +47,19 @@ namespace PR_tool {
             place(interposer.get(), basedie.get(), topdies);
         }
         
-        bool has_route = route(interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes);
-        if (has_route) {
-            parse::output_from_routing_results(interposer.get(), output_file, basedie.get(), mode, try_all_modes);
+        auto route_status = route(interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes);
+        if (route_status == RouteStatus::Failed) {
+            return 1;
+        }
+        if (route_status == RouteStatus::Ok) {
+            parse::output_from_routing_results(interposer.get(), output_file, basedie.get(), mode, try_all_modes, simplify_controlbits, register_map);
         }
 
         return 0;
     }
     catch (const Exception& err){
         debug::exception("Unexpected exception");
+        return 1;
     }
     }
 
@@ -85,37 +90,49 @@ debug::info_fmt("Layout time: {} milliseconds", duration.count());
         PR_tool::hardware::Interposer* interposer, PR_tool::circuit::BaseDie* basedie,
         std::StringView config_path,
         int mode, std::optional<int> compare, bool try_all_modes
-    ) -> bool {
+    ) -> RouteStatus {
         debug::debug("Start routing ...");
-        if (!try_all_modes && mode == 0) {  // not incremental routing 
-            auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer, basedie, mode, try_all_modes);
-            if (!has_bits) {
-                algo::route_nets(interposer, basedie, algo::MazeRouteStrategy{false}, algo::HK{}, mode, false, try_all_modes);
-                return true;
+        if (!try_all_modes && mode == 0) {
+            // v1.0.0: ignore legacy controlbits_<mode>.txt warm-start / skip-route.
+            auto result = algo::route_nets(
+                interposer, basedie, algo::MazeRouteStrategy{false}, algo::HK{},
+                mode, false, try_all_modes);
+            if (!result.failed_net_names.empty()) {
+                debug::error("Routing failed for:");
+                for (const auto& name : result.failed_net_names) {
+                    debug::error(name);
+                }
+                return RouteStatus::Failed;
             }
-            if (has_other_bits) {
-                debug::info("Has other control bits, skip the routing process");
-            }
-            return false;
+            return RouteStatus::Ok;
         }
 
         // incremental routing: route all modes (try_all_modes) or single mode (mode > 0)
         basedie->merge_same_mode_nets();
         auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer, basedie, mode, try_all_modes);
         if (!has_bits) {
-            algo::route_nets(interposer, basedie, algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, try_all_modes, has_other_bits);
+            auto result = algo::route_nets(interposer, basedie, algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, try_all_modes, has_other_bits);
+            if (!result.failed_net_names.empty()) {
+                debug::error("Routing failed for:");
+                for (const auto& name : result.failed_net_names) {
+                    debug::error(name);
+                }
+                return RouteStatus::Failed;
+            }
         }
         else {
             debug::info("Already has control bits, skip the routing process");
         }
 
         if (!try_all_modes && compare.has_value()) {
+            // TODO(split-output): still assumes controlbits_<mode>.txt; formal output is now
+            // regnamecontrolbit_4part/; readback / compare not updated yet.
             std::string current_file {"controlbits_" + std::to_string(mode) + ".txt"};
             std::string target_file {"controlbits_" + std::to_string(compare.value()) + ".txt"};
             parse::compare(current_file, target_file);
         }
 
-        return !has_bits;
+        return has_bits ? RouteStatus::Skipped : RouteStatus::Ok;
     }
     
 

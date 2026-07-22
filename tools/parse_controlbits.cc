@@ -123,6 +123,8 @@ try{
     auto basedie = std::make_unique<circuit::BaseDie>();
 
     // step4: load controlbits
+    // TODO(split-output): still assumes controlbits_<mode>.txt; formal output is now
+    // regnamecontrolbit_4part/; readback / compare not updated yet.
     debug::info("Load controlbits");    
     auto controlbits = parse::load_controlbits(folder, mode);
     if (!controlbits.has_value()) {

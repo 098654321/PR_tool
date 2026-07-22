@@ -19,17 +19,23 @@ namespace PR_tool::circuit {
 
 namespace PR_tool {
 
+    enum class RouteStatus {
+        Skipped,
+        Ok,
+        Failed,
+    };
+
     auto cli_main(
         std::StringView config_path, std::Option<std::StringView> output_path, 
-        int mode, std::optional<int> compare, bool try_all_modes, bool placement
+        int mode, std::optional<int> compare, bool try_all_modes, bool placement,
+        bool simplify_controlbits = false
     ) -> int;
 
     auto place(PR_tool::hardware::Interposer*, PR_tool::circuit::BaseDie*, std::vector<PR_tool::circuit::TopDieInstance*>&) -> void;
 
-    // Returns true when route_nets was executed (caller should write controlbits).
     auto route(
         PR_tool::hardware::Interposer*, PR_tool::circuit::BaseDie*,
         std::StringView,
         int mode, std::optional<int> compare, bool try_all_modes
-    ) -> bool;
+    ) -> RouteStatus;
 }

@@ -4,7 +4,7 @@
 
 更详细的工程说明见：
 
-- [`source/AGENTS.md`](./source/AGENTS.md)：源码架构、数据流、算法与修改指南
+- [`source/AGENTS.md`](./source/AGENTS.md)：源码概况、目录结构、核心索引与构建/测试入口
 - [`test/AGENTS.md`](./test/AGENTS.md)：测试目录结构与用例格式
 
 ---
@@ -16,14 +16,19 @@
 - [xmake](https://xmake.io/mirror/zh-cn/guide/installation.html)
 - 支持 **C++23** 的编译器（`xmake.lua` 中 `set_languages("c++23")`）
 - 构建 `PR_tool` / `view2d` / `view3d` 需要 **Qt**（含 OpenGL）
+- `PR_tool_cli` 是无 Qt 的 headless CLI target
 - 构建 `regression_test` 需要 **Catch2**（macOS / Windows 由 xmake 自动拉取；Linux 需通过 conda 等方式安装并设置 `CONDA_PREFIX`）
 
 ### 构建与运行
 
 ```bash
-# 主程序
+# Qt GUI 程序
 xmake build PR_tool
 xmake run PR_tool <config_folder> [OPTIONS]
+
+# 无 Qt 的 CLI 程序
+xmake build PR_tool_cli
+xmake run PR_tool_cli <config_folder> [OPTIONS]
 
 # 默认 target 为 regression_test
 xmake build regression_test
@@ -41,13 +46,14 @@ xmake run regression_test
 ### 端到端数据流
 
 ```
-config JSON
-  → parse::read_config          # 构建 Interposer + BaseDie
+config JSON (+ optional reigster_adder → register_map)
+  → parse::read_config          # Interposer + BaseDie + RegisterMapConfig
   → algo::build_nets            # Connection → Net / SyncNet
   → algo::place (可选)          # 模拟退火布局
   → algo::route_nets            # Maze / 增量布线
   → parse::output_from_routing_results
-  → controlbits_<mode>.txt
+  → {output}/regnamecontrolbit_4part/
+       botleft_REG0.txt … topright_REG3.txt   # hex address reg_name
 ```
 
 CLI 主流程在 [`source/app/cli/cli.cc`](./source/app/cli/cli.cc)；入口参数解析在 [`source/app/PR_tool.cc`](./source/app/PR_tool.cc)。
@@ -89,7 +95,8 @@ CLI 主流程在 [`source/app/cli/cli.cc`](./source/app/cli/cli.cc)；入口参�
 | `external_ports.json` | 外部 I/O 端口 |
 | `connections.json` | 线网连接（按 mode / sync 分组） |
 | `01_ports.json` | VDD/GND（pose/nege）端口 |
-| `controlbits_<mode>.txt` | （可选）已有布线结果，用于跳过布线或增量 warm-start |
+| `reigster_adder.json`（或 `register_adder.json`） | 寄存器名 → 地址 map（写出四文件用；由 `config.json` 指向） |
+| `controlbits_<mode>.txt` | （可选、legacy）旧单文件布线结果；读回尚未适配四文件输出 |
 
 Pin 名解析规则、连接器状态机、增量代价模型等细节见 [`source/AGENTS.md`](./source/AGENTS.md)。
 
@@ -127,8 +134,8 @@ cd output
 | `path_length` | 路径长度计算 |
 | `debug` | 日志系统 |
 | `all` | 运行上表全部快速测试 |
-| `placer_iteratively [config]` | 慢速稳定性测试（100 次放置+布线，不在 `all` 中；默认 `../test/config/case1`） |
-| `router_iteratively [config]` | 慢速稳定性测试（100 次仅布线，不在 `all` 中；默认 `../test/config/case1`） |
+| `placer_iteratively [config] [iterations]` | 慢速稳定性测试（放置+布线；默认 case1、100 次；不在 `all` 中） |
+| `router_iteratively [config] [iterations]` | 慢速稳定性测试（仅布线；默认 case1、100 次；不在 `all` 中） |
 
 `module_test/test_function/` 与 `module_test/test_writer/` 下还有带独立数据集的专项测试（线长、writer、bbox 等），由对应 `*.cc` 编译进 `module_test` target。
 
@@ -140,7 +147,7 @@ cd output
 |------|------|------|
 | `test.cc` | `[basic]` `[CPU_MEM_AI]` `[CPU_MEM]` `[AI_core]` | 读配置 → build_nets → route，校验总线长 ≤ `golden.txt` |
 | `incremental_test.cc` | `[incremental]` | 增量布线统计与循环测试 |
-| `flow_test.cc` | `[flow]` | 放置 + 布线完整流程 |
+| `flow_test.cc` | `[flow]` | 编排：COB=12 → rebuild → case5 布局/布线×10 → writer test1–5 |
 
 ```bash
 xmake build regression_test
@@ -177,7 +184,7 @@ Linux 上需确保 `CONDA_PREFIX` 指向已安装 Catch2 的环境。
 
 | case | 规模 |
 |:----:|------|
-| case 10 | 最少 bus（`flow_test` 放置+布线用例） |
+| case 10 | 最少 bus |
 | case 11 | 中等 bus |
 | case 12 | 最多 bus |
 
@@ -209,11 +216,10 @@ PR_tool <input folder path> [OPTIONS]
 
 | 选项 | 说明 |
 |------|------|
-| `-o, --output <PATH>` | controlbits 输出目录 |
+| `-o, --output <PATH>` | 输出根目录；其下生成 `regnamecontrolbit_4part/` |
 | `-g, --gui` | GUI 模式 |
 | `-p, --placement` | 启用布局（模拟退火） |
-| `-i, --incremental [MODE]` | 增量布线；可跟正整数 mode，省略则尝试所有 mode |
-| `-c, --compare <MODE>` | 与指定 mode 的 controlbits 对比（需配合 `-i`） |
+| `-s, --simplify-controlbits-file` | 写出四文件时省略等于默认 hex 的行（稀疏输出） |
 | `-v, --verbose` | 输出 Debug 日志 |
 | `-h, --help` | 帮助 |
 | `-V, --version` | 版本信息 |
@@ -222,22 +228,23 @@ PR_tool <input folder path> [OPTIONS]
 
 ```bash
 xmake run PR_tool test/config/case1 -v
-xmake run PR_tool test/config/case20 -i 2 -o ./output
 xmake run PR_tool -g
 ```
+
+**v1.0.0 不支持**：`-i/--incremental` 与 `-c/--compare` 已从 CLI 移除；传入会 FATAL 退出。
 
 ---
 
 ## 工具程序
 
-`tools/` 与 `test/transform_format/` 提供辅助程序，通过 xmake target 构建：
+`tools/` 与 `test/transform_format/` 提供辅助程序。正式产品输出由 Writer 写四文件；`split_regs.py` 仅 legacy 旧单文件离线拆分（详见 [`tools/AGENTS.md`](./tools/AGENTS.md)）。
 
 | target | 说明 |
 |--------|------|
 | `cobmap` | 计算 COB 端口映射 |
 | `view2d` | 加载配置、执行 P&R、2D 可视化 |
 | `view3d` | 加载配置、执行 P&R、3D 可视化 |
-| `parse_controlbits` | 解析 controlbits 文件 |
+| `parse_controlbits` | 解析旧单文件 controlbits（读回未跟四文件） |
 | `txt2json` | 旧版 txt 配置转 JSON |
 | `json2txt` | JSON 配置转旧版 txt 连接格式 |
 

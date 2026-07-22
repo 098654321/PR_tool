@@ -4,6 +4,8 @@
 #include <debug/debug.hh>
 #include <algorithm>
 
+// TODO(split-output): still assumes controlbits_<mode>.txt; formal output is now
+// regnamecontrolbit_4part/; readback / compare not updated yet.
 
 namespace PR_tool::parse {
 

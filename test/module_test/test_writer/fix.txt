@@ -247,7 +247,7 @@ PR 的 `TrackToBumpNet` 仅在 sink bump 接 `track_to_tob`，与上一致。外
 
 | 文件 | 说明 |
 |------|------|
-| `test/module_test/test_writer/test_writer.cc` | IO 网路径回放（TrackToBump 等） |
+| `test/module_test/test_writer/check-controlbits-file/scripts/test_writer.cc` | IO 网路径回放（TrackToBump 等） |
 | `test/module_test/test_writer/test2_chiplet_IO/connections.json` | 100 条合并测例 |
 
 ---

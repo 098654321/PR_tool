@@ -26,9 +26,9 @@ namespace PR_tool::widget {
         void run() override {
             debug::info_fmt("Begin to execute P&R");
             algo::build_nets(this->_basedie, this->_interposer);
-            auto data = algo::route_nets(this->_interposer, this->_basedie, algo::MazeRouteStrategy{}, algo::HK{}, 0, false, false);
+            auto result = algo::route_nets(this->_interposer, this->_basedie, algo::MazeRouteStrategy{}, algo::HK{}, 0, false, false);
             parse::connect_registers(this->_interposer, this->_basedie, 0);
-            debug::info_fmt("P&R finished with total path length '{}'", data._total_length); 
+            debug::info_fmt("P&R finished with total path length '{}'", result.data._total_length); 
             emit this->prFinished();
         }
 

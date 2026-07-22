@@ -33,13 +33,15 @@ static auto print_config(hardware::Interposer* i, circuit::BaseDie* b) -> void {
 }
 
 static auto test_case1() -> void try {
-    auto [i, b] = parse::read_config("../test/config/case1", 0, false);
+    auto [i, b, register_map] = parse::read_config("../test/config/case1", 0, false);
+    (void)register_map;
     print_config(i.get(), b.get());
 }
 THROW_UP_WITH("test_case1")
 
 static auto test_case2() -> void  try{
-    auto [i, b] = parse::read_config("../test/config/case2", 0, false);
+    auto [i, b, register_map] = parse::read_config("../test/config/case2", 0, false);
+    (void)register_map;
     print_config(i.get(), b.get());
 }
 THROW_UP_WITH("test_case2")
