@@ -1,7 +1,7 @@
 # Design: CLI v1.0.0 P0 release fixes
 
 Date: 2026-07-22  
-Status: approved (brainstorming); awaiting implementation plan
+Status: approved; implementation plan written
 
 ## 1. Goal
 
