@@ -47,9 +47,13 @@ struct PR_tool::serde::Deserialize<PR_tool::serde::Json, std::HashMap<int, std::
             PR_tool::serde::Deserialize<PR_tool::serde::Json, std::Vector<std::Vector<std::String>>>::from(j, vec);
 
             std::Vector<ConnectionConfig> nets {};
-            for (auto& net: vec)
-            {
-                assert (net.size() == 2);
+            for (std::usize i = 0; i < vec.size(); ++i) {
+                auto& net = vec[i];
+                if (net.size() != 2) {
+                    throw std::runtime_error(std::format(
+                        "Connection pair under sync key '{}' at index {} must have exactly 2 endpoints, got {}",
+                        key, i, net.size()));
+                }
                 nets.emplace_back(ConnectionConfig{net[0], net[1]});
             }
             value.emplace(std::stoi(key), nets);
