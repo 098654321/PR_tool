@@ -1,9 +1,8 @@
 add_rules("mode.debug", "mode.release")
-set_languages("c99", "c++23")
+set_languages("c99", "c++20")
 
 if is_plat("linux") then 
-    add_cxflags("-std=c++2b")
-    add_cxxflags("-std=c++2b")
+    set_languages("c++20")
 end
 
 if is_plat("windows", "macosx") then
