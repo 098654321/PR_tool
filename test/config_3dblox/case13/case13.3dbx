@@ -1,0 +1,183 @@
+Header:
+  version: "3.0"
+  unit: micron
+  precision: 1000
+  include:
+    - case13.3dbv
+
+Design:
+  name: case13_3dblox
+  external:
+    verilog_file: case13_connectivity.v
+
+ChipletInst:
+  Topdie_inst_2_0:
+    reference: AI
+  Topdie_inst_2_3:
+    reference: AI
+  Topdie_inst_2_6:
+    reference: AI
+  Topdie_inst_2_9:
+    reference: AI
+  Topdie_inst_4_0:
+    reference: AI
+  Topdie_inst_4_3:
+    reference: AI
+  Topdie_inst_4_6:
+    reference: AI
+  Topdie_inst_4_9:
+    reference: AI
+  Topdie_inst_6_0:
+    reference: AI
+  Topdie_inst_6_3:
+    reference: AI
+  Topdie_inst_6_6:
+    reference: AI
+  Topdie_inst_6_9:
+    reference: AI
+  Topdie_inst_8_0:
+    reference: AI
+  Topdie_inst_8_3:
+    reference: AI
+  Topdie_inst_8_6:
+    reference: AI
+  Topdie_inst_8_9:
+    reference: AI
+  prtool_interposer:
+    reference: PRTOOL_INTERPOSER
+
+Stack:
+  Topdie_inst_2_0:
+    loc: [150.0, 4150.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_2_3:
+    loc: [1950.0, 4150.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_2_6:
+    loc: [3750.0, 4150.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_2_9:
+    loc: [5550.0, 4150.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_4_0:
+    loc: [150.0, 2950.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_4_3:
+    loc: [1950.0, 2950.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_4_6:
+    loc: [3750.0, 2950.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_4_9:
+    loc: [5550.0, 2950.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_6_0:
+    loc: [150.0, 1750.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_6_3:
+    loc: [1950.0, 1750.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_6_6:
+    loc: [3750.0, 1750.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_6_9:
+    loc: [5550.0, 1750.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_8_0:
+    loc: [150.0, 550.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_8_3:
+    loc: [1950.0, 550.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_8_6:
+    loc: [3750.0, 550.0]
+    z: 71.0
+    orient: MZ
+  Topdie_inst_8_9:
+    loc: [5550.0, 550.0]
+    z: 71.0
+    orient: MZ
+  prtool_interposer:
+    loc: [0.0, 0.0]
+    z: 0.0
+    orient: R0
+
+Connection:
+  Topdie_inst_2_0_to_interposer:
+    top: Topdie_inst_2_0.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_2_3_to_interposer:
+    top: Topdie_inst_2_3.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_2_6_to_interposer:
+    top: Topdie_inst_2_6.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_2_9_to_interposer:
+    top: Topdie_inst_2_9.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_4_0_to_interposer:
+    top: Topdie_inst_4_0.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_4_3_to_interposer:
+    top: Topdie_inst_4_3.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_4_6_to_interposer:
+    top: Topdie_inst_4_6.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_4_9_to_interposer:
+    top: Topdie_inst_4_9.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_6_0_to_interposer:
+    top: Topdie_inst_6_0.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_6_3_to_interposer:
+    top: Topdie_inst_6_3.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_6_6_to_interposer:
+    top: Topdie_inst_6_6.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_6_9_to_interposer:
+    top: Topdie_inst_6_9.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_8_0_to_interposer:
+    top: Topdie_inst_8_0.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_8_3_to_interposer:
+    top: Topdie_inst_8_3.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_8_6_to_interposer:
+    top: Topdie_inst_8_6.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  Topdie_inst_8_9_to_interposer:
+    top: Topdie_inst_8_9.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0

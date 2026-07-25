@@ -1,0 +1,183 @@
+Header:
+  version: "3.0"
+  unit: micron
+  precision: 1000
+  include:
+    - case1.3dbv
+
+Design:
+  name: case1_3dblox
+  external:
+    verilog_file: case1_connectivity.v
+
+ChipletInst:
+  muyan_0:
+    reference: muyan
+  muyan_1:
+    reference: muyan
+  muyan_10:
+    reference: muyan
+  muyan_11:
+    reference: muyan
+  muyan_12:
+    reference: muyan
+  muyan_13:
+    reference: muyan
+  muyan_14:
+    reference: muyan
+  muyan_15:
+    reference: muyan
+  muyan_2:
+    reference: muyan
+  muyan_3:
+    reference: muyan
+  muyan_4:
+    reference: muyan
+  muyan_5:
+    reference: muyan
+  muyan_6:
+    reference: muyan
+  muyan_7:
+    reference: muyan
+  muyan_8:
+    reference: muyan
+  muyan_9:
+    reference: muyan
+  prtool_interposer:
+    reference: PRTOOL_INTERPOSER
+
+Stack:
+  muyan_0:
+    loc: [150.0, 550.0]
+    z: 71.0
+    orient: MZ
+  muyan_1:
+    loc: [1950.0, 550.0]
+    z: 71.0
+    orient: MZ
+  muyan_10:
+    loc: [3750.0, 2950.0]
+    z: 71.0
+    orient: MZ
+  muyan_11:
+    loc: [5550.0, 2950.0]
+    z: 71.0
+    orient: MZ
+  muyan_12:
+    loc: [150.0, 4150.0]
+    z: 71.0
+    orient: MZ
+  muyan_13:
+    loc: [1950.0, 4150.0]
+    z: 71.0
+    orient: MZ
+  muyan_14:
+    loc: [3750.0, 4150.0]
+    z: 71.0
+    orient: MZ
+  muyan_15:
+    loc: [5550.0, 4150.0]
+    z: 71.0
+    orient: MZ
+  muyan_2:
+    loc: [3750.0, 550.0]
+    z: 71.0
+    orient: MZ
+  muyan_3:
+    loc: [5550.0, 550.0]
+    z: 71.0
+    orient: MZ
+  muyan_4:
+    loc: [150.0, 1750.0]
+    z: 71.0
+    orient: MZ
+  muyan_5:
+    loc: [1950.0, 1750.0]
+    z: 71.0
+    orient: MZ
+  muyan_6:
+    loc: [3750.0, 1750.0]
+    z: 71.0
+    orient: MZ
+  muyan_7:
+    loc: [5550.0, 1750.0]
+    z: 71.0
+    orient: MZ
+  muyan_8:
+    loc: [150.0, 2950.0]
+    z: 71.0
+    orient: MZ
+  muyan_9:
+    loc: [1950.0, 2950.0]
+    z: 71.0
+    orient: MZ
+  prtool_interposer:
+    loc: [0.0, 0.0]
+    z: 0.0
+    orient: R0
+
+Connection:
+  muyan_0_to_interposer:
+    top: muyan_0.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_1_to_interposer:
+    top: muyan_1.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_10_to_interposer:
+    top: muyan_10.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_11_to_interposer:
+    top: muyan_11.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_12_to_interposer:
+    top: muyan_12.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_13_to_interposer:
+    top: muyan_13.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_14_to_interposer:
+    top: muyan_14.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_15_to_interposer:
+    top: muyan_15.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_2_to_interposer:
+    top: muyan_2.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_3_to_interposer:
+    top: muyan_3.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_4_to_interposer:
+    top: muyan_4.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_5_to_interposer:
+    top: muyan_5.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_6_to_interposer:
+    top: muyan_6.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_7_to_interposer:
+    top: muyan_7.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_8_to_interposer:
+    top: muyan_8.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
+  muyan_9_to_interposer:
+    top: muyan_9.regions.front
+    bot: prtool_interposer.regions.front
+    thickness: 1.0
