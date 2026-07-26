@@ -16,10 +16,9 @@ ChipletDef:
         side: front
         coords: [[0.0, 0.0], [7300.0, 0.0], [7300.0, 5500.0], [0.0, 5500.0]]
         layer: metal1
-        bmap: bmaps/PRTOOL_INTERPOSER.bmap
     external:
       APR_tech_file: [case12_tech.lef]
-      LEF_file: [case12_interposer_macros.lef, case12_bump.lef]
+      LEF_file: [case12_interposer_macros.lef]
       DEF_file: case12_interposer.def
   cpu:
     type: die

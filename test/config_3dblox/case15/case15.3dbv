@@ -32,8 +32,7 @@ ChipletDef:
         side: front
         coords: [[0.0, 0.0], [7300.0, 0.0], [7300.0, 5500.0], [0.0, 5500.0]]
         layer: metal1
-        bmap: bmaps/PRTOOL_INTERPOSER.bmap
     external:
       APR_tech_file: [case15_tech.lef]
-      LEF_file: [case15_interposer_macros.lef, case15_bump.lef]
+      LEF_file: [case15_interposer_macros.lef]
       DEF_file: case15_interposer.def
