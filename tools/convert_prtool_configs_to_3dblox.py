@@ -416,10 +416,10 @@ def make_3dbx(
             original = original_by_id[instance]
             coord = instances[original]["coord"]
             loc = topdie_origin_from_tob(int(coord["row"]), int(coord["col"]))
-            # With MZ, the local front surface at z=TOPDIE_THICKNESS maps to
-            # loc.z - TOPDIE_THICKNESS, i.e. one microbump gap over the
-            # interposer's unflipped front surface at z=INTERPOSER_THICKNESS.
-            z = INTERPOSER_THICKNESS + MICROBUMP_GAP + TOPDIE_THICKNESS
+            # With MZ, OpenROAD places the flipped die's front surface at the
+            # stack z coordinate itself.  Keep that surface one microbump gap
+            # above the interposer's unflipped front surface.
+            z = INTERPOSER_THICKNESS + MICROBUMP_GAP
             orient = "MZ"
         lines.extend([
             f"  {instance}:",

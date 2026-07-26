@@ -49,67 +49,67 @@ ChipletInst:
 Stack:
   Topdie_inst_2_0:
     loc: [150.0, 4150.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_2_3:
     loc: [1950.0, 4150.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_2_6:
     loc: [3750.0, 4150.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_2_9:
     loc: [5550.0, 4150.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_4_0:
     loc: [150.0, 2950.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_4_3:
     loc: [1950.0, 2950.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_4_6:
     loc: [3750.0, 2950.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_4_9:
     loc: [5550.0, 2950.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_6_0:
     loc: [150.0, 1750.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_6_3:
     loc: [1950.0, 1750.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_6_6:
     loc: [3750.0, 1750.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_6_9:
     loc: [5550.0, 1750.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_8_0:
     loc: [150.0, 550.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_8_3:
     loc: [1950.0, 550.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_8_6:
     loc: [3750.0, 550.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   Topdie_inst_8_9:
     loc: [5550.0, 550.0]
-    z: 71.0
+    z: 51.0
     orient: MZ
   prtool_interposer:
     loc: [0.0, 0.0]
