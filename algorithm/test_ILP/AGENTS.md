@@ -102,11 +102,19 @@ xmake build test_ILP_unit
 ./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192
 ./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192 -s 0 -d 1
 ./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192 -s 1 -d 1
+
+# Interposer::COB_ARRAY_WIDTH == 13 时可直接跑 case7 ，否则需要先改成13再跑 case7
 ./output/test_ILP test/config/case7 -v
 ./output/test_ILP test/config/case7 -v -o output/case7_run
 ./output/test_ILP test/config/case7 -v --ilp-optimize -L 10
 ./output/test_ILP test/config/case7 -v --ilp-optimize -L 10 --time-limit 2
 ```
+
+**Fixture 约定（与主工程合并后）**：
+
+- 各 case 的 `config.json` 键名仍为 **`reigster_adder`**，文件名为 **`register_adder.json`**。
+- `register_adder.json` 至少含四个 quadrant 键：`botleft_REG0.txt` / `botright_REG1.txt` / `topleft_REG2.txt` / `topright_REG3.txt`（可为 `{}` stub）；否则 `read_config` 会 FATAL。
+- 当前默认 `COB_ARRAY_WIDTH = 13`：右边水平外部端口 `col` 应为 **13**（`col == COB_ARRAY_WIDTH`）。`[flow]` 回归临时改为 12，与本实验无关。
 
 **输出目录**（可选）：`-o DIR` / `--output DIR` 将 `debug.log` 写到 `DIR/debug.log`，并将 `--ilp-optimize` 的 Gurobi 日志写到 `DIR/gurobi/v15_ilp.log`（目录不存在时创建）；省略时分别为 `./debug.log` 与 `./gurobi/v15_ilp.log`。`--sat-log` 的 `./cadical-log` 路径不受 `-o` 影响。
 

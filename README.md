@@ -6,6 +6,8 @@
 
 - [`source/AGENTS.md`](./source/AGENTS.md)：源码概况、目录结构、核心索引与构建/测试入口
 - [`test/AGENTS.md`](./test/AGENTS.md)：测试目录结构与用例格式
+- [`tools/AGENTS.md`](./tools/AGENTS.md)：外围辅助工具
+- [`algorithm/test_ILP/AGENTS.md`](./algorithm/test_ILP/AGENTS.md)：实验性 SAT/ILP 布线（不替代正式 router）
 
 ---
 
@@ -46,11 +48,11 @@ xmake run regression_test
 ### 端到端数据流
 
 ```
-config JSON (+ optional reigster_adder → register_map)
+config JSON (+ optional reigster_adder → register_adder.json → register_map)
   → parse::read_config          # Interposer + BaseDie + RegisterMapConfig
   → algo::build_nets            # Connection → Net / SyncNet
   → algo::place (可选)          # 模拟退火布局
-  → algo::route_nets            # Maze / 增量布线
+  → algo::route_nets            # Maze 布线（v1.0.0 CLI 无增量）
   → parse::output_from_routing_results
   → {output}/regnamecontrolbit_4part/
        botleft_REG0.txt … topright_REG3.txt   # hex address reg_name
@@ -78,9 +80,9 @@ CLI 主流程在 [`source/app/cli/cli.cc`](./source/app/cli/cli.cc)；入口参�
 
 `algo::route_nets`（[`source/algo/router/route_nets.cc`](./source/algo/router/route_nets.cc)）通过命令链（`command_mode/`）组织流程：
 
-**非增量（默认）**：`Sort` → `Resources` → `Route`（`MazeRouteStrategy`，BFS 在 track 图上搜索）
+**非增量（默认，v1.0.0 CLI）**：`Sort` → `Resources` → `Route`（`MazeRouteStrategy`，BFS 在 track 图上搜索）
 
-**增量（`-i/--incremental`）**：`Set_reuse_type` → `Sort` → `Resources` → `Init_recorder` → `Incre_route`（多 cycle 迭代，带代价模型与失败回退）
+**增量**：源码仍在 `source/algo/router/incremental/`，但 v1.0.0 CLI 已拒绝 `-i/--incremental` 与 `-c/--compare`。
 
 ### 输入配置
 
@@ -95,7 +97,7 @@ CLI 主流程在 [`source/app/cli/cli.cc`](./source/app/cli/cli.cc)；入口参�
 | `external_ports.json` | 外部 I/O 端口 |
 | `connections.json` | 线网连接（按 mode / sync 分组） |
 | `01_ports.json` | VDD/GND（pose/nege）端口 |
-| `reigster_adder.json`（或 `register_adder.json`） | 寄存器名 → 地址 map（写出四文件用；由 `config.json` 指向） |
+| `register_adder.json` | 寄存器名 → 地址 map（写出四文件用）；由 `config.json` 的 **`reigster_adder`** 键指向 |
 | `controlbits_<mode>.txt` | （可选、legacy）旧单文件布线结果；读回尚未适配四文件输出 |
 
 Pin 名解析规则、连接器状态机、增量代价模型等细节见 [`source/AGENTS.md`](./source/AGENTS.md)。
@@ -106,17 +108,24 @@ Pin 名解析规则、连接器状态机、增量代价模型等细节见 [`sour
 
 ```
 test/
-├── config/            # 回归测试用例（case1 … case22）
-├── module_test/       # 模块级单元测试
-├── regression_test/   # 端到端回归（Catch2）
-└── transform_format/  # 配置格式转换工具（txt ↔ json）
+├── config/            # 回归用例 case1 … case22（含 case6）
+├── config_3dblox/     # 3DBlox / DEF / LEF 风格测例
+├── module_test/
+│   ├── test_unit/     # module_test 全部 C++ 源（xmake: test_unit/**.cc）
+│   ├── test_writer/   # writer golden cases + run_case.sh 等脚本（无 .cc）
+│   └── test_function/ # 线长/bbox 等数据集（不链入 module_test）
+├── regression_test/   # Catch2 端到端 + [flow]
+└── transform_format/  # txt ↔ json
 ```
+
+另见实验性 SAT/ILP：[`algorithm/test_ILP/`](./algorithm/test_ILP/)（CaDiCal；见其 `AGENTS.md`）。
 
 ### module_test
 
-对各模块进行隔离测试，入口为 [`test/module_test/test.cc`](./test/module_test/test.cc)。
+入口：[`test/module_test/test_unit/test.cc`](./test/module_test/test_unit/test.cc)。
 
 ```bash
+xmake build PR_tool_cli   # iterative 测试会调用 ./PR_tool_cli
 xmake build module_test
 cd output
 ./module_test <module>    # 或 xmake run module_test <module>
@@ -124,45 +133,39 @@ cd output
 
 | 模块名 | 测试内容 |
 |--------|----------|
-| `cob` | COB 硬件对象 |
-| `tob` | TOB 硬件对象 |
-| `interposer` | Interposer 资源查询 |
-| `router` | 布线逻辑 |
-| `placer` | 布局策略 |
-| `config` | 配置解析 |
-| `comparator` | controlbits 比较 |
-| `path_length` | 路径长度计算 |
-| `debug` | 日志系统 |
-| `all` | 运行上表全部快速测试 |
-| `placer_iteratively [config] [iterations]` | 慢速稳定性测试（放置+布线；默认 case1、100 次；不在 `all` 中） |
-| `router_iteratively [config] [iterations]` | 慢速稳定性测试（仅布线；默认 case1、100 次；不在 `all` 中） |
+| `cob` / `tob` / `interposer` | 硬件对象 |
+| `router` / `placer` / `config` | 布线 / 布局 / 配置解析 |
+| `comparator` / `path_length` / `debug` | 比较器 / 线长 / 日志 |
+| `all` | 上表全部快速测试 |
+| `placer_iteratively [config] [N]` | 放置+布线稳定性（默认 case1、100 次；不在 `all`） |
+| `router_iteratively [config] [N]` | 仅布线稳定性（默认 case1、100 次；不在 `all`） |
+| `writer <case> <path.txt> <out> [mode]` | controlbits 四文件写出（实现：`test_unit/test_writer.cc`） |
 
-`module_test/test_function/` 与 `module_test/test_writer/` 下还有带独立数据集的专项测试（线长、writer、bbox 等），由对应 `*.cc` 编译进 `module_test` target。
+`test_writer/` 下的 case + `check-controlbits-file/scripts/run_case.sh` 编排 kiwi 对比；`test_function/` 提供独立数据集，**不会**编进 `module_test` target。
 
 ### regression_test
-
-使用 Catch2，在 [`test/regression_test/`](./test/regression_test/) 中按场景组织：
 
 | 文件 | 标签 | 内容 |
 |------|------|------|
 | `test.cc` | `[basic]` `[CPU_MEM_AI]` `[CPU_MEM]` `[AI_core]` | 读配置 → build_nets → route，校验总线长 ≤ `golden.txt` |
-| `incremental_test.cc` | `[incremental]` | 增量布线统计与循环测试 |
-| `flow_test.cc` | `[flow]` | 编排：COB=12 → rebuild → case5 布局/布线×10 → writer test1–5 |
+| `incremental_test.cc` | `[incremental]` | 增量布线统计（默认 Catch 排除，需显式标签） |
+| `flow_test.cc` | `[flow]` | COB=12 → rebuild → case5 布局/布线×10 → writer test1–5 |
 
 ```bash
 xmake build regression_test
 cd output
 ./regression_test              # 全部场景
-./regression_test "[basic]"    # 仅运行指定标签
+./regression_test "[flow]"     # 产品流回归
+./regression_test "[basic]"    # 仅指定标签
 ```
 
 Linux 上需确保 `CONDA_PREFIX` 指向已安装 Catch2 的环境。
 
 ### 回归用例（`test/config/`）
 
-目前共 **22** 个 case 目录（无 case6）。每个 case 通常含输入 JSON、`golden.txt`（期望总线长上界）及 `description.txt`。
+目前共 **22** 个 case 目录（`case1` … `case22`，**含 case6**）。每个 case 通常含输入 JSON、`register_adder.json`、`golden.txt`（期望总线长上界）及 `description.txt`。
 
-#### case 1–5：基础功能（Muyan 小规模）
+#### case 1–6：基础功能（Muyan 小规模）
 
 | case | 说明 |
 |:----:|------|
@@ -170,7 +173,8 @@ Linux 上需确保 `CONDA_PREFIX` 指向已安装 Catch2 的环境。
 | [case2](./test/config/case2) | 同步线 + 额外非同步线，测试 bump 复用 |
 | [case3](./test/config/case3) | 仅非同步线布线 |
 | [case4](./test/config/case4) | 含 VDD/GND、更多线网（回归中暂未启用） |
-| [case5](./test/config/case5) | 更多连接 |
+| [case5](./test/config/case5) | 更多连接；`[flow]` 默认布局/布线用例 |
+| [case6](./test/config/case6) | 扩展基础用例 |
 
 #### case 7–9：CPU–AI–MEM 芯粒系统
 
@@ -239,14 +243,14 @@ xmake run PR_tool -g
 
 `tools/` 与 `test/transform_format/` 提供辅助程序。正式产品输出由 Writer 写四文件；`split_regs.py` 仅 legacy 旧单文件离线拆分（详见 [`tools/AGENTS.md`](./tools/AGENTS.md)）。
 
-| target | 说明 |
+| target / 脚本 | 说明 |
 |--------|------|
 | `cobmap` | 计算 COB 端口映射 |
-| `view2d` | 加载配置、执行 P&R、2D 可视化 |
-| `view3d` | 加载配置、执行 P&R、3D 可视化 |
+| `view2d` / `view3d` | 加载配置、执行 P&R、可视化 |
 | `parse_controlbits` | 解析旧单文件 controlbits（读回未跟四文件） |
-| `txt2json` | 旧版 txt 配置转 JSON |
-| `json2txt` | JSON 配置转旧版 txt 连接格式 |
+| `txt2json` / `json2txt` | 旧版 txt ↔ JSON |
+| `convert_prtool_configs_to_3dblox.py` | JSON case → 3DBlox 相关文件 |
+| `vis_sat/` | SAT 路径可视化（配合 `test_ILP`） |
 
 ```bash
 xmake build view2d
@@ -259,7 +263,7 @@ xmake run view2d <config_folder>
 
 | 目录 | 说明 |
 |------|------|
-| [`algorithm/`](./algorithm/) | 算法实验与原型（增量布线、ILP 等），非主程序依赖 |
+| [`algorithm/test_ILP/`](./algorithm/test_ILP/) | 实验性统一图 SAT（+可选 ILP）布线；`xmake build test_ILP` |
 | [`document/`](./document/) | 项目文档 |
 | [`resource/`](./resource/) | Qt GUI 资源 |
 | [`tools/`](./tools/) | 独立工具源码 |
@@ -271,10 +275,8 @@ xmake run view2d <config_folder>
 
 | 分支 | 说明 |
 |------|------|
-| `master` | 主开发线；algo 部分采用命令模式框架 |
-| `version_before_commands` | 旧版完整布线流程，不支持增量布线 |
-| `dev.incre_no_sharing` | 增量布线：失败时不共享资源 |
-| `dev.algo` / `dev.linux` | 平台与算法开发分支 |
-| `fix.controlbits` | controlbits 相关修复 |
+| `master` | 主开发线 |
+| `fix.controlbits` | controlbits / CLI / writer 修复线（已合入 `test_ILP` 与 `test_unit` 布局） |
+| `dev.algo_SAT_MCF_latest` 等 | 算法实验历史分支 |
 
-增量布线的高层流程（多 cycle 迭代、按 reuse frequency 排序、失败回退）见 `algorithm/incremental_routing/` 下的实验记录；生产实现位于 `source/algo/router/incremental/`。
+生产布局布线实现位于 `source/algo/`；SAT/ILP 实验不替代正式 router。

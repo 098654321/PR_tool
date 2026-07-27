@@ -26,13 +26,8 @@ output
 **/__pycache__/
 schedule*
 
-/test/EDA_case
-
 .VSCodeCounter/*
 
-local/
-local/*
-third/
 third_party/cadical/
 
 # Writer golden-check local artifacts (per case)
@@ -40,4 +35,4 @@ third_party/cadical/
 
 # check-controlbits-file: track SKILL + scripts + references; ignore caches only
 /test/module_test/test_writer/check-controlbits-file/**/__pycache__/
-/tools/vis_sat/
+/tools/vis_sat/*.png
