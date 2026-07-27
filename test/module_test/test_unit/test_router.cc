@@ -28,7 +28,8 @@ static void test_route_bump_to_bump_net() {
     auto end_bump = i.get_bump(0, 1, 4).value();
     const auto mode_set1 = std::HashSet<int>{0};
     auto name1 = std::string("test_net1");
-    auto net1 = BumpToBumpNet{begin_bump, end_bump, mode_set1, name1};
+    auto uid1 = std::string("test_net1_uid");
+    auto net1 = BumpToBumpNet{begin_bump, end_bump, mode_set1, name1, uid1};
 
     router.route_bump_to_bump_net(&i, &net1);
 
@@ -46,7 +47,8 @@ static void test_route_bump_to_bump_net() {
     end_bump = i.get_bump(2, 1, 39).value();
     const auto mode_set2 = std::HashSet<int>{0};    
     auto name2 = std::string("test_net2");
-    auto net2 = BumpToBumpNet{begin_bump, end_bump, mode_set2, name2};
+    auto uid2 = std::string("test_net2_uid");
+    auto net2 = BumpToBumpNet{begin_bump, end_bump, mode_set2, name2, uid2};
 
     router.route_bump_to_bump_net(&i, &net2);
 
@@ -64,7 +66,8 @@ static void test_route_bump_to_bump_net() {
     end_bump = i.get_bump(2, 3, 78).value();
     const auto mode_set3 = std::HashSet<int>{0};
     auto name3 = std::string("test_net3");
-    auto net3 = BumpToBumpNet{begin_bump, end_bump, mode_set3, name3};
+    auto uid3 = std::string("test_net3_uid");
+    auto net3 = BumpToBumpNet{begin_bump, end_bump, mode_set3, name3, uid3};
 
     router.route_bump_to_bump_net(&i, &net3);
 
@@ -88,7 +91,8 @@ static void test_route_track_to_bump_net() {
     auto end_bump = i.get_bump(0, 1, 4).value();
     const auto mode_set1 = std::HashSet<int>{0};
     auto name1 = std::string("test_net1");
-    auto net1 = TrackToBumpNet{begin_track, end_bump, mode_set1, name1};
+    auto uid1 = std::string("test_net1_uid");
+    auto net1 = TrackToBumpNet{begin_track, end_bump, mode_set1, name1, uid1};
 
     router.route_track_to_bump_net(&i, &net1);
 
@@ -105,7 +109,8 @@ static void test_route_track_to_bump_net() {
     end_bump = i.get_bump(2, 3, 117).value();
     const auto mode_set2 = std::HashSet<int>{0};
     auto name2 = std::string("test_net2");
-    auto net2 = TrackToBumpNet{begin_track, end_bump, mode_set2, name2};
+    auto uid2 = std::string("test_net2_uid");
+    auto net2 = TrackToBumpNet{begin_track, end_bump, mode_set2, name2, uid2};
 
     router.route_track_to_bump_net(&i, &net2);
 
@@ -122,7 +127,8 @@ static void test_route_track_to_bump_net() {
     end_bump = i.get_bump(1, 1, 25).value();
     const auto mode_set3 = std::HashSet<int>{0};
     auto name3 = std::string("test_net3");
-    auto net3 = TrackToBumpNet{begin_track, end_bump, mode_set3, name3};
+    auto uid3 = std::string("test_net3_uid");
+    auto net3 = TrackToBumpNet{begin_track, end_bump, mode_set3, name3, uid3};
 
     router.route_track_to_bump_net(&i, &net3);
 
@@ -145,7 +151,8 @@ static void test_route_bump_to_track_net() {
     auto end_track = i.get_track(1, 3, TrackDirection::Horizontal, 0).value();
     const auto mode_set1 = std::HashSet<int>{0};
     auto name1 = std::string("test_net1");
-    auto net1 = BumpToTrackNet{begin_bump, end_track, mode_set1, name1};
+    auto uid1 = std::string("test_net1_uid");
+    auto net1 = BumpToTrackNet{begin_bump, end_track, mode_set1, name1, uid1};
 
     router.route_bump_to_track_net(&i, &net1);
 
@@ -164,7 +171,8 @@ static void test_route_bump_to_track_net() {
     end_track = i.get_track(1, 2, TrackDirection::Vertical, 117).value();
     const auto mode_set2 = std::HashSet<int>{0};
     auto name2 = std::string("test_net2");
-    auto net2 = BumpToTrackNet{begin_bump, end_track, mode_set2, name2};
+    auto uid2 = std::string("test_net2_uid");
+    auto net2 = BumpToTrackNet{begin_bump, end_track, mode_set2, name2, uid2};
 
     router.route_bump_to_track_net(&i, &net2);
 
@@ -182,7 +190,8 @@ static void test_route_bump_to_track_net() {
     end_track = i.get_track(5, 11, TrackDirection::Horizontal, 39).value();
     const auto mode_set3 = std::HashSet<int>{0};
     auto name3 = std::string("test_net3");
-    auto net3 = BumpToTrackNet{begin_bump, end_track, mode_set3, name3};
+    auto uid3 = std::string("test_net3_uid");
+    auto net3 = BumpToTrackNet{begin_bump, end_track, mode_set3, name3, uid3};
 
     router.route_bump_to_track_net(&i, &net3);
 
@@ -212,7 +221,8 @@ static void test_route_bump_to_bumps_net() {
     i.get_track(0, 0, TrackDirection::Vertical, 45);
     const auto mode_set1 = std::HashSet<int>{0};
     auto name1 = std::string("test_net1");
-    auto net1 = BumpToBumpsNet{begin_bump, std::move(end_bumps), mode_set1, name1};
+    auto uid1 = std::string("test_net1_uid");
+    auto net1 = BumpToBumpsNet{begin_bump, std::move(end_bumps), mode_set1, name1, uid1};
 
     router.route_bump_to_bumps_net(&i, &net1);
 
@@ -243,7 +253,8 @@ static void test_route_track_to_bumps_net() {
     i.get_track(0, 0, TrackDirection::Vertical, 45);
     const auto mode_set1 = std::HashSet<int>{0};
     auto name1 = std::string("test_net1");
-    auto net1 = TrackToBumpsNet{begin_track, std::move(end_bumps), mode_set1, name1};
+    auto uid1 = std::string("test_net1_uid");
+    auto net1 = TrackToBumpsNet{begin_track, std::move(end_bumps), mode_set1, name1, uid1};
 
     router.route_track_to_bumps_net(&i, &net1);
 
@@ -271,7 +282,8 @@ static void test_route_bump_to_tracks_net() {
     // i.get_track(0, 0, TrackDirection::Vertical, 45);
     const auto mode_set1 = std::HashSet<int>{0};
     auto name1 = std::string("test_net1");
-    auto net1 = BumpToTracksNet{begin_bump, std::move(end_tracks), mode_set1, name1};
+    auto uid1 = std::string("test_net1_uid");
+    auto net1 = BumpToTracksNet{begin_bump, std::move(end_tracks), mode_set1, name1, uid1};
 
     router.route_bump_to_tracks_net(&i, &net1);
     
@@ -308,17 +320,22 @@ static void test_route_bump_to_bump_sync_net(){
 
     const auto mode_set1 = std::HashSet<int>{0};
     auto name1 = std::string("test_net1");
+    auto uid1 = std::string("test_net1_uid");
+    auto uid2 = std::string("test_net2_uid");
+    auto uid3 = std::string("test_net3_uid");
+    auto uid4 = std::string("test_net4_uid");
+    auto uid_sync = std::string("test_sync_uid");
     std::Vector<std::shared_ptr<BumpToBumpNet>> btbnets {};
     std::Vector<std::shared_ptr<BumpToTrackNet>> bttnets {};
     std::Vector<std::shared_ptr<TrackToBumpNet>> ttbnets {};
 
-    btbnets.emplace_back(std::move(std::make_shared<BumpToBumpNet>(begin_bump1, end_bump1, mode_set1, name1)));
-    btbnets.emplace_back(std::move(std::make_shared<BumpToBumpNet>(begin_bump2, end_bump2, mode_set1, name1)));
-    bttnets.emplace_back(std::move(std::make_shared<BumpToTrackNet>(begin_bump3, end_track3, mode_set1, name1)));
-    ttbnets.emplace_back(std::move(std::make_shared<TrackToBumpNet>(begin_track4, end_bump4, mode_set1, name1)));
+    btbnets.emplace_back(std::move(std::make_shared<BumpToBumpNet>(begin_bump1, end_bump1, mode_set1, name1, uid1)));
+    btbnets.emplace_back(std::move(std::make_shared<BumpToBumpNet>(begin_bump2, end_bump2, mode_set1, name1, uid2)));
+    bttnets.emplace_back(std::move(std::make_shared<BumpToTrackNet>(begin_bump3, end_track3, mode_set1, name1, uid3)));
+    ttbnets.emplace_back(std::move(std::make_shared<TrackToBumpNet>(begin_track4, end_bump4, mode_set1, name1, uid4)));
 
 
-    SyncNet snet {std::move(btbnets), std::move(bttnets), std::move(ttbnets), mode_set1, name1};
+    SyncNet snet {std::move(btbnets), std::move(bttnets), std::move(ttbnets), mode_set1, name1, uid_sync};
     router.route_sync_net(&interposer, &snet);
     
     debug::debug("show net1 path:(length:)");

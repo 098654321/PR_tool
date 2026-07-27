@@ -117,8 +117,8 @@ target("module_test")
     set_default(false)
     add_deps("PR_tool_cli")
     -- add_packages("xlnt")
-    add_includedirs("source", "source/global", "test/module_test")
-    add_files("test/module_test/**.cc")
+    add_includedirs("source", "source/global", "test/module_test", "test/module_test/test_unit")
+    add_files("test/module_test/test_unit/**.cc")
     add_files(
         "source/algo/**.cc",
         "source/circuit/**.cc",

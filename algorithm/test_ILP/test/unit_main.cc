@@ -3332,7 +3332,7 @@ auto read_wirelength_golden(const std::string& golden_path) -> std::size_t {
 }
 
 auto solve_testlength_case(const std::string& case_dir) -> SatRoutingResult {
-    auto [interposer, basedie] = parse::read_config(case_dir, 0, false);
+    auto [interposer, basedie, register_map] = parse::read_config(case_dir, 0, false);
     algo::build_nets(basedie.get(), interposer.get());
     UnifiedSatSolveOptions options {};
     options.verbose_level = 0;

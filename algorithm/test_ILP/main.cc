@@ -57,7 +57,7 @@ auto run_main(int argc, char** argv) -> int {
     std::filesystem::create_directories(log_dir);
     debug::initial_log(log_dir / "debug.log");
 
-    auto [interposer, basedie] = PR_tool::parse::read_config(cli.config_path, 0, false);
+    auto [interposer, basedie, register_map] = PR_tool::parse::read_config(cli.config_path, 0, false);
     algo::build_nets(basedie.get(), interposer.get());
 
     UnifiedSatSolveOptions options {};

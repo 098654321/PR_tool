@@ -541,7 +541,7 @@ auto validate_routing_solution(
         if (pair != nullptr) {
             const int path_delay =
                 static_cast<int>(path.node_path.size()) - 1 + delay_offset;
-            if (!std::ranges::contains(pair->delays, path_delay)) {
+            if (std::find(pair->delays.begin(), pair->delays.end(), path_delay) == pair->delays.end()) {
                 add_violation(
                     report,
                     ViolationKind::DelayReplayMismatch,
