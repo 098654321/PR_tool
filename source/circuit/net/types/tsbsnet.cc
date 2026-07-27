@@ -7,8 +7,8 @@
 
 namespace PR_tool::circuit {
 
-    TracksToBumpsNet::TracksToBumpsNet(std::Vector<hardware::Track*> begin_tracks, std::Vector<hardware::Bump*> end_bumps, const std::HashSet<int>& modes, std::String& name):
-        _begin_tracks{begin_tracks}, _end_bumps{end_bumps}, Net{Priority{5}, modes, name}
+    TracksToBumpsNet::TracksToBumpsNet(std::Vector<hardware::Track*> begin_tracks, std::Vector<hardware::Bump*> end_bumps, const std::HashSet<int>& modes, std::String& name, std::String& uid):
+        _begin_tracks{begin_tracks}, _end_bumps{end_bumps}, Net{Priority{5}, modes, name, uid}
     {
 
     }

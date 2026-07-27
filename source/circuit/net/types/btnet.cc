@@ -6,10 +6,10 @@
 
 namespace PR_tool::circuit {
 
-    BumpToTrackNet::BumpToTrackNet(hardware::Bump* begin_bump, hardware::Track* end_track, const std::HashSet<int>& modes, std::String& name) :
+    BumpToTrackNet::BumpToTrackNet(hardware::Bump* begin_bump, hardware::Track* end_track, const std::HashSet<int>& modes, std::String& name, std::String& uid) :
         _begin_bump{begin_bump},
         _end_track{end_track},
-        Net{Priority{3}, modes, name}
+        Net{Priority{3}, modes, name, uid}
     {
     }
 

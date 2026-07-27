@@ -1,0 +1,38 @@
+Header:
+  version: "3.0"
+  unit: micron
+  precision: 1000
+
+ChipletDef:
+  PRTOOL_INTERPOSER:
+    type: rdl
+    design_area: [7300.0, 5500.0]
+    shrink: 1.0
+    tsv: false
+    thickness: 50.0
+    offset: [0.0, 0.0]
+    regions:
+      front:
+        side: front
+        coords: [[0.0, 0.0], [7300.0, 0.0], [7300.0, 5500.0], [0.0, 5500.0]]
+        layer: metal1
+    external:
+      APR_tech_file: [case6_tech.lef]
+      LEF_file: [case6_interposer_macros.lef]
+      DEF_file: case6_interposer.def
+  muyan:
+    type: die
+    design_area: [400.0, 200.0]
+    shrink: 1.0
+    tsv: false
+    thickness: 20.0
+    offset: [0.0, 0.0]
+    regions:
+      front:
+        side: front
+        coords: [[0.0, 0.0], [400.0, 0.0], [400.0, 200.0], [0.0, 200.0]]
+        bmap: bmaps/muyan.bmap
+        layer: metal1
+    external:
+      APR_tech_file: [case6_tech.lef]
+      LEF_file: [case6_bump.lef]

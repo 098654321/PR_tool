@@ -3,6 +3,8 @@
 
 # Xmake cache
 .xmake/
+.plan
+.cursor
 build/
 .plan/
 .cursor/
@@ -14,6 +16,7 @@ build/
 compile_commands.json
 
 *.log
+gurobi-log/
 
 output
 
@@ -28,7 +31,9 @@ schedule*
 .VSCodeCounter/*
 
 local/
+local/*
 third/
+third_party/cadical/
 
 # Writer golden-check local artifacts (per case)
 /test/module_test/test_writer/*/check_run/

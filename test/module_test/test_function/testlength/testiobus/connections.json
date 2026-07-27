@@ -1,0 +1,20 @@
+{
+    "5": [
+        [
+            "xinzhai_spi_s_sck_1",
+            "muyan_0.spi_s_sck_1"
+        ],
+        [
+            "xinzhai_spi_s_csn_1",
+            "muyan_0.spi_s_csn_1"
+        ],
+        [
+            "xinzhai_spi_s_dout_1",
+            "muyan_0.spi_s_din_1"
+        ],
+        [
+            "muyan_0.spi_s_dout_1",
+            "xinzhai_spi_s_din_1"
+        ]
+    ]
+}

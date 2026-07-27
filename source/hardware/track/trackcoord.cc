@@ -20,13 +20,13 @@ namespace PR_tool::hardware {
                 this->index == other.index;
     }
 
-    bool TrackCoord::operator < (const TrackCoord& other) const 
-    {
-        return this->row > other.row ? false : \
-                this->row < other.row ? true : \
-                this->col > other.col ? false: \
-                this->col < other.col ? true : \
-                this->index >= other.index ? false : true;
+    bool TrackCoord::operator<(const TrackCoord& other) const {
+        if (row != other.row) return row < other.row;
+        if (col != other.col) return col < other.col;
+        if (dir != other.dir) {
+            return static_cast<int>(dir) < static_cast<int>(other.dir);
+        }
+        return index < other.index;
     }
 
     auto TrackCoord::to_string() const -> std::String {

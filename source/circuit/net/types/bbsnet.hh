@@ -14,7 +14,7 @@ namespace PR_tool::circuit {
 
     class BumpToBumpsNet : public Net {
     public:
-        BumpToBumpsNet(hardware::Bump* begin_bump, std::Vector<hardware::Bump*> end_bumps, const std::HashSet<int>& modes, std::String& name);
+        BumpToBumpsNet(hardware::Bump* begin_bump, std::Vector<hardware::Bump*> end_bumps, const std::HashSet<int>& modes, std::String& name, std::String& uid);
         virtual ~BumpToBumpsNet() noexcept override;
     
     public:

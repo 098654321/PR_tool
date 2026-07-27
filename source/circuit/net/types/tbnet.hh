@@ -14,7 +14,7 @@ namespace PR_tool::circuit {
 
     class TrackToBumpNet : public Net {
     public:
-        TrackToBumpNet(hardware::Track* begin_track, hardware::Bump* end_bump, const std::HashSet<int>& modes, std::String& name);
+        TrackToBumpNet(hardware::Track* begin_track, hardware::Bump* end_bump, const std::HashSet<int>& modes, std::String& name, std::String& uid);
         virtual ~TrackToBumpNet() noexcept override;
     
     public:

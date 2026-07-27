@@ -1,0 +1,22 @@
+a complete case with more nets & IO, including positive/negative ports
+
+case7 with 9*12 COB array on the interposer
+
+TOB = 4 * 4
+COB array = 9 * 12
+
+
+五类互连统计：
+1. chiplet -> 0/1 port: 49 根（49个bump，nege25 + pose24）
+2. chiplet与I/O port之间的bus：3根，位宽4bit
+3. chiplet之间的bus：
+    - 12bit位宽：15根
+    - 20bit位宽：15根
+4. chiplet与I/O port之间的普通互连：39根
+5. chiplet之间的普通互连：0根
+
+I/O端口数量：83个
+0/1端口数量：
+    - 0端口：12个
+    - 1端口：12个
+

@@ -1,0 +1,28 @@
+{
+    "1": [
+        [
+            "muyan_1.s_tx_flit_b0",
+            "muyan_0.m_rx_flit_b0"
+        ],
+        [
+            "muyan_1.s_tx_flit_b1",
+            "muyan_0.m_rx_flit_b1"
+        ],
+        [
+            "muyan_1.s_tx_flit_b2",
+            "muyan_0.m_rx_flit_b2"
+        ],
+        [
+            "muyan_1.s_tx_flit_b3",
+            "muyan_0.m_rx_flit_b3"
+        ],
+        [
+            "muyan_1.s_tx_flit_b4",
+            "muyan_0.m_rx_flit_b4"
+        ],
+        [
+            "muyan_1.s_tx_flit_b5",
+            "muyan_0.m_rx_flit_b5"
+        ]
+    ]
+}
