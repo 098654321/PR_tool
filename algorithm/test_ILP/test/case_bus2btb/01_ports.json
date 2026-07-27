@@ -1,5 +1,5 @@
 {
-    "pose":{
+    "pose": {
         "1": {
             "dir": "vert",
             "row": 0,
@@ -51,29 +51,29 @@
         "9": {
             "dir": "hori",
             "row": 4,
-            "col": 12,
+            "col": 13,
             "index": 108
         },
         "10": {
             "dir": "hori",
             "row": 4,
-            "col": 12,
+            "col": 13,
             "index": 101
         },
         "11": {
             "dir": "hori",
             "row": 4,
-            "col": 12,
+            "col": 13,
             "index": 94
         },
         "12": {
             "dir": "hori",
             "row": 4,
-            "col": 12,
+            "col": 13,
             "index": 87
         }
     },
-    "nege":{
+    "nege": {
         "1": {
             "dir": "vert",
             "row": 0,
@@ -125,25 +125,25 @@
         "9": {
             "dir": "hori",
             "row": 4,
-            "col": 12,
+            "col": 13,
             "index": 91
         },
         "10": {
             "dir": "hori",
             "row": 4,
-            "col": 12,
+            "col": 13,
             "index": 84
         },
         "11": {
             "dir": "hori",
             "row": 4,
-            "col": 12,
+            "col": 13,
             "index": 77
         },
         "12": {
             "dir": "hori",
             "row": 4,
-            "col": 12,
+            "col": 13,
             "index": 70
         }
     }
