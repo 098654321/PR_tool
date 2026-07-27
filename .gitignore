@@ -36,3 +36,4 @@ third_party/cadical/
 # check-controlbits-file: track SKILL + scripts + references; ignore caches only
 /test/module_test/test_writer/check-controlbits-file/**/__pycache__/
 /tools/vis_sat/*.png
+docs/
