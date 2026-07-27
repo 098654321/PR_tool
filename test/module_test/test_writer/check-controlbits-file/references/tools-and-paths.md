@@ -63,7 +63,7 @@ Pin names ending with `nege` / `pose` (e.g. `xinzhai_nege`) map like Reader (`en
 | Script | Role |
 |--------|------|
 | `scripts/run_case.sh` | Full pipeline for one case |
-| `scripts/test_writer.cc` | Built into `module_test` via `test/module_test/**.cc` |
+| `test/module_test/test_unit/test_writer.cc` | Built into `module_test` via `test/module_test/test_unit/**.cc` |
 | `scripts/compare_controlbits.py` | Golden vs PR four-file compare |
 | `scripts/trans_path_old2new.py` | Path coord convert |
 | `scripts/verify_simplify_split.py` | T1 full vs simplified |

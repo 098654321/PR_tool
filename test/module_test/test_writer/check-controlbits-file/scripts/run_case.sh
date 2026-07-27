@@ -69,6 +69,7 @@ python3 "$SCRIPT_DIR/trans_path_old2new.py" \
   -o "$CHECK/net_path_info_new.txt"
 
 echo "==> [5/6] module_test writer (full, no -s)"
+# Writer implementation: test/module_test/test_unit/test_writer.cc (linked into module_test)
 if [[ ! -x "$MODULE_TEST" ]]; then
   echo "error: module_test not found: $MODULE_TEST" >&2
   exit 1
