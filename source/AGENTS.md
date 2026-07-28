@@ -47,7 +47,7 @@ source/
   serde/        # 序列化 / 反序列化宏
 ```
 
-更细的树与配置格式见仓库根目录 `README.md`。默认 `Interposer::COB_ARRAY_WIDTH = 13`；`test/config` 用例可能要求 12 或 13（见 `test/AGENTS.md`）。
+更细的树与配置格式见仓库根目录 `README.md`。默认 `Interposer::COB_ARRAY_WIDTH = 12`；`test/config` 用例可能要求 12 或 13（见 `test/AGENTS.md`）。
 
 ---
 
