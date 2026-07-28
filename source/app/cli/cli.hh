@@ -1,5 +1,6 @@
 #pragma once
 
+#include "algo/router/backend/route_status.hh"
 #include "std/string.hh"
 #include "std/utility.hh"
 #include "std/file.hh"
@@ -18,12 +19,6 @@ namespace PR_tool::circuit {
 
 
 namespace PR_tool {
-
-    enum class RouteStatus {
-        Skipped,
-        Ok,
-        Failed,
-    };
 
     auto cli_main(
         std::StringView config_path, std::Option<std::StringView> output_path, 
