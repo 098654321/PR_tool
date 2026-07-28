@@ -17,6 +17,7 @@
 #include <debug/debug.hh>
 #include <debug/exception.hh>
 #include <std/algorithm.hh>
+#include <filesystem>
 
 namespace PR_tool {
 
@@ -28,8 +29,12 @@ namespace PR_tool {
         const algo::SatRouterCliOptions& sat_opts
     ) -> int {
     try {
-        debug::initial_log("./debug.log");
         std::FilePath output_file = std::FilePath(output_path.has_value() ? *output_path : ".");
+        std::filesystem::create_directories(output_file.string());
+        debug::initial_log(output_file / "debug.log");
+
+        algo::SatRouterCliOptions effective_sat_opts = sat_opts;
+        effective_sat_opts.gurobi_log_dir = (output_file / "gurobi").string();
 
         auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, mode, try_all_modes); 
         algo::build_nets(basedie.get(), interposer.get());
@@ -48,7 +53,7 @@ namespace PR_tool {
         
         auto route_status = route(
             interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes,
-            router_kind, sat_opts
+            router_kind, effective_sat_opts
         );
         if (route_status == RouteStatus::Failed) {
             return 1;

@@ -228,6 +228,20 @@ auto parse_router_and_sat_options(
 
         console::print_with_color("\t--router maze|sat           ", Color::Cyan);
         console::println("Router backend (default: maze).");
+
+        console::println_with_color("SAT router flags (--router sat):", Color::Green);
+        console::print_with_color("\t--scope-pad N               ", Color::Cyan);
+        console::println("Initial pair bbox padding (default 0).");
+        console::print_with_color("\t--delay-pad N, -d N         ", Color::Cyan);
+        console::println("Initial delay padding (default 0).");
+        console::print_with_color("\t--sat-log                   ", Color::Cyan);
+        console::println("Enable CaDiCal solver logs (./cadical-log).");
+        console::print_with_color("\t--max-rss-mb N              ", Color::Cyan);
+        console::println("Peak RSS limit in MB for CaDiCal.");
+        console::print_with_color("\t--ilp-optimize -L percent     ", Color::Cyan);
+        console::println("Optional v15 Gurobi wirelength optimization.");
+        console::print_with_color("\t-R pad, --time-limit hours  ", Color::Cyan);
+        console::println("ILP segment bbox pad / Gurobi time limit.");
     }
 
     auto print_verion() -> void {
