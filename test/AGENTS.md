@@ -27,7 +27,7 @@ test/
 *   **`module_test/test_unit/`**: Unit / iterative / writer C++ entrypoints.
     *   Dispatcher: `test_unit/test.cc` → `./module_test <name>`.
     *   Fast: `cob` `tob` `interposer` `router` `placer` `config` `comparator` `path_length` `debug` `all`.
-    *   Slow (not in `all`): `placer_iteratively` / `router_iteratively` (spawn `./PR_tool_cli`).
+    *   Slow (not in `all`): `placer_iteratively` / `router_iteratively` / `sat_ilp` (spawn `./PR_tool_cli` or unified SAT).
     *   Writer: `./module_test writer <case_dir> <net_path_info_new.txt> <output_dir> [mode]` — implementation in `test_unit/test_writer.cc`.
 *   **`module_test/test_writer/`**: Cases `test1`…`test5` + `check-controlbits-file/` scripts.
     *   Pipeline: `run_case.sh` → json2txt → kiwi golden → path convert → `module_test writer` → `compare_controlbits.py`.

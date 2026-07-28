@@ -21,6 +21,7 @@ extern void test_path_length_main();
 extern void test_placer_iteratively_main(int argc, char** argv);
 extern void test_router_iteratively_main(int argc, char** argv);
 extern void test_writer_main(int argc, char** argv);
+extern void test_sat_ilp_main();
 
 #define REGISTER_TEST(test_name)\
 functions.emplace(#test_name, & test_##test_name##_main);\
@@ -64,6 +65,12 @@ try {
     if (target == "router_iteratively") {
         PR_tool::console::println_fmt("Run test 'router_iteratively'");
         test_router_iteratively_main(argc, argv);
+        return 0;
+    }
+
+    if (target == "sat_ilp") {
+        PR_tool::console::println_fmt("Run test 'sat_ilp'");
+        test_sat_ilp_main();
         return 0;
     }
 
