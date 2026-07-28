@@ -23,7 +23,9 @@ namespace PR_tool {
     auto cli_main(
         std::StringView config_path, std::Option<std::StringView> output_path, 
         int mode, std::optional<int> compare, bool try_all_modes, bool placement,
-        bool simplify_controlbits
+        bool simplify_controlbits,
+        algo::RouterKind router_kind,
+        const algo::SatRouterCliOptions& sat_opts
     ) -> int {
     try {
         debug::initial_log("./debug.log");
@@ -44,7 +46,10 @@ namespace PR_tool {
             place(interposer.get(), basedie.get(), topdies);
         }
         
-        auto route_status = route(interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes);
+        auto route_status = route(
+            interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes,
+            router_kind, sat_opts
+        );
         if (route_status == RouteStatus::Failed) {
             return 1;
         }
@@ -86,10 +91,13 @@ debug::info_fmt("Layout time: {} milliseconds", duration.count());
     auto route(
         PR_tool::hardware::Interposer* interposer, PR_tool::circuit::BaseDie* basedie,
         std::StringView config_path,
-        int mode, std::optional<int> compare, bool try_all_modes
+        int mode, std::optional<int> compare, bool try_all_modes,
+        algo::RouterKind router_kind,
+        const algo::SatRouterCliOptions& sat_opts
     ) -> RouteStatus {
         algo::RouterOptions options;
-        options.kind = algo::RouterKind::Maze;
+        options.kind = router_kind;
+        options.sat = sat_opts;
         options.mode = mode;
         options.try_all_modes = try_all_modes;
         options.compare = compare;

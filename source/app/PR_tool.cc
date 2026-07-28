@@ -4,9 +4,12 @@
 #include "gui/gui.hh"
 #endif
 
+#include "algo/router/backend/router_backend.hh"
 #include "debug/console.hh"
 #include "std/integer.hh"
 #include "std/utility.hh"
+#include <charconv>
+#include <cmath>
 #include <std/collection.hh>
 #include <std/range.hh>
 #include <std/string.hh>
@@ -18,6 +21,172 @@
 #endif
 
 namespace PR_tool {
+
+namespace {
+
+auto parse_non_negative_int(std::StringView value, const char* option_name) -> int {
+    int parsed = 0;
+    const auto [end, error] =
+        std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc {} || end != value.data() + value.size() || parsed < 0) {
+        debug::fatal_fmt("{} requires a non-negative integer argument", option_name);
+    }
+    return parsed;
+}
+
+auto parse_non_negative_double(std::StringView value, const char* option_name) -> double {
+    double parsed = 0.0;
+    const auto [end, error] =
+        std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc {}
+        || end != value.data() + value.size()
+        || !std::isfinite(parsed)
+        || parsed < 0.0) {
+        debug::fatal_fmt("{} requires a non-negative finite number", option_name);
+    }
+    return parsed;
+}
+
+auto parse_positive_double(std::StringView value, const char* option_name) -> double {
+    const auto parsed = parse_non_negative_double(value, option_name);
+    if (parsed <= 0.0) {
+        debug::fatal_fmt("{} requires a positive finite number", option_name);
+    }
+    return parsed;
+}
+
+auto require_next_arg(
+    const std::Vector<std::String>& arguments, std::usize& index, const char* option_name
+) -> std::StringView {
+    if (++index >= arguments.size()) {
+        debug::fatal_fmt("{} requires an argument", option_name);
+    }
+    const auto value = std::StringView {arguments[index]};
+    if (value.empty() || value[0] == '-') {
+        debug::fatal_fmt("{} requires an argument", option_name);
+    }
+    return value;
+}
+
+auto parse_router_and_sat_options(
+    const std::Vector<std::String>& arguments,
+    algo::RouterKind& router_kind,
+    algo::SatRouterCliOptions& sat_opts,
+    bool& any_sat_only_flag
+) -> void {
+    router_kind = algo::RouterKind::Maze;
+    sat_opts = {};
+    any_sat_only_flag = false;
+
+    for (std::usize i = 0; i < arguments.size(); ++i) {
+        const auto arg = std::StringView {arguments[i]};
+        if (arg == "--router") {
+            const auto value = require_next_arg(arguments, i, "--router");
+            if (value == "maze") {
+                router_kind = algo::RouterKind::Maze;
+            } else if (value == "sat") {
+#if !PR_TOOL_HAS_SAT_ROUTER
+                debug::fatal("This build was configured without sat_router");
+#else
+                router_kind = algo::RouterKind::Sat;
+#endif
+            } else {
+                debug::fatal("--router requires maze or sat");
+            }
+            continue;
+        }
+        if (arg == "--scope-pad") {
+            any_sat_only_flag = true;
+            sat_opts.initial_scope_pad =
+                parse_non_negative_int(require_next_arg(arguments, i, "--scope-pad"), "--scope-pad");
+            continue;
+        }
+        if (arg == "--delay-pad") {
+            any_sat_only_flag = true;
+            sat_opts.initial_delay_pad =
+                parse_non_negative_int(require_next_arg(arguments, i, "--delay-pad"), "--delay-pad");
+            continue;
+        }
+        if (arg == "-d") {
+            any_sat_only_flag = true;
+            sat_opts.initial_delay_pad =
+                parse_non_negative_int(require_next_arg(arguments, i, "-d"), "-d");
+            continue;
+        }
+        if (arg == "--sat-log") {
+            any_sat_only_flag = true;
+            sat_opts.enable_sat_log = true;
+            continue;
+        }
+        if (arg == "--max-rss-mb") {
+            any_sat_only_flag = true;
+            const auto value = require_next_arg(arguments, i, "--max-rss-mb");
+            std::size_t parsed = 0;
+            const auto [end, error] =
+                std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (error != std::errc {} || end != value.data() + value.size() || parsed == 0) {
+                debug::fatal("--max-rss-mb requires a positive integer argument");
+            }
+            sat_opts.max_rss_mb = parsed;
+            continue;
+        }
+        if (arg == "--ilp-optimize") {
+            any_sat_only_flag = true;
+            sat_opts.enable_ilp_optimize = true;
+            continue;
+        }
+        if (arg == "-L") {
+            any_sat_only_flag = true;
+            sat_opts.ilp_stretch_threshold_percent =
+                parse_non_negative_double(require_next_arg(arguments, i, "-L"), "-L");
+            continue;
+        }
+        if (arg == "-R") {
+            any_sat_only_flag = true;
+            sat_opts.ilp_segment_bbox_pad =
+                parse_non_negative_int(require_next_arg(arguments, i, "-R"), "-R");
+            continue;
+        }
+        if (arg == "--time-limit") {
+            any_sat_only_flag = true;
+            sat_opts.ilp_time_limit_hours =
+                parse_positive_double(require_next_arg(arguments, i, "--time-limit"), "--time-limit");
+            continue;
+        }
+        if (arg == "-v" || arg == "--verbose") {
+            sat_opts.verbose_level += 1;
+            continue;
+        }
+        if (arg.size() >= 2 && arg[0] == '-' && arg[1] == 'v') {
+            bool all_v = true;
+            for (std::size_t char_index = 1; char_index < arg.size(); ++char_index) {
+                if (arg[char_index] != 'v') {
+                    all_v = false;
+                    break;
+                }
+            }
+            if (all_v) {
+                sat_opts.verbose_level += static_cast<int>(arg.size() - 1);
+                continue;
+            }
+        }
+    }
+
+    if (sat_opts.enable_ilp_optimize && !sat_opts.ilp_stretch_threshold_percent.has_value()) {
+        debug::fatal("--ilp-optimize requires -L <percent>");
+    }
+    if (!sat_opts.enable_ilp_optimize && sat_opts.ilp_stretch_threshold_percent.has_value()) {
+        debug::fatal("-L requires --ilp-optimize");
+    }
+    if (!sat_opts.enable_ilp_optimize && sat_opts.ilp_segment_bbox_pad.has_value()) {
+        debug::fatal("-R requires --ilp-optimize");
+    }
+    if (!sat_opts.enable_ilp_optimize && sat_opts.ilp_time_limit_hours.has_value()) {
+        debug::fatal("--time-limit requires --ilp-optimize");
+    }
+}
+
+} // namespace
 
     auto PR_toollogo = "\
     \t██████╗ ██████╗         ████████╗ ██████╗  ██████╗ ██╗\n\
@@ -56,6 +225,9 @@ namespace PR_tool {
 
         console::print_with_color("\t-s, --simplify-controlbits-file ", Color::Cyan);
         console::println("Omit default-valued registers when writing the four REG files.");
+
+        console::print_with_color("\t--router maze|sat           ", Color::Cyan);
+        console::println("Router backend (default: maze).");
     }
 
     auto print_verion() -> void {
@@ -147,8 +319,17 @@ namespace PR_tool {
                 simplify_controlbits = true;
             }
 
+            algo::RouterKind router_kind = algo::RouterKind::Maze;
+            algo::SatRouterCliOptions sat_opts {};
+            bool any_sat_only_flag = false;
+            parse_router_and_sat_options(arguments, router_kind, sat_opts, any_sat_only_flag);
+            if (router_kind == algo::RouterKind::Maze && any_sat_only_flag) {
+                debug::fatal("SAT-only flags require --router sat");
+            }
+
             return cli_main(arguments[0], std::move(output_path), /*mode=*/0, /*compare=*/std::nullopt,
-                            /*try_all_modes=*/false, placement, simplify_controlbits);
+                            /*try_all_modes=*/false, placement, simplify_controlbits,
+                            router_kind, sat_opts);
         }
 
         return 0;
