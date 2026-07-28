@@ -1,5 +1,6 @@
 #include "sat/routing_feedback.hh"
 
+#include "commit_paths.hh"
 #include "delay/pair_delay_precompute.hh"
 #include "graph/unified_routing_graph.hh"
 #include "ilp_v15/v15_ilp_optimizer.hh"
@@ -328,6 +329,19 @@ auto solve_with_feedback(
                     }
                 }
                 log_feedback_round_end(round, FeedbackRoundStatus::SatSuccess);
+                if (options.commit_to_nets) {
+                    const auto commit = commit_sat_paths_to_nets(
+                        interposer,
+                        basedie,
+                        graph,
+                        nets,
+                        out);
+                    if (!commit.ok) {
+                        out.ok = false;
+                        out.message = commit.message;
+                        debug::error_fmt("SAT commit failed: {}", out.message);
+                    }
+                }
                 return out;
             }
 

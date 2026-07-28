@@ -4,6 +4,10 @@
 #include <algo/router/common/maze/mazeroutestrategy.hh>
 #include <algo/router/common/allocate/hopcroft_karp.hh>
 
+#if PR_TOOL_HAS_SAT_ROUTER
+#include <algo/router/backend/sat_backend.hh>
+#endif
+
 #include <parse/reader/module.hh>
 #include <parse/comparator/controlbits_parser.hh>
 
@@ -85,7 +89,7 @@ auto make_router(RouterKind kind) -> std::unique_ptr<RouterBackend> {
         return std::make_unique<MazeRouterBackend>();
     case RouterKind::Sat:
 #if PR_TOOL_HAS_SAT_ROUTER
-        throw std::runtime_error("sat backend not linked yet");
+        return std::make_unique<SatRouterBackend>();
 #else
         throw std::runtime_error("sat router unsupported");
 #endif
