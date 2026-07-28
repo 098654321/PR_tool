@@ -38,6 +38,10 @@ namespace PR_tool::algo {
         auto build_sync_net(std::Span<const std::Box<circuit::Connection>> connections, int group, int m) -> void;
         auto build_fixed_nets(int m) -> void;
         auto build_01_ports() -> void;
+        auto make_uid_prefix(int mode, int group, std::StringView type_token) const -> std::String;
+        auto bump_uid_token(const hardware::Bump* bump) const -> std::String;
+        auto track_uid_token(const hardware::Track* track) const -> std::String;
+        auto sort_uid_tokens(std::Vector<std::String>& tokens) const -> void;
      
         using Node = std::Variant<hardware::Track*, hardware::Bump*>;
         auto pin_to_node(const circuit::Pin& pin) -> Node;

@@ -125,12 +125,35 @@ namespace PR_tool::algo {
                 auto net_name = std::String{
                     std::format("TrackToBumpNet_from_cob_{}_{}_to_cob_{}_{}_in_group_{}", begin_track->coord().row, begin_track->coord().col, end_bumps[0]->coord().row, end_bumps[0]->coord().col, group)
                 };
-                net = std::make_shared<circuit::TrackToBumpNet>(begin_track, end_bumps[0], std::HashSet<int>{m}, net_name);
+                auto uid = std::format(
+                    "{}:{}->{}",
+                    make_uid_prefix(m, group, "ttb"),
+                    track_uid_token(begin_track),
+                    bump_uid_token(end_bumps[0]));
+                net = std::make_shared<circuit::TrackToBumpNet>(begin_track, end_bumps[0], std::HashSet<int>{m}, net_name, uid);
             } else {
                 auto net_name = std::String{
                     std::format("TrackToBumpsNet_from_cob_{}_{}_in_group_{}_with_{}_ends", coord.row, coord.col, group, end_bumps.size())
                 };
-                net = std::make_shared<circuit::TrackToBumpsNet>(begin_track, std::move(end_bumps), std::HashSet<int>{m}, net_name);
+                auto end_tokens = std::Vector<std::String> {};
+                end_tokens.reserve(end_bumps.size());
+                for (const auto* bump : end_bumps) {
+                    end_tokens.emplace_back(bump_uid_token(bump));
+                }
+                sort_uid_tokens(end_tokens);
+                auto end_part = std::String {};
+                for (std::size_t i = 0; i < end_tokens.size(); ++i) {
+                    if (i != 0) {
+                        end_part += ",";
+                    }
+                    end_part += end_tokens[i];
+                }
+                auto uid = std::format(
+                    "{}:{}->{}",
+                    make_uid_prefix(m, group, "ttbs"),
+                    track_uid_token(begin_track),
+                    end_part);
+                net = std::make_shared<circuit::TrackToBumpsNet>(begin_track, std::move(end_bumps), std::HashSet<int>{m}, net_name, uid);
             }
 
             // Insert to basedie & topdieinsts
@@ -156,12 +179,35 @@ namespace PR_tool::algo {
                 auto net_name = std::String{
                     std::format("BumpToBumpNet_from_cob_{}_{}_to_cob_{}_{}_in_group_{}", begin_bump->coord().row, begin_bump->coord().col, end_bumps[0]->coord().row, end_bumps[0]->coord().col, group)
                 };
-                net = std::make_shared<circuit::BumpToBumpNet>(begin_bump, end_bumps.front(), std::HashSet<int>{m}, net_name);
+                auto uid = std::format(
+                    "{}:{}->{}",
+                    make_uid_prefix(m, group, "btb"),
+                    bump_uid_token(begin_bump),
+                    bump_uid_token(end_bumps[0]));
+                net = std::make_shared<circuit::BumpToBumpNet>(begin_bump, end_bumps.front(), std::HashSet<int>{m}, net_name, uid);
             } else {
                 auto net_name = std::String{
                     std::format("BumpToBumpsNet_from_cob_{}_{}_in_group_{}_with_{}_ends", coord.row, coord.col, group, end_bumps.size())
                 };
-                net = std::make_shared<circuit::BumpToBumpsNet>(begin_bump, std::move(end_bumps), std::HashSet<int>{m}, net_name);
+                auto end_tokens = std::Vector<std::String> {};
+                end_tokens.reserve(end_bumps.size());
+                for (const auto* bump : end_bumps) {
+                    end_tokens.emplace_back(bump_uid_token(bump));
+                }
+                sort_uid_tokens(end_tokens);
+                auto end_part = std::String {};
+                for (std::size_t i = 0; i < end_tokens.size(); ++i) {
+                    if (i != 0) {
+                        end_part += ",";
+                    }
+                    end_part += end_tokens[i];
+                }
+                auto uid = std::format(
+                    "{}:{}->{}",
+                    make_uid_prefix(m, group, "btbs"),
+                    bump_uid_token(begin_bump),
+                    end_part);
+                net = std::make_shared<circuit::BumpToBumpsNet>(begin_bump, std::move(end_bumps), std::HashSet<int>{m}, net_name, uid);
             }
 
             // Insert to basedie & topdieinsts
@@ -188,12 +234,35 @@ namespace PR_tool::algo {
                 auto net_name = std::String{
                     std::format("BumpToTrackNet_from_cob_{}_{}_to_cob_{}_{}_in_group_{}", begin_bump->coord().row, begin_bump->coord().col, end_tracks[0]->coord().row, end_tracks[0]->coord().col, group)
                 };
-                net = std::make_shared<circuit::BumpToTrackNet>(begin_bump, end_tracks.front(), std::HashSet<int>{m}, net_name);
+                auto uid = std::format(
+                    "{}:{}->{}",
+                    make_uid_prefix(m, group, "btt"),
+                    bump_uid_token(begin_bump),
+                    track_uid_token(end_tracks[0]));
+                net = std::make_shared<circuit::BumpToTrackNet>(begin_bump, end_tracks.front(), std::HashSet<int>{m}, net_name, uid);
             } else {
                 auto net_name = std::String{
                     std::format("BumpToTracksNet_from_cob_{}_{}_in_group_{}_with_{}_ends", coord.row, coord.col, group, end_tracks.size())
                 };
-                net = std::make_shared<circuit::BumpToTracksNet>(begin_bump, std::move(end_tracks), std::HashSet<int>{m}, net_name);
+                auto end_tokens = std::Vector<std::String> {};
+                end_tokens.reserve(end_tracks.size());
+                for (const auto* track : end_tracks) {
+                    end_tokens.emplace_back(track_uid_token(track));
+                }
+                sort_uid_tokens(end_tokens);
+                auto end_part = std::String {};
+                for (std::size_t i = 0; i < end_tokens.size(); ++i) {
+                    if (i != 0) {
+                        end_part += ",";
+                    }
+                    end_part += end_tokens[i];
+                }
+                auto uid = std::format(
+                    "{}:{}->{}",
+                    make_uid_prefix(m, group, "btts"),
+                    bump_uid_token(begin_bump),
+                    end_part);
+                net = std::make_shared<circuit::BumpToTracksNet>(begin_bump, std::move(end_tracks), std::HashSet<int>{m}, net_name, uid);
             }
 
             // Insert to basedie & topdieinsts
@@ -233,7 +302,12 @@ namespace PR_tool::algo {
                             auto net_name = std::String{
                                 std::format("BumpToTrackNet_from_cob_{}_{}_to_cob_{}_{}_in_group_{}", begin_bump->coord().row, begin_bump->coord().col, end_track->coord().row, end_track->coord().col, group)
                             };
-                            auto net = std::make_shared<circuit::BumpToTrackNet>(begin_bump, end_track, std::HashSet<int>{m}, net_name);
+                            auto uid = std::format(
+                                "{}:{}->{}",
+                                make_uid_prefix(m, group, "btt"),
+                                bump_uid_token(begin_bump),
+                                track_uid_token(end_track));
+                            auto net = std::make_shared<circuit::BumpToTrackNet>(begin_bump, end_track, std::HashSet<int>{m}, net_name, uid);
                             this->_bump_to_topdie_inst.at(begin_bump)->add_net(net.get());
                             btt_sync_nets.emplace_back(std::move(net));
                         }
@@ -246,7 +320,12 @@ namespace PR_tool::algo {
                             auto net_name = std::String{
                                 std::format("TrackToBumpNet_from_cob_{}_{}_to_cob_{}_{}_in_group_{}", begin_track->coord().row, begin_track->coord().col, end_bump->coord().row, end_bump->coord().col, group)
                             };
-                            auto net = std::make_shared<circuit::TrackToBumpNet>(begin_track, end_bump, std::HashSet<int>{m}, net_name);
+                            auto uid = std::format(
+                                "{}:{}->{}",
+                                make_uid_prefix(m, group, "ttb"),
+                                track_uid_token(begin_track),
+                                bump_uid_token(end_bump));
+                            auto net = std::make_shared<circuit::TrackToBumpNet>(begin_track, end_bump, std::HashSet<int>{m}, net_name, uid);
                             this->_bump_to_topdie_inst.at(end_bump)->add_net(net.get());
                             ttb_sync_nets.emplace_back(std::move(net)); 
                         },
@@ -255,7 +334,12 @@ namespace PR_tool::algo {
                             auto net_name = std::String{
                                 std::format("BumpToBumpNet_from_cob_{}_{}_to_cob_{}_{}_in_group_{}", begin_bump->coord().row, begin_bump->coord().col, end_bump->coord().row, end_bump->coord().col, group)
                             };
-                            auto net = std::make_shared<circuit::BumpToBumpNet>(begin_bump, end_bump, std::HashSet<int>{m}, net_name);
+                            auto uid = std::format(
+                                "{}:{}->{}",
+                                make_uid_prefix(m, group, "btb"),
+                                bump_uid_token(begin_bump),
+                                bump_uid_token(end_bump));
+                            auto net = std::make_shared<circuit::BumpToBumpNet>(begin_bump, end_bump, std::HashSet<int>{m}, net_name, uid);
                             this->_bump_to_topdie_inst.at(begin_bump)->add_net(net.get());
                             this->_bump_to_topdie_inst.at(end_bump)->add_net(net.get());
                             btb_sync_nets.emplace_back(std::move(net)); 
@@ -266,12 +350,16 @@ namespace PR_tool::algo {
         }
 
         auto net_name = std::String(std::format("SyncNet in group {}", group));
+        auto sync_uid = std::format(
+            "{}:s",
+            make_uid_prefix(m, group, "s"));
         this->_basedie->add_net(std::make_shared<circuit::SyncNet>(
             btb_sync_nets,
             btt_sync_nets,
             ttb_sync_nets,
             std::HashSet<int>{m},
-            net_name
+            net_name,
+            sync_uid
         ), m);
     }
 
@@ -289,8 +377,39 @@ namespace PR_tool::algo {
             }
 
             auto net_name = std::String("Nege nets");
+            auto begin_tokens = std::Vector<std::String> {};
+            begin_tokens.reserve(nege_tracks.size());
+            for (const auto* track : nege_tracks) {
+                begin_tokens.emplace_back(track_uid_token(track));
+            }
+            sort_uid_tokens(begin_tokens);
+            auto end_tokens = std::Vector<std::String> {};
+            end_tokens.reserve(this->_bumps_with_nege.size());
+            for (const auto* bump : this->_bumps_with_nege) {
+                end_tokens.emplace_back(bump_uid_token(bump));
+            }
+            sort_uid_tokens(end_tokens);
+            auto begin_part = std::String {};
+            for (std::size_t i = 0; i < begin_tokens.size(); ++i) {
+                if (i != 0) {
+                    begin_part += ",";
+                }
+                begin_part += begin_tokens[i];
+            }
+            auto end_part = std::String {};
+            for (std::size_t i = 0; i < end_tokens.size(); ++i) {
+                if (i != 0) {
+                    end_part += ",";
+                }
+                end_part += end_tokens[i];
+            }
+            auto uid = std::format(
+                "{}:{}->{}",
+                make_uid_prefix(m, -1, "tstbs"),
+                begin_part,
+                end_part);
             this->_basedie->add_net(std::make_shared<circuit::TracksToBumpsNet>(
-                std::move(nege_tracks), std::move(this->_bumps_with_nege), std::HashSet<int>{m}, net_name
+                std::move(nege_tracks), std::move(this->_bumps_with_nege), std::HashSet<int>{m}, net_name, uid
             ), m);
         }
 
@@ -307,8 +426,39 @@ namespace PR_tool::algo {
             }
 
             auto net_name = std::String("Pose nets");
+            auto begin_tokens = std::Vector<std::String> {};
+            begin_tokens.reserve(pose_tracks.size());
+            for (const auto* track : pose_tracks) {
+                begin_tokens.emplace_back(track_uid_token(track));
+            }
+            sort_uid_tokens(begin_tokens);
+            auto end_tokens = std::Vector<std::String> {};
+            end_tokens.reserve(this->_bumps_with_pose.size());
+            for (const auto* bump : this->_bumps_with_pose) {
+                end_tokens.emplace_back(bump_uid_token(bump));
+            }
+            sort_uid_tokens(end_tokens);
+            auto begin_part = std::String {};
+            for (std::size_t i = 0; i < begin_tokens.size(); ++i) {
+                if (i != 0) {
+                    begin_part += ",";
+                }
+                begin_part += begin_tokens[i];
+            }
+            auto end_part = std::String {};
+            for (std::size_t i = 0; i < end_tokens.size(); ++i) {
+                if (i != 0) {
+                    end_part += ",";
+                }
+                end_part += end_tokens[i];
+            }
+            auto uid = std::format(
+                "{}:{}->{}",
+                make_uid_prefix(m, -1, "tstbs"),
+                begin_part,
+                end_part);
             this->_basedie->add_net(std::make_shared<circuit::TracksToBumpsNet>(
-                std::move(pose_tracks), std::move(this->_bumps_with_pose), std::HashSet<int>{m}, net_name
+                std::move(pose_tracks), std::move(this->_bumps_with_pose), std::HashSet<int>{m}, net_name, uid
             ), m);
         }
     }
@@ -352,6 +502,25 @@ namespace PR_tool::algo {
     auto NetBuilder::build_01_ports() -> void {
         this->_pose_tracks = _basedie->pose_ports();
         this->_nege_tracks = _basedie->nege_ports();
+    }
+
+    auto NetBuilder::make_uid_prefix(int mode, int group, std::StringView type_token) const -> std::String {
+        return std::format("m{}:g{}:{}", mode, group, type_token);
+    }
+
+    auto NetBuilder::bump_uid_token(const hardware::Bump* bump) const -> std::String {
+        const auto tob_coord = bump->tob()->coord();
+        return std::format("(t{},t{},{})", tob_coord.row, tob_coord.col, bump->index());
+    }
+
+    auto NetBuilder::track_uid_token(const hardware::Track* track) const -> std::String {
+        const auto tc = track->coord();
+        const auto dir = tc.dir == hardware::TrackDirection::Horizontal ? "h" : "v";
+        return std::format("(c{},c{},{},{})", tc.row, tc.col, dir, tc.index);
+    }
+
+    auto NetBuilder::sort_uid_tokens(std::Vector<std::String>& tokens) const -> void {
+        std::sort(tokens.begin(), tokens.end());
     }
 
 }

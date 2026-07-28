@@ -9,59 +9,76 @@ This document provides an overview of the `test/` directory for AI agents. It de
 
 ## Directory Structure
 
+```text
+test/
+├── config/              # Integration benchmarks (case1 … case22, includes case6)
+├── config_3dblox/       # 3DBlox / DEF / LEF style fixtures (optional format track)
+├── module_test/
+│   ├── test_unit/       # ALL sources linked into `module_test` (xmake: test_unit/**.cc)
+│   ├── test_writer/     # Writer golden cases + bash/python harness (no .cc here)
+│   └── test_function/   # Extra datasets (testlength, bbox, …); not linked into module_test
+├── regression_test/     # Catch2 end-to-end + [flow] orchestrator
+└── transform_format/    # txt2json / json2txt
+```
+
 *   **`config/`**: Integration test cases (Benchmarks).
-    *   Contains numbered cases (e.g., `case1`, `case4`, `case20`).
-    *   Each case represents a specific design scenario with input configurations and expected outputs.
-*   **`module_test/`**: Unit tests.
-    *   Target specific modules or classes (e.g., `test_router.cc`, `test_cob.cc`).
-    *   Used for verifying isolated functionality.
-    *   **Writer golden**: `test_writer/` compares PR `regnamecontrolbit_4part/` (four files, no `-s`) to golden via `check-controlbits-file/scripts/compare_controlbits.py` — no `split_regs` bridge. See `check-controlbits-file/SKILL.md`. Iterative smoke (`placer_iteratively` / `router_iteratively`) does not assert controlbits content.
-*   **`regression_test/`**: End-to-end regression testing.
-    *   Uses the **Catch2** testing framework (`compile_catch2.cc`).
-    *   `test.cc`: Main entry point for regression tests.
-*   **`transform_format/`**: Utility tools.
-    *   `txt2json.cc`: Tool to convert legacy text-based configurations into the modern JSON format used by the tool.
-    *   `json2txt.cc`: Reverse converter from JSON config (via `load_config`) back to legacy `.txt` connection format. Pin coordinates are resolved from config tables (`external_ports.coord`, `topdie_insts.coord` + `topdies.pin_map`), not from hardcoded `IO_` / `Topdie_inst_` naming. Build: `xmake build json2txt`; run: `./json2txt <config_folder> -o <output_dir> [-n name.txt]`.
+    *   Numbered cases `case1` … `case22` (includes `case6`).
+    *   Each case: input JSONs + optional `golden.txt` / `description.txt`.
+*   **`module_test/test_unit/`**: Unit / iterative / writer C++ entrypoints.
+    *   Dispatcher: `test_unit/test.cc` → `./module_test <name>`.
+    *   Fast: `cob` `tob` `interposer` `router` `placer` `config` `comparator` `path_length` `debug` `all`.
+    *   Slow (not in `all`): `placer_iteratively` / `router_iteratively` (spawn `./PR_tool_cli`).
+    *   Writer: `./module_test writer <case_dir> <net_path_info_new.txt> <output_dir> [mode]` — implementation in `test_unit/test_writer.cc`.
+*   **`module_test/test_writer/`**: Cases `test1`…`test5` + `check-controlbits-file/` scripts.
+    *   Pipeline: `run_case.sh` → json2txt → kiwi golden → path convert → `module_test writer` → `compare_controlbits.py`.
+    *   Compares PR `regnamecontrolbit_4part/` (four files, no `-s`) to kiwi golden — no `split_regs` bridge. See `check-controlbits-file/SKILL.md`.
+*   **`module_test/test_function/`**: Datasets for length / bbox / wirelength study. Not part of the `module_test` xmake glob (has its own mains under wirelengthstudy).
+*   **`regression_test/`**: Catch2 (`test.cc`, `incremental_test.cc`, `flow_test.cc`).
+*   **`transform_format/`**: `txt2json.cc` / `json2txt.cc`. Build: `xmake build json2txt`; run: `./json2txt <config_folder> -o <output_dir> [-n name.txt]`.
+*   **Related (outside `test/`)**: experimental SAT/ILP router — `algorithm/test_ILP/` (see that directory’s `AGENTS.md`).
 
 ## Test Case Structure (`config/`)
 
 A typical test case directory (e.g., `test/config/case4/`) contains:
 
 *   **Input Files**:
-    *   `config.json`: The master configuration file linking other configs.
-    *   `interposer.json`: Interposer physical definition.
-    *   `topdies.json`: Definitions of available Top Die types.
-    *   `topdie_insts.json`: Instances of Top Dies and their placement coordinates.
-    *   `external_ports.json`: Definition of I/O ports.
-    *   `connections.json`: The netlist defining connectivity between pins/ports.
-    *   `01_ports.json`: Special port configurations (likely for static 0/1 signals).
+    *   `config.json`: Master config; field **`reigster_adder`** (typo key retained) points at file **`register_adder.json`**.
+    *   `interposer.json`, `topdies.json`, `topdie_insts.json`, `external_ports.json`, `connections.json`, `01_ports.json`.
+    *   `register_adder.json`: Register name → address / quadrant map (required keys: `botleft_REG0.txt` … `topright_REG3.txt`).
 *   **Validation Files**:
-    *   `golden.txt`: Expected output or routing result for regression comparison.
+    *   `golden.txt`: Expected routing result / wirelength bound for regression.
 *   **Documentation**:
-    *   `description.txt`: Human-readable description of the test case intent.
-    *   `*.xlsx`: Excel files sometimes used as the source of truth before conversion to JSON.
+    *   `description.txt`, optional `*.xlsx`.
 
 ## Data Formats
 
-*   **JSON**: The primary format for configuration.
-    *   Parsed using the internal `serde` library.
-    *   Key structures include `pin_map` (TopDie), `coord` (Placement), and connection arrays.
-*   **TXT (Legacy/Routing)**:
-    *   Some cases use `.txt` files for routing definitions (e.g., `case_CPU_8.txt`).
-    *   Format typically involves source/sink coordinates and net tags.
+*   **JSON**: Primary configuration; parsed via internal `serde`.
+*   **TXT (Legacy/Routing)**: Some cases still use `.txt` netlists (e.g. `case_CPU_8.txt`).
 
 ## How to Run Tests
 
-*   **Unit Tests**: Compiled sources in `module_test/` are typically linked against the core library.
-*   Build: `xmake build PR_tool_cli module_test`
-    *   Run from `output/`: `./module_test <test_name>` (e.g. `./module_test placer`)
-    *   Run all fast unit tests: `./module_test all`
-*   **`placer_iteratively` (slow, not in `all`)**: Runs `./PR_tool_cli <config> -p` N times via subprocess (default config: `../test/config/case1`, default N=100). After each run, parses `output/debug.log` and fails if `Failed routing nubmer > 0` or any `Routing failed for this net:` appears. `Total Length >= 1100` only emits a warning and does not stop the run.
-    *   Run: `cd output && ./module_test placer_iteratively`
-    *   Custom case / iterations: `cd output && ./module_test placer_iteratively ../test/config/case5 10`
-*   **`router_iteratively` (slow, not in `all`)**: Same failure checks as `placer_iteratively` (`Failed routing nubmer` / per-net failure), but runs `./PR_tool_cli <config>` without `-p` (routing only) and does **not** warn on `Total Length`. Default config: `../test/config/case1`, default N=100.
-    *   Run: `cd output && ./module_test router_iteratively`
-    *   Custom case / iterations: `cd output && ./module_test router_iteratively ../test/config/case5 10`
-*   **`[flow]` regression** (`test/regression_test/flow_test.cc`): Ensures `COB_ARRAY_WIDTH=12`, rebuilds `PR_tool_cli` / `module_test` / `json2txt`, then runs (1) `placer_iteratively` on `case5` ×10, (2) `router_iteratively` on `case5` ×10, (3) `check-controlbits-file/scripts/run_case.sh` for `test_writer/test1`…`test5`. If kiwi is missing, `run_case.sh` prints WARNING and exits 0 (SKIP).
-*   **Regression**: The `regression_test` target runs the Catch2 suite over `config/` cases and the `[flow]` orchestrator above.
-*   **`[incremental]` tests** (`incremental_test.cc`): tagged `[incremental][.]` — excluded from default Catch runs; run explicitly with `./regression_test '[incremental]'` if needed.
+*   Build (from repo root; in a git worktree prefer `xmake build -P . …`):
+
+```bash
+xmake build PR_tool_cli
+xmake build module_test
+xmake build regression_test
+xmake build json2txt
+```
+
+*   Unit / iterative / writer (from `output/`):
+
+```bash
+./module_test placer
+./module_test all
+./module_test placer_iteratively ../test/config/case5 10
+./module_test router_iteratively ../test/config/case5 10
+./module_test writer ../test/module_test/test_writer/test1_neighbouring_chiplet \
+  <net_path_info_new.txt> <output_dir> 0
+```
+
+*   **`placer_iteratively`**: Runs `./PR_tool_cli <config> -p` N times; fails on `Failed routing nubmer > 0` or `Routing failed for this net:`; `Total Length >= 1100` warns only.
+*   **`router_iteratively`**: Same failure checks; runs `./PR_tool_cli <config>` without `-p`; no Total Length warning.
+*   **`[flow]`** (`flow_test.cc`): Temporarily sets `COB_ARRAY_WIDTH=12`, rebuilds `PR_tool_cli` / `module_test` / `json2txt`, then (1) placer×10 on case5, (2) router×10 on case5, (3) `run_case.sh` for writer test1…test5. Missing kiwi → WARNING + exit 0 (SKIP).
+*   **Regression**: `./regression_test` or `./regression_test "[basic]"` / `"[flow]"`.
+*   **`[incremental]`**: tagged `[incremental][.]` — run explicitly: `./regression_test '[incremental]'`.

@@ -8,6 +8,11 @@ namespace PR_tool::log {
 
     auto initial(const std::FilePath& log_path) -> void;
 
+    /// Thread-local prefix stack for parallel log disambiguation (innermost wins).
+    auto push_thread_prefix(std::String prefix) -> void;
+    auto pop_thread_prefix() -> void;
+    auto current_thread_prefix() -> std::StringView;
+
     auto debug(std::StringView message) -> void;
     auto info(std::StringView message) -> void;
     auto warning(std::StringView message) -> void;

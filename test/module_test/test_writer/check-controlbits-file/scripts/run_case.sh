@@ -42,9 +42,9 @@ if [[ ! -x "$KIWI" ]]; then
 fi
 
 echo "==> [1/6] build module_test (+ json2txt if missing)"
-xmake build module_test
+xmake build -P . module_test
 if [[ ! -x "$JSON2TXT" ]]; then
-  xmake build json2txt
+  xmake build -P . json2txt
 fi
 
 echo "==> [2/6] json2txt → $CHECK/connections.txt"
@@ -69,6 +69,7 @@ python3 "$SCRIPT_DIR/trans_path_old2new.py" \
   -o "$CHECK/net_path_info_new.txt"
 
 echo "==> [5/6] module_test writer (full, no -s)"
+# Writer implementation: test/module_test/test_unit/test_writer.cc (linked into module_test)
 if [[ ! -x "$MODULE_TEST" ]]; then
   echo "error: module_test not found: $MODULE_TEST" >&2
   exit 1

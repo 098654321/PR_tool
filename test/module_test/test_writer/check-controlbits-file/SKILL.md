@@ -30,10 +30,12 @@ check-controlbits-file/
 ├── references/          # detailed docs (read on demand)
 └── scripts/
     ├── run_case.sh              # preferred one-shot pipeline
-    ├── test_writer.cc           # module_test writer harness
     ├── compare_controlbits.py
     ├── trans_path_old2new.py
     └── verify_simplify_split.py
+
+Writer harness source (linked into module_test):
+  test/module_test/test_unit/test_writer.cc
 ```
 
 Testcase data stays in sibling dirs: `../test1_*` … `../test5_*`.
@@ -45,7 +47,7 @@ Progress:
 - [ ] 0 Prepare / build (`xmake build module_test`, `json2txt`)
 - [ ] 1 Pick next case under `test/module_test/test_writer/testN_*`
 - [ ] 2–7 Prefer scripts/run_case.sh (json2txt → kiwi → path → writer → compare)
-- [ ] 5 If path shape unsupported: extend scripts/test_writer.cc, then re-run
+- [ ] 5 If path shape unsupported: extend test/module_test/test_unit/test_writer.cc, then re-run
 - [ ] 8 If diffs: interpret and iterate Writer (or harness) — see references
 - [ ] Optional T1: full + simplified pair — see references/simplify-t1.md
 ```

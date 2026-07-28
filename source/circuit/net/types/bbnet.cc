@@ -9,10 +9,10 @@
 
 namespace PR_tool::circuit {
 
-    BumpToBumpNet::BumpToBumpNet(hardware::Bump* begin_bump, hardware::Bump* end_bump, const std::HashSet<int>& modes, std::String& name) :
+    BumpToBumpNet::BumpToBumpNet(hardware::Bump* begin_bump, hardware::Bump* end_bump, const std::HashSet<int>& modes, std::String& name, std::String& uid) :
         _begin_bump{begin_bump},
         _end_bump{end_bump},
-        Net{Priority{4}, modes, name}
+        Net{Priority{4}, modes, name, uid}
     {
     }
 

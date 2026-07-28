@@ -109,6 +109,14 @@ namespace PR_tool::circuit {
     }
 
     auto BaseDie::add_net(const std::Rc<Net>& net, int mode) -> void {
+        for (const auto& [_, nets] : this->_nets) {
+            for (const auto& existing : nets) {
+                if (existing != nullptr && existing->uid() == net->uid()) {
+                    debug::error_fmt("Duplicate net uid detected: '{}' (name='{}')", net->uid(), net->name());
+                    debug::fatal("BaseDie::add_net: duplicate net uid is not allowed");
+                }
+            }
+        }
         if (!this->_nets.contains(mode)) {
             this->_nets.emplace(mode, std::Vector<std::Rc<Net>>{});
         }

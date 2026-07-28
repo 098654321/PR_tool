@@ -20,9 +20,11 @@
 | 文件 | 作用 |
 |------|------|
 | `split_regs.py` | **Legacy**：旧单文件 `controlbits_*.txt` → 4 个 REG（离线；非正式 Writer） |
-| `register_map.json` | 寄存器名 → 地址/分区 map（case `reigster_adder` 模板 / split 对照） |
+| `register_map.json` | 寄存器名 → 地址/分区 map（对照模板；case 侧文件名为 `register_adder.json`，`config.json` 键仍为 `reigster_adder`） |
 | `port_allocator.py` | 约束目录中的 `connection.txt` → `connections.json` |
-| `parse_controlbits.cc` | 从旧单文件 controlbits 反推路径（调试；读回未跟四文件） |
+| `parse_controlbits.cc` | 从旧单文件 controlbits 反推路径（调试；**读回未跟四文件** `regnamecontrolbit_4part/`） |
+| `convert_prtool_configs_to_3dblox.py` | PR_tool JSON case → 3DBlox 相关文件（实验/格式转换） |
+| `vis_sat/` | SAT 路径可视化脚本与样例图（配合 `algorithm/test_ILP`） |
 | `view2d.cc` / `view3d.cc` | 加载配置并 P&R 后 2D/3D 可视化（低频） |
 | `cobmap.cc` | COB 方向索引映射查询（低频） |
 | `count_lines.py` | 统计 `./source` 代码行数 |
@@ -173,9 +175,10 @@ python3 tools/count_lines.py   # 从仓库根目录运行；统计 ./source
 ### 6.2 常见修改
 
 - 改 split 简化规则 → 同步 `tools/split_regs.py` 与 `source/parse/writer/register_defaults.hh`
-- 改寄存器分区/地址 → 更新 `tools/register_map.json` 与各 case 的 `reigster_adder`；正式写出走 Writer
+- 改寄存器分区/地址 → 更新 `tools/register_map.json` 与各 case 的 **`register_adder.json`**（勿改 `config.json` 键名 `reigster_adder`）；正式写出走 Writer
 - 改 `port_allocator` 语法 → 更新脚本 docstring，并回归相关约束目录生成的 `connections.json`
 - 核心 P&R / Writer 行为 → 改 `source/`，并维护 `source/AGENTS.md`
+- SAT 可视化 / 3DBlox 转换 → `vis_sat/`、`convert_prtool_configs_to_3dblox.py`；算法本体见 `algorithm/test_ILP/AGENTS.md`
 
 ### 6.3 日志约定
 

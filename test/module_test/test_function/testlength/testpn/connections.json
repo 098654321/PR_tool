@@ -1,0 +1,36 @@
+{
+    "-1": [
+        [
+            "xinzhai_nege",
+            "muyan_11.chipID2"
+        ],
+        [
+            "xinzhai_nege",
+            "muyan_12.chipID0"
+        ],
+        [
+            "xinzhai_nege",
+            "muyan_12.chipID1"
+        ],
+        [
+            "xinzhai_pose",
+            "muyan_12.chipID3"
+        ],
+        [
+            "xinzhai_pose",
+            "muyan_13.chipID0"
+        ],
+        [
+            "xinzhai_nege",
+            "muyan_13.chipID1"
+        ],
+        [
+            "xinzhai_pose",
+            "muyan_13.chipID2"
+        ],
+        [
+            "xinzhai_pose",
+            "muyan_13.chipID3"
+        ]
+    ]
+}

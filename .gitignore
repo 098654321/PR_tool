@@ -3,6 +3,8 @@
 
 # Xmake cache
 .xmake/
+.plan
+.cursor
 build/
 .plan/
 .cursor/
@@ -14,6 +16,7 @@ build/
 compile_commands.json
 
 *.log
+gurobi-log/
 
 output
 
@@ -23,16 +26,14 @@ output
 **/__pycache__/
 schedule*
 
-/test/EDA_case
-
 .VSCodeCounter/*
 
-local/
-third/
+third_party/cadical/
 
 # Writer golden-check local artifacts (per case)
 /test/module_test/test_writer/*/check_run/
 
 # check-controlbits-file: track SKILL + scripts + references; ignore caches only
 /test/module_test/test_writer/check-controlbits-file/**/__pycache__/
-/tools/vis_sat/
+/tools/vis_sat/*.png
+docs/

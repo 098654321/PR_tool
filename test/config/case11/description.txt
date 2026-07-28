@@ -1,13 +1,27 @@
 CPU MEM test by xl
 Bump - Bump 
-CPU-CPU: 8 groups of bus-nets, 16 net per bus
+CPU-MEM: 8 groups of bus-nets, 16 net per bus
 MEM-MEM: 4 groups of bus-nets, 16 net per bus
 Track - Bump
 I/O->cpu, 128 nets
 0/1->cpu, 64 nets
 
 
+TOB = 4 * 4
 !!! COB array = 9 * 13
+
+五类互连统计：
+1. chiplet -> 0/1 port: 64 根（64个bump，32+32）
+2. chiplet与I/O port之间的bus：0 根
+3. chiplet之间的bus：
+    - 16bit位宽：12根
+4. chiplet与I/O port之间的普通互连：16根(每根1个IO对8个bump)
+5. chiplet之间的普通互连：0根
+
+I/O端口数量：16个
+0/1端口数量：
+    - 0端口：12个
+    - 1端口：12个
 
 
 目前结果：约2108

@@ -1,0 +1,17 @@
+TOB = 4 * 4
+COB array = 9 * 12
+
+五类互连统计：
+1. chiplet -> 0/1 port: 0 根
+2. chiplet与I/O port之间的bus：0 根
+3. chiplet之间的bus：16根，位宽16bit
+4. chiplet与I/O port之间的普通互连：0根
+5. chiplet之间的普通互连：64根
+
+
+I/O端口数量：83个
+0/1端口数量：
+    - 0端口：12个
+    - 1端口：12个
+
+

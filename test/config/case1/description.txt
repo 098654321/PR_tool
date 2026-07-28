@@ -1,1 +1,6 @@
 muyan with bus, to test sync-routing functionality
+
+5 bus:
+IO-chiplet0, 4bit
+chiplet0_chiplet1, 12bit + 20bit + 12bit + 20bit
+

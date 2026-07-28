@@ -1,0 +1,12 @@
+{
+    "-1": [
+        [
+            "xinzhai_spi_s_sck_1",
+            "muyan_0.spi_s_sck_1"
+        ],
+        [
+            "xinzhai_spi_s_csn_1",
+            "muyan_1.spi_s_csn_1"
+        ]
+    ]
+}

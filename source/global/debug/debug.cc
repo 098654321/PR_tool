@@ -5,6 +5,7 @@
 #include <debug/console.hh>
 #include <debug/log.hh>
 
+#include <mutex>
 #include <std/file.hh>
 #include <std/integer.hh>
 #include <std/exception.hh>
@@ -12,6 +13,54 @@
 namespace PR_tool::debug {
 
     static auto debug_level = DebugLevel::Info;
+    static std::mutex emit_mutex {};
+
+    auto format_prefixed_message(const std::StringView message) -> std::String {
+        const auto prefix = log::current_thread_prefix();
+        if (prefix.empty()) {
+            return std::String {message};
+        }
+        return std::format("{} {}", prefix, message);
+    }
+
+    auto emit_info(const std::StringView message) -> void {
+        const auto line = format_prefixed_message(message);
+        const std::lock_guard lock {emit_mutex};
+        console::info(line);
+        log::info(line);
+    }
+
+    auto emit_warning(const std::StringView message) -> void {
+        const auto line = format_prefixed_message(message);
+        const std::lock_guard lock {emit_mutex};
+        console::warning(line);
+        log::warning(line);
+    }
+
+    auto emit_error(const std::StringView message) -> void {
+        const auto line = format_prefixed_message(message);
+        const std::lock_guard lock {emit_mutex};
+        console::error(line);
+        log::error(line);
+    }
+
+    auto emit_debug(const std::StringView message) -> void {
+        const auto line = format_prefixed_message(message);
+        const std::lock_guard lock {emit_mutex};
+        console::debug(line);
+        log::debug(line);
+    }
+
+    ScopedThreadLogPrefix::ScopedThreadLogPrefix(const std::String prefix) {
+        log::push_thread_prefix(std::move(prefix));
+        active_ = true;
+    }
+
+    ScopedThreadLogPrefix::~ScopedThreadLogPrefix() {
+        if (active_) {
+            log::pop_thread_prefix();
+        }
+    }
 
     static auto debug_level_to_number(DebugLevel level) -> std::i64 {
         switch (level) {
@@ -40,32 +89,28 @@ namespace PR_tool::debug {
         if (!is_debug_level_enough(DebugLevel::Debug)) {
             return;
         }
-        console::debug(message);
-        log::debug(message);
+        emit_debug(message);
     }
 
     auto info(std::StringView message) -> void {
         if (!is_debug_level_enough(DebugLevel::Info)) {
             return;
         }
-        console::info(message);
-        log::info(message);
+        emit_info(message);
     }
 
     auto warning(std::StringView message) -> void {
         if (!is_debug_level_enough(DebugLevel::Warning)) {
             return;
         }
-        console::warning(message);
-        log::warning(message);
+        emit_warning(message);
     }
 
     auto error(std::StringView message) -> void {
         if (!is_debug_level_enough(DebugLevel::Error)) {
             return;
         }
-        console::error(message);
-        log::error(message);
+        emit_error(message);
     }
 
     [[noreturn]] auto fatal(std::StringView message) -> void {

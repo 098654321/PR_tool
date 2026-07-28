@@ -1,9 +1,8 @@
 add_rules("mode.debug", "mode.release")
-set_languages("c99", "c++23")
+set_languages("c99", "c++20")
 
 if is_plat("linux") then 
-    add_cxflags("-std=c++2b")
-    add_cxxflags("-std=c++2b")
+    set_languages("c++20")
 end
 
 if is_plat("windows", "macosx") then
@@ -118,8 +117,8 @@ target("module_test")
     set_default(false)
     add_deps("PR_tool_cli")
     -- add_packages("xlnt")
-    add_includedirs("source", "source/global", "test/module_test")
-    add_files("test/module_test/**.cc")
+    add_includedirs("source", "source/global", "test/module_test", "test/module_test/test_unit")
+    add_files("test/module_test/test_unit/**.cc")
     add_files(
         "source/algo/**.cc",
         "source/circuit/**.cc",
@@ -198,6 +197,185 @@ target("parse_controlbits")
         "source/serde/**.cc"
     )
 
+target("test_ILP")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_includedirs("source", "source/global", "algorithm/test_ILP")
+    add_files(
+        "algorithm/test_ILP/main.cc",
+        "algorithm/test_ILP/test_ilp_cli.cc",
+        "algorithm/test_ILP/scope/build_routing_nets.cc",
+        "algorithm/test_ILP/scope/scope_bbox.cc",
+        "algorithm/test_ILP/scope/pair_routing_state.cc",
+        "algorithm/test_ILP/graph/unified_routing_graph.cc",
+        "algorithm/test_ILP/common/cob_unit_mask.cc",
+        "algorithm/test_ILP/delay/pair_delay_precompute.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_prepare.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_domain.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_segment.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_model.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_extract.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_validate.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_optimizer.cc",
+        "algorithm/test_ILP/sat/unified_sat_scope.cc",
+        "algorithm/test_ILP/sat/sat_constraint_kits.cc",
+        "algorithm/test_ILP/sat/sat_encoding_stats.cc",
+        "algorithm/test_ILP/sat/unified_sat_encoder.cc",
+        "algorithm/test_ILP/sat/encode_tob_special.cc",
+        "algorithm/test_ILP/sat/encode_bus_sync.cc",
+        "algorithm/test_ILP/sat/solve_unified_sat.cc",
+        "algorithm/test_ILP/sat/routing_feedback.cc",
+        "algorithm/test_ILP/sat/routing_round_diagnostics.cc",
+        "algorithm/test_ILP/sat/ideal_shortest_wirelength.cc",
+        "algorithm/test_ILP/sat/routing_solution_validate.cc",
+        "algorithm/test_ILP/sat/sat_solution_extract.cc",
+        "algorithm/test_ILP/sat/routing_path_log.cc",
+        "algorithm/test_ILP/sat_allocation/cadical_solver.cc"
+    )
+    add_files(
+        "source/algo/**.cc",
+        "source/circuit/**.cc",
+        "source/global/**.cc",
+        "source/hardware/**.cc",
+        "source/parse/**.cc",
+        "source/serde/**.cc"
+    )
+    if has_config("cadical") then
+        add_defines("USE_CADICAL")
+        add_includedirs("third_party/cadical/src")
+        add_linkdirs("third_party/cadical/build")
+        add_links("cadical")
+        if is_plat("linux") then
+            add_syslinks("pthread")
+        end
+    end
+    local gurobi_home = os.getenv("GUROBI_HOME")
+    if not gurobi_home or gurobi_home == "" then
+        if is_plat("linux") then
+            gurobi_home = "/opt/gurobi1302/linux64"
+        else
+            gurobi_home = "/Library/gurobi1302/macos_universal2"
+        end
+    end
+    add_includedirs(gurobi_home .. "/include")
+    add_linkdirs(gurobi_home .. "/lib")
+    add_rpathdirs(gurobi_home .. "/lib")
+    if is_plat("linux") then
+        add_links("pthread", "dl", "m")
+    end
+    add_links("gurobi_c++", "gurobi130")
+
+target("test_ILP_unit")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_includedirs("source", "source/global", "algorithm/test_ILP")
+    add_files(
+        "algorithm/test_ILP/test/unit_main.cc",
+        "algorithm/test_ILP/test_ilp_cli.cc",
+        "algorithm/test_ILP/scope/build_routing_nets.cc",
+        "algorithm/test_ILP/scope/scope_bbox.cc",
+        "algorithm/test_ILP/scope/pair_routing_state.cc",
+        "algorithm/test_ILP/graph/unified_routing_graph.cc",
+        "algorithm/test_ILP/common/cob_unit_mask.cc",
+        "algorithm/test_ILP/delay/pair_delay_precompute.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_prepare.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_domain.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_segment.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_model.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_extract.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_validate.cc",
+        "algorithm/test_ILP/ilp_v15/v15_ilp_optimizer.cc",
+        "algorithm/test_ILP/sat/unified_sat_scope.cc",
+        "algorithm/test_ILP/sat/sat_constraint_kits.cc",
+        "algorithm/test_ILP/sat/sat_encoding_stats.cc",
+        "algorithm/test_ILP/sat/unified_sat_encoder.cc",
+        "algorithm/test_ILP/sat/encode_tob_special.cc",
+        "algorithm/test_ILP/sat/encode_bus_sync.cc",
+        "algorithm/test_ILP/sat/solve_unified_sat.cc",
+        "algorithm/test_ILP/sat/routing_feedback.cc",
+        "algorithm/test_ILP/sat/routing_round_diagnostics.cc",
+        "algorithm/test_ILP/sat/ideal_shortest_wirelength.cc",
+        "algorithm/test_ILP/sat/routing_solution_validate.cc",
+        "algorithm/test_ILP/sat/sat_solution_extract.cc",
+        "algorithm/test_ILP/sat/routing_path_log.cc",
+        "algorithm/test_ILP/sat_allocation/cadical_solver.cc"
+    )
+    add_files(
+        "source/algo/**.cc",
+        "source/circuit/**.cc",
+        "source/global/**.cc",
+        "source/hardware/**.cc",
+        "source/parse/**.cc",
+        "source/serde/**.cc"
+    )
+    if has_config("cadical") then
+        add_defines("USE_CADICAL")
+        add_includedirs("third_party/cadical/src")
+        add_linkdirs("third_party/cadical/build")
+        add_links("cadical")
+        if is_plat("linux") then
+            add_syslinks("pthread")
+        end
+    end
+    local gurobi_home = os.getenv("GUROBI_HOME")
+    if not gurobi_home or gurobi_home == "" then
+        if is_plat("linux") then
+            gurobi_home = "/opt/gurobi1302/linux64"
+        else
+            gurobi_home = "/Library/gurobi1302/macos_universal2"
+        end
+    end
+    add_includedirs(gurobi_home .. "/include")
+    add_linkdirs(gurobi_home .. "/lib")
+    add_rpathdirs(gurobi_home .. "/lib")
+    if is_plat("linux") then
+        add_links("pthread", "dl", "m")
+    end
+    add_links("gurobi_c++", "gurobi130")
+
+target("wirelength_study")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_includedirs(
+        "algorithm/test_ILP",
+        "source",
+        "source/global")
+    add_files(
+        "source/algo/**.cc",
+        "source/circuit/**.cc",
+        "source/global/**.cc",
+        "source/hardware/**.cc",
+        "source/parse/**.cc",
+        "source/serde/**.cc")
+    local gurobi_home = os.getenv("GUROBI_HOME")
+    if not gurobi_home or gurobi_home == "" then
+      if is_plat("linux") then
+        gurobi_home = "/opt/gurobi1302/linux64"
+      else
+        gurobi_home = "/Library/gurobi1302/macos_universal2"
+      end
+    end
+    add_includedirs(gurobi_home .. "/include")
+    add_linkdirs(gurobi_home .. "/lib")
+    add_rpathdirs(gurobi_home .. "/lib")
+    if is_plat("linux") then
+      add_links("pthread", "dl", "m")
+    end
+    add_links("gurobi_c++", "gurobi130")
+
+
+-- tools
+
+option("cadical")
+
+    set_default(true)
+
+    set_showmenu(true)
+
+    set_description("Enable CaDiCaL SAT solver")
 
 
 -- xmake project -k compile_commands
