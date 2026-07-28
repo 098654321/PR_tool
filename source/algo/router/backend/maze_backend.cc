@@ -27,6 +27,9 @@ public:
         circuit::BaseDie* basedie,
         const RouterOptions& options
     ) -> RouteStatus override {
+        if (options.kind != RouterKind::Maze) {
+            throw std::runtime_error("MazeRouterBackend: kind/backend mismatch");
+        }
         debug::debug("Start routing ...");
         const auto mode = options.mode;
         const auto try_all_modes = options.try_all_modes;

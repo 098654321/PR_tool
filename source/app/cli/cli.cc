@@ -94,7 +94,7 @@ debug::info_fmt("Layout time: {} milliseconds", duration.count());
         options.try_all_modes = try_all_modes;
         options.compare = compare;
         options.config_path = config_path;
-        return algo::make_router(algo::RouterKind::Maze)->run(interposer, basedie, options);
+        return algo::make_router(options.kind)->run(interposer, basedie, options);
     }
     
 
