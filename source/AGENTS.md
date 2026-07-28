@@ -22,12 +22,14 @@ PR_tool 面向 chiplet interposer 的布局布线：输入系统配置（topdie 
 1. `parse::read_config` → `Interposer` + `BaseDie` + `RegisterMapConfig`（`config.json` 字段 **`reigster_adder`** → 文件 **`register_adder.json`**）
 2. `algo::build_nets` → `Connection` 转为 `circuit::Net` / `SyncNet`
 3. 可选 `algo::place`（默认 `SAPlaceStrategy`，5 参：init/freeze/solve_num/cooling/max_no_improvement）
-4. `algo::route_nets`（非增量 Maze；单 net 失败可继续，失败时跳过 REG 写出）
+4. `algo::route_nets`（非增量；`--router maze` 或 `--router sat`；单 net 失败可继续，失败时跳过 REG 写出）
 5. `parse::output_from_routing_results` → `{output}/regnamecontrolbit_4part/` 四文件
 
 GUI：`source/app/gui/gui.cc` → `widget::Window`；P&R 在 `PRThread` 中异步执行；可导出 controlbits 到输出根目录。
 
-实验性 SAT/ILP 布线在 `algorithm/test_ILP/`（不替代本目录 router）；见该目录 `AGENTS.md`。
+SAT/ILP 布线实现位于 `algo/router/sat_ilp/` + `algo/router/backend/`（`SatRouterBackend`）；`algorithm/test_ILP/` 为过渡壳与 fixture（见该目录 `AGENTS.md`）。
+
+**`test/config` 与 `COB_ARRAY_WIDTH`**：跑 `test/config/caseN` 前须使 `Interposer::COB_ARRAY_WIDTH`（`hardware/interposer.hh`）与 case 的 `description.txt` 一致；规则见 `test/AGENTS.md`。
 
 ---
 
@@ -45,7 +47,7 @@ source/
   serde/        # 序列化 / 反序列化宏
 ```
 
-更细的树与配置格式见仓库根目录 `README.md`。当前默认 `Interposer::COB_ARRAY_WIDTH = 13`（`[flow]` 回归会临时改成 12）。
+更细的树与配置格式见仓库根目录 `README.md`。默认 `Interposer::COB_ARRAY_WIDTH = 13`；`test/config` 用例可能要求 12 或 13（见 `test/AGENTS.md`）。
 
 ---
 
@@ -88,8 +90,10 @@ source/
 |------|------|
 | `netbuilder/netbuilder.cc` → `build_nets` | Connection → Net；sync 组 → `SyncNet`；pose/nege → 固定电源地网 |
 | `placer/place.hh` → `place` | 默认 `SAPlaceStrategy`（HPWL + 模拟退火） |
-| `router/route_nets.cc` → `route_nets` | Invoker 命令链 + `RouteEngine`；忽略 legacy controlbits warm-start |
-| `router/common/maze/*` | 非增量 BFS maze；`MazeRerouter` 拉齐 SyncNet 长度 |
+| `router/route_nets.cc` → `route_nets` | Invoker 命令链 + `RouteEngine`；`--router maze\|sat` 选后端 |
+| `router/backend/maze_backend.cc` | 默认 Maze BFS；`MazeRerouter` 拉齐 SyncNet 长度 |
+| `router/backend/sat_backend.cc` | `--router sat`；调用 `sat_ilp/` 统一图 SAT（可选 v15 ILP） |
+| `router/sat_ilp/` | v14 SAT 编码、反馈扩边、commit 到 `PathPackage`（`xmake f --cadical=y`） |
 | `router/incremental/*` | 增量代码仍在树中；v1.0.0 CLI 已拒绝 `-i/-c` |
 
 ### parse
@@ -105,14 +109,15 @@ source/
 
 ## 4. 构建与测试
 
-构建系统：仓库根目录 `xmake.lua`（C++23）。
+构建系统：仓库根目录 `xmake.lua`（C++23）。SAT 后端默认开启：`xmake f --sat_router=y|n`（默认 `y`）；关闭时 `PR_TOOL_HAS_SAT_ROUTER=0`，`--router sat` 不可用。
 
 ```bash
+xmake f --sat_router=y --cadical=y   # 默认；SAT 需 CaDiCal，可选 Gurobi（v15 ILP）
 xmake build PR_tool
 xmake run PR_tool <config_folder> [OPTIONS]
 
 xmake build PR_tool_cli
-xmake run PR_tool_cli <config_folder> [OPTIONS]
+xmake run PR_tool_cli <config_folder> --router sat --scope-pad 1   # SAT 首轮 scope 扩展
 
 # module_test 只编译 test/module_test/test_unit/**.cc
 xmake build module_test
@@ -122,4 +127,4 @@ xmake build regression_test
 ./output/regression_test "[flow]"
 ```
 
-常用 CLI 选项与配置目录约定见根 `README.md`；测试布局见 `test/AGENTS.md`；SAT/ILP 实验见 `algorithm/test_ILP/AGENTS.md`。
+常用 CLI：`--router maze|sat`（默认 maze）、`--scope-pad N` / `--delay-pad N`（仅 SAT；勿与写出稀疏 `-s` 混淆）。配置目录约定见根 `README.md`；测试与 `COB_ARRAY_WIDTH` 见 `test/AGENTS.md`；`algorithm/test_ILP/` 见该目录 `AGENTS.md`。

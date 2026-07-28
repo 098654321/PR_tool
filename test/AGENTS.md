@@ -73,12 +73,26 @@ xmake build json2txt
 ./module_test all
 ./module_test placer_iteratively ../test/config/case5 10
 ./module_test router_iteratively ../test/config/case5 10
+./module_test sat_ilp
 ./module_test writer ../test/module_test/test_writer/test1_neighbouring_chiplet \
   <net_path_info_new.txt> <output_dir> 0
 ```
 
 *   **`placer_iteratively`**: Runs `./PR_tool_cli <config> -p` N times; fails on `Failed routing nubmer > 0` or `Routing failed for this net:`; `Total Length >= 1100` warns only.
 *   **`router_iteratively`**: Same failure checks; runs `./PR_tool_cli <config>` without `-p`; no Total Length warning.
-*   **`[flow]`** (`flow_test.cc`): Temporarily sets `COB_ARRAY_WIDTH=12`, rebuilds `PR_tool_cli` / `module_test` / `json2txt`, then (1) placer×10 on case5, (2) router×10 on case5, (3) `run_case.sh` for writer test1…test5. Missing kiwi → WARNING + exit 0 (SKIP).
+*   **`sat_ilp`** (`test_unit/test_sat_ilp.cc`): In-process SAT smoke — `build_routing_nets` unit test, `solve_unified_sat_and_commit` on `test/config/case1`, optional `algorithm/test_ILP/test/case_2btb` when `COB_ARRAY_WIDTH==13`. Requires `module_test` built with `PR_TOOL_HAS_SAT_ROUTER=1` (default `xmake f --sat_router=y --cadical=y`). CaDiCal via `third_party/cadical`; Gurobi only if exercising v15 ILP paths.
+*   **`[flow]`** (`flow_test.cc`): Uses `CobArrayWidthGuard` to temporarily set `COB_ARRAY_WIDTH=12`, rebuilds `PR_tool_cli` / `module_test` / `json2txt`, then (1) placer×10 on case5, (2) **maze** router×10 on case5, (3) `run_case.sh` for writer test1…test5. Does **not** exercise `--router sat`. Missing kiwi → WARNING + exit 0 (SKIP).
 *   **Regression**: `./regression_test` or `./regression_test "[basic]"` / `"[flow]"`.
 *   **`[incremental]`**: tagged `[incremental][.]` — run explicitly: `./regression_test '[incremental]'`.
+
+### COB_ARRAY_WIDTH vs test/config cases
+
+Before running any `test/config/caseN` (maze or SAT):
+
+1. Open `test/config/caseN/description.txt` if present.
+2. If it contains `COB array = 9 * W` / `!!! COB array = 9 * W` / `9*W`,
+   set `Interposer::COB_ARRAY_WIDTH` in `source/hardware/interposer.hh` to **W** (12 or 13), then rebuild.
+3. If there is no `description.txt`, or no COB array line, use **WIDTH=12**.
+4. After a temporary header change, restore the previous value (see `[flow]` `CobArrayWidthGuard`).
+
+Reference map (check description if unsure): cases 1–6 and 17–22 → 12; cases 7–16 → 13.

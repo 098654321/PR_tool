@@ -132,6 +132,8 @@ target("view2d")
         "tools/view2d.cc"
     )
     remove_files("source/algo/router/sat_ilp/**.cc")
+    remove_files("source/algo/router/backend/sat_backend.cc")
+    add_defines("PR_TOOL_HAS_SAT_ROUTER=0")
     add_rules("qt.widgetapp", "qt.opengl")
 
 -- Load config, run P&R and view result in 3D view
@@ -156,6 +158,8 @@ target("view3d")
         "tools/view3d.cc"
     )
     remove_files("source/algo/router/sat_ilp/**.cc")
+    remove_files("source/algo/router/backend/sat_backend.cc")
+    add_defines("PR_TOOL_HAS_SAT_ROUTER=0")
     add_rules("qt.widgetapp", "qt.opengl")
 
 -- Test Tasks
@@ -258,6 +262,8 @@ target("parse_controlbits")
         "source/serde/**.cc"
     )
     remove_files("source/algo/router/sat_ilp/**.cc")
+    remove_files("source/algo/router/backend/sat_backend.cc")
+    add_defines("PR_TOOL_HAS_SAT_ROUTER=0")
 
 target("test_ILP")
     set_kind("binary")

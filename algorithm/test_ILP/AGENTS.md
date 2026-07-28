@@ -1,6 +1,8 @@
 # PR_tool / algorithm/test_ILP 工程指南
 
-本文件是 `algorithm/test_ILP/` 子工程的入口说明。当前 `test_ILP` 默认实现**第十四版 D/A 距离语义 SAT 可行性布线**（见 `problem_formulation/第十四版方法.md`）；可选的 `--ilp-optimize -L <percent>` 会在 SAT 成功后执行第十五版 Gurobi MCF 线长优化。不直接替代 `source/algo/router/` 的正式路由流程。
+本文件是 `algorithm/test_ILP/` 的入口说明。**SAT/ILP 实现源码已迁入** `source/algo/router/sat_ilp/`（经 `backend/sat_backend.cc` 接入正式 `route_nets`）；本目录为**过渡壳**：`main.cc` / `test_ilp_cli.cc`、fixture、`problem_formulation/` 方法文档。算法为**第十四版 D/A 距离语义 SAT**（见 `problem_formulation/第十四版方法.md`）；可选 `--ilp-optimize -L <percent>` 为第十五版 Gurobi MCF 线长优化。
+
+使用 `test/config/case*` 时须遵循 `test/AGENTS.md` 的 **COB_ARRAY_WIDTH** 规则。
 
 ## 项目总体介绍
 
@@ -36,16 +38,12 @@
 ## 目录结构
 
 ```text
+source/algo/router/sat_ilp/     # 正式实现（scope/ graph/ delay/ sat/ ilp_v15/ …）
 algorithm/test_ILP/
-├── main.cc
-├── common/           # RoutingNet、SatRoutingResult、hw_map
-├── scope/            # build_routing_nets、scope_bbox、pair_routing_state
-├── graph/            # unified_routing_graph（含 VirtualSource / augment_graph_for_pnnet）
-├── delay/            # pair_delay_precompute（BFS、bus_d_min、PNnet r_n 偏移）
-├── sat/              # encoder、routing_feedback、encode_tob_special、encode_bus_sync、extract
-├── sat_allocation/   # cadical_solver（assume/solve/failed）
-├── problem_formulation/
-├── mcf/ precompute/ ilp_allocation/ visualization/   # 第十二版遗留，未链接 test_ILP
+├── main.cc, test_ilp_cli.cc   # 独立 test_ILP 可执行入口（链入 sat_ilp 源）
+├── test/                       # 小型 fixture（case_2btb 等）
+├── problem_formulation/        # 方法文档（勿改）
+└── mcf/ precompute/ …         # 第十二版遗留，未链接
 ```
 
 ## 关键模块
@@ -103,7 +101,7 @@ xmake build test_ILP_unit
 ./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192 -s 0 -d 1
 ./output/test_ILP algorithm/test_ILP/test/case_2btb -v --max-rss-mb 8192 -s 1 -d 1
 
-# Interposer::COB_ARRAY_WIDTH == 13 时可直接跑 case7 ，否则需要先改成13再跑 case7
+# 跑 test/config/case* 前先按 test/AGENTS.md 设置 COB_ARRAY_WIDTH
 ./output/test_ILP test/config/case7 -v
 ./output/test_ILP test/config/case7 -v -o output/case7_run
 ./output/test_ILP test/config/case7 -v --ilp-optimize -L 10
@@ -114,7 +112,7 @@ xmake build test_ILP_unit
 
 - 各 case 的 `config.json` 键名仍为 **`reigster_adder`**，文件名为 **`register_adder.json`**。
 - `register_adder.json` 至少含四个 quadrant 键：`botleft_REG0.txt` / `botright_REG1.txt` / `topleft_REG2.txt` / `topright_REG3.txt`（可为 `{}` stub）；否则 `read_config` 会 FATAL。
-- 当前默认 `COB_ARRAY_WIDTH = 13`：右边水平外部端口 `col` 应为 **13**（`col == COB_ARRAY_WIDTH`）。`[flow]` 回归临时改为 12，与本实验无关。
+- `COB_ARRAY_WIDTH` 须与 case 的 `description.txt` 一致；详见 `test/AGENTS.md`（cases 7–16 通常为 13）。
 
 **输出目录**（可选）：`-o DIR` / `--output DIR` 将 `debug.log` 写到 `DIR/debug.log`，并将 `--ilp-optimize` 的 Gurobi 日志写到 `DIR/gurobi/v15_ilp.log`（目录不存在时创建）；省略时分别为 `./debug.log` 与 `./gurobi/v15_ilp.log`。`--sat-log` 的 `./cadical-log` 路径不受 `-o` 影响。
 
