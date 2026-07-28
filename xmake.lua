@@ -204,6 +204,8 @@ target("regression_test")
         "source/serde/**.cc"
     )
     remove_files("source/algo/router/sat_ilp/**.cc")
+    remove_files("source/algo/router/backend/sat_backend.cc")
+    add_defines("PR_TOOL_HAS_SAT_ROUTER=0")
 
 target("txt2json")
     set_kind("binary")
@@ -220,6 +222,8 @@ target("txt2json")
         "source/serde/**.cc"
     )
     remove_files("source/algo/router/sat_ilp/**.cc")
+    remove_files("source/algo/router/backend/sat_backend.cc")
+    add_defines("PR_TOOL_HAS_SAT_ROUTER=0")
 
 target("json2txt")
     set_kind("binary")
@@ -236,6 +240,8 @@ target("json2txt")
         "source/serde/**.cc"
     )
     remove_files("source/algo/router/sat_ilp/**.cc")
+    remove_files("source/algo/router/backend/sat_backend.cc")
+    add_defines("PR_TOOL_HAS_SAT_ROUTER=0")
 
 target("parse_controlbits")
     set_kind("binary")

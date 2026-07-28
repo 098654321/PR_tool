@@ -8,6 +8,7 @@
 
 #include <circuit/net/types/syncnet.hh>
 #include <circuit/net/types/tbsnet.hh>
+#include <circuit/net/types/tsbsnet.hh>
 #include <circuit/path/pathpackage.hh>
 #include <format>
 #include <stdexcept>
@@ -271,6 +272,36 @@ auto build_single_history_package(
         }
         append_track_to_bump(interposer, end_bump, tracks.back(), history);
     }
+    else if (routing_net.kind == RoutingNetKind::PNnet) {
+        if (pair_path.physical_source_node < 0
+            || static_cast<std::size_t>(pair_path.physical_source_node) >= graph.nodes.size()) {
+            throw std::runtime_error(std::format(
+                "commit: PNnet '{}' demand {} missing physical source track",
+                routing_net.name,
+                pair_path.demand_id));
+        }
+        if (demand.sink.kind != GraphNodeRef::Kind::Bump) {
+            throw std::runtime_error(std::format(
+                "commit: PNnet '{}' expected bump sink",
+                routing_net.name));
+        }
+        const auto& source_node = graph.nodes[static_cast<std::size_t>(pair_path.physical_source_node)];
+        auto* source_track = resolve_track(interposer, source_node);
+        auto* end_bump = resolve_bump(interposer, demand.sink.bump);
+        if (source_track == nullptr || end_bump == nullptr) {
+            throw std::runtime_error(std::format(
+                "commit: PNnet '{}' could not resolve endpoints",
+                routing_net.name));
+        }
+        if (source_track != tracks.front()) {
+            throw std::runtime_error(std::format(
+                "commit: PNnet '{}' path does not start at selected source track {} (got {})",
+                routing_net.name,
+                source_track->coord().to_string(),
+                tracks.front()->coord().to_string()));
+        }
+        append_track_to_bump(interposer, end_bump, tracks.back(), history);
+    }
     else {
         throw std::runtime_error(std::format(
             "commit: unsupported routing net kind for '{}'",
@@ -371,14 +402,6 @@ auto commit_sat_paths_to_nets(
 
     try {
         for (const auto& routing_net : routing_nets) {
-            if (routing_net.kind == RoutingNetKind::PNnet) {
-                return CommitPathsResult {
-                    false,
-                    std::format(
-                        "commit not implemented for PNnet '{}'",
-                        routing_net.name)};
-            }
-
             auto* circuit_net = find_circuit_net(basedie, routing_net);
             if (circuit_net == nullptr) {
                 return CommitPathsResult {
@@ -396,6 +419,19 @@ auto commit_sat_paths_to_nets(
                     std::format(
                         "commit: no SAT paths for routing net '{}'",
                         routing_net.name)};
+            }
+
+            if (routing_net.kind == RoutingNetKind::PNnet) {
+                if (dynamic_cast<circuit::TracksToBumpsNet*>(circuit_net) == nullptr) {
+                    return CommitPathsResult {
+                        false,
+                        std::format(
+                            "commit: PNnet '{}' is not a TracksToBumpsNet",
+                            routing_net.name)};
+                }
+                auto history = merge_track_to_bumps_history(interposer, graph, routing_net, paths);
+                commit_history_to_net(interposer, circuit_net, std::move(history), true);
+                continue;
             }
 
             if (routing_net.is_sync_bus) {
