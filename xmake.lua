@@ -22,6 +22,33 @@ rule("qt.opengl")
         end
     end)
 
+local function add_sat_ilp_deps()
+    if has_config("cadical") then
+        add_defines("USE_CADICAL")
+        add_includedirs("third_party/cadical/src")
+        add_linkdirs("third_party/cadical/build")
+        add_links("cadical")
+        if is_plat("linux") then
+            add_syslinks("pthread")
+        end
+    end
+    local gurobi_home = os.getenv("GUROBI_HOME")
+    if not gurobi_home or gurobi_home == "" then
+        if is_plat("linux") then
+            gurobi_home = "/opt/gurobi1302/linux64"
+        else
+            gurobi_home = "/Library/gurobi1302/macos_universal2"
+        end
+    end
+    add_includedirs(gurobi_home .. "/include")
+    add_linkdirs(gurobi_home .. "/lib")
+    add_rpathdirs(gurobi_home .. "/lib")
+    if is_plat("linux") then
+        add_links("pthread", "dl", "m")
+    end
+    add_links("gurobi_c++", "gurobi130")
+end
+
 -- PR_tool Task!!!
 
 target("PR_tool")
@@ -32,6 +59,16 @@ target("PR_tool")
     add_includedirs("source", "source/global")
     add_files("source/**.cc", "source/widget/**.h", "resource/resource.qrc")
     add_rules("qt.widgetapp", "qt.opengl")
+    if has_config("sat_router") then
+        add_defines("PR_TOOL_HAS_SAT_ROUTER=1")
+        add_includedirs("source/algo/router/sat_ilp")
+        add_sat_ilp_deps()
+    else
+        remove_files("source/algo/router/sat_ilp/**.cc")
+        remove_files("source/algo/router/backend/sat_backend.cc")
+        remove_files("source/algo/router/sat_ilp/commit_paths.cc")
+        add_defines("PR_TOOL_HAS_SAT_ROUTER=0")
+    end
 
 target("PR_tool_cli")
     set_kind("binary")
@@ -51,6 +88,16 @@ target("PR_tool_cli")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
+    if has_config("sat_router") then
+        add_defines("PR_TOOL_HAS_SAT_ROUTER=1")
+        add_includedirs("source/algo/router/sat_ilp")
+        add_sat_ilp_deps()
+    else
+        remove_files("source/algo/router/sat_ilp/**.cc")
+        remove_files("source/algo/router/backend/sat_backend.cc")
+        remove_files("source/algo/router/sat_ilp/commit_paths.cc")
+        add_defines("PR_TOOL_HAS_SAT_ROUTER=0")
+    end
 
 -- Tool Application 
 
@@ -127,6 +174,9 @@ target("module_test")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
+    add_defines("PR_TOOL_HAS_SAT_ROUTER=1")
+    add_includedirs("source/algo/router/sat_ilp")
+    add_sat_ilp_deps()
 
 target("regression_test")
     set_kind("binary")
@@ -241,30 +291,7 @@ target("test_ILP")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
-    if has_config("cadical") then
-        add_defines("USE_CADICAL")
-        add_includedirs("third_party/cadical/src")
-        add_linkdirs("third_party/cadical/build")
-        add_links("cadical")
-        if is_plat("linux") then
-            add_syslinks("pthread")
-        end
-    end
-    local gurobi_home = os.getenv("GUROBI_HOME")
-    if not gurobi_home or gurobi_home == "" then
-        if is_plat("linux") then
-            gurobi_home = "/opt/gurobi1302/linux64"
-        else
-            gurobi_home = "/Library/gurobi1302/macos_universal2"
-        end
-    end
-    add_includedirs(gurobi_home .. "/include")
-    add_linkdirs(gurobi_home .. "/lib")
-    add_rpathdirs(gurobi_home .. "/lib")
-    if is_plat("linux") then
-        add_links("pthread", "dl", "m")
-    end
-    add_links("gurobi_c++", "gurobi130")
+    add_sat_ilp_deps()
 
 target("test_ILP_unit")
     set_kind("binary")
@@ -310,30 +337,7 @@ target("test_ILP_unit")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
-    if has_config("cadical") then
-        add_defines("USE_CADICAL")
-        add_includedirs("third_party/cadical/src")
-        add_linkdirs("third_party/cadical/build")
-        add_links("cadical")
-        if is_plat("linux") then
-            add_syslinks("pthread")
-        end
-    end
-    local gurobi_home = os.getenv("GUROBI_HOME")
-    if not gurobi_home or gurobi_home == "" then
-        if is_plat("linux") then
-            gurobi_home = "/opt/gurobi1302/linux64"
-        else
-            gurobi_home = "/Library/gurobi1302/macos_universal2"
-        end
-    end
-    add_includedirs(gurobi_home .. "/include")
-    add_linkdirs(gurobi_home .. "/lib")
-    add_rpathdirs(gurobi_home .. "/lib")
-    if is_plat("linux") then
-        add_links("pthread", "dl", "m")
-    end
-    add_links("gurobi_c++", "gurobi130")
+    add_sat_ilp_deps()
 
 target("wirelength_study")
     set_kind("binary")
@@ -368,6 +372,11 @@ target("wirelength_study")
 
 
 -- tools
+
+option("sat_router")
+    set_default(true)
+    set_showmenu(true)
+    set_description("Build SAT/ILP router backend into PR_tool / PR_tool_cli")
 
 option("cadical")
 
