@@ -131,6 +131,7 @@ target("view2d")
         "source/widget/frame/**.cc",
         "tools/view2d.cc"
     )
+    remove_files("source/algo/router/sat_ilp/**.cc")
     add_rules("qt.widgetapp", "qt.opengl")
 
 -- Load config, run P&R and view result in 3D view
@@ -154,6 +155,7 @@ target("view3d")
         "resource/resource.qrc",
         "tools/view3d.cc"
     )
+    remove_files("source/algo/router/sat_ilp/**.cc")
     add_rules("qt.widgetapp", "qt.opengl")
 
 -- Test Tasks
@@ -201,6 +203,7 @@ target("regression_test")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
+    remove_files("source/algo/router/sat_ilp/**.cc")
 
 target("txt2json")
     set_kind("binary")
@@ -216,6 +219,7 @@ target("txt2json")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
+    remove_files("source/algo/router/sat_ilp/**.cc")
 
 target("json2txt")
     set_kind("binary")
@@ -231,6 +235,7 @@ target("json2txt")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
+    remove_files("source/algo/router/sat_ilp/**.cc")
 
 target("parse_controlbits")
     set_kind("binary")
@@ -246,50 +251,53 @@ target("parse_controlbits")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
+    remove_files("source/algo/router/sat_ilp/**.cc")
 
 target("test_ILP")
     set_kind("binary")
     set_targetdir("./output")
     set_default(false)
-    add_includedirs("source", "source/global", "algorithm/test_ILP")
+    add_includedirs("source", "source/global", "source/algo/router/sat_ilp", "algorithm/test_ILP")
     add_files(
         "algorithm/test_ILP/main.cc",
-        "algorithm/test_ILP/test_ilp_cli.cc",
-        "algorithm/test_ILP/scope/build_routing_nets.cc",
-        "algorithm/test_ILP/scope/scope_bbox.cc",
-        "algorithm/test_ILP/scope/pair_routing_state.cc",
-        "algorithm/test_ILP/graph/unified_routing_graph.cc",
-        "algorithm/test_ILP/common/cob_unit_mask.cc",
-        "algorithm/test_ILP/delay/pair_delay_precompute.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_prepare.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_domain.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_segment.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_model.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_extract.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_validate.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_optimizer.cc",
-        "algorithm/test_ILP/sat/unified_sat_scope.cc",
-        "algorithm/test_ILP/sat/sat_constraint_kits.cc",
-        "algorithm/test_ILP/sat/sat_encoding_stats.cc",
-        "algorithm/test_ILP/sat/unified_sat_encoder.cc",
-        "algorithm/test_ILP/sat/encode_tob_special.cc",
-        "algorithm/test_ILP/sat/encode_bus_sync.cc",
-        "algorithm/test_ILP/sat/solve_unified_sat.cc",
-        "algorithm/test_ILP/sat/routing_feedback.cc",
-        "algorithm/test_ILP/sat/routing_round_diagnostics.cc",
-        "algorithm/test_ILP/sat/ideal_shortest_wirelength.cc",
-        "algorithm/test_ILP/sat/routing_solution_validate.cc",
-        "algorithm/test_ILP/sat/sat_solution_extract.cc",
-        "algorithm/test_ILP/sat/routing_path_log.cc",
-        "algorithm/test_ILP/sat_allocation/cadical_solver.cc"
+        "algorithm/test_ILP/test_ilp_cli.cc"
     )
     add_files(
-        "source/algo/**.cc",
+        "source/algo/**.cc|router/sat_ilp/**",
         "source/circuit/**.cc",
         "source/global/**.cc",
         "source/hardware/**.cc",
         "source/parse/**.cc",
         "source/serde/**.cc"
+    )
+    add_files(
+        "source/algo/router/sat_ilp/scope/build_routing_nets.cc",
+        "source/algo/router/sat_ilp/scope/scope_bbox.cc",
+        "source/algo/router/sat_ilp/scope/pair_routing_state.cc",
+        "source/algo/router/sat_ilp/graph/unified_routing_graph.cc",
+        "source/algo/router/sat_ilp/common/cob_unit_mask.cc",
+        "source/algo/router/sat_ilp/delay/pair_delay_precompute.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_prepare.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_domain.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_segment.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_model.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_extract.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_validate.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_optimizer.cc",
+        "source/algo/router/sat_ilp/sat/unified_sat_scope.cc",
+        "source/algo/router/sat_ilp/sat/sat_constraint_kits.cc",
+        "source/algo/router/sat_ilp/sat/sat_encoding_stats.cc",
+        "source/algo/router/sat_ilp/sat/unified_sat_encoder.cc",
+        "source/algo/router/sat_ilp/sat/encode_tob_special.cc",
+        "source/algo/router/sat_ilp/sat/encode_bus_sync.cc",
+        "source/algo/router/sat_ilp/sat/solve_unified_sat.cc",
+        "source/algo/router/sat_ilp/sat/routing_feedback.cc",
+        "source/algo/router/sat_ilp/sat/routing_round_diagnostics.cc",
+        "source/algo/router/sat_ilp/sat/ideal_shortest_wirelength.cc",
+        "source/algo/router/sat_ilp/sat/routing_solution_validate.cc",
+        "source/algo/router/sat_ilp/sat/sat_solution_extract.cc",
+        "source/algo/router/sat_ilp/sat/routing_path_log.cc",
+        "source/algo/router/sat_ilp/sat_allocation/cadical_solver.cc"
     )
     add_sat_ilp_deps()
 
@@ -297,45 +305,47 @@ target("test_ILP_unit")
     set_kind("binary")
     set_targetdir("./output")
     set_default(false)
-    add_includedirs("source", "source/global", "algorithm/test_ILP")
+    add_includedirs("source", "source/global", "source/algo/router/sat_ilp", "algorithm/test_ILP")
     add_files(
         "algorithm/test_ILP/test/unit_main.cc",
-        "algorithm/test_ILP/test_ilp_cli.cc",
-        "algorithm/test_ILP/scope/build_routing_nets.cc",
-        "algorithm/test_ILP/scope/scope_bbox.cc",
-        "algorithm/test_ILP/scope/pair_routing_state.cc",
-        "algorithm/test_ILP/graph/unified_routing_graph.cc",
-        "algorithm/test_ILP/common/cob_unit_mask.cc",
-        "algorithm/test_ILP/delay/pair_delay_precompute.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_prepare.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_domain.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_segment.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_model.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_extract.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_validate.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_optimizer.cc",
-        "algorithm/test_ILP/sat/unified_sat_scope.cc",
-        "algorithm/test_ILP/sat/sat_constraint_kits.cc",
-        "algorithm/test_ILP/sat/sat_encoding_stats.cc",
-        "algorithm/test_ILP/sat/unified_sat_encoder.cc",
-        "algorithm/test_ILP/sat/encode_tob_special.cc",
-        "algorithm/test_ILP/sat/encode_bus_sync.cc",
-        "algorithm/test_ILP/sat/solve_unified_sat.cc",
-        "algorithm/test_ILP/sat/routing_feedback.cc",
-        "algorithm/test_ILP/sat/routing_round_diagnostics.cc",
-        "algorithm/test_ILP/sat/ideal_shortest_wirelength.cc",
-        "algorithm/test_ILP/sat/routing_solution_validate.cc",
-        "algorithm/test_ILP/sat/sat_solution_extract.cc",
-        "algorithm/test_ILP/sat/routing_path_log.cc",
-        "algorithm/test_ILP/sat_allocation/cadical_solver.cc"
+        "algorithm/test_ILP/test_ilp_cli.cc"
     )
     add_files(
-        "source/algo/**.cc",
+        "source/algo/**.cc|router/sat_ilp/**",
         "source/circuit/**.cc",
         "source/global/**.cc",
         "source/hardware/**.cc",
         "source/parse/**.cc",
         "source/serde/**.cc"
+    )
+    add_files(
+        "source/algo/router/sat_ilp/scope/build_routing_nets.cc",
+        "source/algo/router/sat_ilp/scope/scope_bbox.cc",
+        "source/algo/router/sat_ilp/scope/pair_routing_state.cc",
+        "source/algo/router/sat_ilp/graph/unified_routing_graph.cc",
+        "source/algo/router/sat_ilp/common/cob_unit_mask.cc",
+        "source/algo/router/sat_ilp/delay/pair_delay_precompute.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_prepare.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_domain.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_segment.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_model.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_extract.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_validate.cc",
+        "source/algo/router/sat_ilp/ilp_v15/v15_ilp_optimizer.cc",
+        "source/algo/router/sat_ilp/sat/unified_sat_scope.cc",
+        "source/algo/router/sat_ilp/sat/sat_constraint_kits.cc",
+        "source/algo/router/sat_ilp/sat/sat_encoding_stats.cc",
+        "source/algo/router/sat_ilp/sat/unified_sat_encoder.cc",
+        "source/algo/router/sat_ilp/sat/encode_tob_special.cc",
+        "source/algo/router/sat_ilp/sat/encode_bus_sync.cc",
+        "source/algo/router/sat_ilp/sat/solve_unified_sat.cc",
+        "source/algo/router/sat_ilp/sat/routing_feedback.cc",
+        "source/algo/router/sat_ilp/sat/routing_round_diagnostics.cc",
+        "source/algo/router/sat_ilp/sat/ideal_shortest_wirelength.cc",
+        "source/algo/router/sat_ilp/sat/routing_solution_validate.cc",
+        "source/algo/router/sat_ilp/sat/sat_solution_extract.cc",
+        "source/algo/router/sat_ilp/sat/routing_path_log.cc",
+        "source/algo/router/sat_ilp/sat_allocation/cadical_solver.cc"
     )
     add_sat_ilp_deps()
 
@@ -344,6 +354,7 @@ target("wirelength_study")
     set_targetdir("./output")
     set_default(false)
     add_includedirs(
+        "source/algo/router/sat_ilp",
         "algorithm/test_ILP",
         "source",
         "source/global")
@@ -354,6 +365,7 @@ target("wirelength_study")
         "source/hardware/**.cc",
         "source/parse/**.cc",
         "source/serde/**.cc")
+    remove_files("source/algo/router/sat_ilp/**.cc")
     local gurobi_home = os.getenv("GUROBI_HOME")
     if not gurobi_home or gurobi_home == "" then
       if is_plat("linux") then
