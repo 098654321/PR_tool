@@ -60,17 +60,35 @@ auto find_circuit_net(circuit::BaseDie& basedie, const RoutingNet& routing_net) 
     return nullptr;
 }
 
-auto find_cob_connector(
+auto find_cob_info(
     hardware::Interposer* interposer,
     hardware::Track* from,
     hardware::Track* to
-) -> std::Option<hardware::COBConnector> {
+) -> std::Option<circuit::COBConnectorInfo> {
     for (auto& [adj_track, connector] : interposer->adjacent_tracks(from)) {
         if (adj_track == to) {
-            return connector;
+            return circuit::COBConnectorInfo{
+                connector.coord(),
+                connector.from_dir(),
+                connector.from_track_index(),
+                connector.to_dir(),
+                connector.to_track_index(),
+            };
         }
     }
     return std::nullopt;
+}
+
+auto tob_info_from(hardware::Bump* bump, const hardware::TOBConnector& connector)
+    -> circuit::TOBConnectorInfo {
+    return circuit::TOBConnectorInfo{
+        connector.bump_index(),
+        connector.hori_index(),
+        connector.vert_index(),
+        connector.track_index(),
+        connector.single_direction(),
+        bump->tob()->coord(),
+    };
 }
 
 auto collect_ordered_tracks(
@@ -104,21 +122,20 @@ auto collect_ordered_tracks(
 auto append_track_chain(
     hardware::Interposer* interposer,
     const std::Vector<hardware::Track*>& tracks,
-    algo::routed_path& regular_path
+    circuit::HistoryPathPackage& history
 ) -> void {
     for (std::size_t i = 0; i < tracks.size(); ++i) {
-        std::Option<hardware::COBConnector> connector {std::nullopt};
+        std::Option<circuit::COBConnectorInfo> connector_info {std::nullopt};
         if (i + 1 < tracks.size()) {
-            connector = find_cob_connector(interposer, tracks[i], tracks[i + 1]);
-            if (!connector.has_value()) {
+            connector_info = find_cob_info(interposer, tracks[i], tracks[i + 1]);
+            if (!connector_info.has_value()) {
                 throw std::runtime_error(std::format(
                     "commit: missing COB connector between {} and {}",
                     tracks[i]->coord().to_string(),
                     tracks[i + 1]->coord().to_string()));
             }
-            connector->suspend();
         }
-        regular_path.emplace_back(tracks[i], connector);
+        history._regular_path.emplace_back(tracks[i]->coord(), connector_info);
     }
 }
 
@@ -126,7 +143,7 @@ auto append_bump_to_track(
     hardware::Interposer* interposer,
     hardware::Bump* bump,
     hardware::Track* track,
-    circuit::PathPackage& package
+    circuit::HistoryPathPackage& history
 ) -> void {
     auto tracks_map = interposer->available_tracks_bump_to_track(bump, true);
     const auto iter = tracks_map.find(track);
@@ -136,14 +153,15 @@ auto append_bump_to_track(
             bump->coord().to_string(),
             track->coord().to_string()));
     }
-    package._tob_to_track.emplace_back(bump, iter->second, track);
+    history._tob_to_track.emplace_back(
+        bump->coord(), tob_info_from(bump, iter->second), track->coord());
 }
 
 auto append_track_to_bump(
     hardware::Interposer* interposer,
     hardware::Bump* bump,
     hardware::Track* track,
-    circuit::PathPackage& package
+    circuit::HistoryPathPackage& history
 ) -> void {
     auto tracks_map = interposer->available_tracks_track_to_bump(bump, true);
     const auto iter = tracks_map.find(track);
@@ -153,7 +171,8 @@ auto append_track_to_bump(
             track->coord().to_string(),
             bump->coord().to_string()));
     }
-    package._track_to_tob.emplace_back(bump, iter->second, track);
+    history._track_to_tob.emplace_back(
+        bump->coord(), tob_info_from(bump, iter->second), track->coord());
 }
 
 auto source_ref_for_pair(const RoutingNet& net, const SourceSinkPairPath& pair_path) -> GraphNodeRef {
@@ -163,12 +182,12 @@ auto source_ref_for_pair(const RoutingNet& net, const SourceSinkPairPath& pair_p
     return {};
 }
 
-auto build_single_path_package(
+auto build_single_history_package(
     hardware::Interposer* interposer,
     const UnifiedGraph& graph,
     const RoutingNet& routing_net,
     const SourceSinkPairPath& pair_path
-) -> circuit::PathPackage {
+) -> circuit::HistoryPathPackage {
     if (pair_path.demand_id >= routing_net.demands.size()) {
         throw std::runtime_error(std::format(
             "commit: net '{}' demand {} out of range",
@@ -185,8 +204,11 @@ auto build_single_path_package(
             pair_path.demand_id));
     }
 
-    circuit::PathPackage package {};
-    append_track_chain(interposer, tracks, package._regular_path);
+    circuit::PathPackage empty_package {};
+    circuit::HistoryPathPackage history{empty_package};
+    history.clear_all();
+
+    append_track_chain(interposer, tracks, history);
 
     if (routing_net.kind == RoutingNetKind::Bnet) {
         const auto source_ref = source_ref_for_pair(routing_net, pair_path);
@@ -207,8 +229,8 @@ auto build_single_path_package(
                 "commit: Bnet '{}' could not resolve endpoint bumps",
                 routing_net.name));
         }
-        append_bump_to_track(interposer, begin_bump, tracks.front(), package);
-        append_track_to_bump(interposer, end_bump, tracks.back(), package);
+        append_bump_to_track(interposer, begin_bump, tracks.front(), history);
+        append_track_to_bump(interposer, end_bump, tracks.back(), history);
     }
     else if (routing_net.kind == RoutingNetKind::Tnet) {
         const auto source_ref = source_ref_for_pair(routing_net, pair_path);
@@ -247,7 +269,7 @@ auto build_single_path_package(
                 source_track->coord().to_string(),
                 tracks.front()->coord().to_string()));
         }
-        append_track_to_bump(interposer, end_bump, tracks.back(), package);
+        append_track_to_bump(interposer, end_bump, tracks.back(), history);
     }
     else {
         throw std::runtime_error(std::format(
@@ -256,50 +278,69 @@ auto build_single_path_package(
     }
 
     std::usize path_l = algo::path_length(tracks);
-    if (!package._tob_to_track.empty()) {
+    if (!history._tob_to_track.empty()) {
         path_l += 1;
     }
-    if (!package._track_to_tob.empty()) {
+    if (!history._track_to_tob.empty()) {
         path_l += 1;
     }
-    package._length = path_l;
-    return package;
+    history._length = path_l;
+    return history;
 }
 
-auto merge_track_to_bumps_package(
+auto merge_track_to_bumps_history(
     hardware::Interposer* interposer,
     const UnifiedGraph& graph,
     const RoutingNet& routing_net,
     const std::Vector<const SourceSinkPairPath*>& paths
-) -> circuit::PathPackage {
-    circuit::PathPackage package {};
-    algo::routed_path total_regular_path {};
+) -> circuit::HistoryPathPackage {
+    circuit::PathPackage empty_package {};
+    circuit::HistoryPathPackage history{empty_package};
+    history.clear_all();
     std::usize total_length {0};
 
     for (const auto* pair_path : paths) {
-        auto member_package = build_single_path_package(interposer, graph, routing_net, *pair_path);
-        total_regular_path.insert(
-            total_regular_path.end(),
-            member_package._regular_path.begin(),
-            member_package._regular_path.end());
-        package._track_to_tob.insert(
-            package._track_to_tob.end(),
-            member_package._track_to_tob.begin(),
-            member_package._track_to_tob.end());
+        auto member_history = build_single_history_package(interposer, graph, routing_net, *pair_path);
+        history._regular_path.insert(
+            history._regular_path.end(),
+            member_history._regular_path.begin(),
+            member_history._regular_path.end());
+        history._track_to_tob.insert(
+            history._track_to_tob.end(),
+            member_history._track_to_tob.begin(),
+            member_history._track_to_tob.end());
 
         auto path_tracks = std::Vector<hardware::Track*> {};
-        for (auto& [track, connector] : member_package._regular_path) {
-            (void)connector;
-            path_tracks.push_back(track);
+        for (const auto& [track_coord, connector_info] : member_history._regular_path) {
+            (void)connector_info;
+            auto track = interposer->get_track(track_coord);
+            if (!track.has_value()) {
+                throw std::runtime_error(std::format(
+                    "commit: track not found during merge: {}",
+                    track_coord.to_string()));
+            }
+            path_tracks.push_back(track.value());
         }
         if (!path_tracks.empty()) {
             total_length += algo::path_length(path_tracks);
         }
     }
 
-    package._regular_path = std::move(total_regular_path);
-    package._length = total_length + 1;
-    return package;
+    history._length = total_length + 1;
+    return history;
+}
+
+auto commit_history_to_net(
+    hardware::Interposer* interposer,
+    circuit::Net* circuit_net,
+    circuit::HistoryPathPackage history,
+    bool occupy
+) -> void {
+    circuit::PathPackage package{history, interposer};
+    if (occupy) {
+        package.occupy_all();
+    }
+    circuit_net->set_pathpackage(package);
 }
 
 auto paths_for_net(
@@ -359,28 +400,26 @@ auto commit_sat_paths_to_nets(
 
             if (routing_net.is_sync_bus) {
                 for (const auto* pair_path : paths) {
-                    auto package = build_single_path_package(interposer, graph, routing_net, *pair_path);
-                    package.occupy_all();
-                    circuit_net->set_pathpackage(package);
+                    auto history = build_single_history_package(interposer, graph, routing_net, *pair_path);
+                    commit_history_to_net(interposer, circuit_net, std::move(history), false);
                 }
                 if (auto* sync_net = dynamic_cast<circuit::SyncNet*>(circuit_net)) {
                     sync_net->collect_package();
+                    sync_net->pathpackage().occupy_all();
                 }
                 continue;
             }
 
             if (paths.size() == 1) {
-                auto package = build_single_path_package(interposer, graph, routing_net, *paths.front());
-                package.occupy_all();
-                circuit_net->set_pathpackage(package);
+                auto history = build_single_history_package(interposer, graph, routing_net, *paths.front());
+                commit_history_to_net(interposer, circuit_net, std::move(history), true);
                 continue;
             }
 
             if (routing_net.kind == RoutingNetKind::Tnet
                 && dynamic_cast<circuit::TrackToBumpsNet*>(circuit_net) != nullptr) {
-                auto package = merge_track_to_bumps_package(interposer, graph, routing_net, paths);
-                package.occupy_all();
-                circuit_net->set_pathpackage(package);
+                auto history = merge_track_to_bumps_history(interposer, graph, routing_net, paths);
+                commit_history_to_net(interposer, circuit_net, std::move(history), true);
                 continue;
             }
 
