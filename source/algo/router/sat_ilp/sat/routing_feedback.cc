@@ -280,9 +280,21 @@ auto solve_with_feedback(
                 out.solve_ms = total_solve_ms;
                 out.feedback_rounds = round;
                 out.total_wirelength = total_wirelength(graph, out);
-                log_routing_paths(graph, nets, out);
+                if (options.verbose_level >= 1) {
+                    log_routing_paths(graph, nets, out);
+                }
                 const auto validation = validate_routing_solution(graph, nets, model, session, out);
                 log_validation_report(validation, options.verbose_level);
+                if (!validation.pass) {
+                    out.ok = false;
+                    out.message = "SAT_VALIDATION_FAILED";
+                    debug::error_fmt(
+                        "SAT validation failed: violations={}",
+                        validation.violations_count);
+                    log_feedback_round_end(round, FeedbackRoundStatus::ValidationFailed);
+                    stamp_sat_timing(out);
+                    return out;
+                }
                 debug::info_fmt(
                     "unified SAT ok: paths={} vars={} clauses={} round_solve_ms={} total_solve_ms={} total_wirelength={} round={}",
                     out.paths.size(),
@@ -324,7 +336,6 @@ auto solve_with_feedback(
                     out.ilp_pre_ms = ilp.stats.pre_ms;
                     if (ilp.status == V15IlpStatus::Optimal
                         || ilp.status == V15IlpStatus::Suboptimal) {
-                        log_routing_paths(graph, nets, out);
                         log_non_shortest_nets(interposer, graph, nets, delays, out);
                     }
                 }

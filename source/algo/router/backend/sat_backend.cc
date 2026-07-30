@@ -3,12 +3,46 @@
 #include <sat/solve_unified_sat.hh>
 
 #include <circuit/basedie.hh>
+#include <circuit/net/net.hh>
 #include <debug/debug.hh>
 #include <hardware/interposer.hh>
 
 #include <stdexcept>
 
 namespace PR_tool::algo {
+
+namespace {
+
+auto log_committed_net_paths(const circuit::BaseDie& basedie) -> void {
+    debug::info(
+        "\n"
+        "**********************************************************************************\n"
+        "                                        Net & Path Infomation\n"
+        "**********************************************************************************"
+    );
+    for (const auto& [_, nets] : basedie.nets()) {
+        for (const auto& net : nets) {
+            debug::info(net->to_string());
+            const auto length = net->length();
+            if (length > 0) {
+                debug::info_fmt("Routing length of this net: {}", length);
+                debug::info_fmt("Routing priority of this net: {}", net->priority().value());
+                net->show_path();
+            }
+            else {
+                debug::info_fmt("Routing failed for this net: {}", net->name());
+            }
+        }
+    }
+    debug::info(
+        "\n"
+        "**********************************************************************************\n"
+        "                                        Data Analysis\n"
+        "**********************************************************************************"
+    );
+}
+
+} // namespace
 
 auto SatRouterBackend::run(
     hardware::Interposer* interposer,
@@ -65,6 +99,7 @@ auto SatRouterBackend::run(
         return RouteStatus::Failed;
     }
 
+    log_committed_net_paths(*basedie);
     debug::info_fmt(
         "SAT routing ok: paths={} total_wirelength={} feedback_rounds={}",
         result.paths.size(),

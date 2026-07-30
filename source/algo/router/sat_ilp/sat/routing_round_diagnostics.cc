@@ -93,6 +93,8 @@ auto feedback_round_status_name(FeedbackRoundStatus status) -> std::String {
             return "UNSAT_EXHAUSTED";
         case FeedbackRoundStatus::SolverError:
             return "SOLVER_ERROR";
+        case FeedbackRoundStatus::ValidationFailed:
+            return "VALIDATION_FAILED";
         case FeedbackRoundStatus::MemoryLimit:
             return "MEMORY_LIMIT";
         case FeedbackRoundStatus::MaxRoundsExceeded:

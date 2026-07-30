@@ -34,10 +34,24 @@ namespace PR_tool::algo {
         void build();
 
     private:
-        auto build_no_sync_nets(std::Span<const std::Box<circuit::Connection>> connections, int group, int m) -> void;
+        auto build_no_sync_nets(
+            std::Span<const std::Box<circuit::Connection>> connections,
+            int group,
+            int m,
+            std::Vector<hardware::Bump*>& bumps_with_pose,
+            std::Vector<hardware::Bump*>& bumps_with_nege
+        ) -> void;
         auto build_sync_net(std::Span<const std::Box<circuit::Connection>> connections, int group, int m) -> void;
-        auto build_fixed_nets(int m) -> void;
+        auto build_fixed_nets(
+            int m,
+            const std::Vector<hardware::Bump*>& bumps_with_pose,
+            const std::Vector<hardware::Bump*>& bumps_with_nege
+        ) -> void;
         auto build_01_ports() -> void;
+        auto register_net_at_bump_owners(
+            circuit::Net* net,
+            const std::Vector<hardware::Bump*>& bumps
+        ) -> void;
         auto make_uid_prefix(int mode, int group, std::StringView type_token) const -> std::String;
         auto bump_uid_token(const hardware::Bump* bump) const -> std::String;
         auto track_uid_token(const hardware::Track* track) const -> std::String;
@@ -54,8 +68,6 @@ namespace PR_tool::algo {
         // Temp var while build!
         std::Vector<hardware::TrackCoord> _pose_tracks;
         std::Vector<hardware::TrackCoord> _nege_tracks;
-        std::Vector<hardware::Bump*> _bumps_with_pose {};
-        std::Vector<hardware::Bump*> _bumps_with_nege {};
         std::HashMap<hardware::Bump*, circuit::TopDieInstance*> _bump_to_topdie_inst {};
     };
 
