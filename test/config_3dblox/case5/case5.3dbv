@@ -16,7 +16,6 @@ ChipletDef:
         side: front
         coords: [[0.0, 0.0], [400.0, 0.0], [400.0, 200.0], [0.0, 200.0]]
         bmap: bmaps/AI.bmap
-        layer: metal1
     external:
       APR_tech_file: [case5_tech.lef]
       LEF_file: [case5_bump.lef]
@@ -31,11 +30,10 @@ ChipletDef:
       front:
         side: front
         coords: [[0.0, 0.0], [7300.0, 0.0], [7300.0, 5500.0], [0.0, 5500.0]]
-        layer: metal1
+        bmap: bmaps/PRTOOL_INTERPOSER.bmap
     external:
       APR_tech_file: [case5_tech.lef]
-      LEF_file: [case5_interposer_macros.lef]
-      DEF_file: case5_interposer.def
+      LEF_file: [case5_bump.lef]
   cpu:
     type: die
     design_area: [400.0, 200.0]
@@ -48,7 +46,6 @@ ChipletDef:
         side: front
         coords: [[0.0, 0.0], [400.0, 0.0], [400.0, 200.0], [0.0, 200.0]]
         bmap: bmaps/cpu.bmap
-        layer: metal1
     external:
       APR_tech_file: [case5_tech.lef]
       LEF_file: [case5_bump.lef]
@@ -64,7 +61,6 @@ ChipletDef:
         side: front
         coords: [[0.0, 0.0], [400.0, 0.0], [400.0, 200.0], [0.0, 200.0]]
         bmap: bmaps/mem.bmap
-        layer: metal1
     external:
       APR_tech_file: [case5_tech.lef]
       LEF_file: [case5_bump.lef]

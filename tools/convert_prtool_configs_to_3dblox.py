@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Convert PR_tool JSON cases into a 3DBlox/OpenROAD-loadable package.
 
-The generated package uses standard 3DBlox, Verilog, LEF, DEF and bump-map
-files. Positive connection groups become named synchronous Verilog nets; no
-metadata Tcl sidecar is emitted.
+The generated package uses standard 3DBlox, Verilog, LEF and bump-map files.
+Positive connection groups become named synchronous Verilog nets.  Interposer
+DEF and macros LEF are still written for later drawing, but are not referenced
+from `.3dbv`/`.3dbx`.  The package also carries the original register_adder.json
+required for PR_tool controlbit output.
 """
 
 from __future__ import annotations
@@ -21,8 +23,9 @@ DEFAULT_INPUT = Path("/Users/jiaheng/FDU_files/Tao_group/PR_tool/PR_tool/test/co
 DEFAULT_OUTPUT = Path("/Users/jiaheng/FDU_files/Tao_group/PR_tool/PR_tool/test/config_3dblox")
 
 # Interposer geometry (microns), per the user-provided hardware dimensions.
+# COB column count is per-case (12 or 13); see cob_cols_from_case().
 COB_ROWS = 9
-COB_COLS = 12
+DEFAULT_COB_COLS = 12
 COB_SIZE = 100.0
 CHANNEL_LONG = 500.0
 CHANNEL_SHORT = 50.0
@@ -39,10 +42,33 @@ TOPDIE_THICKNESS = 20.0
 INTERPOSER_THICKNESS = 50.0
 MICROBUMP_GAP = 1.0
 
-INTERPOSER_WIDTH = 2 * EDGE_MARGIN + COB_COLS * COB_SIZE + (COB_COLS - 1) * CHANNEL_LONG
 INTERPOSER_HEIGHT = 2 * EDGE_MARGIN + COB_ROWS * COB_SIZE + (COB_ROWS - 1) * CHANNEL_LONG
 PORT_SPAN = (128 - 1) * PORT_PITCH
 PORT_OFFSET = (COB_SIZE - PORT_SPAN) / 2.0
+
+_COB_ARRAY_RE = re.compile(
+    r"COB\s*array\s*=\s*9\s*\*\s*(\d+)|!!!\s*COB\s*array\s*=\s*9\s*\*\s*(\d+)|9\s*\*\s*(12|13)\b",
+    re.IGNORECASE,
+)
+
+
+def interposer_width(cob_cols: int) -> float:
+    return 2 * EDGE_MARGIN + cob_cols * COB_SIZE + (cob_cols - 1) * CHANNEL_LONG
+
+
+def cob_cols_from_case(source_dir: Path) -> int:
+    """Read COB column count from description.txt; default 12 (matches test/AGENTS.md)."""
+    path = source_dir / "description.txt"
+    if not path.exists():
+        return DEFAULT_COB_COLS
+    match = _COB_ARRAY_RE.search(path.read_text(encoding="utf-8"))
+    if not match:
+        return DEFAULT_COB_COLS
+    width = next(group for group in match.groups() if group is not None)
+    cols = int(width)
+    if cols not in (12, 13):
+        raise ValueError(f"{source_dir.name}: unsupported COB array width {cols} (expected 12 or 13)")
+    return cols
 
 
 def read_json(path: Path) -> Any:
@@ -168,6 +194,43 @@ def bmap_lines(port_map: dict[str, str]) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
+def interposer_port_xy(
+    original: str,
+    external_ports: dict[str, Any],
+    ports_01: dict[str, Any],
+    cob_cols: int,
+) -> tuple[float, float]:
+    """Resolve micron XY for an interposer Verilog port used by connectivity."""
+    if original in external_ports:
+        return boundary_port_xy(external_ports[original]["coord"], cob_cols)
+    for polarity in ("pose", "nege"):
+        # Cases may name the shared 0/1 net "pose"/"nege" or e.g. "xinzhai_pose".
+        if original == polarity or original.endswith(f"_{polarity}"):
+            entries = ports_01.get(polarity, {})
+            if entries:
+                first = sorted(entries, key=lambda key: int(key))[0]
+                return boundary_port_xy(entries[first], cob_cols)
+        prefix = f"{polarity}_"
+        if original.startswith(prefix):
+            key = original[len(prefix):]
+            if key in ports_01.get(polarity, {}):
+                return boundary_port_xy(ports_01[polarity][key], cob_cols)
+    raise ValueError(f"no physical coordinate for interposer port {original!r}")
+
+
+def interposer_bmap_lines(
+    boundary_ports: dict[str, str],
+    external_ports: dict[str, Any],
+    ports_01: dict[str, Any],
+    cob_cols: int,
+) -> str:
+    lines: list[str] = []
+    for index, (original, port) in enumerate(sorted(boundary_ports.items())):
+        x, y = interposer_port_xy(original, external_ports, ports_01, cob_cols)
+        lines.append(f"bump_{index} PRTOOL_BUMP {x:.4f} {y:.4f} {port} {port}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
 def cob_origin(row: int, col: int) -> tuple[float, float]:
     return (
         EDGE_MARGIN + col * (COB_SIZE + CHANNEL_LONG),
@@ -195,11 +258,11 @@ def clamp(value: int, lower: int, upper: int) -> int:
     return max(lower, min(upper, value))
 
 
-def boundary_port_xy(coord: dict[str, Any]) -> tuple[float, float]:
+def boundary_port_xy(coord: dict[str, Any], cob_cols: int) -> tuple[float, float]:
     direction = coord["dir"]
     port_index = int(coord["index"])
     if direction == "vert":
-        col = clamp(int(coord["col"]), 0, COB_COLS - 1)
+        col = clamp(int(coord["col"]), 0, cob_cols - 1)
         top_side = int(coord["row"]) >= COB_ROWS
         row = COB_ROWS - 1 if top_side else 0
         cob_x, cob_y = cob_origin(row, col)
@@ -207,8 +270,8 @@ def boundary_port_xy(coord: dict[str, Any]) -> tuple[float, float]:
         y = cob_y + COB_SIZE if top_side else cob_y
         return x, y
     row = clamp(int(coord["row"]), 0, COB_ROWS - 1)
-    right_side = int(coord["col"]) >= COB_COLS
-    col = COB_COLS - 1 if right_side else 0
+    right_side = int(coord["col"]) >= cob_cols
+    col = cob_cols - 1 if right_side else 0
     cob_x, cob_y = cob_origin(row, col)
     x = cob_x + COB_SIZE if right_side else cob_x
     y = cob_y + COB_SIZE - PORT_OFFSET - port_index * PORT_PITCH
@@ -284,27 +347,29 @@ def make_interposer_def(
     external_ports: dict[str, Any],
     ports_01: dict[str, Any],
     net_names: dict[str, str],
+    cob_cols: int,
 ) -> str:
     dbu = 1000
+    width = interposer_width(cob_cols)
 
     def db(value: float) -> int:
         return round(value * dbu)
 
     components: list[str] = []
     for row in range(COB_ROWS):
-        for col in range(COB_COLS):
+        for col in range(cob_cols):
             x, y = cob_origin(row, col)
             components.append(f"- COB_{row}_{col} PRTOOL_COB + PLACED ( {db(x)} {db(y)} ) N ;")
 
     for row in range(COB_ROWS):
-        for col in range(COB_COLS - 1):
+        for col in range(cob_cols - 1):
             x, y = cob_origin(row, col)
             hx = x + COB_SIZE
             hy = y + (COB_SIZE - CHANNEL_SHORT) / 2.0
             components.append(f"- HCHAN_{row}_{col + 1} PRTOOL_HCHAN + PLACED ( {db(hx)} {db(hy)} ) N ;")
 
     for row in range(COB_ROWS - 1):
-        for col in range(COB_COLS):
+        for col in range(cob_cols):
             x, y = cob_origin(row, col)
             vx = x + (COB_SIZE - CHANNEL_SHORT) / 2.0
             vy = y + COB_SIZE
@@ -317,13 +382,13 @@ def make_interposer_def(
 
     pins: list[str] = []
     for name, spec in sorted(external_ports.items()):
-        x, y = boundary_port_xy(spec["coord"])
+        x, y = boundary_port_xy(spec["coord"], cob_cols)
         pins.append(
             f"- {name} + NET {net_names[name]} + DIRECTION INOUT + USE SIGNAL + FIXED ( {db(x)} {db(y)} ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;"
         )
     for polarity in ("pose", "nege"):
         for key, spec in sorted(ports_01.get(polarity, {}).items(), key=lambda item: int(item[0])):
-            x, y = boundary_port_xy(spec)
+            x, y = boundary_port_xy(spec, cob_cols)
             pins.append(
                 f"- {polarity}_{key} + NET {polarity}_{key} + DIRECTION INOUT + USE SIGNAL + FIXED ( {db(x)} {db(y)} ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;"
             )
@@ -334,7 +399,7 @@ def make_interposer_def(
         'BUSBITCHARS "[]" ;',
         f"DESIGN {case_name}_interposer ;",
         f"UNITS DISTANCE MICRONS {dbu} ;",
-        f"DIEAREA ( 0 0 ) ( {db(INTERPOSER_WIDTH)} {db(INTERPOSER_HEIGHT)} ) ;",
+        f"DIEAREA ( 0 0 ) ( {db(width)} {db(INTERPOSER_HEIGHT)} ) ;",
         "",
         f"COMPONENTS {len(components)} ;",
         *components,
@@ -365,19 +430,16 @@ def make_3dbv(case_name: str, chiplets: dict[str, dict[str, Any]]) -> str:
             "      front:",
             "        side: front",
             f"        coords: [[0.0, 0.0], [{info['width']:.1f}, 0.0], [{info['width']:.1f}, {info['height']:.1f}], [0.0, {info['height']:.1f}]]",
-            "        layer: metal1",
+        ])
+        if info.get("bmap"):
+            lines.append(f"        bmap: {info['bmap']}")
+        lines.extend([
             "    external:",
             f"      APR_tech_file: [{case_name}_tech.lef]",
             f"      LEF_file: [{lef_files}]",
         ])
-        if info.get("def_file"):
-            lines.append(f"      DEF_file: {info['def_file']}")
-        if info.get("bmap"):
-            # bmap belongs under the front region, before layer; recreate the
-            # two lines in their standard order for parsers that preserve YAML.
-            layer_line = lines.pop()
-            lines.insert(len(lines) - 3, f"        bmap: {info['bmap']}")
-            lines.append(layer_line)
+        # DEF / macros LEF are still generated for later drawing, but are not
+        # referenced from 3DBlox so read_3dbx does not load them.
     return "\n".join(lines) + "\n"
 
 
@@ -461,7 +523,8 @@ def make_metadata(case_name: str, source: dict[str, Any], nets: list[dict[str, A
     return "\n".join(lines)
 
 
-def make_readme(case_name: str) -> str:
+def make_readme(case_name: str, cob_cols: int) -> str:
+    width = interposer_width(cob_cols)
     return f"""# {case_name}: PR_tool to 3DBlox package
 
 Load this package from its directory with:
@@ -471,7 +534,10 @@ source load_{case_name}.tcl
 ```
 
 `{case_name}.3dbx` and its included `.3dbv` are standard 3DBlox.  The top
-connectivity is standard Verilog.  A net called `prsync__m<mode>__g<group>[i]`
+connectivity is standard Verilog.  It uses one Verilog module per physical
+topdie instance so every module port preserves that instance's PR_tool
+connection direction: sources are `output`, sinks are `input`, and only
+unconnected ports remain `inout`.  A net called `prsync__m<mode>__g<group>[i]`
 is lane `i` of a non-overlapping synchronous group.  A scalar net containing
 several `__g<group>_l<lane>` fragments is one physical multi-source/multi-sink
 component that belongs to several groups; this occurs in case16 and prevents
@@ -479,18 +545,22 @@ incorrectly splitting its shared port.
 
 The converted interposer geometry uses the provided hardware dimensions:
 COB 100x100, channel gap 500 (short edge 50), TOB 400x200, and a substrate
-edge margin of 300 microns.  This yields an interposer size of
-{INTERPOSER_WIDTH:.1f} x {INTERPOSER_HEIGHT:.1f} microns.  Topdie placement is
-derived from TOB array coordinates, and external/0/1 port physical positions
-are computed from the COB-edge port pitch (0.3 micron) and written into the
-generated standard physical files.  Bump maps are emitted only for topdies;
-the interposer's external I/O ports are DEF PINS.  No metadata Tcl sidecar is
-emitted.
+edge margin of 300 microns.  This case uses a COB array of 9 x {cob_cols},
+yielding an interposer size of {width:.1f} x {INTERPOSER_HEIGHT:.1f} microns.
+Topdie placement is derived from TOB array coordinates.  External/0/1 port
+positions use the COB-edge port pitch (0.3 micron) and are written into the
+interposer bump map referenced by `.3dbv`.  `read_3dbx` loads tech/bump LEF
+plus bump maps only; `{case_name}_interposer.def` and
+`{case_name}_interposer_macros.lef` are still emitted for later drawing but
+are not referenced from `.3dbv`/`.3dbx`.  `register_adder.json` is copied from
+the source configuration and must be loaded by `prt` before route.
 """
 
 
 def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
     case_name = source_dir.name
+    cob_cols = cob_cols_from_case(source_dir)
+    ip_width = interposer_width(cob_cols)
     config = read_json(source_dir / "config.json")
     topdies = read_json(source_dir / "topdies.json")
     instances = read_json(source_dir / "topdie_insts.json")
@@ -506,9 +576,22 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
 
     groups = normalize_connections(connections)
     components, group_membership = connected_components(groups)
+    endpoint_roles: dict[str, set[str]] = defaultdict(set)
+    for _mode, _group, pairs in groups:
+        for source, sink in pairs:
+            endpoint_roles[str(source)].add("source")
+            endpoint_roles[str(sink)].add("sink")
 
     inst_ids = {name: verilog_id(name, "inst_") for name in instances}
     type_ids = {name: verilog_id(name, "chiplet_") for name in topdies}
+    # OpenROAD matches Verilog instances by instance and BTerm name, not by
+    # the Verilog module name.  Give every physical instance its own module so
+    # a port can retain its actual direction even when another instance of the
+    # same chiplet type uses the corresponding port in the opposite direction.
+    instance_module_ids = {
+        name: verilog_id(f"{type_ids[spec['topdie']]}__{name}", "chiplet_")
+        for name, spec in instances.items()
+    }
     port_ids: dict[str, dict[str, str]] = {
         topdie: {name: verilog_id(name, "pin_") for name in spec["pin_map"]}
         for topdie, spec in topdies.items()
@@ -530,6 +613,14 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
         if endpoint in ext_ids:
             return "prtool_interposer", ext_ids[endpoint]
         return "prtool_interposer", fixed_ids[endpoint]
+
+    def endpoint_direction(endpoint: str) -> str:
+        roles = endpoint_roles.get(endpoint, set())
+        if roles == {"source"}:
+            return "output"
+        if roles == {"sink"}:
+            return "input"
+        return "inout"
 
     # Each component receives one legal physical Verilog net.  Membership is
     # collected from all groups so fanout/multisink endpoints cannot be split.
@@ -584,6 +675,9 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
     (output_dir / "bmaps").mkdir()
+    if not register_path.exists():
+        raise FileNotFoundError(f"{case_name}: missing register_adder.json")
+    write_text(output_dir / "register_adder.json", json.dumps(registers, indent=2) + "\n")
 
     source = {
         "config": config,
@@ -620,18 +714,23 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
 
     chiplets["PRTOOL_INTERPOSER"] = {
         "type": "rdl",
-        "width": INTERPOSER_WIDTH,
+        "width": ip_width,
         "height": INTERPOSER_HEIGHT,
         "thickness": INTERPOSER_THICKNESS,
-        "lef_files": [f"{case_name}_interposer_macros.lef"],
-        "def_file": f"{case_name}_interposer.def",
+        "lef_files": [f"{case_name}_bump.lef"],
+        "bmap": "bmaps/PRTOOL_INTERPOSER.bmap",
     }
+    write_text(
+        output_dir / "bmaps/PRTOOL_INTERPOSER.bmap",
+        interposer_bmap_lines(boundary_ports, external_ports, ports_01, cob_cols),
+    )
     write_text(output_dir / f"{case_name}_tech.lef", TECH_LEF)
     write_text(output_dir / f"{case_name}_bump.lef", BUMP_LEF)
+    # Still generated for later drawing; not referenced from .3dbv/.3dbx.
     write_text(output_dir / f"{case_name}_interposer_macros.lef", make_interposer_macros_lef())
     write_text(
         output_dir / f"{case_name}_interposer.def",
-        make_interposer_def(case_name, external_ports, ports_01, boundary_net_names),
+        make_interposer_def(case_name, external_ports, ports_01, boundary_net_names, cob_cols),
     )
     write_text(output_dir / f"{case_name}.3dbv", make_3dbv(case_name, chiplets))
     instance_types = {inst_ids[name]: type_ids[spec["topdie"]] for name, spec in instances.items()}
@@ -639,17 +738,19 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
     write_text(output_dir / f"{case_name}.3dbx", make_3dbx(case_name, instance_types, instances, inst_ids))
 
     # Verilog module declarations and all interposer ports.  Unconnected
-    # boundary ports retain a named one-terminal net so DEF and connectivity
-    # Verilog use the same name.
+    # boundary ports retain a named one-terminal net so the interposer bump
+    # map / optional drawing DEF and connectivity Verilog use the same name.
     verilog: list[str] = ["// Generated by convert_prtool_configs_to_3dblox.py", ""]
-    for topdie, ports in sorted(port_ids.items()):
-        verilog.append(f"module {type_ids[topdie]} ({', '.join(ports.values())});")
-        for port in ports.values():
-            verilog.append(f"  inout {port};")
+    for instance, spec in sorted(instances.items()):
+        topdie = spec["topdie"]
+        ports = port_ids[topdie]
+        verilog.append(f"module {instance_module_ids[instance]} ({', '.join(ports.values())});")
+        for original, port in ports.items():
+            verilog.append(f"  {endpoint_direction(f'{instance}.{original}')} {port};")
         verilog.extend(["endmodule", ""])
     verilog.append(f"module PRTOOL_INTERPOSER ({', '.join(boundary_ports.values())});")
-    for port in boundary_ports.values():
-        verilog.append(f"  inout {port};")
+    for original, port in boundary_ports.items():
+        verilog.append(f"  {endpoint_direction(original)} {port};")
     verilog.extend(["endmodule", "", f"module {case_name}_3dblox;"])
     for group in sorted(vector_groups):
         mode, group_id = group
@@ -667,7 +768,7 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
             endpoint = f"{original}.{port}"
             if endpoint in endpoint_nets:
                 conns.append(f".{vport}({endpoint_nets[endpoint]})")
-        verilog.append(f"  {type_ids[topdie]} {inst_ids[original]} ({', '.join(conns)});")
+        verilog.append(f"  {instance_module_ids[original]} {inst_ids[original]} ({', '.join(conns)});")
     boundary_conns = []
     for original, vport in sorted(boundary_ports.items()):
         boundary_conns.append(f".{vport}({boundary_net_names[original]})")
@@ -675,8 +776,12 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
     verilog.extend(["endmodule", ""])
     write_text(output_dir / f"{case_name}_connectivity.v", "\n".join(verilog))
 
-    write_text(output_dir / f"load_{case_name}.tcl", f"cd [file dirname [info script]]\nread_3dbx {case_name}.3dbx\n")
-    write_text(output_dir / "README.md", make_readme(case_name))
+    write_text(
+        output_dir / f"load_{case_name}.tcl",
+        f"cd [file dirname [info script]]\n"
+        f"read_3dbx {case_name}.3dbx\n",
+    )
+    write_text(output_dir / "README.md", make_readme(case_name, cob_cols))
 
 
 def parse_cases(text: str) -> list[int]:
@@ -702,7 +807,8 @@ def main() -> None:
         if not source_dir.is_dir():
             raise FileNotFoundError(source_dir)
         convert_case(source_dir, args.output, args.force)
-        print(f"converted {source_dir.name}")
+        cob_cols = cob_cols_from_case(source_dir)
+        print(f"converted {source_dir.name} (COB 9x{cob_cols})")
 
 
 if __name__ == "__main__":
