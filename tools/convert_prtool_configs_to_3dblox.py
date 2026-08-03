@@ -224,10 +224,28 @@ def interposer_bmap_lines(
     ports_01: dict[str, Any],
     cob_cols: int,
 ) -> str:
+    def power_polarity(port: str) -> str | None:
+        for polarity in ("pose", "nege"):
+            if port == polarity or port.endswith(f"_{polarity}"):
+                return polarity
+        return None
+
     lines: list[str] = []
-    for index, (original, port) in enumerate(sorted(boundary_ports.items())):
+    bump_index = 0
+    for original, port in sorted(boundary_ports.items()):
+        # pose/nege are logical connections.  Their physical entry points are
+        # the complete 01_ports sets emitted below, not an arbitrary first bump.
+        if power_polarity(original) is not None:
+            continue
         x, y = interposer_port_xy(original, external_ports, ports_01, cob_cols)
-        lines.append(f"bump_{index} PRTOOL_BUMP {x:.4f} {y:.4f} {port} {port}")
+        lines.append(f"bump_{bump_index} PRTOOL_BUMP {x:.4f} {y:.4f} {port} {port}")
+        bump_index += 1
+    for polarity in ("pose", "nege"):
+        for key, coord in sorted(ports_01.get(polarity, {}).items(), key=lambda item: int(item[0])):
+            x, y = boundary_port_xy(coord, cob_cols)
+            port = f"{polarity}_{key}"
+            lines.append(f"bump_{bump_index} PRTOOL_BUMP {x:.4f} {y:.4f} {port} {port}")
+            bump_index += 1
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -553,7 +571,8 @@ interposer bump map referenced by `.3dbv`.  `read_3dbx` loads tech/bump LEF
 plus bump maps only; `{case_name}_interposer.def` and
 `{case_name}_interposer_macros.lef` are still emitted for later drawing but
 are not referenced from `.3dbv`/`.3dbx`.  `register_adder.json` is copied from
-the source configuration and must be loaded by `prt` before route.
+the source configuration.  `prt` automatically finds it and the connectivity
+Verilog from the loaded 3DBlox package before routing.
 """
 
 
