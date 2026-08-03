@@ -22,8 +22,8 @@ edge margin of 300 microns.  This case uses a COB array of 9 x 13,
 yielding an interposer size of 7900.0 x 5500.0 microns.
 Topdie placement is derived from TOB array coordinates.  External/0/1 port
 positions use the COB-edge port pitch (0.3 micron) and are written into the
-interposer bump map referenced by `.3dbv`.  `read_3dbx` loads tech/bump LEF
-plus bump maps only; `case15_interposer.def` and
-`case15_interposer_macros.lef` are still emitted for later drawing but
-are not referenced from `.3dbv`/`.3dbx`.  `register_adder.json` is copied from
-the source configuration and must be loaded by `prt` before route.
+interposer bump map referenced by `.3dbv`.  Tech/bump LEF,
+`case15_interposer.def` and `case15_interposer_macros.lef` are still
+emitted for later drawing but are not referenced from `.3dbv`/`.3dbx`.
+`register_adder.json` is copied from the source configuration and must be
+loaded by `prt` before route.

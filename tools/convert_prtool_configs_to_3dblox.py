@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Convert PR_tool JSON cases into a 3DBlox/OpenROAD-loadable package.
+"""Convert PR_tool JSON cases into a 3DBlox package.
 
-The generated package uses standard 3DBlox, Verilog, LEF and bump-map files.
-Positive connection groups become named synchronous Verilog nets.  Interposer
-DEF and macros LEF are still written for later drawing, but are not referenced
-from `.3dbv`/`.3dbx`.  The package also carries the original register_adder.json
-required for PR_tool controlbit output.
+The generated package uses standard 3DBlox, Verilog and bump-map files.
+Positive connection groups become named synchronous Verilog nets.  Tech LEF,
+bump LEF, interposer DEF and macros LEF are still written for later drawing,
+but are not referenced from `.3dbv`/`.3dbx`.  The package also carries the
+original register_adder.json required for PR_tool controlbit output.
 """
 
 from __future__ import annotations
@@ -417,7 +417,6 @@ def make_interposer_def(
 def make_3dbv(case_name: str, chiplets: dict[str, dict[str, Any]]) -> str:
     lines = ["Header:", '  version: "3.0"', "  unit: micron", "  precision: 1000", "", "ChipletDef:"]
     for chiplet, info in sorted(chiplets.items()):
-        lef_files = ", ".join(info.get("lef_files", [f"{case_name}_bump.lef"]))
         lines.extend([
             f"  {chiplet}:",
             f"    type: {info.get('type', 'die')}",
@@ -433,13 +432,8 @@ def make_3dbv(case_name: str, chiplets: dict[str, dict[str, Any]]) -> str:
         ])
         if info.get("bmap"):
             lines.append(f"        bmap: {info['bmap']}")
-        lines.extend([
-            "    external:",
-            f"      APR_tech_file: [{case_name}_tech.lef]",
-            f"      LEF_file: [{lef_files}]",
-        ])
-        # DEF / macros LEF are still generated for later drawing, but are not
-        # referenced from 3DBlox so read_3dbx does not load them.
+        # Tech/bump LEF, DEF and macros LEF are still generated for later
+        # drawing, but are not referenced from ChipletDef.external.
     return "\n".join(lines) + "\n"
 
 
@@ -549,11 +543,11 @@ edge margin of 300 microns.  This case uses a COB array of 9 x {cob_cols},
 yielding an interposer size of {width:.1f} x {INTERPOSER_HEIGHT:.1f} microns.
 Topdie placement is derived from TOB array coordinates.  External/0/1 port
 positions use the COB-edge port pitch (0.3 micron) and are written into the
-interposer bump map referenced by `.3dbv`.  `read_3dbx` loads tech/bump LEF
-plus bump maps only; `{case_name}_interposer.def` and
-`{case_name}_interposer_macros.lef` are still emitted for later drawing but
-are not referenced from `.3dbv`/`.3dbx`.  `register_adder.json` is copied from
-the source configuration and must be loaded by `prt` before route.
+interposer bump map referenced by `.3dbv`.  Tech/bump LEF,
+`{case_name}_interposer.def` and `{case_name}_interposer_macros.lef` are still
+emitted for later drawing but are not referenced from `.3dbv`/`.3dbx`.
+`register_adder.json` is copied from the source configuration and must be
+loaded by `prt` before route.
 """
 
 
@@ -702,7 +696,6 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
             "width": TOPDIE_WIDTH,
             "height": TOPDIE_HEIGHT,
             "thickness": TOPDIE_THICKNESS,
-            "lef_files": [f"{case_name}_bump.lef"],
         }
         write_text(output_dir / bmap, bmap_lines(ports))
     boundary_ports = dict(ext_ids)
@@ -717,16 +710,15 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
         "width": ip_width,
         "height": INTERPOSER_HEIGHT,
         "thickness": INTERPOSER_THICKNESS,
-        "lef_files": [f"{case_name}_bump.lef"],
         "bmap": "bmaps/PRTOOL_INTERPOSER.bmap",
     }
     write_text(
         output_dir / "bmaps/PRTOOL_INTERPOSER.bmap",
         interposer_bmap_lines(boundary_ports, external_ports, ports_01, cob_cols),
     )
+    # Still generated for later drawing; not referenced from .3dbv/.3dbx.
     write_text(output_dir / f"{case_name}_tech.lef", TECH_LEF)
     write_text(output_dir / f"{case_name}_bump.lef", BUMP_LEF)
-    # Still generated for later drawing; not referenced from .3dbv/.3dbx.
     write_text(output_dir / f"{case_name}_interposer_macros.lef", make_interposer_macros_lef())
     write_text(
         output_dir / f"{case_name}_interposer.def",
