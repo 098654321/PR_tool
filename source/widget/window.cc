@@ -277,6 +277,8 @@ namespace PR_tool::widget {
 
         this->_schematicWidget->reload();
         this->_layoutWidget->reload();
+        this->_view2DWidget->reload();
+        this->_view3DWidget->reload();
 
         this->_configPath.emplace(std::move(configPath));
     }
@@ -656,6 +658,7 @@ namespace PR_tool::widget {
         }
 
         this->_view2DWidget->reload();
+        this->_view3DWidget->reload();
         this->_view3DWidget->displayRoutingResult();
 
         this->disableEdit();

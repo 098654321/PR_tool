@@ -106,6 +106,7 @@ namespace PR_tool::widget {
         ~View3DWidget() noexcept;
 
     public:
+        void reload();
         auto displayRoutingResult() -> void;
 
     protected:

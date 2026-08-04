@@ -182,7 +182,7 @@ namespace PR_tool::widget {
         this->initCOBCube();
         this->initChannelCube();
         this->initTOBCube();
-        // this->initTopdieInstance();
+        this->initTopdieInstance();
 
         this->_cubeVAO.release();
     }
@@ -481,6 +481,56 @@ namespace PR_tool::widget {
         this->addTrack(begin, end, update);
     }
 
+    void View3DWidget::reload() {
+        // GL context is created on first show; initializeGL will build TopDies from current basedie.
+        if (!this->isValid()) {
+            return;
+        }
+
+        this->makeCurrent();
+
+        this->_trackInstMatrices.clear();
+        this->updateTrackInstMatrices();
+
+        // Interposer::clear() rebuilds COB/TOB objects; refresh click-target pointers.
+        this->_cobs.clear();
+        for (int row = 0; row < hardware::Interposer::COB_ARRAY_HEIGHT; ++row) {
+            for (int col = 0; col < hardware::Interposer::COB_ARRAY_WIDTH; ++col) {
+                auto coord = hardware::COBCoord{row, col};
+                this->_cobs.emplace_back(this->_interposer->get_cob(coord).value());
+            }
+        }
+        this->_tobs.clear();
+        for (auto& [tobcoord, basecoord] : hardware::Interposer::TOB_COORD_MAP) {
+            (void)basecoord;
+            this->_tobs.push_back(this->_interposer->get_tob(tobcoord).value());
+        }
+
+        this->_topdieinsts.clear();
+        this->_pointedCube.reset();
+
+        QVector<Cube*> remaining;
+        remaining.reserve(this->_cubes.size());
+        for (auto* cube : this->_cubes) {
+            if (cube->type == CubeType::Topdie) {
+                cube->positionsVBO.destroy();
+                cube->verticesVBO.destroy();
+                if (cube->texture) {
+                    cube->texture->destroy();
+                }
+                delete cube;
+            } else {
+                remaining.push_back(cube);
+            }
+        }
+        this->_cubes = remaining;
+
+        this->initTopdieInstance();
+
+        this->doneCurrent();
+        this->update();
+    }
+
     auto View3DWidget::displayRoutingResult() -> void {
         if (!this->isVisible()) {
             QTimer::singleShot(0, this, &View3DWidget::displayRoutingResult);
@@ -488,6 +538,9 @@ namespace PR_tool::widget {
         }
 
         this->makeCurrent();
+
+        // Replace prior track visuals so repeated calls do not stack geometry.
+        this->_trackInstMatrices.clear();
 
         using enum hardware::COBDirection;
         using enum hardware::TrackDirection;
