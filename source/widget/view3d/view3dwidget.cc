@@ -23,6 +23,7 @@
 #include <QFileInfo>
 #include <QtDebug>
 #include <QTimer>
+#include <QLabel>
 
 namespace PR_tool::widget {
 
@@ -108,6 +109,22 @@ namespace PR_tool::widget {
         this->setMouseTracking(true);
         this->setFocusPolicy(Qt::StrongFocus);
         this->setFocus();
+
+        // U22: sparse corner legend over the GL view (Fusion-plain QLabel)
+        this->_legendLabel = new QLabel{this};
+        this->_legendLabel->setTextFormat(Qt::RichText);
+        this->_legendLabel->setText(QStringLiteral(
+            "<span style='color:#CDAD00'>■</span> COB&nbsp;&nbsp;"
+            "<span style='color:#548B54'>■</span> TOB&nbsp;&nbsp;"
+            "<span style='color:#AAAAAA'>■</span> Channel&nbsp;&nbsp;"
+            "<span style='color:#FF00FF'>■</span> Track"));
+        this->_legendLabel->setStyleSheet(QStringLiteral(
+            "QLabel { color: #DDDDDD; background: transparent; padding: 6px; }"));
+        this->_legendLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+        this->_legendLabel->setAccessibleName(QStringLiteral("View 3D color legend"));
+        this->_legendLabel->adjustSize();
+        this->_legendLabel->move(8, 8);
+        this->_legendLabel->raise();
     }
 
     //! \brief destruct function
@@ -895,6 +912,10 @@ namespace PR_tool::widget {
         QOpenGLWidget::resizeEvent(event);
         this->updateProjectionMatrix();
         this->reRender();
+        if (this->_legendLabel != nullptr) {
+            this->_legendLabel->move(8, 8);
+            this->_legendLabel->raise();
+        }
     }
 
     void View3DWidget::initializeGL() {

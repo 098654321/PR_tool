@@ -1,7 +1,9 @@
 #include "./view2dwidget.h"
 #include "./view2dview.h"
 #include "./view2dscene.hh"
-#include "qboxlayout.h"
+
+#include <QGridLayout>
+#include <QLabel>
 
 namespace PR_tool::widget {
 
@@ -19,8 +21,22 @@ namespace PR_tool::widget {
         this->_view->setScene(this->_scene);
         this->_view->adjustSceneRect();
 
-        auto layout = new QVBoxLayout{this};
-        layout->addWidget(this->_view);
+        // U22: sparse corner legend (Fusion-plain QLabel, not a card)
+        auto legend = new QLabel{this};
+        legend->setTextFormat(Qt::RichText);
+        legend->setText(QStringLiteral(
+            "<span style='color:#CDAD00'>■</span> COB&nbsp;&nbsp;"
+            "<span style='color:#548B54'>■</span> TOB&nbsp;&nbsp;"
+            "<span style='color:#000000'>■</span> Track/Net"));
+        legend->setStyleSheet(QStringLiteral(
+            "QLabel { color: #333333; background: transparent; padding: 6px; }"));
+        legend->setAttribute(Qt::WA_TransparentForMouseEvents);
+        legend->setAccessibleName(QStringLiteral("View 2D color legend"));
+
+        auto layout = new QGridLayout{this};
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(this->_view, 0, 0);
+        layout->addWidget(legend, 0, 0, Qt::AlignTop | Qt::AlignLeft);
     }
 
     void View2DWidget::reload() {

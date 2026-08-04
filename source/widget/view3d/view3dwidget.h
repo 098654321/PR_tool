@@ -12,6 +12,8 @@
 #include <QWheelEvent>
 #include <QDragEnterEvent>
 
+class QLabel;
+
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QtOpenGLWidgets/QOpenGLWidget>
 #include <QtOpenGL/QOpenGLFunctions_3_3_Core>
@@ -249,6 +251,8 @@ namespace PR_tool::widget {
         std::Vector<circuit::TopDieInstance*> _topdieinsts {};
 
         bool _cobRegisterEditEnabled {true};
+
+        QLabel* _legendLabel {nullptr};
     };
 
 }
