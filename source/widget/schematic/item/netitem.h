@@ -100,6 +100,7 @@ namespace PR_tool::widget::schematic {
 
         QColor _paintColor {DEFAULT_COLOR};
         qreal  _paintWidth {DEFAULT_WIDTH};
+        Qt::PenStyle _paintStyle {Qt::SolidLine};
         
         QColor _color {DEFAULT_COLOR};
         qreal  _width {DEFAULT_WIDTH};

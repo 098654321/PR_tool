@@ -59,6 +59,7 @@ namespace PR_tool::widget::schematic {
     {
         this->_paintColor = HOVER_COLOR;
         this->_paintWidth = DEFAULT_WIDTH + 1;
+        this->_paintStyle = Qt::DashLine;
 
         this->_color = DEFAULT_COLOR;
         this->_width = DEFAULT_WIDTH;
@@ -386,7 +387,7 @@ namespace PR_tool::widget::schematic {
     }
     
     void NetItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
-        QPen pen(this->_paintColor, this->_paintWidth);
+        QPen pen(this->_paintColor, this->_paintWidth, this->_paintStyle);
         painter->setPen(pen);
         painter->drawPath(this->_path);
     }
@@ -395,6 +396,8 @@ namespace PR_tool::widget::schematic {
         if (!this->isFloating()) {
             this->_paintColor = HOVER_COLOR;
             this->_paintWidth = this->_width + 1;
+            this->_paintStyle = Qt::DashLine;
+            this->update();
         }
         QGraphicsItem::hoverEnterEvent(event);
     }
@@ -403,6 +406,8 @@ namespace PR_tool::widget::schematic {
         if (!this->isFloating()) {
             this->_paintColor = this->_color;
             this->_paintWidth = this->_width;
+            this->_paintStyle = Qt::SolidLine;
+            this->update();
         }
         QGraphicsItem::hoverLeaveEvent(event);
     }
@@ -411,6 +416,7 @@ namespace PR_tool::widget::schematic {
         this->prepareGeometryChange();
         this->_paintColor = this->_color;
         this->_paintWidth = this->_width;
+        this->_paintStyle = Qt::SolidLine;
         this->update();
     }
 

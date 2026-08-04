@@ -79,7 +79,13 @@ namespace PR_tool::widget::layout {
     }
     
     void TopDieInstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
-        painter->setBrush(this->_highlighted ? HIGHLIGHT_COLOR : COLOR);
+        if (this->_highlighted) {
+            painter->setPen(QPen(HIGHLIGHT_COLOR, 4, Qt::DashLine));
+            painter->setBrush(HIGHLIGHT_COLOR);
+        } else {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(COLOR);
+        }
         QFont font = painter->font();
         font.setPointSize(FONT_SIZE);
         painter->setFont(font);

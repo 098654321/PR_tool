@@ -50,7 +50,13 @@ namespace PR_tool::widget::schematic {
     }
 
     void PinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
-        painter->setBrush(this->_hovered ? HOVERED_COLOR : COLOR);
+        if (this->_hovered) {
+            painter->setPen(QPen(HOVERED_COLOR, 2, Qt::DashLine));
+            painter->setBrush(HOVERED_COLOR);
+        } else {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(COLOR);
+        }
         painter->drawEllipse(QPointF{0., 0.}, this->_raduis, this->_raduis);
 
         auto length = this->_name.size() * CHAR_WIDTH_;
