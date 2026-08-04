@@ -18,7 +18,8 @@ namespace PR_tool::widget::schematic {
         this->_pin = new PinItem{name, QPointF{0, 0}, PinSide::Left, this};
         this->_width = GridItem::snapToGrid(PIN_SIDE_INTERVAL + PinItem::NAME_INTERVAL + name.size() * PinItem::CHAR_WIDTH_ + PIN_SIDE_INTERVAL);
 
-        this->setFlags(this->flags() | QGraphicsItem::ItemIsMovable);
+        // Physical Track coord is set in the property panel only (canvas drag would desync Layout).
+        this->setToolTip(QStringLiteral("Set physical coord in the property panel"));
         this->setZValue(0);
     }
 
