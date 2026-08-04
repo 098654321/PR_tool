@@ -348,12 +348,32 @@ namespace PR_tool::widget {
 
     void SchematicScene::headleCreateNet(schematic::PinItem* pin, QGraphicsSceneMouseEvent* event) {
         if (this->_floatingNet != nullptr) {
+            auto* beginPin = this->_floatingNet->beginPoint()->connectedPin();
+
+            if (pin == beginPin) {
+                QMessageBox::warning(
+                    nullptr,
+                    "Create Net Error",
+                    "Cannot connect a pin to itself."
+                );
+                return;
+            }
+
+            if (!pin->connectedPoints().isEmpty()) {
+                QMessageBox::warning(
+                    nullptr,
+                    "Create Net Error",
+                    "End pin already has a connection."
+                );
+                return;
+            }
+
             auto endPoint = this->addNetPoint(pin);
             
             auto connection = this->_basedie->add_connection(
                 0,
                 -1, 
-                this->_floatingNet->beginPoint()->connectedPin()->toCircuitPin(),
+                beginPin->toCircuitPin(),
                 endPoint->connectedPin()->toCircuitPin()
             );
 
