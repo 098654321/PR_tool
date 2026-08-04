@@ -10,6 +10,7 @@
 #include <circuit/topdieinst/topdieinst.hh>
 #include <hardware/tob/tob.hh>
 #include <hardware/bump/bump.hh>
+#include <std/format.hh>
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -150,16 +151,56 @@ namespace PR_tool::widget {
 
         const auto& nets = this->_topdieinst->nets();
         auto netModel = new QStandardItemModel {
-            static_cast<int>(nets.size()), 3,
-            pinMapTableView
+            nets.empty() ? 1 : static_cast<int>(nets.size()), 3,
+            netTableView
         };
 
-        // Init header
-        // MARK: How to show nets?
-        netModel->setHorizontalHeaderLabels(QStringList{"Begin", "End", "Priority"}); 
-        // Add items
-        itemRoot = netModel->invisibleRootItem();
-        for (auto row = 0; row < nets.size(); ++row) {
+        netModel->setHorizontalHeaderLabels(QStringList{"Begin", "End", "Priority"});
+        if (nets.empty()) {
+            // Nets are attached during build_nets; empty before P&R.
+            netModel->setItem(0, 0, new QStandardItem{"(no net data)"});
+            netModel->setItem(0, 1, new QStandardItem{""});
+            netModel->setItem(0, 2, new QStandardItem{""});
+        } else {
+            for (auto row = 0; row < static_cast<int>(nets.size()); ++row) {
+                auto* net = nets[static_cast<std::size_t>(row)];
+                if (net == nullptr) {
+                    netModel->setItem(row, 0, new QStandardItem{"(null net)"});
+                    netModel->setItem(row, 1, new QStandardItem{""});
+                    netModel->setItem(row, 2, new QStandardItem{""});
+                    continue;
+                }
+
+                QString beginText;
+                QString endText;
+                const auto nodes = net->nodes_map();
+                if (!nodes.empty()) {
+                    QStringList begins;
+                    QStringList ends;
+                    for (const auto& [beginBump, endBumps] : nodes) {
+                        if (beginBump != nullptr) {
+                            begins << QString::fromStdString(std::format("{}", beginBump->coord()));
+                        }
+                        for (auto* endBump : endBumps) {
+                            if (endBump != nullptr) {
+                                ends << QString::fromStdString(std::format("{}", endBump->coord()));
+                            }
+                        }
+                    }
+                    beginText = begins.join(", ");
+                    endText = ends.join(", ");
+                } else {
+                    // Track-endpoint nets have empty nodes_map(); to_string() still describes begin/end.
+                    beginText = QString::fromStdString(net->to_string());
+                    endText = QStringLiteral("-");
+                }
+
+                netModel->setItem(row, 0, new QStandardItem{beginText});
+                netModel->setItem(row, 1, new QStandardItem{endText});
+                netModel->setItem(row, 2, new QStandardItem{
+                    QString::number(net->priority().value())
+                });
+            }
         }
         netTableView->setModel(netModel);
 
