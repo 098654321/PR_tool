@@ -714,7 +714,7 @@ namespace PR_tool::widget {
 
         auto output_root = dialog.outputDir().trimmed();
         if (output_root.isEmpty()) {
-            QMessageBox::warning(this, QStringLiteral("导出控制位"), QStringLiteral("请选择输出目录"));
+            QMessageBox::warning(this, QStringLiteral("Export Controlbits"), QStringLiteral("Please select an output directory"));
             return;
         }
 
@@ -731,8 +731,8 @@ namespace PR_tool::widget {
             QDir{output_root}.filePath(QStringLiteral("regnamecontrolbit_4part"));
         QMessageBox::information(
             this,
-            QStringLiteral("导出控制位"),
-            QStringLiteral("已写出控制位到：\n%1").arg(out_dir));
+            QStringLiteral("Export Controlbits"),
+            QStringLiteral("Controlbits written to:\n%1").arg(out_dir));
         // U17: leave export path visible after the MessageBox is dismissed.
         this->statusBar()->showMessage(out_dir, 15000);
     }

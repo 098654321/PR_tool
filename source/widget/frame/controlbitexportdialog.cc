@@ -13,24 +13,24 @@ namespace PR_tool::widget {
 ControlBitExportDialog::ControlBitExportDialog(QWidget* parent)
     : QDialog(parent)
 {
-    setWindowTitle(QStringLiteral("导出控制位"));
+    setWindowTitle(QStringLiteral("Export Controlbits"));
     setModal(true);
 
     auto* layout = new QVBoxLayout{this};
 
-    auto* path_label = new QLabel{QStringLiteral("输出目录（将在其下创建 regnamecontrolbit_4part/）："), this};
+    auto* path_label = new QLabel{QStringLiteral("Output directory (creates regnamecontrolbit_4part/ under it):"), this};
     layout->addWidget(path_label);
 
     auto* path_row = new QHBoxLayout{};
     _pathEdit = new QLineEdit{this};
     _pathEdit->setText(QDir::currentPath());
-    auto* browse = new QPushButton{QStringLiteral("浏览…"), this};
+    auto* browse = new QPushButton{QStringLiteral("Browse…"), this};
     browse->setMaximumWidth(80);
     path_row->addWidget(_pathEdit);
     path_row->addWidget(browse);
     layout->addLayout(path_row);
 
-    _simplifyCheck = new QCheckBox{QStringLiteral("智能简化寄存器输出"), this};
+    _simplifyCheck = new QCheckBox{QStringLiteral("Smart simplify register output"), this};
     _simplifyCheck->setChecked(false);
     layout->addWidget(_simplifyCheck);
 
@@ -55,7 +55,7 @@ auto ControlBitExportDialog::simplify() const -> bool {
 void ControlBitExportDialog::onBrowse() {
     auto dir = QFileDialog::getExistingDirectory(
         this,
-        QStringLiteral("选择输出目录"),
+        QStringLiteral("Select Output Directory"),
         _pathEdit->text().isEmpty() ? QDir::currentPath() : _pathEdit->text());
     if (!dir.isEmpty()) {
         _pathEdit->setText(dir);
