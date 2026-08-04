@@ -209,11 +209,13 @@ namespace PR_tool::widget {
         this->_placeRouteAction = this->_toolBar->addAction(QIcon{":/image/image/icon/execute.png"}, "Place & Route");
         this->_placeRouteAction->setToolTip("Place & Route");
         this->_placeRouteAction->setStatusTip("Run place and route");
+        this->_placeRouteAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
         connect(this->_placeRouteAction, &QAction::triggered, this, &Window::executePlaceRoute);
 
         this->_generateControlBitAction = this->_toolBar->addAction(QIcon{":/image/image/icon/save.png"}, "Export Controlbits");
         this->_generateControlBitAction->setToolTip("Export Controlbits");
         this->_generateControlBitAction->setStatusTip("Export controlbits to output directory");
+        this->_generateControlBitAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
         this->_generateControlBitAction->setEnabled(false);
         connect(this->_generateControlBitAction, &QAction::triggered, this, &Window::generateControlBitAs);
 
