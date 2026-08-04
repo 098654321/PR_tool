@@ -31,7 +31,7 @@ namespace PR_tool::widget {
         auto thisLayout = new QVBoxLayout{this};
         thisLayout->setSpacing(10);
 
-        auto searchEdit = new QLineEdit {this};
+        this->_searchEdit = new QLineEdit {this};
 
         auto loadTopDieButton = new QPushButton {"Load TopDie", this};
         auto loadTopDiesButton = new QPushButton {"Load TopDies", this};
@@ -40,7 +40,7 @@ namespace PR_tool::widget {
         auto libraryScrollArea = new QScrollArea {this};
         libraryScrollArea->setWidgetResizable(true);
 
-        thisLayout->addWidget(searchEdit);
+        thisLayout->addWidget(this->_searchEdit);
         thisLayout->addWidget(loadTopDieButton);
         thisLayout->addWidget(loadTopDiesButton);
         thisLayout->addWidget(addExportButton);
@@ -53,6 +53,7 @@ namespace PR_tool::widget {
 
         libraryScrollArea->setWidget(libraryWidget);
 
+        connect(this->_searchEdit, &QLineEdit::textChanged, this, &SchematicLibWidget::applySearchFilter);
         connect(addExportButton, &QPushButton::clicked, this, &SchematicLibWidget::addExport);
         connect(loadTopDieButton, &QPushButton::clicked, this, &SchematicLibWidget::onLoadTopDieClicked);
         connect(loadTopDiesButton, &QPushButton::clicked, this, &SchematicLibWidget::onLoadTopDiesClicked);
@@ -72,11 +73,26 @@ namespace PR_tool::widget {
         this->_libraryLayout->addStretch();
 
         this->loadTopDiesFromBaseDie();
+        this->applySearchFilter();
     }
 
     void SchematicLibWidget::loadTopDiesFromBaseDie() {
         for (auto& [_, topdie] : this->_basedie->topdies()) {
             this->addTopDie(topdie.get());
+        }
+    }
+
+    void SchematicLibWidget::applySearchFilter() {
+        const auto filter = this->_searchEdit->text();
+        for (int i = 0; i < this->_libraryLayout->count(); ++i) {
+            auto* item = this->_libraryLayout->itemAt(i);
+            auto* button = qobject_cast<QPushButton*>(item->widget());
+            if (!button) {
+                continue;
+            }
+            const bool visible = filter.isEmpty()
+                || button->text().contains(filter, Qt::CaseInsensitive);
+            button->setVisible(visible);
         }
     }
 
@@ -160,11 +176,13 @@ namespace PR_tool::widget {
                 "    background-color: gray;"
                 "    color: white;"
                 "}");
-        this->_libraryLayout->insertWidget(0, button); 
+        this->_libraryLayout->insertWidget(0, button);
 
         connect(button, &QPushButton::clicked, [this, topdie] () {
             
             emit this->initialTopDieInst(topdie);
         });
+
+        this->applySearchFilter();
     }
 }

@@ -38,8 +38,10 @@ namespace PR_tool::widget {
 
     private:
         void loadTopDiesFromBaseDie();
+        void applySearchFilter();
 
     private:
+        QLineEdit* _searchEdit {nullptr};
         QVBoxLayout* _libraryLayout;
 
         circuit::BaseDie* _basedie {nullptr};
