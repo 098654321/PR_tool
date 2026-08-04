@@ -35,7 +35,9 @@
 #include <QMenuBar>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QDialog>
 #include <QLabel>
+#include <QProgressBar>
 #include <QThread>
 #include <QStatusBar>
 
@@ -295,13 +297,23 @@ namespace PR_tool::widget {
         dialog.setModal(true);
 
         QVBoxLayout layout(&dialog);
-        auto label = QLabel("Running");
-        auto font = label.font();
-        font.setPointSize(20);
+        auto title = QLabel(QStringLiteral("Place & Route in progress…"));
+        auto font = title.font();
+        font.setPointSize(16);
         font.setBold(true);
-        label.setFont(font);
-        label.setAlignment(Qt::AlignCenter);
-        layout.addWidget(&label);
+        title.setFont(font);
+        title.setAlignment(Qt::AlignCenter);
+        layout.addWidget(&title);
+
+        auto hint = QLabel(QStringLiteral("Please wait. This window closes when finished."));
+        hint.setAlignment(Qt::AlignCenter);
+        hint.setWordWrap(true);
+        layout.addWidget(&hint);
+
+        auto progress = QProgressBar();
+        progress.setRange(0, 0); // indeterminate — no real % without algo cooperation
+        layout.addWidget(&progress);
+
         dialog.setFixedSize(400, 200);
 
         bool success = false;
