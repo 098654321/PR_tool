@@ -21,9 +21,14 @@
 #include <widget/frame/controlbitexportdialog.h>
 
 #include <hardware/interposer.hh>
+#include <hardware/track/trackcoord.hh>
 #include <circuit/basedie.hh>
+#include <circuit/connection/pin.hh>
 
+#include <serde/json/json.hh>
 #include <std/exception.hh>
+#include <std/file.hh>
+#include <std/utility.hh>
 
 #include <QDebug>
 #include <QResizeEvent>
@@ -40,6 +45,9 @@
 #include <QProgressBar>
 #include <QThread>
 #include <QStatusBar>
+
+#include <fstream>
+#include <filesystem>
 
 namespace PR_tool::widget {
 
@@ -272,13 +280,318 @@ namespace PR_tool::widget {
     }
     QMESSAGEBOX_REPORT_EXCEPTION("Load Config")
 
-    void Window::saveConfig() {
+    namespace {
 
+        auto pin_to_config_string(const circuit::Pin& pin) -> std::String {
+            return std::match(pin.connected_point(),
+                [](const circuit::ConnectVDD& vdd) -> std::String {
+                    return vdd.name;
+                },
+                [](const circuit::ConnectGND& gnd) -> std::String {
+                    return gnd.name;
+                },
+                [](const circuit::ConnectExPort& eport) -> std::String {
+                    return eport.port->name();
+                },
+                [](const circuit::ConnectBump& bump) -> std::String {
+                    return std::format("{}.{}", bump.inst->name(), bump.name);
+                }
+            );
+        }
+
+        auto dir_to_json_string(hardware::TrackDirection dir) -> std::String {
+            switch (dir) {
+                case hardware::TrackDirection::Horizontal:
+                    return "hori";
+                case hardware::TrackDirection::Vertical:
+                    return "vert";
+            }
+            return "vert";
+        }
+
+        auto write_json_file(const std::FilePath& path, const serde::Json& json) -> void {
+            std::ofstream out{path};
+            if (!out.is_open()) {
+                throw std::runtime_error(std::format("Cannot open '{}' for writing", path.string()));
+            }
+            out << json.to_string();
+            if (!out.good()) {
+                throw std::runtime_error(std::format("Failed writing '{}'", path.string()));
+            }
+        }
+
+        auto default_config_json() -> serde::Json {
+            auto root = serde::Json::object();
+            root.insert("interposer", serde::Json::string("interposer.json"));
+            root.insert("topdies", serde::Json::string("topdies.json"));
+            root.insert("topdie_insts", serde::Json::string("topdie_insts.json"));
+            root.insert("external_ports", serde::Json::string("external_ports.json"));
+            root.insert("connections", serde::Json::string("connections.json"));
+            root.insert("reigster_adder", serde::Json::string("register_adder.json"));
+            root.insert("ports_01", serde::Json::string("01_ports.json"));
+            return root;
+        }
+
+        auto load_or_default_config_paths(const std::Option<std::FilePath>& sourceFolder)
+            -> serde::Json
+        {
+            if (sourceFolder.has_value()) {
+                const auto configPath = *sourceFolder / "config.json";
+                if (std::filesystem::exists(configPath)) {
+                    return serde::Json::load_from(configPath);
+                }
+            }
+            return default_config_json();
+        }
+
+        auto json_path_field(const serde::Json& config, const std::String& key, const char* fallback)
+            -> std::String
+        {
+            if (auto field = config.get(key); field.has_value() && (*field)->is_string()) {
+                return std::String{(*field)->as_string()};
+            }
+            return fallback;
+        }
+
+        auto build_topdie_insts_json(const circuit::BaseDie& basedie) -> serde::Json {
+            auto root = serde::Json::object();
+            for (const auto& [name, inst] : basedie.topdie_insts()) {
+                auto entry = serde::Json::object();
+                entry.insert("topdie", serde::Json::string(inst->topdie()->name()));
+
+                const auto& tob_coord = inst->tob()->coord();
+                auto coord = serde::Json::object();
+                coord.insert("row", serde::Json::integer(static_cast<int>(tob_coord.row)));
+                coord.insert("col", serde::Json::integer(static_cast<int>(tob_coord.col)));
+                entry.insert("coord", std::move(coord));
+
+                root.insert(std::String{name}, std::move(entry));
+            }
+            return root;
+        }
+
+        auto build_external_ports_json(const circuit::BaseDie& basedie) -> serde::Json {
+            auto root = serde::Json::object();
+            for (const auto& [name, eport] : basedie.external_ports()) {
+                const auto& tc = eport->coord();
+                auto coord = serde::Json::object();
+                coord.insert("row", serde::Json::integer(static_cast<int>(tc.row)));
+                coord.insert("col", serde::Json::integer(static_cast<int>(tc.col)));
+                coord.insert("index", serde::Json::integer(static_cast<int>(tc.index)));
+                coord.insert("dir", serde::Json::string(dir_to_json_string(tc.dir)));
+
+                auto entry = serde::Json::object();
+                entry.insert("coord", std::move(coord));
+                root.insert(std::String{name}, std::move(entry));
+            }
+            return root;
+        }
+
+        auto build_sync_group_json(
+            const std::HashMap<int, std::Vector<std::Box<circuit::Connection>>>& sync_map
+        ) -> serde::Json {
+            auto root = serde::Json::object();
+            for (const auto& [sync, connections] : sync_map) {
+                auto sync_arr = serde::Json::array();
+                for (const auto& conn : connections) {
+                    auto pair = serde::Json::array();
+                    pair.push(serde::Json::string(pin_to_config_string(conn->input_pin())));
+                    pair.push(serde::Json::string(pin_to_config_string(conn->output_pin())));
+                    sync_arr.push(std::move(pair));
+                }
+                root.insert(std::to_string(sync), std::move(sync_arr));
+            }
+            return root;
+        }
+
+        auto build_connections_json(const circuit::BaseDie& basedie) -> serde::Json {
+            const auto& all = basedie.connections();
+            // GUI loads with mode==0 (flat sync → pairs). Prefer that shape when
+            // only mode 0 is present; otherwise emit mode → sync → pairs.
+            if (all.size() <= 1) {
+                if (all.empty()) {
+                    return serde::Json::object();
+                }
+                return build_sync_group_json(all.begin()->second);
+            }
+
+            auto root = serde::Json::object();
+            for (const auto& [mode, sync_map] : all) {
+                root.insert(std::to_string(mode), build_sync_group_json(sync_map));
+            }
+            return root;
+        }
+
+        auto copy_if_exists(const std::FilePath& from, const std::FilePath& to) -> void {
+            if (!std::filesystem::exists(from)) {
+                return;
+            }
+            std::filesystem::create_directories(to.parent_path());
+            std::filesystem::copy_file(
+                from,
+                to,
+                std::filesystem::copy_options::overwrite_existing
+            );
+        }
+
+        auto copy_static_config_files(
+            const std::FilePath& srcFolder,
+            const std::FilePath& destFolder,
+            const serde::Json& configPaths
+        ) -> void {
+            copy_if_exists(srcFolder / "config.json", destFolder / "config.json");
+
+            const auto copy_named = [&](const std::String& key, const char* fallback) {
+                const auto rel = json_path_field(configPaths, key, fallback);
+                copy_if_exists(srcFolder / rel, destFolder / rel);
+            };
+
+            copy_named("interposer", "interposer.json");
+            copy_named("topdies", "topdies.json");
+            copy_named("ports_01", "01_ports.json");
+            copy_named("reigster_adder", "register_adder.json");
+        }
+
+    } // namespace
+
+    auto Window::writeConfigFolder(
+        const std::FilePath& destFolder,
+        const std::Option<std::FilePath>& copyStaticFrom
+    ) -> bool {
+        if (this->_basedie == nullptr) {
+            QMessageBox::critical(
+                this,
+                QStringLiteral("Save Config"),
+                QStringLiteral("No project loaded (basedie is null).")
+            );
+            return false;
+        }
+
+        std::filesystem::create_directories(destFolder);
+
+        const auto configPaths = load_or_default_config_paths(copyStaticFrom);
+
+        const bool same_folder =
+            copyStaticFrom.has_value()
+            && (std::filesystem::absolute(*copyStaticFrom).lexically_normal()
+                == std::filesystem::absolute(destFolder).lexically_normal());
+
+        if (copyStaticFrom.has_value() && !same_folder) {
+            copy_static_config_files(*copyStaticFrom, destFolder, configPaths);
+        }
+
+        // Ensure destination has a config.json (Save As with no prior path, or
+        // copy skipped because source had none).
+        const auto destConfigPath = destFolder / "config.json";
+        if (!std::filesystem::exists(destConfigPath)) {
+            write_json_file(destConfigPath, configPaths);
+        }
+
+        const auto topdieInstsRel =
+            json_path_field(configPaths, "topdie_insts", "topdie_insts.json");
+        const auto externalPortsRel =
+            json_path_field(configPaths, "external_ports", "external_ports.json");
+        const auto connectionsRel =
+            json_path_field(configPaths, "connections", "connections.json");
+
+        write_json_file(
+            destFolder / topdieInstsRel,
+            build_topdie_insts_json(*this->_basedie)
+        );
+        write_json_file(
+            destFolder / externalPortsRel,
+            build_external_ports_json(*this->_basedie)
+        );
+        write_json_file(
+            destFolder / connectionsRel,
+            build_connections_json(*this->_basedie)
+        );
+
+        return true;
     }
 
-    void Window::saveConfigAs() {
-        
+    void Window::saveConfig() try {
+        if (this->_basedie == nullptr) {
+            QMessageBox::critical(
+                this,
+                QStringLiteral("Save Config"),
+                QStringLiteral("No project loaded (basedie is null).")
+            );
+            return;
+        }
+
+        if (!this->hasConfigPath()) {
+            this->saveConfigAs();
+            return;
+        }
+
+        if (!this->writeConfigFolder(*this->_configPath, this->_configPath)) {
+            return;
+        }
+
+        if (this->_statusLabel != nullptr) {
+            this->_statusLabel->setText(
+                QStringLiteral("Saved: %1")
+                    .arg(QString::fromStdString(this->_configPath->string()))
+            );
+        }
+
+        QMessageBox::information(
+            this,
+            QStringLiteral("Save Config"),
+            QStringLiteral("Config saved to:\n%1")
+                .arg(QString::fromStdString(this->_configPath->string()))
+        );
     }
+    QMESSAGEBOX_REPORT_EXCEPTION("Save Config")
+
+    void Window::saveConfigAs() try {
+        if (this->_basedie == nullptr) {
+            QMessageBox::critical(
+                this,
+                QStringLiteral("Save Config As"),
+                QStringLiteral("No project loaded (basedie is null).")
+            );
+            return;
+        }
+
+        QString startDir;
+        if (this->hasConfigPath()) {
+            startDir = QString::fromStdString(this->_configPath->string());
+        }
+
+        const auto selected = QFileDialog::getExistingDirectory(
+            this,
+            QStringLiteral("Save Config As — choose destination folder"),
+            startDir,
+            QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks
+        );
+        if (selected.isEmpty()) {
+            return;
+        }
+
+        auto destPath = std::FilePath{selected.toStdString()};
+        if (!this->writeConfigFolder(destPath, this->_configPath)) {
+            return;
+        }
+
+        this->_configPath.emplace(std::move(destPath));
+
+        if (this->_statusLabel != nullptr) {
+            this->_statusLabel->setText(
+                QStringLiteral("Saved as: %1")
+                    .arg(QString::fromStdString(this->_configPath->string()))
+            );
+        }
+
+        QMessageBox::information(
+            this,
+            QStringLiteral("Save Config As"),
+            QStringLiteral("Config saved to:\n%1")
+                .arg(QString::fromStdString(this->_configPath->string()))
+        );
+    }
+    QMESSAGEBOX_REPORT_EXCEPTION("Save Config As")
 
     void Window::executePlaceRoute() try {
         if (this->_finishPR) {

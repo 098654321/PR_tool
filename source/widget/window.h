@@ -50,6 +50,14 @@ namespace PR_tool::widget {
         void executePlaceRoute();
         void generateControlBitAs();
 
+        /// Write in-memory project into `destFolder` (JSON config set).
+        /// When `copyStaticFrom` is set and differs from dest, copy static
+        /// files (config.json, interposer, topdies, ports_01, register map).
+        auto writeConfigFolder(
+            const std::FilePath& destFolder,
+            const std::Option<std::FilePath>& copyStaticFrom
+        ) -> bool;
+
     private:
         auto hasConfigPath() -> bool;
         void disableEdit();
