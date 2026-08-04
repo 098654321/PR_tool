@@ -318,7 +318,7 @@ namespace PR_tool::widget {
         auto swregStr = this->_swRegister->currentText();
 
         using enum hardware::COBSignalDirection;
-        auto dir = (selregStr == "Track To COB") ? TrackToCOB : COBToTrack;
+        auto dir = (selregStr == "Track to COB") ? TrackToCOB : COBToTrack;
 
         using enum hardware::COBSwState;
         auto state = (swregStr == "Connected") ? Connected : DisConnected;
