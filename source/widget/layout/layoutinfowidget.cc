@@ -30,7 +30,7 @@ namespace PR_tool::widget {
         _scene{scene}
     {
         auto thisLayout = new QVBoxLayout {this};
-        auto widget = new QGroupBox {"Layout Infomation", this};
+        auto widget = new QGroupBox {"Layout Information", this};
         widget->setStyleSheet("background-color: white;");
         thisLayout->addWidget(widget);
         thisLayout->addStretch();

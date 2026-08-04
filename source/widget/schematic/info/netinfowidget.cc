@@ -26,7 +26,7 @@ namespace PR_tool::widget::schematic {
         QWidget{parent}
     {
         auto thisLayout = new QVBoxLayout {this};
-        auto widget = new QGroupBox {"Net Infomation", this};
+        auto widget = new QGroupBox {"Net Information", this};
         widget->setStyleSheet("background-color: white;");
         thisLayout->addWidget(widget);
         thisLayout->addStretch();
@@ -85,9 +85,9 @@ namespace PR_tool::widget::schematic {
 
         connect(removeButton, &QPushButton::clicked, [this] () {
             auto response = QMessageBox::question(
-                nullptr, 
+                this, 
                 "Confirm", 
-                "Do yout want to delete this net?",
+                "Do you want to delete this net?",
                 QMessageBox::Yes | QMessageBox::No);
             
             if (response == QMessageBox::Yes) {

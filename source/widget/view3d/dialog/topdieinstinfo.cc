@@ -38,7 +38,7 @@ namespace PR_tool::widget {
 
         //// Base info
         auto baseGroup = new QGroupBox {this};
-        baseGroup->setTitle("Base Infomation");
+        baseGroup->setTitle("Base Information");
         auto baseLayout = new QVBoxLayout {baseGroup};
         baseLayout->setContentsMargins(10, 10, 10, 10);
         layout->addWidget(baseGroup);
@@ -139,7 +139,7 @@ namespace PR_tool::widget {
         
         //// Net info
         auto netGroup = new QGroupBox {this};
-        netGroup->setTitle("Net Infomation");
+        netGroup->setTitle("Net Information");
         auto netLayout = new QVBoxLayout {netGroup};
         netLayout->setContentsMargins(10, 10, 10, 10);
         layout->addWidget(netGroup);        

@@ -227,7 +227,7 @@ namespace PR_tool::widget {
         }
 
         if (this->hasConfigPath()) {
-            auto reply = QMessageBox::question(nullptr, 
+            auto reply = QMessageBox::question(this, 
                         "Load Config", 
                         "A configuration already exists.\nDo you want to delete the original configuration and import it?", 
                         QMessageBox::Yes | QMessageBox::No);

@@ -27,7 +27,7 @@ namespace PR_tool::widget::schematic {
         QWidget{parent}
     {
         auto thisLayout = new QVBoxLayout {this};
-        auto widget = new QGroupBox {"TopDieInst Infomation", this};
+        auto widget = new QGroupBox {"TopDieInst Information", this};
         widget->setStyleSheet("background-color: white;");
         thisLayout->addWidget(widget);
         thisLayout->addStretch();
@@ -36,7 +36,7 @@ namespace PR_tool::widget::schematic {
         layout->setSpacing(10);
 
         // Name
-        layout->addWidget(new QLabel {"Begin ", widget}, 0, 0);
+        layout->addWidget(new QLabel {"Name ", widget}, 0, 0);
         this->_nameEdit = new LineEditWithButton {widget};
         this->_nameEdit->setMinimumHeight(MIN_HEIGHT);
         layout->addWidget(this->_nameEdit, 0, 1);
@@ -61,9 +61,9 @@ namespace PR_tool::widget::schematic {
 
         connect(removeButton, &QPushButton::clicked, [this] () {
             auto response = QMessageBox::question(
-                nullptr, 
+                this, 
                 "Confirm", 
-                "Do yout want to delete this topdie instance?",
+                "Do you want to delete this topdie instance?",
                 QMessageBox::Yes | QMessageBox::No);
         
             if (response == QMessageBox::Yes) {

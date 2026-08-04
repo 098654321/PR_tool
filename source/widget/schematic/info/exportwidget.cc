@@ -32,7 +32,7 @@ namespace PR_tool::widget::schematic {
         QWidget{parent}
     {
         auto thisLayout = new QVBoxLayout {this};
-        auto widget = new QGroupBox {"Net Infomation", this};
+        auto widget = new QGroupBox {"Net Information", this};
         widget->setStyleSheet("background-color: white;");
         thisLayout->addWidget(widget);
         thisLayout->addStretch();
@@ -103,9 +103,9 @@ namespace PR_tool::widget::schematic {
         layout->addWidget(deleteButton, 6, 0, 1, 2);
         connect(deleteButton, &QPushButton::clicked, [this] () {
             auto response = QMessageBox::question(
-                nullptr, 
+                this, 
                 "Confirm", 
-                "Do yout want to delete this external port?",
+                "Do you want to delete this external port?",
                 QMessageBox::Yes | QMessageBox::No);
         
             if (response == QMessageBox::Yes) {

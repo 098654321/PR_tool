@@ -34,7 +34,7 @@ namespace PR_tool::widget {
 
         //// Base info
         auto baseGroup = new QGroupBox {this};
-        baseGroup->setTitle("Base Infomation");
+        baseGroup->setTitle("Base Information");
         auto baseLayout = new QVBoxLayout {baseGroup};
         baseLayout->setContentsMargins(10, 10, 10, 10);
         layout->addWidget(baseGroup);
