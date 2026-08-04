@@ -31,6 +31,7 @@
 #include <QToolBar>
 #include <QStackedWidget>
 #include <QToolButton>
+#include <QKeySequence>
 #include <QMenuBar>
 #include <QFileDialog>
 #include <QMessageBox>
@@ -115,13 +116,29 @@ namespace PR_tool::widget {
         this->_toolBar->setMovable(false);
         this->_toolBar->setMinimumWidth(50);
         this->_toolBar->setIconSize(QSize(35, 35));
+        this->_toolBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
         this->addToolBar(Qt::LeftToolBarArea, this->_toolBar);
 
-        // Page button!
-        auto schematicButton = this->_toolBar->addAction(QIcon(":/image/image/icon/chip.png"), "");
-        auto layoutButton = this->_toolBar->addAction(QIcon(":/image/image/icon/layout.png"), "");
-        auto view2DButton = this->_toolBar->addAction(QIcon(":/image/image/icon/view2d.png"), "");
-        auto view3DButton = this->_toolBar->addAction(QIcon(":/image/image/icon/view3d.png"), "");
+        // Page buttons (icon-only; text/tooltip for recognition)
+        auto schematicButton = this->_toolBar->addAction(QIcon(":/image/image/icon/chip.png"), "Schematic");
+        schematicButton->setToolTip("Schematic");
+        schematicButton->setStatusTip("Switch to Schematic view");
+        schematicButton->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
+
+        auto layoutButton = this->_toolBar->addAction(QIcon(":/image/image/icon/layout.png"), "Layout");
+        layoutButton->setToolTip("Layout");
+        layoutButton->setStatusTip("Switch to Layout view");
+        layoutButton->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_2));
+
+        auto view2DButton = this->_toolBar->addAction(QIcon(":/image/image/icon/view2d.png"), "View 2D");
+        view2DButton->setToolTip("View 2D");
+        view2DButton->setStatusTip("Switch to 2D view");
+        view2DButton->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_3));
+
+        auto view3DButton = this->_toolBar->addAction(QIcon(":/image/image/icon/view3d.png"), "View 3D");
+        view3DButton->setToolTip("View 3D");
+        view3DButton->setStatusTip("Switch to 3D view");
+        view3DButton->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_4));
 
         connect(schematicButton, &QAction::triggered, [this]() {
             this->_stackedWidget->setCurrentWidget(this->_schematicWidget);
@@ -142,17 +159,22 @@ namespace PR_tool::widget {
         stretch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         this->_toolBar->addWidget(stretch);
 
-        this->_placeRouteAction = this->_toolBar->addAction(QIcon{":/image/image/icon/execute.png"}, "");
+        this->_placeRouteAction = this->_toolBar->addAction(QIcon{":/image/image/icon/execute.png"}, "Place & Route");
+        this->_placeRouteAction->setToolTip("Place & Route");
+        this->_placeRouteAction->setStatusTip("Run place and route");
         connect(this->_placeRouteAction, &QAction::triggered, this, &Window::executePlaceRoute);
 
-        this->_generateControlBitAction = this->_toolBar->addAction(QIcon{":/image/image/icon/save.png"}, "");
+        this->_generateControlBitAction = this->_toolBar->addAction(QIcon{":/image/image/icon/save.png"}, "Export Controlbits");
+        this->_generateControlBitAction->setToolTip("Export Controlbits");
+        this->_generateControlBitAction->setStatusTip("Export controlbits to output directory");
         this->_generateControlBitAction->setEnabled(false);
         connect(this->_generateControlBitAction, &QAction::triggered, this, &Window::generateControlBitAs);
 
         this->_toolBar->addSeparator();
 
-        // Run button!
-        auto settingButton = this->_toolBar->addAction(QIcon{":/image/image/icon/setting.png"}, "");
+        auto settingButton = this->_toolBar->addAction(QIcon{":/image/image/icon/setting.png"}, "Settings");
+        settingButton->setToolTip("Settings");
+        settingButton->setStatusTip("Open Settings");
         connect(settingButton, &QAction::triggered, [this] () {
             this->_stackedWidget->setCurrentWidget(this->_settingWidget);
         });
