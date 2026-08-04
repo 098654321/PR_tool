@@ -731,6 +731,8 @@ namespace PR_tool::widget {
             this,
             QStringLiteral("导出控制位"),
             QStringLiteral("已写出控制位到：\n%1").arg(out_dir));
+        // U17: leave export path visible after the MessageBox is dismissed.
+        this->statusBar()->showMessage(out_dir, 15000);
     }
     QMESSAGEBOX_REPORT_EXCEPTION("Generate control bit file")
 
