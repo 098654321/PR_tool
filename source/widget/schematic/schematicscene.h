@@ -105,6 +105,9 @@ namespace PR_tool::widget {
 
         void cleanFloatingNet();
 
+        /// Grow/fit view scene rect so newly placed items stay reachable (S3).
+        void adjustSceneRect();
+
     protected:
         circuit::BaseDie* _basedie;
         hardware::Interposer* _interposer;

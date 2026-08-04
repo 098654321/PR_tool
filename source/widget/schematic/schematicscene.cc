@@ -14,6 +14,7 @@
 #include <circuit/basedie.hh>
 #include <hardware/interposer.hh>
 #include <widget/frame/itemtypecheck.h>
+#include <widget/frame/graphicsview.h>
 
 #include <debug/debug.hh>
 #include <QMessageBox>
@@ -375,6 +376,14 @@ namespace PR_tool::widget {
         }
     }
 
+    void SchematicScene::adjustSceneRect() {
+        for (QGraphicsView* view : this->views()) {
+            if (auto* gv = qobject_cast<GraphicsView*>(view)) {
+                gv->adjustSceneRect();
+            }
+        }
+    }
+
     void SchematicScene::handleInitialTopDie(circuit::TopDie* topdie) {
         auto idle_tob = this->_interposer->get_a_idle_tob();
         if (!idle_tob.has_value()) {
@@ -394,6 +403,7 @@ namespace PR_tool::widget {
 
             this->_floatingTopdDieInst = topdieInstItem;
 
+            this->adjustSceneRect();
             emit this->layoutChanged();
         }
     }
@@ -408,6 +418,7 @@ namespace PR_tool::widget {
 
         this->_floatingExPort = eportItem;
 
+        this->adjustSceneRect();
         emit this->layoutChanged();
     }
 
@@ -426,6 +437,7 @@ namespace PR_tool::widget {
     void SchematicScene::placeFloatingTopdDieInst() {
         assert(this->_floatingTopdDieInst != nullptr);
         this->_floatingTopdDieInst = nullptr;
+        this->adjustSceneRect();
     }
 
     void SchematicScene::cleanFloatingTopdDieInst() {
@@ -442,6 +454,7 @@ namespace PR_tool::widget {
     void SchematicScene::placeFloatingExPort() {
         assert(this->_floatingExPort != nullptr);
         this->_floatingExPort = nullptr;
+        this->adjustSceneRect();
     }
 
     void SchematicScene::cleanFloatingExPort() {
