@@ -5,6 +5,7 @@
 #include "std/utility.hh"
 #include <parse/reader/config/config.hh>
 #include <QMainWindow>
+#include <QString>
 
 namespace PR_tool::hardware {
     class Interposer;
@@ -34,6 +35,9 @@ namespace PR_tool::widget {
     public:
         Window(QWidget *parent = nullptr);
         ~Window();
+
+        /// Load config from an existing directory path (no file dialog).
+        void loadConfigFromPath(const QString& path);
 
     private:
         void createSystem();

@@ -235,9 +235,9 @@ namespace PR_tool::widget {
         statusBar->addPermanentWidget(this->_statusLabel);
     }
 
-    void Window::loadConfig() try {
+    void Window::loadConfig() {
         if (this->_finishPR) {
-            QMessageBox::critical(\
+            QMessageBox::critical(
                 this,
                 "Load Config",
                 "Can't load new config after finishing P&R"
@@ -255,40 +255,30 @@ namespace PR_tool::widget {
             }
         }
 
-        // Load a new one!
         auto filePath = QFileDialog::getExistingDirectory(this, "Select Config path");
         if (!filePath.isEmpty()) {
-            // MARK: For loss origin data, it should be these, buf box<net> in basedie...
-            // Once faild, loss all 
-
-            // auto configPath = std::FilePath{filePath.toStdString()};
-            // auto [i, b] = parse::read_config(configPath);
-
-            // this->_interposer->clear();
-            // this->_basedie->clear();
-
-            // *(this->_interposer) = std::move(*i);
-            // *(this->_basedie) = std::move(*b);
-
-            // this->_schematicWidget->reload();
-            // this->_layoutWidget->reload();
-
-            // this->_configPath.emplace(std::move(configPath));
-
-            auto configPath = std::FilePath{filePath.toStdString()};
-
-            if (this->hasConfigPath()) {
-                this->_interposer->clear();
-                this->_basedie->clear();
-            }
-
-            this->_register_map = parse::read_config(configPath, this->_interposer.get(), this->_basedie.get(), 0, false);
-
-            this->_schematicWidget->reload();
-            this->_layoutWidget->reload();
-
-            this->_configPath.emplace(std::move(configPath));
+            this->loadConfigFromPath(filePath);
         }
+    }
+
+    void Window::loadConfigFromPath(const QString& path) try {
+        if (path.isEmpty()) {
+            return;
+        }
+
+        auto configPath = std::FilePath{path.toStdString()};
+
+        if (this->hasConfigPath()) {
+            this->_interposer->clear();
+            this->_basedie->clear();
+        }
+
+        this->_register_map = parse::read_config(configPath, this->_interposer.get(), this->_basedie.get(), 0, false);
+
+        this->_schematicWidget->reload();
+        this->_layoutWidget->reload();
+
+        this->_configPath.emplace(std::move(configPath));
     }
     QMESSAGEBOX_REPORT_EXCEPTION("Load Config")
 
