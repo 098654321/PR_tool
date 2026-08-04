@@ -33,6 +33,16 @@ namespace PR_tool::widget::schematic {
         }
 
         auto thisLayout = new QVBoxLayout {this};
+
+        // Empty-state guidance when nothing is selected (U23); single-click opens properties (U7/S9).
+        auto emptyHint = new QLabel {
+            QStringLiteral("Click a component to edit its properties."),
+            this
+        };
+        emptyHint->setWordWrap(true);
+        emptyHint->setStyleSheet(QStringLiteral("color: gray;"));
+        thisLayout->addWidget(emptyHint);
+
         auto widget = new QGroupBox {"View Information", this};
         widget->setStyleSheet("background-color: white;");
         thisLayout->addWidget(widget);
