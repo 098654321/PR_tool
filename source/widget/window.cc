@@ -30,6 +30,7 @@
 #include <std/file.hh>
 #include <std/utility.hh>
 
+#include <QApplication>
 #include <QDebug>
 #include <QResizeEvent>
 #include <QVBoxLayout>
@@ -105,6 +106,8 @@ namespace PR_tool::widget {
         // ====================== View ======================
         auto viewMenu= new QMenu("View", this->_menuBar);
         auto themesAction = new QAction{"Themes", viewMenu};
+        themesAction->setEnabled(false);
+        themesAction->setToolTip("Not available yet");
         viewMenu->addAction(themesAction);
 
         this->_menuBar->addMenu(viewMenu);
@@ -118,6 +121,15 @@ namespace PR_tool::widget {
         helpMenu->addAction(aboutQTAction);
 
         this->_menuBar->addMenu(helpMenu);
+
+        connect(aboutAction, &QAction::triggered, this, [this]() {
+            QMessageBox::about(
+                this,
+                "About PR_tool",
+                "PR_tool is a chiplet interposer place-and-route tool."
+            );
+        });
+        connect(aboutQTAction, &QAction::triggered, qApp, &QApplication::aboutQt);
     }
 
     void Window::createToolBar() {
