@@ -161,10 +161,10 @@ namespace PR_tool::widget {
     void Window::createCentralWidget() {
         this->_stackedWidget = new QStackedWidget(this);
 
-        this->_schematicWidget = new SchematicWidget{this->_interposer.get(), this->_basedie.get(), this->_schematicWidget};
+        this->_schematicWidget = new SchematicWidget{this->_interposer.get(), this->_basedie.get(), this};
         this->_stackedWidget->addWidget(this->_schematicWidget);
 
-        this->_layoutWidget = new LayoutWidget{this->_interposer.get(), this->_basedie.get(), this->_schematicWidget};
+        this->_layoutWidget = new LayoutWidget{this->_interposer.get(), this->_basedie.get(), this};
         this->_stackedWidget->addWidget(this->_layoutWidget);
 
         this->_view2DWidget = new View2DWidget {this->_interposer.get(), this->_basedie.get(), this};
