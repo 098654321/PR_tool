@@ -2,6 +2,8 @@
 #include "./view2dview.h"
 #include "./view2dscene.hh"
 
+#include <hardware/interposer.hh>
+
 #include <QGridLayout>
 #include <QLabel>
 
@@ -27,16 +29,32 @@ namespace PR_tool::widget {
         legend->setText(QStringLiteral(
             "<span style='color:#CDAD00'>■</span> COB&nbsp;&nbsp;"
             "<span style='color:#548B54'>■</span> TOB&nbsp;&nbsp;"
-            "<span style='color:#000000'>■</span> Track/Net"));
+            "<span style='color:#000000'>■</span> Track/Net<br>"
+            "<span style='color:#555555'>Hardware registers: open COB dialog "
+            "(view/edit before P&amp;R lock).</span>"));
         legend->setStyleSheet(QStringLiteral(
             "QLabel { color: #333333; background: transparent; padding: 6px; }"));
         legend->setAttribute(Qt::WA_TransparentForMouseEvents);
         legend->setAccessibleName(QStringLiteral("View 2D color legend"));
+        legend->setWordWrap(true);
+
+        // V2-1: thin bottom-right hint (not a full inspector)
+        const auto cobCount = this->_interposer != nullptr
+            ? static_cast<int>(this->_interposer->cobs().size())
+            : 0;
+        auto hint = new QLabel{this};
+        hint->setText(QStringLiteral("Double-click a COB for details  ·  %1 COBs")
+                          .arg(cobCount));
+        hint->setStyleSheet(QStringLiteral(
+            "QLabel { color: #555555; background: transparent; padding: 6px; }"));
+        hint->setAttribute(Qt::WA_TransparentForMouseEvents);
+        hint->setAccessibleName(QStringLiteral("View 2D interaction hint"));
 
         auto layout = new QGridLayout{this};
         layout->setContentsMargins(0, 0, 0, 0);
         layout->addWidget(this->_view, 0, 0);
         layout->addWidget(legend, 0, 0, Qt::AlignTop | Qt::AlignLeft);
+        layout->addWidget(hint, 0, 0, Qt::AlignBottom | Qt::AlignRight);
     }
 
     void View2DWidget::reload() {
