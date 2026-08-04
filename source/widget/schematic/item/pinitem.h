@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QGraphicsItem>
 #include <QPainter>
+#include <QPainterPath>
 #include <QDebug>
 #include <circuit/connection/pin.hh>
 
@@ -30,6 +31,8 @@ namespace PR_tool::widget::schematic {
     
         static constexpr qreal PIN_RADIUS = 5.;
         static constexpr qreal PIN_DIAMETER = 2 * PIN_RADIUS;
+        // Extra invisible margin so pins stay clickable after default view scale(1/2.5).
+        static constexpr qreal HIT_PADDING = 5.;
         static constexpr qreal NAME_INTERVAL = 10.;
         static constexpr qreal CHAR_WIDTH_ = 10.;
         static constexpr qreal CHAR_HEIGHT = 20.;
@@ -49,6 +52,7 @@ namespace PR_tool::widget::schematic {
 
     public:        
         auto boundingRect() const -> QRectF override;
+        auto shape() const -> QPainterPath override;
         void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
         auto itemChange(GraphicsItemChange change, const QVariant& value) -> QVariant override;
 

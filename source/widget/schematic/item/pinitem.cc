@@ -38,7 +38,15 @@ namespace PR_tool::widget::schematic {
     }
 
     auto PinItem::boundingRect() const -> QRectF {
-        return QRectF(-this->_raduis,  -this->_raduis, 2 * this->_raduis, 2 * this->_raduis);
+        const auto r = this->_raduis + HIT_PADDING;
+        return QRectF(-r, -r, 2 * r, 2 * r);
+    }
+
+    auto PinItem::shape() const -> QPainterPath {
+        QPainterPath path;
+        const auto r = this->_raduis + HIT_PADDING;
+        path.addEllipse(QPointF{0., 0.}, r, r);
+        return path;
     }
 
     void PinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {

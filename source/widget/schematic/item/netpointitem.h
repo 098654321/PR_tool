@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QGraphicsLineItem>
+#include <QPainterPath>
 #include <QPen>
 #include <QDebug>
 
@@ -13,6 +14,8 @@ namespace PR_tool::widget::schematic {
     public:
         static constexpr qreal RADIUS = 5.;
         static constexpr qreal DIAMETER = 2. * RADIUS;
+        // Extra invisible margin so net points stay clickable after default view scale(1/2.5).
+        static constexpr qreal HIT_PADDING = 5.;
 
         static constexpr qreal MOVING_RADIUS = 8.;
         static constexpr qreal MOVING_DIAMETER = 2. * MOVING_RADIUS;
@@ -34,6 +37,9 @@ namespace PR_tool::widget::schematic {
         { this->_netitem = netitem; }
 
         void updatePos();
+
+        auto boundingRect() const -> QRectF override;
+        auto shape() const -> QPainterPath override;
 
     protected:
         QVariant itemChange(GraphicsItemChange change, const QVariant& value) override;

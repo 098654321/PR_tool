@@ -26,6 +26,18 @@ namespace PR_tool::widget::schematic {
         this->linkToPin(connectedPin);
         this->setZValue(1);
     }
+
+    auto NetPointItem::boundingRect() const -> QRectF {
+        const auto r = qMax(this->rect().width(), this->rect().height()) / 2. + HIT_PADDING;
+        return QRectF(-r, -r, 2. * r, 2. * r);
+    }
+
+    auto NetPointItem::shape() const -> QPainterPath {
+        QPainterPath path;
+        const auto r = qMax(this->rect().width(), this->rect().height()) / 2. + HIT_PADDING;
+        path.addEllipse(QPointF{0., 0.}, r, r);
+        return path;
+    }
  
     void NetPointItem::linkToPin(PinItem* pin) {
         if (pin != nullptr) {
