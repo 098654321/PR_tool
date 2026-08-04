@@ -20,6 +20,8 @@ class QStackedWidget;
 class QMenuBar;
 class QPushButton;
 class QLabel;
+class QAction;
+class QActionGroup;
 
 namespace PR_tool::widget {
 
@@ -65,6 +67,8 @@ namespace PR_tool::widget {
     private:
         auto hasConfigPath() -> bool;
         void disableEdit();
+        void updateStatusLabel();
+        auto currentPageName() const -> QString;
 
     private:
         QMenuBar* _menuBar {nullptr};
@@ -76,6 +80,13 @@ namespace PR_tool::widget {
         View2DWidget* _view2DWidget {nullptr};
         View3DWidget* _view3DWidget {nullptr};
         SettingWidget* _settingWidget {nullptr};
+
+        QAction* _schematicAction {nullptr};
+        QAction* _layoutAction {nullptr};
+        QAction* _view2DAction {nullptr};
+        QAction* _view3DAction {nullptr};
+        QAction* _settingsAction {nullptr};
+        QActionGroup* _pageActionGroup {nullptr};
 
         QAction* _placeRouteAction {nullptr};
         QAction* _generateControlBitAction {nullptr};

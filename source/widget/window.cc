@@ -31,6 +31,7 @@
 #include <std/utility.hh>
 
 #include <QApplication>
+#include <QActionGroup>
 #include <QDebug>
 #include <QResizeEvent>
 #include <QVBoxLayout>
@@ -141,44 +142,61 @@ namespace PR_tool::widget {
         this->_toolBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
         this->addToolBar(Qt::LeftToolBarArea, this->_toolBar);
 
-        // Page buttons (icon-only; text/tooltip for recognition)
-        auto schematicButton = this->_toolBar->addAction(QIcon(":/image/image/icon/chip.png"), "Schematic");
-        schematicButton->setToolTip("Schematic");
-        schematicButton->setStatusTip("Switch to Schematic view");
-        schematicButton->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
+        this->_pageActionGroup = new QActionGroup{this};
+        this->_pageActionGroup->setExclusive(true);
 
-        auto layoutButton = this->_toolBar->addAction(QIcon(":/image/image/icon/layout.png"), "Layout");
-        layoutButton->setToolTip("Layout");
-        layoutButton->setStatusTip("Switch to Layout view");
-        layoutButton->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_2));
+        // Page buttons (icon-only; text/tooltip for recognition; checkable for wayfinding)
+        this->_schematicAction = this->_toolBar->addAction(QIcon(":/image/image/icon/chip.png"), "Schematic");
+        this->_schematicAction->setToolTip("Schematic");
+        this->_schematicAction->setStatusTip("Switch to Schematic view");
+        this->_schematicAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
+        this->_schematicAction->setCheckable(true);
+        this->_pageActionGroup->addAction(this->_schematicAction);
 
-        auto view2DButton = this->_toolBar->addAction(QIcon(":/image/image/icon/view2d.png"), "View 2D");
-        view2DButton->setToolTip("View 2D");
-        view2DButton->setStatusTip("Switch to 2D view");
-        view2DButton->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_3));
+        this->_layoutAction = this->_toolBar->addAction(QIcon(":/image/image/icon/layout.png"), "Layout");
+        this->_layoutAction->setToolTip("Layout");
+        this->_layoutAction->setStatusTip("Switch to Layout view");
+        this->_layoutAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_2));
+        this->_layoutAction->setCheckable(true);
+        this->_pageActionGroup->addAction(this->_layoutAction);
 
-        auto view3DButton = this->_toolBar->addAction(QIcon(":/image/image/icon/view3d.png"), "View 3D");
-        view3DButton->setToolTip("View 3D");
-        view3DButton->setStatusTip("Switch to 3D view");
-        view3DButton->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_4));
+        this->_view2DAction = this->_toolBar->addAction(QIcon(":/image/image/icon/view2d.png"), "View 2D");
+        this->_view2DAction->setToolTip("View 2D");
+        this->_view2DAction->setStatusTip("Switch to 2D view");
+        this->_view2DAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_3));
+        this->_view2DAction->setCheckable(true);
+        this->_pageActionGroup->addAction(this->_view2DAction);
 
-        connect(schematicButton, &QAction::triggered, [this]() {
+        this->_view3DAction = this->_toolBar->addAction(QIcon(":/image/image/icon/view3d.png"), "View 3D");
+        this->_view3DAction->setToolTip("View 3D");
+        this->_view3DAction->setStatusTip("Switch to 3D view");
+        this->_view3DAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_4));
+        this->_view3DAction->setCheckable(true);
+        this->_pageActionGroup->addAction(this->_view3DAction);
+
+        this->_schematicAction->setChecked(true);
+
+        connect(this->_schematicAction, &QAction::triggered, [this]() {
             this->_stackedWidget->setCurrentWidget(this->_schematicWidget);
+            this->updateStatusLabel();
             this->statusBar()->showMessage(QStringLiteral(
                 "Ctrl+Wheel zoom · Middle-drag pan · Right-click / Esc cancel placement"));
         });
-        connect(layoutButton, &QAction::triggered, [this]() {
+        connect(this->_layoutAction, &QAction::triggered, [this]() {
             this->_stackedWidget->setCurrentWidget(this->_layoutWidget);
+            this->updateStatusLabel();
             this->statusBar()->showMessage(QStringLiteral(
                 "Ctrl+Wheel zoom · Middle-drag pan"));
         });
-        connect(view2DButton, &QAction::triggered, [this] () {
+        connect(this->_view2DAction, &QAction::triggered, [this] () {
             this->_stackedWidget->setCurrentWidget(this->_view2DWidget);
+            this->updateStatusLabel();
             this->statusBar()->showMessage(QStringLiteral(
                 "Ctrl+Wheel zoom · Middle-drag pan"));
         });
-        connect(view3DButton, &QAction::triggered, [this] () {
+        connect(this->_view3DAction, &QAction::triggered, [this] () {
             this->_stackedWidget->setCurrentWidget(this->_view3DWidget);
+            this->updateStatusLabel();
             this->statusBar()->clearMessage();
         });
 
@@ -201,11 +219,14 @@ namespace PR_tool::widget {
 
         this->_toolBar->addSeparator();
 
-        auto settingButton = this->_toolBar->addAction(QIcon{":/image/image/icon/setting.png"}, "Settings");
-        settingButton->setToolTip("Settings");
-        settingButton->setStatusTip("Open Settings");
-        connect(settingButton, &QAction::triggered, [this] () {
+        this->_settingsAction = this->_toolBar->addAction(QIcon{":/image/image/icon/setting.png"}, "Settings");
+        this->_settingsAction->setToolTip("Settings");
+        this->_settingsAction->setStatusTip("Open Settings");
+        this->_settingsAction->setCheckable(true);
+        this->_pageActionGroup->addAction(this->_settingsAction);
+        connect(this->_settingsAction, &QAction::triggered, [this] () {
             this->_stackedWidget->setCurrentWidget(this->_settingWidget);
+            this->updateStatusLabel();
             this->statusBar()->clearMessage();
         });
     }
@@ -236,13 +257,15 @@ namespace PR_tool::widget {
     void Window::createStatusBar() {
         auto statusBar = this->statusBar();
 
-        this->_statusLabel = new QLabel{QStringLiteral("PR_tool"), this};
+        this->_statusLabel = new QLabel{this};
         this->_statusLabel->setAlignment(Qt::AlignCenter);
         this->_statusLabel->setMinimumWidth(200);
 
         statusBar->addPermanentWidget(this->_statusLabel);
+        this->updateStatusLabel();
 
         // Default page is Schematic — surface gesture tips (U8/S5/X1).
+        // Temporary message; permanent page/path label stays on _statusLabel.
         statusBar->showMessage(QStringLiteral(
             "Ctrl+Wheel zoom · Middle-drag pan · Right-click / Esc cancel placement"));
     }
@@ -293,6 +316,7 @@ namespace PR_tool::widget {
         this->_view3DWidget->reload();
 
         this->_configPath.emplace(std::move(configPath));
+        this->updateStatusLabel();
     }
     QMESSAGEBOX_REPORT_EXCEPTION("Load Config")
 
@@ -545,12 +569,7 @@ namespace PR_tool::widget {
             return;
         }
 
-        if (this->_statusLabel != nullptr) {
-            this->_statusLabel->setText(
-                QStringLiteral("Saved: %1")
-                    .arg(QString::fromStdString(this->_configPath->string()))
-            );
-        }
+        this->updateStatusLabel();
 
         QMessageBox::information(
             this,
@@ -592,13 +611,7 @@ namespace PR_tool::widget {
         }
 
         this->_configPath.emplace(std::move(destPath));
-
-        if (this->_statusLabel != nullptr) {
-            this->_statusLabel->setText(
-                QStringLiteral("Saved as: %1")
-                    .arg(QString::fromStdString(this->_configPath->string()))
-            );
-        }
+        this->updateStatusLabel();
 
         QMessageBox::information(
             this,
@@ -673,12 +686,12 @@ namespace PR_tool::widget {
         this->_view3DWidget->reload();
         this->_view3DWidget->displayRoutingResult();
 
+        this->_finishPR = true;
         this->disableEdit();
 
         assert(this->_generateControlBitAction != nullptr);
         this->_generateControlBitAction->setEnabled(true);
         this->_placeRouteAction->setEnabled(false);
-        this->_finishPR = true;
 
         QMessageBox::information(
             this,
@@ -729,10 +742,7 @@ namespace PR_tool::widget {
         this->_schematicWidget->setEnabled(false);
         this->_layoutWidget->setEnabled(false);
 
-        if (this->_statusLabel != nullptr) {
-            this->_statusLabel->setText(QStringLiteral(
-                "Editing locked after P&R — use Export Controlbits; reload app to edit again"));
-        }
+        this->updateStatusLabel();
 
         const auto suffix = QStringLiteral(" — read-only after P&R");
         auto title = this->windowTitle();
@@ -741,6 +751,46 @@ namespace PR_tool::widget {
         }
         if (!title.endsWith(suffix)) {
             this->setWindowTitle(title + suffix);
+        }
+    }
+
+    auto Window::currentPageName() const -> QString {
+        if (this->_stackedWidget == nullptr) {
+            return QStringLiteral("Schematic");
+        }
+        const auto* current = this->_stackedWidget->currentWidget();
+        if (current == this->_layoutWidget) {
+            return QStringLiteral("Layout");
+        }
+        if (current == this->_view2DWidget) {
+            return QStringLiteral("View 2D");
+        }
+        if (current == this->_view3DWidget) {
+            return QStringLiteral("View 3D");
+        }
+        if (current == this->_settingWidget) {
+            return QStringLiteral("Settings");
+        }
+        return QStringLiteral("Schematic");
+    }
+
+    void Window::updateStatusLabel() {
+        if (this->_statusLabel == nullptr) {
+            return;
+        }
+
+        const auto path = this->hasConfigPath()
+            ? QString::fromStdString(this->_configPath->string())
+            : QStringLiteral("unsaved");
+        const auto page = this->currentPageName();
+
+        if (this->_finishPR) {
+            // Lock messaging stays dominant; page + path still visible.
+            this->_statusLabel->setText(
+                QStringLiteral("Editing locked | %1 | %2").arg(page, path));
+        } else {
+            this->_statusLabel->setText(
+                QStringLiteral("%1 | %2").arg(page, path));
         }
     }
 
