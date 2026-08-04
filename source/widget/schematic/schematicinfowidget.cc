@@ -69,6 +69,7 @@ namespace PR_tool::widget {
 
         connect(this->_netInfoWidget, &NetInfoWidget::netSyncChanged, this,&SchematicInfoWidget::netSyncChanged);
         connect(this->_netInfoWidget, &NetInfoWidget::netColorChanged, this,&SchematicInfoWidget::netColorChanged);
+        connect(this->_netInfoWidget, &NetInfoWidget::netWidthChanged, this,&SchematicInfoWidget::netWidthChanged);
         connect(this->_netInfoWidget, &NetInfoWidget::removeNet, this,&SchematicInfoWidget::removeNet);
     }
 
@@ -177,6 +178,8 @@ namespace PR_tool::widget {
     }
 
     void SchematicInfoWidget::netWidthChanged(NetItem* net, qreal width) {
+        net->setWidth(width);
+        net->update();
     }
 
     void SchematicInfoWidget::removeNet(NetItem* net) {

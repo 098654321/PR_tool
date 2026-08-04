@@ -68,6 +68,14 @@ namespace PR_tool::widget::schematic {
         this->_colorButton->setMinimumHeight(30);
         layout->addWidget(this->_colorButton, 3, 1);
 
+        // Width
+        layout->addWidget(new QLabel {"Width ", widget}, 4, 0);
+        this->_widthSpinBox = new QSpinBox{widget};
+        this->_widthSpinBox->setMinimum(1);
+        this->_widthSpinBox->setMaximum(20);
+        this->_widthSpinBox->setMinimumHeight(30);
+        layout->addWidget(this->_widthSpinBox, 4, 1);
+
         connect(this->_colorButton, &ColorPickerButton::colorChanged, [this] (const QColor& color) {
             assert(this->_net != nullptr);
             emit this->netColorChanged(this->_net, color);
@@ -78,10 +86,15 @@ namespace PR_tool::widget::schematic {
             emit this->netSyncChanged(this->_net, sync);
         });
 
+        connect(this->_widthSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), [this] (int width) {
+            assert(this->_net != nullptr);
+            emit this->netWidthChanged(this->_net, width);
+        });
+
         // Remove        
         auto removeButton = new QPushButton {"Remove", widget};
         removeButton->setMinimumHeight(30);
-        layout->addWidget(removeButton, 4, 0, 1, 2);
+        layout->addWidget(removeButton, 5, 0, 1, 2);
 
         connect(removeButton, &QPushButton::clicked, [this] () {
             auto response = QMessageBox::question(
@@ -117,6 +130,7 @@ namespace PR_tool::widget::schematic {
         this->_syncSpinBox->setValue(this->_net->unwrap()->sync());
 
         this->_colorButton->setColor(this->_net->color());
+        this->_widthSpinBox->setValue(static_cast<int>(this->_net->width()));
     }
 
     auto NetInfoWidget::currentNet() -> NetItem* {
