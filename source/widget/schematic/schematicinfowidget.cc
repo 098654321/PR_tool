@@ -99,6 +99,52 @@ namespace PR_tool::widget {
         this->setCurrentWidget(this->_viewInfoWidget);
     }
 
+    void SchematicInfoWidget::deleteCurrentItem() {
+        auto* current = this->currentWidget();
+        if (current == this->_netInfoWidget) {
+            auto* net = this->_netInfoWidget->currentNet();
+            if (net == nullptr) {
+                return;
+            }
+            auto response = QMessageBox::question(
+                this,
+                "Confirm",
+                "Do you want to delete this net?",
+                QMessageBox::Yes | QMessageBox::No);
+            if (response == QMessageBox::Yes) {
+                this->removeNet(net);
+            }
+        }
+        else if (current == this->_eportInfoWidget) {
+            auto* eport = this->_eportInfoWidget->currentExternalPort();
+            if (eport == nullptr) {
+                return;
+            }
+            auto response = QMessageBox::question(
+                this,
+                "Confirm",
+                "Do you want to delete this external port?",
+                QMessageBox::Yes | QMessageBox::No);
+            if (response == QMessageBox::Yes) {
+                this->removeExternalPort(eport);
+            }
+        }
+        else if (current == this->_topdieInstInfoWidget) {
+            auto* inst = this->_topdieInstInfoWidget->currentTopDieInstance();
+            if (inst == nullptr) {
+                return;
+            }
+            auto response = QMessageBox::question(
+                this,
+                "Confirm",
+                "Do you want to delete this topdie instance?",
+                QMessageBox::Yes | QMessageBox::No);
+            if (response == QMessageBox::Yes) {
+                this->removeTopDieInstance(inst);
+            }
+        }
+    }
+
     void SchematicInfoWidget::externalPortRename(ExternalPortItem* eport, const QString& name) try {
         this->_basedie->external_port_rename(eport->unwrap(), name.toStdString());
         eport->setName(name);

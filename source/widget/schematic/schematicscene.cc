@@ -129,7 +129,28 @@ namespace PR_tool::widget {
         QGraphicsScene::mouseMoveEvent(event);
     }
 
+    void SchematicScene::emitSelectionForItem(QGraphicsItem* item) {
+        if (!item) {
+            emit this->viewSelected();
+            return;
+        }
+
+        if (item->type() == schematic::NetItem::Type) {
+            emit this->netSelected(dynamic_cast<schematic::NetItem*>(item));
+        }
+        else if (item->type() == schematic::TopDieInstanceItem::Type) {
+            emit this->topdieInstSelected(dynamic_cast<schematic::TopDieInstanceItem*>(item));
+        }
+        else if (item->type() == schematic::ExternalPortItem::Type) {
+            emit this->exportSelected(dynamic_cast<schematic::ExternalPortItem*>(item));
+        }
+    }
+
     void SchematicScene::mousePressEvent(QGraphicsSceneMouseEvent* event) {
+        const bool wasFloating = this->_floatingNet != nullptr
+            || this->_floatingTopdDieInst != nullptr
+            || this->_floatingExPort != nullptr;
+
         if (this->_floatingNet != nullptr) {
             if (event->button() & Qt::LeftButton) {
                 auto gridPos = schematic::GridItem::snapToGrid(event->scenePos());
@@ -159,25 +180,19 @@ namespace PR_tool::widget {
         }
 
         QGraphicsScene::mousePressEvent(event);
+
+        // Single-click drives the property panel the same way double-click does (U7/S9).
+        // Skip while placing/wiring so pin-start and floating placement are undisturbed.
+        const bool nowFloating = this->_floatingNet != nullptr
+            || this->_floatingTopdDieInst != nullptr
+            || this->_floatingExPort != nullptr;
+        if (!wasFloating && !nowFloating && (event->button() & Qt::LeftButton)) {
+            this->emitSelectionForItem(this->itemAt(event->scenePos(), QTransform()));
+        }
     }
 
     void SchematicScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event) {
-        QGraphicsItem *item = itemAt(event->scenePos(), QTransform());
-        if (!item) {
-            emit this->viewSelected();
-        }
-        else {
-            if (item->type() == schematic::NetItem::Type) {
-                emit this->netSelected(dynamic_cast<schematic::NetItem*>(item));
-            }
-            else if (item->type() == schematic::TopDieInstanceItem::Type) {
-                emit this->topdieInstSelected(dynamic_cast<schematic::TopDieInstanceItem*>(item));
-            }
-            else if (item->type() == schematic::ExternalPortItem::Type) {
-                emit this->exportSelected(dynamic_cast<schematic::ExternalPortItem*>(item));
-            }
-        }
-
+        this->emitSelectionForItem(this->itemAt(event->scenePos(), QTransform()));
         QGraphicsScene::mouseDoubleClickEvent(event);
     }
 

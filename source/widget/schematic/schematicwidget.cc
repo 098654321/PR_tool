@@ -11,6 +11,8 @@
 #include <QSplitter>
 #include <QVBoxLayout>
 #include <QLineEdit>
+#include <QShortcut>
+#include <QKeySequence>
 
 namespace PR_tool::widget {
 
@@ -97,6 +99,19 @@ namespace PR_tool::widget {
         QObject::connect(
             this->_infoWidget, &SchematicInfoWidget::layoutChanged,
             this, &SchematicWidget::layoutChanged);
+
+        // Delete/Backspace on the canvas removes the item shown in the property panel (S9).
+        auto* deleteShortcut = new QShortcut{QKeySequence::Delete, this->_view};
+        deleteShortcut->setContext(Qt::WidgetShortcut);
+        QObject::connect(
+            deleteShortcut, &QShortcut::activated,
+            this->_infoWidget, &SchematicInfoWidget::deleteCurrentItem);
+
+        auto* backspaceShortcut = new QShortcut{QKeySequence{Qt::Key_Backspace}, this->_view};
+        backspaceShortcut->setContext(Qt::WidgetShortcut);
+        QObject::connect(
+            backspaceShortcut, &QShortcut::activated,
+            this->_infoWidget, &SchematicInfoWidget::deleteCurrentItem);
     }
 
 }

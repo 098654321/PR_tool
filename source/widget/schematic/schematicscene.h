@@ -52,6 +52,9 @@ namespace PR_tool::widget {
         void mousePressEvent(QGraphicsSceneMouseEvent* event) override;
         void mouseDoubleClickEvent(QGraphicsSceneMouseEvent* event) override;
 
+    private:
+        void emitSelectionForItem(QGraphicsItem* item);
+
     public:
         auto addExPort(circuit::ExternalPort*) -> schematic::ExternalPortItem*;
         auto addTopDieInst(circuit::TopDieInstance* inst) -> schematic::TopDieInstanceItem*;
