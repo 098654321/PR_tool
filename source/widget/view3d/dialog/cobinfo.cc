@@ -199,8 +199,11 @@ namespace PR_tool::widget {
         if (!allowEdit) {
             this->_editorButton->setEnabled(false);
             this->_editorButton->setToolTip(
-                QStringLiteral("Register editing is disabled after Place & Route"));
+                QStringLiteral("Register edit locked after Place & Route"));
             this->setWindowTitle(QStringLiteral("COB Info [view-only]"));
+        } else {
+            this->_editorButton->setToolTip(
+                QStringLiteral("Edits may not sync to View2D until Place & Route is re-run"));
         }
 
         this->setMinimumSize(400, 400);

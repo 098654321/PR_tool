@@ -398,6 +398,7 @@ namespace PR_tool::widget {
 
         auto configPath = std::FilePath{path.toStdString()};
 
+        // Clear before in-place read_config: if parse throws, prior design data is already wiped.
         if (this->hasConfigPath()) {
             this->_interposer->clear();
             this->_basedie->clear();
@@ -412,8 +413,18 @@ namespace PR_tool::widget {
 
         this->_configPath.emplace(std::move(configPath));
         this->updateStatusLabel();
+    } catch (const std::Exception& err) {
+        QMessageBox::critical(
+            this,
+            QStringLiteral("Load Config"),
+            QStringLiteral(
+                "Failed to load configuration.\n\n"
+                "%1\n\n"
+                "If a previous design was loaded, it may already have been cleared "
+                "before this failure. Reload a valid config or restart the application.")
+                .arg(QString::fromLatin1(err.what()))
+        );
     }
-    QMESSAGEBOX_REPORT_EXCEPTION("Load Config")
 
     namespace {
 
@@ -768,7 +779,10 @@ namespace PR_tool::widget {
                 "(Likely unset after Add Export — set coords in Schematic.)\n")
                 .arg(defaultCoordExportCount);
         }
-        summary += QStringLiteral("\nEditing will be locked after a successful run.");
+        summary += QStringLiteral(
+            "\nNote: GUI routes with the current Layout placement only "
+            "(no automatic placer).\n"
+            "Editing will be locked after a successful run.");
 
         const auto answer = QMessageBox::question(
             this,
