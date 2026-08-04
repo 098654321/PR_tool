@@ -164,15 +164,22 @@ namespace PR_tool::widget {
 
         connect(schematicButton, &QAction::triggered, [this]() {
             this->_stackedWidget->setCurrentWidget(this->_schematicWidget);
+            this->statusBar()->showMessage(QStringLiteral(
+                "Ctrl+Wheel zoom · Middle-drag pan · Right-click / Esc cancel placement"));
         });
         connect(layoutButton, &QAction::triggered, [this]() {
             this->_stackedWidget->setCurrentWidget(this->_layoutWidget);
+            this->statusBar()->showMessage(QStringLiteral(
+                "Ctrl+Wheel zoom · Middle-drag pan"));
         });
         connect(view2DButton, &QAction::triggered, [this] () {
             this->_stackedWidget->setCurrentWidget(this->_view2DWidget);
+            this->statusBar()->showMessage(QStringLiteral(
+                "Ctrl+Wheel zoom · Middle-drag pan"));
         });
         connect(view3DButton, &QAction::triggered, [this] () {
             this->_stackedWidget->setCurrentWidget(this->_view3DWidget);
+            this->statusBar()->clearMessage();
         });
 
         this->_toolBar->addSeparator();
@@ -199,6 +206,7 @@ namespace PR_tool::widget {
         settingButton->setStatusTip("Open Settings");
         connect(settingButton, &QAction::triggered, [this] () {
             this->_stackedWidget->setCurrentWidget(this->_settingWidget);
+            this->statusBar()->clearMessage();
         });
     }
 
@@ -233,6 +241,10 @@ namespace PR_tool::widget {
         this->_statusLabel->setMinimumWidth(200);
 
         statusBar->addPermanentWidget(this->_statusLabel);
+
+        // Default page is Schematic — surface gesture tips (U8/S5/X1).
+        statusBar->showMessage(QStringLiteral(
+            "Ctrl+Wheel zoom · Middle-drag pan · Right-click / Esc cancel placement"));
     }
 
     void Window::loadConfig() {

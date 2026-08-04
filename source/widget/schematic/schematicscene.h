@@ -81,6 +81,9 @@ namespace PR_tool::widget {
         void handleInitialTopDie(circuit::TopDie* topdie);
         void handleAddExport();
 
+        /// Cancel floating topdie / export / net placement (Right-click or Esc).
+        void cancelFloatingPlacement();
+
     public:
         auto topdieinstMap() -> QHash<circuit::TopDieInstance*, schematic::TopDieInstanceItem*>& 
         { return this->_topdieinstMap; }

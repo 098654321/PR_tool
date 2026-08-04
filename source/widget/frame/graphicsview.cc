@@ -57,7 +57,8 @@ namespace PR_tool::widget {
     }
 
     void GraphicsView::mousePressEvent(QMouseEvent* event) {
-        if (event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
+        // Middle-drag only: right-click is reserved for schematic cancel (U8/S5).
+        if (event->button() == Qt::MiddleButton) {
             this->_isPanning = true;
             this->_lastMousePos = event->pos();
             this->setDragMode(QGraphicsView::NoDrag);

@@ -157,7 +157,7 @@ namespace PR_tool::widget {
                 this->_floatingNet->addPoint(gridPos);
             }
             else if (event->button() & Qt::RightButton) {
-                this->cleanFloatingNet();
+                this->cancelFloatingPlacement();
             }
         }
 
@@ -166,7 +166,7 @@ namespace PR_tool::widget {
                 this->placeFloatingTopdDieInst();
             }
             else if (event->button() & Qt::RightButton) {
-                this->cleanFloatingTopdDieInst();
+                this->cancelFloatingPlacement();
             }
         }
         
@@ -175,7 +175,7 @@ namespace PR_tool::widget {
                 this->placeFloatingExPort();
             }
             else if (event->button() & Qt::RightButton) {
-                this->cleanFloatingExPort();
+                this->cancelFloatingPlacement();
             }
         }
 
@@ -409,6 +409,18 @@ namespace PR_tool::widget {
         this->_floatingExPort = eportItem;
 
         emit this->layoutChanged();
+    }
+
+    void SchematicScene::cancelFloatingPlacement() {
+        if (this->_floatingNet != nullptr) {
+            this->cleanFloatingNet();
+        }
+        if (this->_floatingTopdDieInst != nullptr) {
+            this->cleanFloatingTopdDieInst();
+        }
+        if (this->_floatingExPort != nullptr) {
+            this->cleanFloatingExPort();
+        }
     }
 
     void SchematicScene::placeFloatingTopdDieInst() {

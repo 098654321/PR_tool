@@ -112,6 +112,13 @@ namespace PR_tool::widget {
         QObject::connect(
             backspaceShortcut, &QShortcut::activated,
             this->_infoWidget, &SchematicInfoWidget::deleteCurrentItem);
+
+        // Esc cancels floating topdie / export / net (U8/S5; Right-click also cancels).
+        auto* escapeShortcut = new QShortcut{QKeySequence{Qt::Key_Escape}, this->_view};
+        escapeShortcut->setContext(Qt::WidgetShortcut);
+        QObject::connect(
+            escapeShortcut, &QShortcut::activated,
+            this->_scene, &SchematicScene::cancelFloatingPlacement);
     }
 
 }
