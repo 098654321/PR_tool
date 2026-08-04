@@ -290,7 +290,7 @@ namespace PR_tool::widget {
         worker->start();
 
         dialog.exec();
-        delete worker;
+        worker->wait();
 
         ////////////////////////////////////////////////
 
