@@ -18,6 +18,7 @@ class QToolBar;
 class QStackedWidget;
 class QMenuBar;
 class QPushButton;
+class QLabel;
 
 namespace PR_tool::widget {
 
@@ -66,6 +67,8 @@ namespace PR_tool::widget {
 
         QAction* _placeRouteAction {nullptr};
         QAction* _generateControlBitAction {nullptr};
+
+        QLabel* _statusLabel {nullptr};
 
     private:
         std::Box<hardware::Interposer> _interposer {nullptr};

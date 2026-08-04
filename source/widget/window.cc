@@ -208,12 +208,11 @@ namespace PR_tool::widget {
     void Window::createStatusBar() {
         auto statusBar = this->statusBar();
 
-        auto status1 = new QLabel{"PR_tool", this};
-        status1->setAlignment(Qt::AlignCenter);                    
+        this->_statusLabel = new QLabel{QStringLiteral("PR_tool"), this};
+        this->_statusLabel->setAlignment(Qt::AlignCenter);
+        this->_statusLabel->setMinimumWidth(200);
 
-        status1->setMinimumWidth(200); 
-
-        statusBar->addPermanentWidget(status1);
+        statusBar->addPermanentWidget(this->_statusLabel);
     }
 
     void Window::loadConfig() try {
@@ -345,11 +344,18 @@ namespace PR_tool::widget {
         this->_view3DWidget->displayRoutingResult();
 
         this->disableEdit();
-        
+
         assert(this->_generateControlBitAction != nullptr);
         this->_generateControlBitAction->setEnabled(true);
         this->_placeRouteAction->setEnabled(false);
         this->_finishPR = true;
+
+        QMessageBox::information(
+            this,
+            QStringLiteral("Place & Route Complete"),
+            QStringLiteral(
+                "Schematic and layout editing are now locked for this session.\n\n"
+                "Export Controlbits is enabled. To edit again, reload the application."));
     }
     QMESSAGEBOX_REPORT_EXCEPTION("Execute Place & Routing")
 
@@ -389,9 +395,23 @@ namespace PR_tool::widget {
         return this->_configPath.has_value();
     }
 
-    void Window::disableEdit() { 
+    void Window::disableEdit() {
         this->_schematicWidget->setEnabled(false);
         this->_layoutWidget->setEnabled(false);
+
+        if (this->_statusLabel != nullptr) {
+            this->_statusLabel->setText(QStringLiteral(
+                "Editing locked after P&R — use Export Controlbits; reload app to edit again"));
+        }
+
+        const auto suffix = QStringLiteral(" — read-only after P&R");
+        auto title = this->windowTitle();
+        if (title.isEmpty()) {
+            title = QStringLiteral("PR_tool");
+        }
+        if (!title.endsWith(suffix)) {
+            this->setWindowTitle(title + suffix);
+        }
     }
 
     Window::~Window() {}
