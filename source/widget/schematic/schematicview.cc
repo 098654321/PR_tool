@@ -55,9 +55,9 @@ namespace PR_tool::widget {
         }
     }
 
-    // MARK: Why??? call update can't update
     void SchematicView::updateBack() {
-        this->setBackColor(this->backColor());
-        this->update();
+        // QGraphicsView background/grid is painted on the viewport;
+        // QWidget::update() on the view itself is unreliable here.
+        this->viewport()->update();
     }
 }
