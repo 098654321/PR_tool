@@ -136,11 +136,7 @@ namespace PR_tool::widget {
                 this->_floatingNet->addPoint(gridPos);
             }
             else if (event->button() & Qt::RightButton) {
-                this->_floatingNet->beginPoint()->unlinkPin();
-                this->items().removeOne(this->_floatingNet);
-                delete this->_floatingNet->beginPoint();
-                delete this->_floatingNet;
-                this->_floatingNet = nullptr;
+                this->cleanFloatingNet();
             }
         }
 
@@ -430,6 +426,21 @@ namespace PR_tool::widget {
         this->_floatingExPort = nullptr;
 
         emit this->layoutChanged();
+    }
+
+    void SchematicScene::cleanFloatingNet() {
+        assert(this->_floatingNet != nullptr);
+
+        auto beginPoint = this->_floatingNet->beginPoint();
+        assert(beginPoint != nullptr);
+
+        beginPoint->unlinkPin();
+        this->removeItem(this->_floatingNet);
+        this->removeItem(beginPoint);
+
+        delete this->_floatingNet;
+        delete beginPoint;
+        this->_floatingNet = nullptr;
     }
 
 }

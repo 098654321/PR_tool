@@ -97,6 +97,8 @@ namespace PR_tool::widget {
         void placeFloatingExPort();
         void cleanFloatingExPort();
 
+        void cleanFloatingNet();
+
     protected:
         circuit::BaseDie* _basedie;
         hardware::Interposer* _interposer;
