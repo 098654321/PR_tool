@@ -33,6 +33,14 @@ namespace PR_tool::widget {
         label->setAlignment(Qt::AlignCenter);
         layout->addWidget(label);
 
+        auto flowHint = new QLabel{
+            QStringLiteral(
+                "Typical flow: Schematic → Layout → Place & Route → View 2D/3D → Export"),
+            this};
+        flowHint->setWordWrap(true);
+        flowHint->setAlignment(Qt::AlignCenter);
+        layout->addWidget(flowHint);
+
         auto createButton = new QPushButton("Empty Project", this);
         createButton->setFixedHeight(40);
         auto openButton = new QPushButton("Load Config", this);

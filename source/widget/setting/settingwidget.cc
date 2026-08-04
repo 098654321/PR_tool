@@ -41,6 +41,13 @@ namespace PR_tool::widget {
         tip->setWordWrap(true);
         layout->addWidget(tip);
 
+        auto* flow = new QLabel{
+            QStringLiteral(
+                "Typical flow: Schematic → Layout → Place & Route → View 2D/3D → Export"),
+            this};
+        flow->setWordWrap(true);
+        layout->addWidget(flow);
+
         layout->addStretch(1);
     }
 
