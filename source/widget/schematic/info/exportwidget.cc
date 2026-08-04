@@ -47,7 +47,7 @@ namespace PR_tool::widget::schematic {
         layout->addWidget(this->_nameEdit, 0, 1);
 
         connect(this->_nameEdit, &LineEditWithButton::textConfirmed, [this] (const QString& name) {
-            assert(this->_externalPort == nullptr);
+            assert(this->_externalPort != nullptr);
             emit this->externalPortRename(this->_externalPort, name);
         });
 
