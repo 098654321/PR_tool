@@ -154,7 +154,7 @@ namespace PR_tool::widget {
         sublayout6->setContentsMargins(0, 0, 0, 0);
 
         auto swregLabel = new QLabel {registerGroup};
-        swregLabel->setText("Swith Register");
+        swregLabel->setText("Switch Register");
         sublayout6->addWidget(swregLabel);
 
         this->_swRegister = new QComboBox {registerGroup};
@@ -228,10 +228,12 @@ namespace PR_tool::widget {
                 this->_setButton->setEnabled(false);
                 this->_selRegister->setEnabled(false);
                 this->_swRegister->setEnabled(false);
+                this->setWindowTitle("COB Info");
             } else {
                 this->_setButton->setEnabled(true);
                 this->_selRegister->setEnabled(true);
                 this->_swRegister->setEnabled(true);
+                this->setWindowTitle("COB Info [editing]");
             }
         });
 
