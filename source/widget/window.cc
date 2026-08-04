@@ -268,8 +268,6 @@ namespace PR_tool::widget {
             return;
         }
 
-        // MARK, if faild...
-
         auto dialog = QDialog(this);
         dialog.setWindowTitle("Execute Place & Route");
         dialog.setModal(true);
@@ -284,15 +282,30 @@ namespace PR_tool::widget {
         layout.addWidget(&label);
         dialog.setFixedSize(400, 200);
 
+        bool success = false;
+        QString message;
+
         auto *worker = new PRThread{this->_interposer.get(), this->_basedie.get()};
-        connect(worker, &PRThread::prFinished, &dialog, &QDialog::accept);
+        connect(worker, &PRThread::prFinished, &dialog,
+            [&dialog, &success, &message](bool ok, const QString& msg) {
+                success = ok;
+                message = msg;
+                dialog.accept();
+            });
         connect(worker, &PRThread::finished, worker, &QObject::deleteLater);
         worker->start();
 
         dialog.exec();
         worker->wait();
 
-        ////////////////////////////////////////////////
+        if (!success) {
+            QMessageBox::critical(
+                this,
+                "Execute Place & Route",
+                message.isEmpty() ? QStringLiteral("P&R failed") : message
+            );
+            return;
+        }
 
         this->_view2DWidget->reload();
         this->_view3DWidget->displayRoutingResult();
