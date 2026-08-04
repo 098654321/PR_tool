@@ -31,38 +31,46 @@ namespace PR_tool::widget {
     {
         auto thisLayout = new QVBoxLayout {this};
         auto widget = new QGroupBox {"Layout Information", this};
-        widget->setStyleSheet("background-color: white;");
         thisLayout->addWidget(widget);
         thisLayout->addStretch();
 
         auto layout = new QGridLayout{widget};
         layout->setSpacing(10);
 
+        // L3: clarify Schematic vs Layout editing roles
+        auto roleHint = new QLabel {
+            QStringLiteral("Edit connectivity in Schematic; adjust TopDie placement here."),
+            widget
+        };
+        roleHint->setWordWrap(true);
+        roleHint->setStyleSheet(QStringLiteral("color: gray;"));
+        layout->addWidget(roleHint, 0, 0, 1, 2);
+
         // Size (display-only)
-        layout->addWidget(new QLabel {"TopDie Instance Size ", widget}, 0, 0);
+        layout->addWidget(new QLabel {"TopDie Instance Size ", widget}, 1, 0);
         this->_topdieInstSizeSpinBox = new QSpinBox {this};
         this->_topdieInstSizeSpinBox->setMinimum(0);
         this->_topdieInstSizeSpinBox->setMaximum(hardware::Interposer::TOB_ARRAY_HEIGHT * hardware::Interposer::TOB_ARRAY_WIDTH);
         this->_topdieInstSizeSpinBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
         this->_topdieInstSizeSpinBox->setEnabled(false);
-        layout->addWidget(this->_topdieInstSizeSpinBox, 0, 1);
+        layout->addWidget(this->_topdieInstSizeSpinBox, 1, 1);
 
         // Layout Map (read-only; no jump-to-TOB)
         auto label = new QLabel {"Layout Place Map ", widget};
         label->setMinimumHeight(MIN_HEIGHT);
-        layout->addWidget(label, 1, 0, 1, 2);
+        layout->addWidget(label, 2, 0, 1, 2);
         this->_instPlaceView = new QTableView {widget};
         this->_instPlaceView->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
         this->_instPlaceView->setEditTriggers(QAbstractItemView::NoEditTriggers);
         this->_instPlaceView->setFocusPolicy(Qt::NoFocus);
-        layout->addWidget(this->_instPlaceView, 2, 0, 1, 2);
+        layout->addWidget(this->_instPlaceView, 3, 0, 1, 2);
 
         // Path length (display-only)
-        layout->addWidget(new QLabel {"Path Length", widget}, 3, 0);
+        layout->addWidget(new QLabel {"Path Length", widget}, 4, 0);
         this->_pathLengthEdit = new QLineEdit {this};
         this->_pathLengthEdit->setMinimumHeight(MIN_HEIGHT);
         this->_pathLengthEdit->setEnabled(false);
-        layout->addWidget(this->_pathLengthEdit, 4, 0, 1, 2);
+        layout->addWidget(this->_pathLengthEdit, 5, 0, 1, 2);
 
         layout->setColumnMinimumWidth(0, 50);
         layout->setColumnStretch(0, 0);

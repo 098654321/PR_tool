@@ -33,7 +33,6 @@ namespace PR_tool::widget::schematic {
     {
         auto thisLayout = new QVBoxLayout {this};
         auto widget = new QGroupBox {"Net Information", this};
-        widget->setStyleSheet("background-color: white;");
         thisLayout->addWidget(widget);
         thisLayout->addStretch();
 

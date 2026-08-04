@@ -19,6 +19,8 @@
 
 #include <debug/debug.hh>
 #include <QDebug>
+#include <QMessageBox>
+#include <QGraphicsView>
 
 namespace PR_tool::widget {
 
@@ -180,9 +182,22 @@ namespace PR_tool::widget {
     }
 
     auto LayoutScene::addNet(layout::PinItem* beginPin, layout::PinItem* endPin) -> layout::NetItem* {
+        // Illegal: source-to-source connection (algo unchanged; warn and skip)
+        if (beginPin->isSourcePortPin() && endPin->isSourcePortPin()) {
+            QWidget* parent = nullptr;
+            const auto sceneViews = this->views();
+            if (!sceneViews.isEmpty()) {
+                parent = sceneViews.first();
+            }
+            QMessageBox::warning(
+                parent,
+                QStringLiteral("Invalid Net"),
+                QStringLiteral("Cannot connect a source port to another source port (VDD/GND).")
+            );
+            return nullptr;
+        }
+
         auto n = new layout::NetItem {beginPin, endPin};
-        // MARK: Check source to source
-        assert(!(beginPin->isSourcePortPin() && endPin->isSourcePortPin()));
         if (beginPin->isSourcePortPin() || endPin->isSourcePortPin()) {
             this->_netsWithSourcePorts.push_back(n);
         }

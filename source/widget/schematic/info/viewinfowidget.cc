@@ -44,7 +44,6 @@ namespace PR_tool::widget::schematic {
         thisLayout->addWidget(emptyHint);
 
         auto widget = new QGroupBox {"View Information", this};
-        widget->setStyleSheet("background-color: white;");
         thisLayout->addWidget(widget);
         thisLayout->addStretch();
 

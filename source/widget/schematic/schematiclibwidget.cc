@@ -47,7 +47,6 @@ namespace PR_tool::widget {
         thisLayout->addWidget(libraryScrollArea);
         
         auto libraryWidget = new QWidget;
-        libraryWidget->setStyleSheet("background-color: white;");
         this->_libraryLayout = new QVBoxLayout(libraryWidget);
         this->_libraryLayout->addStretch();
 
