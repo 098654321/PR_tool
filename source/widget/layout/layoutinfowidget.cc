@@ -38,27 +38,30 @@ namespace PR_tool::widget {
         auto layout = new QGridLayout{widget};
         layout->setSpacing(10);
 
-        // Size
+        // Size (display-only)
         layout->addWidget(new QLabel {"TopDie Instance Size ", widget}, 0, 0);
         this->_topdieInstSizeSpinBox = new QSpinBox {this};
         this->_topdieInstSizeSpinBox->setMinimum(0);
-        this->_topdieInstSizeSpinBox->setReadOnly(true);
         this->_topdieInstSizeSpinBox->setMaximum(hardware::Interposer::TOB_ARRAY_HEIGHT * hardware::Interposer::TOB_ARRAY_WIDTH);
+        this->_topdieInstSizeSpinBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        this->_topdieInstSizeSpinBox->setEnabled(false);
         layout->addWidget(this->_topdieInstSizeSpinBox, 0, 1);
 
-        // Layout Map
+        // Layout Map (read-only; no jump-to-TOB)
         auto label = new QLabel {"Layout Place Map ", widget};
         label->setMinimumHeight(MIN_HEIGHT);
         layout->addWidget(label, 1, 0, 1, 2);
         this->_instPlaceView = new QTableView {widget};
         this->_instPlaceView->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+        this->_instPlaceView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        this->_instPlaceView->setFocusPolicy(Qt::NoFocus);
         layout->addWidget(this->_instPlaceView, 2, 0, 1, 2);
 
-        // Path length
+        // Path length (display-only)
         layout->addWidget(new QLabel {"Path Length", widget}, 3, 0);
         this->_pathLengthEdit = new QLineEdit {this};
         this->_pathLengthEdit->setMinimumHeight(MIN_HEIGHT);
-        this->_pathLengthEdit->setReadOnly(true);
+        this->_pathLengthEdit->setEnabled(false);
         layout->addWidget(this->_pathLengthEdit, 4, 0, 1, 2);
 
         layout->setColumnMinimumWidth(0, 50);
@@ -71,7 +74,6 @@ namespace PR_tool::widget {
         // Instance size
         auto instSize = this->_basedie->topdie_insts().size();
         this->_topdieInstSizeSpinBox->setValue(instSize);
-        this->_topdieInstSizeSpinBox->setEnabled(true);
 
         // Coords
         auto model = new QStandardItemModel {static_cast<int>(instSize), 2};
@@ -80,12 +82,15 @@ namespace PR_tool::widget {
         auto itemRoot = model->invisibleRootItem();
         int row = 0;
         for (auto& [name, inst] : this->_basedie->topdie_insts()) {
-            model->setItem(row, 0, new QStandardItem {QString::fromStdString(name.data())});
-            auto tob = inst->tob();
+            auto nameItem = new QStandardItem {QString::fromStdString(name.data())};
+            nameItem->setEditable(false);
+            model->setItem(row, 0, nameItem);
             assert(inst->tob() != nullptr);
-            model->setItem(row, 1, new QStandardItem {
+            auto coordItem = new QStandardItem {
                 QString::fromStdString(std::format("{}", inst->tob()->coord()))
-            });
+            };
+            coordItem->setEditable(false);
+            model->setItem(row, 1, coordItem);
             row += 1;
         }
 
