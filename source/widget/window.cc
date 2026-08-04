@@ -728,6 +728,59 @@ namespace PR_tool::widget {
             return;
         }
 
+        // U26: preflight summary (nets, default-coord exports, idle TOBs)
+        std::size_t connectionCount = 0;
+        for (const auto& [mode, inner] : this->_basedie->connections()) {
+            (void)mode;
+            for (const auto& [sync, vec] : inner) {
+                (void)sync;
+                connectionCount += vec.size();
+            }
+        }
+
+        std::size_t idleTobCount = 0;
+        for (const auto& [coord, tob] : this->_interposer->tobs()) {
+            (void)coord;
+            if (tob->is_idle()) {
+                ++idleTobCount;
+            }
+        }
+
+        // GUI "Add Export" seeds TrackCoord{}; treat still-default as possibly unset.
+        const hardware::TrackCoord defaultExportCoord {};
+        std::size_t defaultCoordExportCount = 0;
+        for (const auto& [name, eport] : this->_basedie->external_ports()) {
+            (void)name;
+            if (eport->coord() == defaultExportCoord) {
+                ++defaultCoordExportCount;
+            }
+        }
+
+        auto summary = QStringLiteral(
+            "Start Place & Route?\n\n"
+            "Connections (nets): %1\n"
+            "Idle TOBs: %2\n")
+            .arg(connectionCount)
+            .arg(idleTobCount);
+        if (defaultCoordExportCount > 0) {
+            summary += QStringLiteral(
+                "Exports still at default coord (0,0,vert,0): %1\n"
+                "(Likely unset after Add Export — set coords in Schematic.)\n")
+                .arg(defaultCoordExportCount);
+        }
+        summary += QStringLiteral("\nEditing will be locked after a successful run.");
+
+        const auto answer = QMessageBox::question(
+            this,
+            QStringLiteral("Execute Place & Route"),
+            summary,
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No
+        );
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
+
         auto dialog = QDialog(this);
         dialog.setWindowTitle("Execute Place & Route");
         dialog.setModal(true);

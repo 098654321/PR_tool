@@ -80,6 +80,8 @@ namespace PR_tool::widget {
         void headleCreateNet(schematic::PinItem* pin, QGraphicsSceneMouseEvent* event);
         void handleInitialTopDie(circuit::TopDie* topdie);
         void handleAddExport();
+        void handleAddVdd();
+        void handleAddGnd();
 
         /// Cancel floating topdie / export / net placement (Right-click or Esc).
         void cancelFloatingPlacement();

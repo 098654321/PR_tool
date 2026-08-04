@@ -62,6 +62,14 @@ namespace PR_tool::widget {
         QObject::connect(
             this->_libWidget, &SchematicLibWidget::addExport, 
             this->_scene, &SchematicScene::handleAddExport);
+
+        QObject::connect(
+            this->_libWidget, &SchematicLibWidget::addVdd,
+            this->_scene, &SchematicScene::handleAddVdd);
+
+        QObject::connect(
+            this->_libWidget, &SchematicLibWidget::addGnd,
+            this->_scene, &SchematicScene::handleAddGnd);
     }
 
     void SchematicWidget::initSchematicView(hardware::Interposer* interposer, circuit::BaseDie* basedie) {

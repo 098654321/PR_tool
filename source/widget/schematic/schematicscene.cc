@@ -408,6 +408,18 @@ namespace PR_tool::widget {
         }
     }
 
+    void SchematicScene::handleAddVdd() {
+        const auto name = QStringLiteral("VDD_%1").arg(this->_vddPorts.size());
+        this->addVDDSourcePort(name);
+        this->adjustSceneRect();
+    }
+
+    void SchematicScene::handleAddGnd() {
+        const auto name = QStringLiteral("GND_%1").arg(this->_gndPorts.size());
+        this->addGNDSourcePort(name);
+        this->adjustSceneRect();
+    }
+
     void SchematicScene::handleAddExport() {
         auto eport = this->_basedie->add_external_port({});
         auto eportItem = this->addExPort(eport);

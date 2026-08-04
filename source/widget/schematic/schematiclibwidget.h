@@ -25,6 +25,8 @@ namespace PR_tool::widget {
     signals:
         void initialTopDieInst(circuit::TopDie* topdie);
         void addExport();
+        void addVdd();
+        void addGnd();
 
     public:
         void onLoadTopDieClicked();
