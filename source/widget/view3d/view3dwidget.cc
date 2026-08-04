@@ -481,6 +481,10 @@ namespace PR_tool::widget {
         this->addTrack(begin, end, update);
     }
 
+    void View3DWidget::setCobRegisterEditEnabled(bool enabled) {
+        this->_cobRegisterEditEnabled = enabled;
+    }
+
     void View3DWidget::reload() {
         // GL context is created on first show; initializeGL will build TopDies from current basedie.
         if (!this->isValid()) {
@@ -845,7 +849,7 @@ namespace PR_tool::widget {
             case CubeType::COB: {
                 this->makeCurrent();
                 auto cob = this->getCOBByCubeIndeces(i);
-                auto dialog = COBInfoDialog{cob};
+                auto dialog = COBInfoDialog{cob, this->_cobRegisterEditEnabled};
                 dialog.exec();
                 this->doneCurrent();
                 break;

@@ -16,6 +16,7 @@ namespace PR_tool::widget {
     class LayoutScene;
     class LayoutView;
     class LayoutInfoWidget;
+    class GraphicsView;
 
     class LayoutWidget : public QWidget {
         Q_OBJECT
@@ -29,6 +30,7 @@ namespace PR_tool::widget {
 
     public:
         void reload();
+        auto graphicsView() const -> GraphicsView*;
 
     private:
         QSplitter* _splitter {nullptr};

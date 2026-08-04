@@ -55,4 +55,8 @@ namespace PR_tool::widget {
         this->_infoWidget->updateInfo();
     }
 
+    auto LayoutWidget::graphicsView() const -> GraphicsView* {
+        return this->_view;
+    }
+
 }

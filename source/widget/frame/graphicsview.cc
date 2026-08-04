@@ -12,7 +12,7 @@ namespace PR_tool::widget {
         this->setInteractive(true);
         this->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
 
-        this->scale(1.0 / 2.5, 1.0 / 2.5);
+        this->scale(kDefaultScale, kDefaultScale);
     }
 
     void GraphicsView::adjustSceneRect() {
@@ -36,6 +36,31 @@ namespace PR_tool::widget {
 
         qreal margin = 3000;
         this->setSceneRect(minX - margin, minY - margin, (maxX - minX) + 2 * margin, (maxY - minY) + 2 * margin);
+    }
+
+    void GraphicsView::fitContent() {
+        this->adjustSceneRect();
+        if (this->scene() == nullptr || this->items().isEmpty()) {
+            return;
+        }
+
+        QRectF bounds = this->scene()->itemsBoundingRect();
+        if (!bounds.isValid() || bounds.isEmpty()) {
+            return;
+        }
+
+        const qreal pad = qMax(bounds.width(), bounds.height()) * 0.05 + 20.0;
+        bounds.adjust(-pad, -pad, pad, pad);
+
+        const auto oldAnchor = this->transformationAnchor();
+        this->setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+        this->fitInView(bounds, Qt::KeepAspectRatio);
+        this->setTransformationAnchor(oldAnchor);
+    }
+
+    void GraphicsView::resetZoom() {
+        this->resetTransform();
+        this->scale(kDefaultScale, kDefaultScale);
     }
 
     void GraphicsView::wheelEvent(QWheelEvent* event) {

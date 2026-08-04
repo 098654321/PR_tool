@@ -20,6 +20,7 @@ namespace PR_tool::widget {
 
     class SchematicView;
     class SchematicScene;
+    class GraphicsView;
 
     class SchematicWidget : public QWidget {
         Q_OBJECT
@@ -32,6 +33,10 @@ namespace PR_tool::widget {
 
     public:
         void reload();
+        auto graphicsView() const -> GraphicsView*;
+
+        /// Schematic main splitter (lib | view | info) for geometry persistence.
+        auto splitter() const -> QSplitter* { return this->_splitter; }
 
     signals:
         // MARK: More detail infomation

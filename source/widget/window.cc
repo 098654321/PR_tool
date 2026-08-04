@@ -19,6 +19,7 @@
 #include <parse/reader/module.hh>
 #include <widget/frame/msgexception.h>
 #include <widget/frame/controlbitexportdialog.h>
+#include <widget/frame/graphicsview.h>
 
 #include <hardware/interposer.hh>
 #include <hardware/track/trackcoord.hh>
@@ -32,8 +33,12 @@
 
 #include <QApplication>
 #include <QActionGroup>
+#include <QByteArray>
+#include <QCloseEvent>
 #include <QDebug>
 #include <QResizeEvent>
+#include <QSettings>
+#include <QSplitter>
 #include <QVBoxLayout>
 #include <QToolBar>
 #include <QStackedWidget>
@@ -63,7 +68,58 @@ namespace PR_tool::widget {
         this->createCentralWidget();
         this->createStatusBar();
 
-        this->resize(1500, 900);
+        this->restoreWindowSettings();
+    }
+
+    namespace {
+        constexpr auto kSettingsOrg = "PR_tool";
+        constexpr auto kSettingsApp = "PR_tool";
+        constexpr auto kGeometryKey = "geometry";
+        constexpr auto kWindowStateKey = "windowState";
+        constexpr auto kSchematicSplitterKey = "schematicSplitter";
+    }
+
+    void Window::restoreWindowSettings() {
+        QSettings settings{kSettingsOrg, kSettingsApp};
+
+        const auto geometry = settings.value(kGeometryKey).toByteArray();
+        if (!geometry.isEmpty()) {
+            this->restoreGeometry(geometry);
+        } else {
+            this->resize(1500, 900);
+        }
+
+        const auto windowState = settings.value(kWindowStateKey).toByteArray();
+        if (!windowState.isEmpty()) {
+            this->restoreState(windowState);
+        }
+
+        if (this->_schematicWidget != nullptr) {
+            if (auto* splitter = this->_schematicWidget->splitter()) {
+                const auto splitterState =
+                    settings.value(kSchematicSplitterKey).toByteArray();
+                if (!splitterState.isEmpty()) {
+                    splitter->restoreState(splitterState);
+                }
+            }
+        }
+    }
+
+    void Window::saveWindowSettings() const {
+        QSettings settings{kSettingsOrg, kSettingsApp};
+        settings.setValue(kGeometryKey, this->saveGeometry());
+        settings.setValue(kWindowStateKey, this->saveState());
+
+        if (this->_schematicWidget != nullptr) {
+            if (auto* splitter = this->_schematicWidget->splitter()) {
+                settings.setValue(kSchematicSplitterKey, splitter->saveState());
+            }
+        }
+    }
+
+    void Window::closeEvent(QCloseEvent* event) {
+        this->saveWindowSettings();
+        QMainWindow::closeEvent(event);
     }
 
     void Window::createSystem() {
@@ -78,8 +134,8 @@ namespace PR_tool::widget {
         auto fileMenu= new QMenu("File", this->_menuBar);
 
         // Load
-        auto loadAction= new QAction("Load", fileMenu);
-        fileMenu->addAction(loadAction);
+        this->_loadAction = new QAction("Load", fileMenu);
+        fileMenu->addAction(this->_loadAction);
         
         fileMenu->addSeparator(); 
 
@@ -99,7 +155,7 @@ namespace PR_tool::widget {
 
         this->_menuBar->addMenu(fileMenu);
 
-        connect(loadAction, &QAction::triggered, this, &Window::loadConfig);
+        connect(this->_loadAction, &QAction::triggered, this, &Window::loadConfig);
         connect(saveAction, &QAction::triggered, this, &Window::saveConfig);
         connect(saveAsAction, &QAction::triggered, this, &Window::saveConfigAs);
         connect(exitAction, &QAction::triggered, this, &Window::close);
@@ -111,7 +167,29 @@ namespace PR_tool::widget {
         themesAction->setToolTip("Not available yet");
         viewMenu->addAction(themesAction);
 
+        viewMenu->addSeparator();
+
+        auto fitInViewAction = new QAction{"Fit in View", viewMenu};
+        fitInViewAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
+        fitInViewAction->setStatusTip("Fit current canvas content into the viewport");
+        viewMenu->addAction(fitInViewAction);
+
+        auto resetZoomAction = new QAction{"Reset Zoom", viewMenu};
+        resetZoomAction->setStatusTip("Restore default zoom for the current canvas");
+        viewMenu->addAction(resetZoomAction);
+
         this->_menuBar->addMenu(viewMenu);
+
+        connect(fitInViewAction, &QAction::triggered, this, [this]() {
+            if (auto* view = this->currentGraphicsView()) {
+                view->fitContent();
+            }
+        });
+        connect(resetZoomAction, &QAction::triggered, this, [this]() {
+            if (auto* view = this->currentGraphicsView()) {
+                view->resetZoom();
+            }
+        });
 
         // ====================== Help ======================
         auto helpMenu= new QMenu("Help", this->_menuBar);
@@ -231,6 +309,18 @@ namespace PR_tool::widget {
             this->updateStatusLabel();
             this->statusBar()->clearMessage();
         });
+
+        // Accessible names live on the icon-only tool buttons (QAction has no
+        // setAccessibleName in this Qt build).
+        for (QAction *action : {
+                 this->_schematicAction, this->_layoutAction, this->_view2DAction,
+                 this->_view3DAction, this->_placeRouteAction, this->_generateControlBitAction,
+                 this->_settingsAction}) {
+            if (auto *button = qobject_cast<QToolButton *>(this->_toolBar->widgetForAction(action))) {
+                button->setAccessibleName(action->text());
+                button->setAccessibleDescription(action->statusTip());
+            }
+        }
     }
 
     void Window::createCentralWidget() {
@@ -276,8 +366,11 @@ namespace PR_tool::widget {
         if (this->_finishPR) {
             QMessageBox::critical(
                 this,
-                "Load Config",
-                "Can't load new config after finishing P&R"
+                QStringLiteral("Load Config"),
+                QStringLiteral(
+                    "This session is locked after Place & Route.\n"
+                    "Loading a new config is disabled.\n\n"
+                    "Restart the application to begin a new session.")
             );
             return;
         }
@@ -699,8 +792,10 @@ namespace PR_tool::widget {
             this,
             QStringLiteral("Place & Route Complete"),
             QStringLiteral(
-                "Schematic and layout editing are now locked for this session.\n\n"
-                "Export Controlbits is enabled. To edit again, reload the application."));
+                "Schematic and layout editing are now locked for this session.\n"
+                "View 2D / View 3D remain available for viewing results (view-only).\n"
+                "File → Load is disabled until you restart the application.\n\n"
+                "Export Controlbits is enabled."));
     }
     QMESSAGEBOX_REPORT_EXCEPTION("Execute Place & Routing")
 
@@ -743,8 +838,18 @@ namespace PR_tool::widget {
     }
 
     void Window::disableEdit() {
+        // Keep View2D / View3D / Settings enterable for result viewing.
         this->_schematicWidget->setEnabled(false);
         this->_layoutWidget->setEnabled(false);
+
+        if (this->_loadAction != nullptr) {
+            this->_loadAction->setEnabled(false);
+            this->_loadAction->setToolTip(
+                QStringLiteral("Disabled after P&R — restart the application to load a new config"));
+        }
+
+        // View3D COB register edit is no longer allowed after P&R.
+        this->_view3DWidget->setCobRegisterEditEnabled(false);
 
         this->updateStatusLabel();
 
@@ -778,6 +883,23 @@ namespace PR_tool::widget {
         return QStringLiteral("Schematic");
     }
 
+    auto Window::currentGraphicsView() const -> GraphicsView* {
+        if (this->_stackedWidget == nullptr) {
+            return nullptr;
+        }
+        const auto* current = this->_stackedWidget->currentWidget();
+        if (current == this->_schematicWidget) {
+            return this->_schematicWidget->graphicsView();
+        }
+        if (current == this->_layoutWidget) {
+            return this->_layoutWidget->graphicsView();
+        }
+        if (current == this->_view2DWidget) {
+            return this->_view2DWidget->graphicsView();
+        }
+        return nullptr;
+    }
+
     void Window::updateStatusLabel() {
         if (this->_statusLabel == nullptr) {
             return;
@@ -789,9 +911,10 @@ namespace PR_tool::widget {
         const auto page = this->currentPageName();
 
         if (this->_finishPR) {
-            // Lock messaging stays dominant; page + path still visible.
+            // Schematic/Layout locked; 2D/3D remain view-only for results.
             this->_statusLabel->setText(
-                QStringLiteral("Editing locked | %1 | %2").arg(page, path));
+                QStringLiteral("Editing locked (2D/3D view-only) | %1 | %2")
+                    .arg(page, path));
         } else {
             this->_statusLabel->setText(
                 QStringLiteral("%1 | %2").arg(page, path));

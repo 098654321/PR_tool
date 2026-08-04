@@ -28,4 +28,8 @@ namespace PR_tool::widget {
         this->_view->adjustSceneRect();
     }
 
+    auto View2DWidget::graphicsView() const -> GraphicsView* {
+        return this->_view;
+    }
+
 }

@@ -43,8 +43,12 @@ namespace PR_tool::widget {
 
         auto createButton = new QPushButton("Empty Project", this);
         createButton->setFixedHeight(40);
+        createButton->setAccessibleName("Empty Project");
+        createButton->setAccessibleDescription("Create an empty project");
         auto openButton = new QPushButton("Load Config", this);
         openButton->setFixedHeight(40);
+        openButton->setAccessibleName("Load Config");
+        openButton->setAccessibleDescription("Load an existing config directory");
         layout->addWidget(createButton);
         layout->addWidget(openButton);
 

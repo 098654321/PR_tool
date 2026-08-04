@@ -15,6 +15,7 @@ namespace PR_tool::widget {
 
     class View2DView;
     class View2DScene;
+    class GraphicsView;
 
     class View2DWidget : public QWidget {
     public:
@@ -25,6 +26,7 @@ namespace PR_tool::widget {
 
     public:
         void reload();
+        auto graphicsView() const -> GraphicsView*;
 
     protected:
         View2DScene* _scene {nullptr};

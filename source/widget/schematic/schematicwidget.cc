@@ -44,6 +44,10 @@ namespace PR_tool::widget {
         this->_infoWidget->reload();
     }
 
+    auto SchematicWidget::graphicsView() const -> GraphicsView* {
+        return this->_view;
+    }
+
     void SchematicWidget::initTopdieLibWidget() {
         this->_libWidget = new SchematicLibWidget {this->_basedie, this->_splitter};
         this->_libWidget->setFixedWidth(200);

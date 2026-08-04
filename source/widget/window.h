@@ -7,6 +7,8 @@
 #include <QMainWindow>
 #include <QString>
 
+class QCloseEvent;
+
 namespace PR_tool::hardware {
     class Interposer;
 }
@@ -30,6 +32,7 @@ namespace PR_tool::widget {
     class View3DWidget;
     class View2DWidget;
     class SettingWidget;
+    class GraphicsView;
 
     class Window : public QMainWindow {
         Q_OBJECT
@@ -41,12 +44,17 @@ namespace PR_tool::widget {
         /// Load config from an existing directory path (no file dialog).
         void loadConfigFromPath(const QString& path);
 
+    protected:
+        void closeEvent(QCloseEvent* event) override;
+
     private:
         void createSystem();
         void createMenuBar();
         void createToolBar();
         void createCentralWidget();
         void createStatusBar();
+        void restoreWindowSettings();
+        void saveWindowSettings() const;
 
     private:
         void loadConfig();
@@ -69,6 +77,7 @@ namespace PR_tool::widget {
         void disableEdit();
         void updateStatusLabel();
         auto currentPageName() const -> QString;
+        auto currentGraphicsView() const -> GraphicsView*;
 
     private:
         QMenuBar* _menuBar {nullptr};
@@ -88,6 +97,7 @@ namespace PR_tool::widget {
         QAction* _settingsAction {nullptr};
         QActionGroup* _pageActionGroup {nullptr};
 
+        QAction* _loadAction {nullptr};
         QAction* _placeRouteAction {nullptr};
         QAction* _generateControlBitAction {nullptr};
 

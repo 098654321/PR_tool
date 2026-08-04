@@ -21,8 +21,7 @@
 #include <QGroupBox>
 #include <QDebug>
 #include <QMessageBox>
-
-// MARK: A Litter MESS(String)
+#include <QHash>
 
 namespace PR_tool::widget {
 
@@ -30,7 +29,7 @@ namespace PR_tool::widget {
         "Left", "Right", "Up", "Down"
     };
 
-    COBInfoDialog::COBInfoDialog(hardware::COB* cob) :
+    COBInfoDialog::COBInfoDialog(hardware::COB* cob, bool allowEdit) :
         QDialog{},
         _cob{cob}
     {
@@ -197,6 +196,13 @@ namespace PR_tool::widget {
         this->_setButton->setEnabled(false);
         buttonLayout->addWidget(this->_setButton);
 
+        if (!allowEdit) {
+            this->_editorButton->setEnabled(false);
+            this->_editorButton->setToolTip(
+                QStringLiteral("Register editing is disabled after Place & Route"));
+            this->setWindowTitle(QStringLiteral("COB Info [view-only]"));
+        }
+
         this->setMinimumSize(400, 400);
 
         /////////////////////////////////////////////////////////////////////////
@@ -253,16 +259,14 @@ namespace PR_tool::widget {
         this->updateRegister();
     }
 
-    // MARK: with method a dir
     static auto directionFromString(const QString& dir) -> hardware::COBDirection {
-        if (dir == "Left") {
-            return hardware::COBDirection::Left;
-        } else if (dir == "Right") {
-            return hardware::COBDirection::Right;
-        } else if (dir == "Up") {
-            return hardware::COBDirection::Up;    
-        } 
-        return hardware::COBDirection::Down;
+        static const QHash<QString, hardware::COBDirection> kDirectionMap {
+            {QStringLiteral("Left"),  hardware::COBDirection::Left},
+            {QStringLiteral("Right"), hardware::COBDirection::Right},
+            {QStringLiteral("Up"),    hardware::COBDirection::Up},
+            {QStringLiteral("Down"),  hardware::COBDirection::Down},
+        };
+        return kDirectionMap.value(dir, hardware::COBDirection::Down);
     }
 
     auto COBInfoDialog::updateRegister() -> void {

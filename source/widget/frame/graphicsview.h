@@ -16,6 +16,12 @@ namespace PR_tool::widget {
 
     public:
         void adjustSceneRect();
+        /// Fit all scene items into the viewport (KeepAspectRatio).
+        void fitContent();
+        /// Restore the default zoom (constructor scale 1/2.5).
+        void resetZoom();
+
+        static constexpr qreal kDefaultScale = 1.0 / 2.5;
 
     protected:
         void wheelEvent(QWheelEvent* event) override;

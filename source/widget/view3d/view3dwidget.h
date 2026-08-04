@@ -108,6 +108,8 @@ namespace PR_tool::widget {
     public:
         void reload();
         auto displayRoutingResult() -> void;
+        /// When false, COB Info dialog keeps inquiry but disables Enable Edit / Set Value.
+        void setCobRegisterEditEnabled(bool enabled);
 
     protected:
         void initAxis(const QMatrix4x4& view, const QMatrix4x4& projection, const QMatrix4x4& bias);
@@ -245,6 +247,8 @@ namespace PR_tool::widget {
         std::Vector<hardware::TOB*> _tobs {};
         std::Vector<hardware::COB*> _cobs {};
         std::Vector<circuit::TopDieInstance*> _topdieinsts {};
+
+        bool _cobRegisterEditEnabled {true};
     };
 
 }
