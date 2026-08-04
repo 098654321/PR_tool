@@ -9,6 +9,7 @@
 #include <circuit/export/export.hh>
 #include <QGraphicsScene>
 #include <QHash>
+#include <QString>
 
 namespace PR_tool::hardware {
     class TOB;
@@ -50,7 +51,6 @@ namespace PR_tool::widget {
         LayoutScene(hardware::Interposer* interposer, circuit::BaseDie* basedie, QObject* parent = nullptr);
 
     signals:
-        // void topdieInstancePlacedTOBChanged(layout::TopDieInstanceItem* inst, layout::TOBItem *originTOB, layout::TOBItem *newTOB);
         void layoutChanged();
 
     public:
@@ -76,6 +76,10 @@ namespace PR_tool::widget {
         auto totalNetLenght() -> qreal;
         void choiseSourcePort();
 
+        /// Highlight the TOB hosting the named TopDieInstance and center views on it.
+        void focusTopDieInstance(const QString& name);
+        void clearTopDieHighlight();
+
     private:
         auto circuitPinToPinItem(const circuit::Pin& pin) -> layout::PinItem*;
         
@@ -96,6 +100,8 @@ namespace PR_tool::widget {
         QVector<layout::SourcePortItem*> _vddPorts {};
         QVector<layout::SourcePortItem*> _gndPorts {};
         QVector<layout::NetItem*> _netsWithSourcePorts {};
+        layout::TOBItem* _highlightedTOB {nullptr};
+        layout::TopDieInstanceItem* _highlightedTopDie {nullptr};
     };
 
 

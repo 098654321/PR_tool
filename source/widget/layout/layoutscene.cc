@@ -60,6 +60,8 @@ namespace PR_tool::widget {
     }
 
     void LayoutScene::reloadItems() {
+        this->_highlightedTOB = nullptr;
+        this->_highlightedTopDie = nullptr;
         this->_topdieinstMap.clear();
         this->_externalPortsMap.clear();
         this->_tobsMaps.clear();
@@ -70,6 +72,47 @@ namespace PR_tool::widget {
         this->clear();
 
         this->addSceneItems();
+    }
+
+    void LayoutScene::clearTopDieHighlight() {
+        if (this->_highlightedTOB != nullptr) {
+            this->_highlightedTOB->highlight(false);
+            this->_highlightedTOB = nullptr;
+        }
+        if (this->_highlightedTopDie != nullptr) {
+            this->_highlightedTopDie->highlight(false);
+            this->_highlightedTopDie = nullptr;
+        }
+    }
+
+    void LayoutScene::focusTopDieInstance(const QString& name) {
+        this->clearTopDieHighlight();
+        if (name.isEmpty()) {
+            return;
+        }
+
+        for (auto it = this->_topdieinstMap.cbegin(); it != this->_topdieinstMap.cend(); ++it) {
+            auto* inst = it.key();
+            auto* instItem = it.value();
+            if (inst == nullptr || instItem == nullptr) {
+                continue;
+            }
+            if (QString::fromStdString(inst->name().data()) != name) {
+                continue;
+            }
+
+            auto* tobItem = this->_tobsMaps.value(inst->tob(), nullptr);
+            if (tobItem != nullptr) {
+                tobItem->highlight(true);
+                this->_highlightedTOB = tobItem;
+            }
+            instItem->highlight(true);
+            this->_highlightedTopDie = instItem;
+            for (auto* view : this->views()) {
+                view->centerOn(instItem);
+            }
+            return;
+        }
     }
 
     void LayoutScene::addSceneItems() {
@@ -101,16 +144,7 @@ namespace PR_tool::widget {
         // Call after addTOBItems!!
         for (auto& [name, topdieInst] : this->_basedie->topdie_insts()) {
             auto tobItem = this->_tobsMaps.value(topdieInst->tob());
-            auto item = this->addTopDieInstance(topdieInst.get(), tobItem);
-            
-            // // Connect the tob changed signal
-            // connect(item, &TopDieInstanceItem::placedTOBChanged, 
-            //     [this, item] (TOBItem *originTOB, TOBItem *newTOB) {
-            //         // MARK, maybe better..
-            //         this->choiseSourcePort();
-            //         emit this->topdieInstancePlacedTOBChanged(item, originTOB, newTOB);
-            //     }
-            // );
+            this->addTopDieInstance(topdieInst.get(), tobItem);
         }
     }
 

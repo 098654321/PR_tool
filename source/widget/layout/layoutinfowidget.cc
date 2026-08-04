@@ -37,9 +37,11 @@ namespace PR_tool::widget {
         auto layout = new QGridLayout{widget};
         layout->setSpacing(10);
 
-        // L3: clarify Schematic vs Layout editing roles
+        // L1/L3: layout scope — TopDie↔TOB only; connectivity lives in Schematic
         auto roleHint = new QLabel {
-            QStringLiteral("Edit connectivity in Schematic; adjust TopDie placement here."),
+            QStringLiteral(
+                "Layout supports TopDie placement on TOBs only (no net editing here). "
+                "Edit connectivity in Schematic."),
             widget
         };
         roleHint->setWordWrap(true);
@@ -55,15 +57,26 @@ namespace PR_tool::widget {
         this->_topdieInstSizeSpinBox->setEnabled(false);
         layout->addWidget(this->_topdieInstSizeSpinBox, 1, 1);
 
-        // Layout Map (read-only; no jump-to-TOB)
+        // Layout Map (read-only display; row click jumps to TOB)
         auto label = new QLabel {"Layout Place Map ", widget};
         label->setMinimumHeight(MIN_HEIGHT);
         layout->addWidget(label, 2, 0, 1, 2);
         this->_instPlaceView = new QTableView {widget};
         this->_instPlaceView->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
         this->_instPlaceView->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        this->_instPlaceView->setFocusPolicy(Qt::NoFocus);
+        this->_instPlaceView->setSelectionBehavior(QAbstractItemView::SelectRows);
+        this->_instPlaceView->setSelectionMode(QAbstractItemView::SingleSelection);
+        this->_instPlaceView->setFocusPolicy(Qt::StrongFocus);
         layout->addWidget(this->_instPlaceView, 3, 0, 1, 2);
+
+        connect(this->_instPlaceView, &QTableView::clicked, this, [this](const QModelIndex& index) {
+            if (!index.isValid() || this->_scene == nullptr) {
+                return;
+            }
+            const auto nameIndex = index.sibling(index.row(), 0);
+            const auto name = nameIndex.data(Qt::DisplayRole).toString();
+            this->_scene->focusTopDieInstance(name);
+        });
 
         // Path length (display-only)
         layout->addWidget(new QLabel {"Path Length", widget}, 4, 0);

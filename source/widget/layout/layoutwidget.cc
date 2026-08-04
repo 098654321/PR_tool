@@ -40,6 +40,7 @@ namespace PR_tool::widget {
         this->_splitter->addWidget(this->_infoWidget);
 
         connect(this->_scene, &LayoutScene::layoutChanged, [this]() {
+                this->_scene->clearTopDieHighlight();
                 this->_scene->choiseSourcePort();
                 this->_infoWidget->updateInfo();
             }

@@ -44,6 +44,7 @@ namespace PR_tool::widget::layout {
     */
 
     const QColor TopDieInstanceItem::COLOR = QColor::fromRgb(84, 139, 84);
+    const QColor TopDieInstanceItem::HIGHLIGHT_COLOR = Qt::red;
 
     TopDieInstanceItem::TopDieInstanceItem(circuit::TopDieInstance* topdieInst, TOBItem* tob): 
         _topdieInst{topdieInst},
@@ -78,7 +79,7 @@ namespace PR_tool::widget::layout {
     }
     
     void TopDieInstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
-        painter->setBrush(COLOR);
+        painter->setBrush(this->_highlighted ? HIGHLIGHT_COLOR : COLOR);
         QFont font = painter->font();
         font.setPointSize(FONT_SIZE);
         painter->setFont(font);
@@ -88,6 +89,11 @@ namespace PR_tool::widget::layout {
             NAME_AREA_BEGIN_Y - HEIGHT/2,
             }, 
             this->_name);
+    }
+
+    void TopDieInstanceItem::highlight(bool active) {
+        this->_highlighted = active;
+        this->update();
     }
 
     void TopDieInstanceItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
