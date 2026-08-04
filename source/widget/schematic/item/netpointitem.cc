@@ -108,6 +108,13 @@ namespace PR_tool::widget::schematic {
             this->linkToPin(pin);
             this->setRect(-RADIUS, -RADIUS, DIAMETER, DIAMETER);
 
+            // Explicit write-back: setPos→itemChange may no-op when position is unchanged,
+            // leaving Connection still pointing at the old pin after a re-link.
+            if (this->_netitem != nullptr && !this->_netitem->isFloating()
+                && this->_connectedPin != nullptr) {
+                this->_netitem->updatePositionFrom(this, this->pos());
+            }
+
             this->_dragging = false;
         }
 
