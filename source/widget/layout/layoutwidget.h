@@ -32,6 +32,10 @@ namespace PR_tool::widget {
         void reload();
         auto graphicsView() const -> GraphicsView*;
 
+    signals:
+        /// Emitted after layout placement changes (e.g. TOB drag/swap).
+        void layoutChanged();
+
     private:
         QSplitter* _splitter {nullptr};
 

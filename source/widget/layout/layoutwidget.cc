@@ -43,6 +43,7 @@ namespace PR_tool::widget {
                 this->_scene->clearTopDieHighlight();
                 this->_scene->choiseSourcePort();
                 this->_infoWidget->updateInfo();
+                emit this->layoutChanged();
             }
         );
 

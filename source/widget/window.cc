@@ -344,6 +344,8 @@ namespace PR_tool::widget {
         this->setCentralWidget(this->_stackedWidget);
 
         connect(this->_schematicWidget, &SchematicWidget::layoutChanged, this->_layoutWidget, &LayoutWidget::reload);
+        // S14: Layout TOB place/swap → refresh Schematic from basedie (positions are independent of TOB).
+        connect(this->_layoutWidget, &LayoutWidget::layoutChanged, this->_schematicWidget, &SchematicWidget::reload);
     }
 
     void Window::createStatusBar() {
@@ -782,6 +784,7 @@ namespace PR_tool::widget {
         summary += QStringLiteral(
             "\nNote: GUI routes with the current Layout placement only "
             "(no automatic placer).\n"
+            "Router: maze (mode 0). SAT/router picker not in GUI this phase.\n"
             "Editing will be locked after a successful run.");
 
         const auto answer = QMessageBox::question(
@@ -795,9 +798,14 @@ namespace PR_tool::widget {
             return;
         }
 
+        // U12: keep modal for wait()/thread correctness; clarify busy (no cancel).
         auto dialog = QDialog(this);
-        dialog.setWindowTitle("Execute Place & Route");
+        dialog.setWindowTitle(QStringLiteral("Place & Route — busy"));
         dialog.setModal(true);
+        dialog.setWindowFlags(
+            (dialog.windowFlags() | Qt::CustomizeWindowHint | Qt::WindowTitleHint)
+            & ~Qt::WindowCloseButtonHint
+        );
 
         QVBoxLayout layout(&dialog);
         auto title = QLabel(QStringLiteral("Place & Route in progress…"));
@@ -808,7 +816,9 @@ namespace PR_tool::widget {
         title.setAlignment(Qt::AlignCenter);
         layout.addWidget(&title);
 
-        auto hint = QLabel(QStringLiteral("Please wait. This window closes when finished."));
+        auto hint = QLabel(QStringLiteral(
+            "Main window is blocked until P&R finishes. "
+            "This dialog closes when finished (no cancel)."));
         hint.setAlignment(Qt::AlignCenter);
         hint.setWordWrap(true);
         layout.addWidget(&hint);
