@@ -8,7 +8,7 @@ Header:
 Design:
   name: case9_3dblox
   external:
-    verilog_file: case9_connectivity.v
+    verilog_file: case9_3dblox_stub.v
 
 ChipletInst:
   Topdie_inst_2_0:

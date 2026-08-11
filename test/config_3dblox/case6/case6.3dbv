@@ -18,7 +18,7 @@ ChipletDef:
         layer: metal1
     external:
       APR_tech_file: [case6_tech.lef]
-      LEF_file: [case6_interposer_macros.lef]
+      LEF_file: [case6_interposer_macros.lef, case6_bump.lef]
       DEF_file: case6_interposer.def
   muyan:
     type: die

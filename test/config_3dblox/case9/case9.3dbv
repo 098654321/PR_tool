@@ -22,7 +22,7 @@ ChipletDef:
       LEF_file: [case9_bump.lef]
   PRTOOL_INTERPOSER:
     type: rdl
-    design_area: [7300.0, 5500.0]
+    design_area: [7900.0, 5500.0]
     shrink: 1.0
     tsv: false
     thickness: 50.0
@@ -30,11 +30,11 @@ ChipletDef:
     regions:
       front:
         side: front
-        coords: [[0.0, 0.0], [7300.0, 0.0], [7300.0, 5500.0], [0.0, 5500.0]]
+        coords: [[0.0, 0.0], [7900.0, 0.0], [7900.0, 5500.0], [0.0, 5500.0]]
         layer: metal1
     external:
       APR_tech_file: [case9_tech.lef]
-      LEF_file: [case9_interposer_macros.lef]
+      LEF_file: [case9_interposer_macros.lef, case9_bump.lef]
       DEF_file: case9_interposer.def
   cpu:
     type: die

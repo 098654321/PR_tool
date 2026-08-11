@@ -1,0 +1,17 @@
+16 AI core test by xl
+
+
+TOB = 4 * 4
+!!! COB array = 9 * 13
+
+五类互连统计：
+1. chiplet -> 0/1 port: 128 根（128个bump，pose47+nege81）
+2. chiplet与I/O port之间的bus：1根，8bit位宽
+3. chiplet之间的bus：15根，8bit位宽
+4. chiplet与I/O port之间的普通互连：101根（1对1）+6根（1个IO对16个bump）
+5. chiplet之间的普通互连：189根
+
+I/O端口数量：16个
+0/1端口数量：
+    - 0端口：12个
+    - 1端口：12个

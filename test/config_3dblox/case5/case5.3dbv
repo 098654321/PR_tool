@@ -34,7 +34,7 @@ ChipletDef:
         layer: metal1
     external:
       APR_tech_file: [case5_tech.lef]
-      LEF_file: [case5_interposer_macros.lef]
+      LEF_file: [case5_interposer_macros.lef, case5_bump.lef]
       DEF_file: case5_interposer.def
   cpu:
     type: die

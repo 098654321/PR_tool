@@ -22,7 +22,6 @@ DEFAULT_OUTPUT = Path("/Users/jiaheng/FDU_files/Tao_group/PR_tool/PR_tool/test/c
 
 # Interposer geometry (microns), per the user-provided hardware dimensions.
 COB_ROWS = 9
-COB_COLS = 12
 COB_SIZE = 100.0
 CHANNEL_LONG = 500.0
 CHANNEL_SHORT = 50.0
@@ -39,7 +38,6 @@ TOPDIE_THICKNESS = 20.0
 INTERPOSER_THICKNESS = 50.0
 MICROBUMP_GAP = 1.0
 
-INTERPOSER_WIDTH = 2 * EDGE_MARGIN + COB_COLS * COB_SIZE + (COB_COLS - 1) * CHANNEL_LONG
 INTERPOSER_HEIGHT = 2 * EDGE_MARGIN + COB_ROWS * COB_SIZE + (COB_ROWS - 1) * CHANNEL_LONG
 PORT_SPAN = (128 - 1) * PORT_PITCH
 PORT_OFFSET = (COB_SIZE - PORT_SPAN) / 2.0
@@ -158,13 +156,20 @@ def connected_components(groups: list[tuple[str, str, list[list[str]]]]) -> tupl
     return ordered, membership
 
 
-def bmap_lines(port_map: dict[str, str]) -> str:
+def topdie_port_id(name: str) -> str:
+    return "pin_" + re.sub(r"[^A-Za-z0-9_$]", "_", name)
+
+
+def bmap_lines(pin_map: dict[str, int], port_map: dict[str, str]) -> str:
     lines: list[str] = []
-    for index, (original, port) in enumerate(sorted(port_map.items())):
-        # Instance names and positions are unique even if the original pin_map
-        # deliberately maps several logical signals to the same bump number.
-        x, y = index % 32, index // 32
-        lines.append(f"bump_{index} PRTOOL_BUMP {x}.0 {y}.0 {port} {port}")
+    for serial, (original, port) in enumerate(sorted(port_map.items())):
+        # Preserve the PR_tool pin-map index in the bump instance name.  The
+        # importer recovers it from here because logical pin names such as
+        # jtag_tck do not necessarily end in a numeric bump index.
+        x, y = serial % 32, serial // 32
+        lines.append(
+            f"bump_{pin_map[original]}_{serial} PRTOOL_BUMP {x}.0 {y}.0 {port} {port}"
+        )
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -195,11 +200,34 @@ def clamp(value: int, lower: int, upper: int) -> int:
     return max(lower, min(upper, value))
 
 
-def boundary_port_xy(coord: dict[str, Any]) -> tuple[float, float]:
+def interposer_width(cob_cols: int) -> float:
+    return 2 * EDGE_MARGIN + cob_cols * COB_SIZE + (cob_cols - 1) * CHANNEL_LONG
+
+
+def infer_cob_cols(external_ports: dict[str, Any], ports_01: dict[str, Any]) -> int:
+    boundary_coords = [spec["coord"] for spec in external_ports.values()]
+    boundary_coords.extend(
+        spec for polarity in ("pose", "nege") for spec in ports_01.get(polarity, {}).values()
+    )
+    horizontal_cols = [int(coord["col"]) for coord in boundary_coords if coord["dir"] == "hori"]
+    if not horizontal_cols:
+        raise ValueError("cannot infer COB column count without a horizontal boundary port")
+    cob_cols = max(horizontal_cols)
+    if cob_cols not in (12, 13):
+        raise ValueError(f"unsupported PR_tool COB array width: 9x{cob_cols}")
+    for coord in boundary_coords:
+        if coord["dir"] == "hori" and int(coord["col"]) not in (0, cob_cols):
+            raise ValueError(f"horizontal port is not on the 9x{cob_cols} interposer boundary: {coord}")
+        if coord["dir"] == "vert" and int(coord["row"]) not in (0, COB_ROWS):
+            raise ValueError(f"vertical port is not on the 9x{cob_cols} interposer boundary: {coord}")
+    return cob_cols
+
+
+def boundary_port_xy(coord: dict[str, Any], cob_cols: int) -> tuple[float, float]:
     direction = coord["dir"]
     port_index = int(coord["index"])
     if direction == "vert":
-        col = clamp(int(coord["col"]), 0, COB_COLS - 1)
+        col = clamp(int(coord["col"]), 0, cob_cols - 1)
         top_side = int(coord["row"]) >= COB_ROWS
         row = COB_ROWS - 1 if top_side else 0
         cob_x, cob_y = cob_origin(row, col)
@@ -207,8 +235,8 @@ def boundary_port_xy(coord: dict[str, Any]) -> tuple[float, float]:
         y = cob_y + COB_SIZE if top_side else cob_y
         return x, y
     row = clamp(int(coord["row"]), 0, COB_ROWS - 1)
-    right_side = int(coord["col"]) >= COB_COLS
-    col = COB_COLS - 1 if right_side else 0
+    right_side = int(coord["col"]) >= cob_cols
+    col = cob_cols - 1 if right_side else 0
     cob_x, cob_y = cob_origin(row, col)
     x = cob_x + COB_SIZE if right_side else cob_x
     y = cob_y + COB_SIZE - PORT_OFFSET - port_index * PORT_PITCH
@@ -284,6 +312,7 @@ def make_interposer_def(
     external_ports: dict[str, Any],
     ports_01: dict[str, Any],
     net_names: dict[str, str],
+    cob_cols: int,
 ) -> str:
     dbu = 1000
 
@@ -292,19 +321,19 @@ def make_interposer_def(
 
     components: list[str] = []
     for row in range(COB_ROWS):
-        for col in range(COB_COLS):
+        for col in range(cob_cols):
             x, y = cob_origin(row, col)
             components.append(f"- COB_{row}_{col} PRTOOL_COB + PLACED ( {db(x)} {db(y)} ) N ;")
 
     for row in range(COB_ROWS):
-        for col in range(COB_COLS - 1):
+        for col in range(cob_cols - 1):
             x, y = cob_origin(row, col)
             hx = x + COB_SIZE
             hy = y + (COB_SIZE - CHANNEL_SHORT) / 2.0
             components.append(f"- HCHAN_{row}_{col + 1} PRTOOL_HCHAN + PLACED ( {db(hx)} {db(hy)} ) N ;")
 
     for row in range(COB_ROWS - 1):
-        for col in range(COB_COLS):
+        for col in range(cob_cols):
             x, y = cob_origin(row, col)
             vx = x + (COB_SIZE - CHANNEL_SHORT) / 2.0
             vy = y + COB_SIZE
@@ -317,13 +346,13 @@ def make_interposer_def(
 
     pins: list[str] = []
     for name, spec in sorted(external_ports.items()):
-        x, y = boundary_port_xy(spec["coord"])
+        x, y = boundary_port_xy(spec["coord"], cob_cols)
         pins.append(
             f"- {name} + NET {net_names[name]} + DIRECTION INOUT + USE SIGNAL + FIXED ( {db(x)} {db(y)} ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;"
         )
     for polarity in ("pose", "nege"):
         for key, spec in sorted(ports_01.get(polarity, {}).items(), key=lambda item: int(item[0])):
-            x, y = boundary_port_xy(spec)
+            x, y = boundary_port_xy(spec, cob_cols)
             pins.append(
                 f"- {polarity}_{key} + NET {polarity}_{key} + DIRECTION INOUT + USE SIGNAL + FIXED ( {db(x)} {db(y)} ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;"
             )
@@ -334,7 +363,7 @@ def make_interposer_def(
         'BUSBITCHARS "[]" ;',
         f"DESIGN {case_name}_interposer ;",
         f"UNITS DISTANCE MICRONS {dbu} ;",
-        f"DIEAREA ( 0 0 ) ( {db(INTERPOSER_WIDTH)} {db(INTERPOSER_HEIGHT)} ) ;",
+        f"DIEAREA ( 0 0 ) ( {db(interposer_width(cob_cols))} {db(INTERPOSER_HEIGHT)} ) ;",
         "",
         f"COMPONENTS {len(components)} ;",
         *components,
@@ -399,7 +428,7 @@ def make_3dbx(
         f"  name: {case_name}_3dblox",
         "  external:",
         # Current OpenROAD parser reads this standard's list field as a scalar.
-        f"    verilog_file: {case_name}_connectivity.v",
+        f"    verilog_file: {case_name}_3dblox_stub.v",
         "",
         "ChipletInst:",
     ]
@@ -461,7 +490,7 @@ def make_metadata(case_name: str, source: dict[str, Any], nets: list[dict[str, A
     return "\n".join(lines)
 
 
-def make_readme(case_name: str) -> str:
+def make_readme(case_name: str, cob_cols: int) -> str:
     return f"""# {case_name}: PR_tool to 3DBlox package
 
 Load this package from its directory with:
@@ -470,8 +499,11 @@ Load this package from its directory with:
 source load_{case_name}.tcl
 ```
 
-`{case_name}.3dbx` and its included `.3dbv` are standard 3DBlox.  The top
-connectivity is standard Verilog.  A net called `prsync__m<mode>__g<group>[i]`
+`{case_name}.3dbx` and its included `.3dbv` are standard 3DBlox.  Its external
+Verilog is intentionally a minimal stub so 3DBlox does not build generic chip
+nets for very large PR_tool designs; `prtool_route` automatically loads the
+adjacent `{case_name}_connectivity.v` instead.  That connectivity is standard
+Verilog with PR_tool direction comments.  A net called `prsync__m<mode>__g<group>[i]`
 is lane `i` of a non-overlapping synchronous group.  A scalar net containing
 several `__g<group>_l<lane>` fragments is one physical multi-source/multi-sink
 component that belongs to several groups; this occurs in case16 and prevents
@@ -480,11 +512,13 @@ incorrectly splitting its shared port.
 The converted interposer geometry uses the provided hardware dimensions:
 COB 100x100, channel gap 500 (short edge 50), TOB 400x200, and a substrate
 edge margin of 300 microns.  This yields an interposer size of
-{INTERPOSER_WIDTH:.1f} x {INTERPOSER_HEIGHT:.1f} microns.  Topdie placement is
+{interposer_width(cob_cols):.1f} x {INTERPOSER_HEIGHT:.1f} microns.  Topdie placement is
 derived from TOB array coordinates, and external/0/1 port physical positions
 are computed from the COB-edge port pitch (0.3 micron) and written into the
-generated standard physical files.  Bump maps are emitted only for topdies;
-the interposer's external I/O ports are DEF PINS.  No metadata Tcl sidecar is
+generated standard physical files.  Bump maps are emitted for topdies; the
+interposer external I/O positions are read directly from its DEF pins.  The
+original PR_tool configuration is copied
+to `prtool_reference/` for `prtool_verify_import`.  No metadata Tcl sidecar is
 emitted.
 """
 
@@ -502,7 +536,10 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
     register_path = source_dir / "reigster_adder.json"
     if not register_path.exists():
         register_path = source_dir / "register_adder.json"
-    registers = read_json(register_path) if register_path.exists() else {}
+    if not register_path.exists():
+        raise FileNotFoundError(f"{case_name}: missing register_adder.json")
+    registers = read_json(register_path)
+    cob_cols = infer_cob_cols(external_ports, ports_01)
 
     groups = normalize_connections(connections)
     components, group_membership = connected_components(groups)
@@ -510,7 +547,7 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
     inst_ids = {name: verilog_id(name, "inst_") for name in instances}
     type_ids = {name: verilog_id(name, "chiplet_") for name in topdies}
     port_ids: dict[str, dict[str, str]] = {
-        topdie: {name: verilog_id(name, "pin_") for name in spec["pin_map"]}
+        topdie: {name: topdie_port_id(name) for name in spec["pin_map"]}
         for topdie, spec in topdies.items()
     }
     ext_ids = {name: verilog_id(name, "ext_") for name in external_ports}
@@ -530,6 +567,36 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
         if endpoint in ext_ids:
             return "prtool_interposer", ext_ids[endpoint]
         return "prtool_interposer", fixed_ids[endpoint]
+
+    endpoint_directions: dict[str, str] = {}
+
+    def set_endpoint_direction(endpoint: str, direction: str) -> None:
+        previous = endpoint_directions.setdefault(endpoint, direction)
+        if previous != direction:
+            raise ValueError(
+                f"{case_name}: endpoint {endpoint!r} is both a source and a sink"
+            )
+
+    for _, _, pairs in groups:
+        for source, sink in pairs:
+            set_endpoint_direction(str(source), "output")
+            set_endpoint_direction(str(sink), "input")
+
+    topdie_port_directions: dict[str, dict[str, str]] = {
+        topdie: {} for topdie in topdies
+    }
+    interposer_port_directions: dict[str, str] = {}
+    for endpoint, direction in endpoint_directions.items():
+        if "." in endpoint:
+            instance, port = endpoint.split(".", 1)
+            topdie = instances[instance]["topdie"]
+            topdie_port_directions[topdie][port_ids[topdie][port]] = direction
+        else:
+            if endpoint in ext_ids:
+                port = ext_ids[endpoint]
+            else:
+                port = fixed_ids[endpoint]
+            interposer_port_directions[port] = direction
 
     # Each component receives one legal physical Verilog net.  Membership is
     # collected from all groups so fanout/multisink endpoints cannot be split.
@@ -584,6 +651,8 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
     (output_dir / "bmaps").mkdir()
+    shutil.copyfile(register_path, output_dir / "register_adder.json")
+    shutil.copytree(source_dir, output_dir / "prtool_reference")
 
     source = {
         "config": config,
@@ -610,20 +679,19 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
             "thickness": TOPDIE_THICKNESS,
             "lef_files": [f"{case_name}_bump.lef"],
         }
-        write_text(output_dir / bmap, bmap_lines(ports))
+        write_text(output_dir / bmap, bmap_lines(topdies[topdie]["pin_map"], ports))
     boundary_ports = dict(ext_ids)
     boundary_ports.update(fixed_ids)
     boundary_net_names = {
         original: endpoint_nets.get(original, f"prunconnected__p{index}")
         for index, original in enumerate(sorted(boundary_ports))
     }
-
     chiplets["PRTOOL_INTERPOSER"] = {
         "type": "rdl",
-        "width": INTERPOSER_WIDTH,
+        "width": interposer_width(cob_cols),
         "height": INTERPOSER_HEIGHT,
         "thickness": INTERPOSER_THICKNESS,
-        "lef_files": [f"{case_name}_interposer_macros.lef"],
+        "lef_files": [f"{case_name}_interposer_macros.lef", f"{case_name}_bump.lef"],
         "def_file": f"{case_name}_interposer.def",
     }
     write_text(output_dir / f"{case_name}_tech.lef", TECH_LEF)
@@ -631,25 +699,38 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
     write_text(output_dir / f"{case_name}_interposer_macros.lef", make_interposer_macros_lef())
     write_text(
         output_dir / f"{case_name}_interposer.def",
-        make_interposer_def(case_name, external_ports, ports_01, boundary_net_names),
+        make_interposer_def(case_name, external_ports, ports_01, boundary_net_names, cob_cols),
     )
     write_text(output_dir / f"{case_name}.3dbv", make_3dbv(case_name, chiplets))
     instance_types = {inst_ids[name]: type_ids[spec["topdie"]] for name, spec in instances.items()}
     instance_types["prtool_interposer"] = "PRTOOL_INTERPOSER"
     write_text(output_dir / f"{case_name}.3dbx", make_3dbx(case_name, instance_types, instances, inst_ids))
+    write_text(output_dir / f"{case_name}_3dblox_stub.v", f"module {case_name}_3dblox;\nendmodule\n")
 
     # Verilog module declarations and all interposer ports.  Unconnected
     # boundary ports retain a named one-terminal net so DEF and connectivity
     # Verilog use the same name.
     verilog: list[str] = ["// Generated by convert_prtool_configs_to_3dblox.py", ""]
     for topdie, ports in sorted(port_ids.items()):
-        verilog.append(f"module {type_ids[topdie]} ({', '.join(ports.values())});")
+        verilog.append(f"module {type_ids[topdie]} (")
+        port_names = list(ports.values())
+        verilog.extend(
+            f"  {port}{',' if index + 1 < len(port_names) else ''}"
+            for index, port in enumerate(port_names)
+        )
+        verilog.append(");")
         for port in ports.values():
-            verilog.append(f"  inout {port};")
+            verilog.append(f"  {topdie_port_directions[topdie].get(port, 'inout')} {port};")
         verilog.extend(["endmodule", ""])
-    verilog.append(f"module PRTOOL_INTERPOSER ({', '.join(boundary_ports.values())});")
+    verilog.append("module PRTOOL_INTERPOSER (")
+    interposer_port_names = list(boundary_ports.values())
+    verilog.extend(
+        f"  {port}{',' if index + 1 < len(interposer_port_names) else ''}"
+        for index, port in enumerate(interposer_port_names)
+    )
+    verilog.append(");")
     for port in boundary_ports.values():
-        verilog.append(f"  inout {port};")
+        verilog.append(f"  {interposer_port_directions.get(port, 'inout')} {port};")
     verilog.extend(["endmodule", "", f"module {case_name}_3dblox;"])
     for group in sorted(vector_groups):
         mode, group_id = group
@@ -660,6 +741,19 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
             verilog.append(f"  wire {record['net']};")
     for net_name in sorted(set(boundary_net_names.values()) - set(endpoint_nets.values())):
         verilog.append(f"  wire {net_name};")
+    for endpoint, direction in sorted(endpoint_directions.items()):
+        instance, port = endpoint_expr(endpoint)
+        verilog.append(f"  // PRTOOL_DIRECTION {instance}.{port} {direction}")
+    for mode, group, pairs in groups:
+        group_token = group if re.fullmatch(r"-?[0-9]+", group) else net_name_token(group)
+        net = f"prtool__m{net_name_token(mode)}__g{group_token}"
+        for source, sink in pairs:
+            source_instance, source_port = endpoint_expr(str(source))
+            sink_instance, sink_port = endpoint_expr(str(sink))
+            verilog.append(
+                f"  // PRTOOL_CONNECTION {net} {source_instance}.{source_port} "
+                f"{sink_instance}.{sink_port}"
+            )
     for original, spec in sorted(instances.items()):
         topdie = spec["topdie"]
         conns = []
@@ -667,16 +761,35 @@ def convert_case(source_dir: Path, output_root: Path, force: bool) -> None:
             endpoint = f"{original}.{port}"
             if endpoint in endpoint_nets:
                 conns.append(f".{vport}({endpoint_nets[endpoint]})")
-        verilog.append(f"  {type_ids[topdie]} {inst_ids[original]} ({', '.join(conns)});")
+        verilog.append(f"  {type_ids[topdie]} {inst_ids[original]} (")
+        verilog.extend(
+            f"    {connection}{',' if index + 1 < len(conns) else ''}"
+            for index, connection in enumerate(conns)
+        )
+        verilog.append("  );")
     boundary_conns = []
     for original, vport in sorted(boundary_ports.items()):
         boundary_conns.append(f".{vport}({boundary_net_names[original]})")
-    verilog.append(f"  PRTOOL_INTERPOSER prtool_interposer ({', '.join(boundary_conns)});")
+    verilog.append("  PRTOOL_INTERPOSER prtool_interposer (")
+    verilog.extend(
+        f"    {connection}{',' if index + 1 < len(boundary_conns) else ''}"
+        for index, connection in enumerate(boundary_conns)
+    )
+    verilog.append("  );")
     verilog.extend(["endmodule", ""])
     write_text(output_dir / f"{case_name}_connectivity.v", "\n".join(verilog))
 
     write_text(output_dir / f"load_{case_name}.tcl", f"cd [file dirname [info script]]\nread_3dbx {case_name}.3dbx\n")
-    write_text(output_dir / "README.md", make_readme(case_name))
+    write_text(
+        output_dir / "run.tcl",
+        "set pkg [file dirname [info script]]\n"
+        "set out [file join $pkg results]\n"
+        f"read_3dbx [file join $pkg {case_name}.3dbx]\n"
+        "prtool_verify_import [file join $pkg prtool_reference] -report [file join $out prtool_import_check.log]\n"
+        "prtool_route -router maze -verbose -output_dir $out\n"
+        f"write_db [file join $out {case_name}_prtool.odb]\n",
+    )
+    write_text(output_dir / "README.md", make_readme(case_name, cob_cols))
 
 
 def parse_cases(text: str) -> list[int]:

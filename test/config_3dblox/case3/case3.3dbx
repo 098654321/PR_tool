@@ -8,7 +8,7 @@ Header:
 Design:
   name: case3_3dblox
   external:
-    verilog_file: case3_connectivity.v
+    verilog_file: case3_3dblox_stub.v
 
 ChipletInst:
   muyan_0:
