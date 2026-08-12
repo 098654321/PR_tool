@@ -12,6 +12,7 @@
 #include "../schematicscene.h"
 #include "./exportitem.h"
 #include <QGraphicsSceneMouseEvent>
+#include <QGraphicsView>
 #include <cassert>
 
 namespace PR_tool::widget::schematic {
@@ -49,7 +50,37 @@ namespace PR_tool::widget::schematic {
         return path;
     }
 
+    auto PinItem::viewScale() const -> qreal {
+        if (auto* sc = this->scene()) {
+            const auto views = sc->views();
+            if (!views.isEmpty()) {
+                return views.first()->transform().m11();
+            }
+        }
+        return 1.0;
+    }
+
+    auto PinItem::shouldForceShowPin() const -> bool {
+        // Selected / hover always force-show. NetItem hover already calls setHovered on
+        // connected pins. Full "related net" focus force-show lands with Ch.七.
+        return this->isSelected() || this->_hovered;
+    }
+
     void PinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
+        // LOD (Ch.五): hide per-pin mark+name unless Near or force-show.
+        // boundingRect/shape keep HIT_PADDING so invisible pins remain clickable; anchors stay.
+        const qreal s = this->viewScale();
+        if (!this->shouldForceShowPin()) {
+            if (s < LOD_FAR_MAX) {
+                // Far: do not draw pin / group.
+                return;
+            }
+            if (s < LOD_NEAR_MIN) {
+                // Medium: Ch.六 draws Port Group bars here — no per-pin ticks/names in Ch.五.
+                return;
+            }
+        }
+
         if (this->_hovered) {
             painter->setPen(QPen(HOVERED_COLOR, 2, Qt::DashLine));
             painter->setBrush(HOVERED_COLOR);
@@ -176,15 +207,31 @@ namespace PR_tool::widget::schematic {
         QGraphicsItem::mousePressEvent(event);
     }
 
-    void PinItem::hoverEnterEvent(QGraphicsSceneHoverEvent * event) {
-        this->_hovered = true;
+    void PinItem::setHovered(bool hovered) {
+        if (this->_hovered == hovered) {
+            return;
+        }
+        this->_hovered = hovered;
         this->update();
+    }
+
+    void PinItem::hoverEnterEvent(QGraphicsSceneHoverEvent * event) {
+        this->setHovered(true);
+        for (auto* point : this->_connectedNetPoints) {
+            if (point && point->netItem()) {
+                point->netItem()->setHighlight(true);
+            }
+        }
         QGraphicsItem::hoverEnterEvent(event);
     }
 
     void PinItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *event) {
-        this->_hovered = false;
-        this->update();
+        this->setHovered(false);
+        for (auto* point : this->_connectedNetPoints) {
+            if (point && point->netItem()) {
+                point->netItem()->setHighlight(false);
+            }
+        }
         QGraphicsItem::hoverLeaveEvent(event);
     }
 

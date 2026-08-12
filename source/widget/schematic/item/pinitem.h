@@ -36,6 +36,10 @@ namespace PR_tool::widget::schematic {
         static constexpr qreal NAME_INTERVAL = 10.;
         static constexpr qreal CHAR_WIDTH_ = 10.;
         static constexpr qreal CHAR_HEIGHT = 20.;
+        // Pin LOD (Ch.五): s = QGraphicsView::transform().m11(). Default open ≈ 0.40 → Far.
+        static constexpr qreal LOD_FAR_MAX = 0.45;   // s < Far: hide pin / group graphics
+        static constexpr qreal LOD_NEAR_MIN = 0.90;  // s >= Near: draw pin mark + name
+        // Medium: LOD_FAR_MAX <= s < LOD_NEAR_MIN → Port Group bars (Ch.六), not per-pin ticks/names
         static const    QColor COLOR;
         static const    QColor HOVERED_COLOR;
 
@@ -74,6 +78,9 @@ namespace PR_tool::widget::schematic {
         auto name() const -> const QString& { return this->_name; }
         void setName(const QString& name) { this->_name = name; }
 
+        auto side() const -> PinSide { return this->_side; }
+        void setSide(PinSide side) { this->_side = side; this->update(); }
+
         auto connectedPoints() const -> const QVector<NetPointItem*>& 
         { return this->_connectedNetPoints; }
 
@@ -86,10 +93,19 @@ namespace PR_tool::widget::schematic {
         void setRaduis(qreal radius) { this->_raduis = radius; }
         void resetRaduis() { this->_raduis = PIN_RADIUS; }
 
+        /// Display-only hover style (also used when a connected net is hovered).
+        void setHovered(bool hovered);
+
     public:
         auto parentExternalPort() const -> ExternalPortItem*;
         auto parentTopDieInstance() const -> TopDieInstanceItem*;
         auto parentSourcePort() const -> SourcePortItem*;
+
+    private:
+        /// View scale s = transform().m11(); 1.0 if no view yet.
+        auto viewScale() const -> qreal;
+        /// Selected / hover (incl. net-hover via setHovered). Related-net focus: TODO Ch.七.
+        auto shouldForceShowPin() const -> bool;
 
     private:
         QString _name;
