@@ -85,6 +85,16 @@ namespace PR_tool::widget::schematic {
         /// When expand reaches size 1 at Medium zoom, pins should paint.
         auto shouldRevealPins() const -> bool;
 
+        auto portGroups() const -> const QVector<PortGroupItem*>& { return this->_portGroups; }
+
+        /// Ch.七: strong border when this die is focus target or a focused-net endpoint.
+        void setFocusBorder(bool on);
+
+    protected:
+        void hoverEnterEvent(QGraphicsSceneHoverEvent* event) override;
+        void hoverLeaveEvent(QGraphicsSceneHoverEvent* event) override;
+        auto itemChange(GraphicsItemChange change, const QVariant& value) -> QVariant override;
+
     private:
         void clearPortGroups();
         void rebuildPortGroups(int groupSize);
@@ -97,6 +107,7 @@ namespace PR_tool::widget::schematic {
         qreal _width {};
         qreal _height {};
         QColor _fillColor {};
+        bool _focusBorder {false};
 
         circuit::TopDieInstance* const _topdieinstance {nullptr};
         QMap<QString, PinItem*> _pins {};

@@ -61,9 +61,8 @@ namespace PR_tool::widget::schematic {
     }
 
     auto PinItem::shouldForceShowPin() const -> bool {
-        // Selected / hover always force-show. NetItem hover already calls setHovered on
-        // connected pins. Full "related net" focus force-show lands with Ch.七.
-        if (this->isSelected() || this->_hovered) {
+        // Selected / hover / related-net focus always force-show (Ch.五 + Ch.七).
+        if (this->isSelected() || this->_hovered || this->_focusRelated) {
             return true;
         }
         // Ch.六: click-expand to group size 1 at Medium zoom reveals pins.
@@ -226,21 +225,31 @@ namespace PR_tool::widget::schematic {
         this->update();
     }
 
+    void PinItem::setFocusRelated(bool related) {
+        if (this->_focusRelated == related) {
+            return;
+        }
+        this->_focusRelated = related;
+        this->update();
+    }
+
     void PinItem::hoverEnterEvent(QGraphicsSceneHoverEvent * event) {
         this->setHovered(true);
-        for (auto* point : this->_connectedNetPoints) {
-            if (point && point->netItem()) {
-                point->netItem()->setHighlight(true);
+        if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+            if (this->isTopDieInstancePin()) {
+                sc->setHoverTopDie(this->parentTopDieInstance());
             }
+            sc->setHoverPin(this);
         }
         QGraphicsItem::hoverEnterEvent(event);
     }
 
     void PinItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *event) {
         this->setHovered(false);
-        for (auto* point : this->_connectedNetPoints) {
-            if (point && point->netItem()) {
-                point->netItem()->setHighlight(false);
+        if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+            sc->setHoverPin(nullptr);
+            if (this->isTopDieInstancePin()) {
+                sc->setHoverTopDie(nullptr);
             }
         }
         QGraphicsItem::hoverLeaveEvent(event);

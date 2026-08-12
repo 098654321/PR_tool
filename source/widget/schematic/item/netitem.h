@@ -7,6 +7,7 @@
 #include <std/utility.hh>
 #include <QGraphicsLineItem>
 #include <QPen>
+#include <QVector>
 #include <QDebug>
 
 namespace PR_tool::circuit {
@@ -18,10 +19,35 @@ namespace PR_tool::widget::schematic {
     class PinItem;
     class NetPointItem;
 
+    /// Tunable Ch.七 “弱背景 + 强交互” visual params (schematic connections).
+    struct ConnectionFocusStyle {
+        static constexpr qreal DEFAULT_WIDTH = 1.0;
+        static constexpr qreal DEFAULT_OPACITY = 0.35;
+
+        static constexpr qreal DIE_RELATED_WIDTH = 2.0;
+        static constexpr qreal DIE_RELATED_OPACITY = 1.0;
+        static constexpr qreal DIE_UNRELATED_OPACITY = 0.15;
+
+        static constexpr qreal NET_FOCUS_WIDTH = 2.5;
+        static constexpr qreal NET_FOCUS_OPACITY = 1.0;
+        static constexpr qreal NET_UNRELATED_OPACITY = 0.08;
+
+        static constexpr qreal DIE_BORDER_DEFAULT = 1.5;
+        static constexpr qreal DIE_BORDER_FOCUS = 3.0;
+    };
+
+    enum class NetFocusRole {
+        Default,
+        DieRelated,
+        DieUnrelated,
+        NetFocused,
+        NetUnrelated,
+    };
+
     class NetItem : public QGraphicsItem {
     public:
         static const     QColor DEFAULT_COLOR;
-        static constexpr qreal  DEFAULT_WIDTH = 2;
+        static constexpr qreal  DEFAULT_WIDTH = ConnectionFocusStyle::DEFAULT_WIDTH;
 
         static const     QColor HOVER_COLOR;
 
@@ -49,6 +75,10 @@ namespace PR_tool::widget::schematic {
 
     public:
         void setLine(const QPointF& begin, const QPointF& end);
+        /// Replace geometry with an orthogonal polyline (schematic display only).
+        void setRoutePoints(const QVector<QPointF>& points);
+        /// Apply Ch.七 focus role (width / opacity / contrast). Floating nets ignored.
+        void applyFocusRole(NetFocusRole role);
 
     protected:
         auto boundingRect() const -> QRectF override;
@@ -100,6 +130,7 @@ namespace PR_tool::widget::schematic {
 
         QColor _paintColor {DEFAULT_COLOR};
         qreal  _paintWidth {DEFAULT_WIDTH};
+        qreal  _paintOpacity {ConnectionFocusStyle::DEFAULT_OPACITY};
         Qt::PenStyle _paintStyle {Qt::SolidLine};
         
         QColor _color {DEFAULT_COLOR};

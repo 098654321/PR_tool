@@ -48,6 +48,7 @@ namespace PR_tool::widget {
         QGraphicsScene{}
     {
         this->addSceneItems();
+        this->refreshConnectionFocus();
     }
 
     void SchematicScene::reloadItems() {
@@ -66,9 +67,15 @@ namespace PR_tool::widget {
         this->_pendingExportGroupSync = false;
         this->_portGroupFlushScheduled = false;
 
+        this->_hoverTopDie = nullptr;
+        this->_selectedTopDie = nullptr;
+        this->_hoverFocusNets.clear();
+        this->_selectedFocusNets.clear();
+
         this->clear();
 
         this->addSceneItems();
+        this->refreshConnectionFocus();
     }
 
     void SchematicScene::requestPortGroupSync(schematic::TopDieInstanceItem* item) {
@@ -317,31 +324,45 @@ namespace PR_tool::widget {
 
     void SchematicScene::emitSelectionForItem(QGraphicsItem* item) {
         if (!item) {
+            this->_selectedFocusNets.clear();
             emit this->viewSelected();
+            this->refreshConnectionFocus();
             return;
         }
 
         if (item->type() == schematic::NetItem::Type) {
-            emit this->netSelected(dynamic_cast<schematic::NetItem*>(item));
+            auto* net = dynamic_cast<schematic::NetItem*>(item);
+            this->_selectedFocusNets = this->expandToBundleNets(net);
+            emit this->netSelected(net);
+            this->refreshConnectionFocus();
         }
         else if (item->type() == schematic::TopDieInstanceItem::Type) {
             auto* top = dynamic_cast<schematic::TopDieInstanceItem*>(item);
             if (top) {
+                this->enforceSingleTopDieSelection(top);
                 top->setSelected(true);
+                this->_selectedTopDie = top;
+                this->_selectedFocusNets.clear();
             }
             emit this->topdieInstSelected(top);
+            this->refreshConnectionFocus();
         }
         else if (item->type() == schematic::ExternalPortItem::Type) {
             auto* eport = dynamic_cast<schematic::ExternalPortItem*>(item);
             if (eport) {
                 eport->setSelected(true);
             }
+            this->_selectedFocusNets.clear();
             emit this->exportSelected(eport);
+            this->refreshConnectionFocus();
         }
         else if (item->type() == schematic::PortGroupItem::Type) {
             auto* group = dynamic_cast<schematic::PortGroupItem*>(item);
             if (group && group->ownerTopDie()) {
+                this->enforceSingleTopDieSelection(group->ownerTopDie());
                 group->ownerTopDie()->setSelected(true);
+                this->_selectedTopDie = group->ownerTopDie();
+                this->_selectedFocusNets = this->netsForPortGroup(group);
                 emit this->topdieInstSelected(group->ownerTopDie());
             } else if (group && group->isExportGroup() && !group->exportMembers().isEmpty()) {
                 for (auto* e : group->exportMembers()) {
@@ -349,11 +370,286 @@ namespace PR_tool::widget {
                         e->setSelected(true);
                     }
                 }
+                this->_selectedFocusNets = this->netsForPortGroup(group);
                 emit this->exportSelected(group->exportMembers().first());
             } else {
+                this->_selectedFocusNets.clear();
                 emit this->viewSelected();
             }
+            this->refreshConnectionFocus();
         }
+    }
+
+    void SchematicScene::enforceSingleTopDieSelection(schematic::TopDieInstanceItem* keep) {
+        for (auto* top : this->_topdieinstMap) {
+            if (top && top != keep && top->isSelected()) {
+                top->setSelected(false);
+            }
+        }
+    }
+
+    void SchematicScene::setHoverTopDie(schematic::TopDieInstanceItem* die) {
+        if (this->_hoverTopDie == die) {
+            return;
+        }
+        this->_hoverTopDie = die;
+        this->refreshConnectionFocus();
+    }
+
+    void SchematicScene::setHoverPin(schematic::PinItem* pin) {
+        QSet<schematic::NetItem*> nets;
+        if (pin) {
+            for (auto* point : pin->connectedPoints()) {
+                if (point && point->netItem() && !point->netItem()->isFloating()) {
+                    nets.unite(this->expandToBundleNets(point->netItem()));
+                }
+            }
+        }
+        if (nets == this->_hoverFocusNets) {
+            return;
+        }
+        this->_hoverFocusNets = std::move(nets);
+        this->refreshConnectionFocus();
+    }
+
+    void SchematicScene::setHoverNet(schematic::NetItem* net) {
+        QSet<schematic::NetItem*> nets = this->expandToBundleNets(net);
+        if (nets == this->_hoverFocusNets) {
+            return;
+        }
+        this->_hoverFocusNets = std::move(nets);
+        this->refreshConnectionFocus();
+    }
+
+    void SchematicScene::setHoverPortGroup(schematic::PortGroupItem* group) {
+        QSet<schematic::NetItem*> nets = this->netsForPortGroup(group);
+        if (nets == this->_hoverFocusNets) {
+            return;
+        }
+        this->_hoverFocusNets = std::move(nets);
+        this->refreshConnectionFocus();
+    }
+
+    void SchematicScene::onTopDieSelectionChanged(schematic::TopDieInstanceItem* die, bool selected) {
+        if (this->_refreshingFocus) {
+            return;
+        }
+        if (selected) {
+            this->enforceSingleTopDieSelection(die);
+            this->_selectedTopDie = die;
+        } else if (this->_selectedTopDie == die) {
+            this->_selectedTopDie = nullptr;
+            // Another die may still be selected (rubber-band); pick one if present.
+            for (auto* top : this->_topdieinstMap) {
+                if (top && top->isSelected()) {
+                    this->_selectedTopDie = top;
+                    this->enforceSingleTopDieSelection(top);
+                    break;
+                }
+            }
+        }
+        this->refreshConnectionFocus();
+    }
+
+    auto SchematicScene::endpointPins(schematic::NetItem* net) const -> QSet<schematic::PinItem*> {
+        QSet<schematic::PinItem*> pins;
+        if (!net) {
+            return pins;
+        }
+        if (net->beginPoint() && net->beginPoint()->connectedPin()) {
+            pins.insert(net->beginPoint()->connectedPin());
+        }
+        if (net->endPoint() && net->endPoint()->connectedPin()) {
+            pins.insert(net->endPoint()->connectedPin());
+        }
+        return pins;
+    }
+
+    auto SchematicScene::endpointTopDies(schematic::NetItem* net) const -> QSet<schematic::TopDieInstanceItem*> {
+        QSet<schematic::TopDieInstanceItem*> dies;
+        for (auto* pin : this->endpointPins(net)) {
+            if (pin && pin->isTopDieInstancePin()) {
+                if (auto* top = pin->parentTopDieInstance()) {
+                    dies.insert(top);
+                }
+            }
+        }
+        return dies;
+    }
+
+    auto SchematicScene::netsTouchingDie(schematic::TopDieInstanceItem* die) const -> QSet<schematic::NetItem*> {
+        QSet<schematic::NetItem*> nets;
+        if (!die) {
+            return nets;
+        }
+        for (auto* net : this->_nets) {
+            if (!net || net->isFloating()) {
+                continue;
+            }
+            for (auto* pin : this->endpointPins(net)) {
+                if (pin && pin->isTopDieInstancePin() && pin->parentTopDieInstance() == die) {
+                    nets.insert(net);
+                    break;
+                }
+            }
+        }
+        return nets;
+    }
+
+    auto SchematicScene::netsForPortGroup(schematic::PortGroupItem* group) const -> QSet<schematic::NetItem*> {
+        QSet<schematic::NetItem*> nets;
+        if (!group) {
+            return nets;
+        }
+        if (group->isExportGroup()) {
+            for (auto* eport : group->exportMembers()) {
+                if (!eport || !eport->pin()) {
+                    continue;
+                }
+                auto* pin = eport->pin();
+                for (auto* point : pin->connectedPoints()) {
+                    if (point && point->netItem() && !point->netItem()->isFloating()) {
+                        nets.unite(this->expandToBundleNets(point->netItem()));
+                    }
+                }
+            }
+            return nets;
+        }
+        for (auto* pin : group->pinMembers()) {
+            if (!pin) {
+                continue;
+            }
+            for (auto* point : pin->connectedPoints()) {
+                if (point && point->netItem() && !point->netItem()->isFloating()) {
+                    nets.unite(this->expandToBundleNets(point->netItem()));
+                }
+            }
+        }
+        return nets;
+    }
+
+    auto SchematicScene::expandToBundleNets(schematic::NetItem* seed) const -> QSet<schematic::NetItem*> {
+        QSet<schematic::NetItem*> out;
+        if (!seed || seed->isFloating()) {
+            return out;
+        }
+        out.insert(seed);
+
+        auto expandPinGroup = [&](schematic::PinItem* pin) {
+            if (!pin || !pin->isTopDieInstancePin()) {
+                return;
+            }
+            auto* top = pin->parentTopDieInstance();
+            if (!top || top->portGroups().isEmpty()) {
+                return;
+            }
+            for (auto* group : top->portGroups()) {
+                if (!group || !group->pinMembers().contains(pin)) {
+                    continue;
+                }
+                for (auto* member : group->pinMembers()) {
+                    if (!member) {
+                        continue;
+                    }
+                    for (auto* point : member->connectedPoints()) {
+                        if (point && point->netItem() && !point->netItem()->isFloating()) {
+                            out.insert(point->netItem());
+                        }
+                    }
+                }
+                break;
+            }
+        };
+
+        for (auto* pin : this->endpointPins(seed)) {
+            expandPinGroup(pin);
+        }
+        return out;
+    }
+
+    void SchematicScene::refreshConnectionFocus() {
+        if (this->_refreshingFocus) {
+            return;
+        }
+        this->_refreshingFocus = true;
+
+        // Priority: net/bundle focus > die focus > default.
+        // Hover temporarily overrides selected when both are set.
+        const QSet<schematic::NetItem*> focusNets =
+            !this->_hoverFocusNets.isEmpty() ? this->_hoverFocusNets : this->_selectedFocusNets;
+        schematic::TopDieInstanceItem* focusDie =
+            this->_hoverTopDie ? this->_hoverTopDie : this->_selectedTopDie;
+
+        const bool netFocus = !focusNets.isEmpty();
+        const bool dieFocus = !netFocus && focusDie != nullptr;
+
+        QSet<schematic::NetItem*> dieRelated;
+        if (dieFocus) {
+            dieRelated = this->netsTouchingDie(focusDie);
+        }
+
+        QSet<schematic::TopDieInstanceItem*> highlightDies;
+        QSet<schematic::PinItem*> highlightPins;
+        if (netFocus) {
+            for (auto* net : focusNets) {
+                highlightDies.unite(this->endpointTopDies(net));
+                highlightPins.unite(this->endpointPins(net));
+            }
+        } else if (dieFocus) {
+            highlightDies.insert(focusDie);
+            for (auto* net : dieRelated) {
+                highlightDies.unite(this->endpointTopDies(net));
+                highlightPins.unite(this->endpointPins(net));
+            }
+        }
+
+        for (auto* net : this->_nets) {
+            if (!net || net->isFloating()) {
+                continue;
+            }
+            if (netFocus) {
+                net->applyFocusRole(
+                    focusNets.contains(net)
+                        ? schematic::NetFocusRole::NetFocused
+                        : schematic::NetFocusRole::NetUnrelated
+                );
+            } else if (dieFocus) {
+                net->applyFocusRole(
+                    dieRelated.contains(net)
+                        ? schematic::NetFocusRole::DieRelated
+                        : schematic::NetFocusRole::DieUnrelated
+                );
+            } else {
+                net->applyFocusRole(schematic::NetFocusRole::Default);
+            }
+        }
+
+        for (auto* top : this->_topdieinstMap) {
+            if (top) {
+                top->setFocusBorder(highlightDies.contains(top));
+            }
+        }
+
+        // Force-show related pins (Ch.五 LOD override via Ch.七 focus).
+        for (auto* top : this->_topdieinstMap) {
+            if (!top) {
+                continue;
+            }
+            for (auto* pin : top->pins()) {
+                if (pin) {
+                    pin->setFocusRelated(highlightPins.contains(pin));
+                }
+            }
+        }
+        for (auto* eport : this->_exportMap) {
+            if (!eport || !eport->pin()) {
+                continue;
+            }
+            auto* pin = eport->pin();
+            pin->setFocusRelated(highlightPins.contains(pin));
+        }
+
+        this->_refreshingFocus = false;
     }
 
     void SchematicScene::mousePressEvent(QGraphicsSceneMouseEvent* event) {

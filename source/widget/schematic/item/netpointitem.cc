@@ -1,6 +1,7 @@
 #include "./netpointitem.h"
 #include "./netitem.h"
 #include "./pinitem.h"
+#include "widget/schematic/schematicscene.h"
 #include "qnamespace.h"
 #include "qobject.h"
 
@@ -70,12 +71,20 @@ namespace PR_tool::widget::schematic {
     }
 
     void NetPointItem::hoverEnterEvent(QGraphicsSceneHoverEvent* event) {
-        setPen(QPen(HOVER_COLOR, 3)); 
+        setPen(QPen(HOVER_COLOR, 3));
+        if (this->_netitem) {
+            if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+                sc->setHoverNet(this->_netitem);
+            }
+        }
         QGraphicsEllipseItem::hoverEnterEvent(event);
     }
 
     void NetPointItem::hoverLeaveEvent(QGraphicsSceneHoverEvent* event) {
         setPen(QPen(COLOR, 2));
+        if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+            sc->setHoverNet(nullptr);
+        }
         QGraphicsEllipseItem::hoverLeaveEvent(event);
     }
 

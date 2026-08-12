@@ -211,12 +211,29 @@ namespace PR_tool::widget::schematic {
             this->setSelected(true);
         }
 
+        if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+            if (this->_owner) {
+                // Keep die focus while over its port groups (nested hover leave on die).
+                sc->setHoverTopDie(this->_owner);
+            }
+            // Bundle net-focus when parent context allows (Ch.六 gate) or die already focused.
+            if (canSelect || (this->_owner && this->_owner->isSelected())) {
+                sc->setHoverPortGroup(this);
+            }
+        }
+
         QGraphicsItem::hoverEnterEvent(event);
     }
 
     void PortGroupItem::hoverLeaveEvent(QGraphicsSceneHoverEvent* event) {
         this->_hovered = false;
         this->update();
+        if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+            sc->setHoverPortGroup(nullptr);
+            if (this->_owner) {
+                sc->setHoverTopDie(nullptr);
+            }
+        }
         QGraphicsItem::hoverLeaveEvent(event);
     }
 

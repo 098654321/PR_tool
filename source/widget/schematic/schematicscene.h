@@ -56,6 +56,14 @@ namespace PR_tool::widget {
         void requestPortGroupSync(schematic::TopDieInstanceItem* item);
         void requestExportPortGroupSync();
 
+        /// Ch.七 connection focus (hover / select share visuals).
+        void setHoverTopDie(schematic::TopDieInstanceItem* die);
+        void setHoverPin(schematic::PinItem* pin);
+        void setHoverNet(schematic::NetItem* net);
+        void setHoverPortGroup(schematic::PortGroupItem* group);
+        void onTopDieSelectionChanged(schematic::TopDieInstanceItem* die, bool selected);
+        void refreshConnectionFocus();
+
     protected:
         void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override;
         void mousePressEvent(QGraphicsSceneMouseEvent* event) override;
@@ -63,6 +71,12 @@ namespace PR_tool::widget {
 
     private:
         void emitSelectionForItem(QGraphicsItem* item);
+        void enforceSingleTopDieSelection(schematic::TopDieInstanceItem* keep);
+        auto expandToBundleNets(schematic::NetItem* seed) const -> QSet<schematic::NetItem*>;
+        auto netsForPortGroup(schematic::PortGroupItem* group) const -> QSet<schematic::NetItem*>;
+        auto netsTouchingDie(schematic::TopDieInstanceItem* die) const -> QSet<schematic::NetItem*>;
+        auto endpointTopDies(schematic::NetItem* net) const -> QSet<schematic::TopDieInstanceItem*>;
+        auto endpointPins(schematic::NetItem* net) const -> QSet<schematic::PinItem*>;
 
     public:
         auto addExPort(circuit::ExternalPort*) -> schematic::ExternalPortItem*;
@@ -140,6 +154,13 @@ namespace PR_tool::widget {
         QSet<schematic::TopDieInstanceItem*> _pendingTopDieGroupSync {};
         bool _pendingExportGroupSync {false};
         bool _portGroupFlushScheduled {false};
+
+        // Ch.七 focus state (hover temporarily overrides selected when both set).
+        schematic::TopDieInstanceItem* _hoverTopDie {nullptr};
+        schematic::TopDieInstanceItem* _selectedTopDie {nullptr};
+        QSet<schematic::NetItem*> _hoverFocusNets {};
+        QSet<schematic::NetItem*> _selectedFocusNets {};
+        bool _refreshingFocus {false};
     };
 
 }

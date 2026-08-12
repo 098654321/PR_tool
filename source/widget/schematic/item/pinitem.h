@@ -95,6 +95,8 @@ namespace PR_tool::widget::schematic {
 
         /// Display-only hover style (also used when a connected net is hovered).
         void setHovered(bool hovered);
+        /// Ch.七: force-show when pin is on a focused / related net.
+        void setFocusRelated(bool related);
 
     public:
         auto parentExternalPort() const -> ExternalPortItem*;
@@ -104,7 +106,7 @@ namespace PR_tool::widget::schematic {
     private:
         /// View scale s = transform().m11(); 1.0 if no view yet.
         auto viewScale() const -> qreal;
-        /// Selected / hover (incl. net-hover via setHovered). Related-net focus: TODO Ch.七.
+        /// Selected / hover / related-net focus force-show (Ch.五 + Ch.七).
         auto shouldForceShowPin() const -> bool;
 
     private:
@@ -113,6 +115,7 @@ namespace PR_tool::widget::schematic {
 
         qreal _raduis {PIN_RADIUS};
         bool _hovered {false};
+        bool _focusRelated {false};
 
         QVector<NetPointItem*> _connectedNetPoints {};
     };

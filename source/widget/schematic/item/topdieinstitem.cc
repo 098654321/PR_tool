@@ -1,6 +1,7 @@
 #include "./topdieinstitem.h"
 #include "./pinitem.h"
 #include "./portgroupitem.h"
+#include "./netitem.h"
 #include "../schematicscene.h"
 #include "qchar.h"
 #include "qcolor.h"
@@ -14,6 +15,7 @@
 #include <QFont>
 #include <QFontMetricsF>
 #include <QGraphicsScene>
+#include <QGraphicsSceneHoverEvent>
 #include <QGraphicsView>
 #include <QPainter>
 #include <QStyleOptionGraphicsItem>
@@ -430,7 +432,12 @@ namespace PR_tool::widget::schematic {
         const QRectF headerRect {0., 0., this->_width, HEADER_HEIGHT};
         const QRectF bodyRect {0., HEADER_HEIGHT, this->_width, this->_height - HEADER_HEIGHT};
 
-        const QColor borderColor = QColor::fromRgb(80, 80, 80);
+        const QColor borderColor = this->_focusBorder
+            ? QColor::fromRgb(20, 20, 20)
+            : QColor::fromRgb(80, 80, 80);
+        const qreal borderWidth = this->_focusBorder
+            ? ConnectionFocusStyle::DIE_BORDER_FOCUS
+            : ConnectionFocusStyle::DIE_BORDER_DEFAULT;
 
         // Body (lighter) then header (more visible) — sharp corners only.
         painter->setPen(Qt::NoPen);
@@ -441,7 +448,7 @@ namespace PR_tool::widget::schematic {
         painter->drawRect(headerRect);
 
         painter->setBrush(Qt::NoBrush);
-        painter->setPen(QPen(borderColor, 1.5));
+        painter->setPen(QPen(borderColor, borderWidth));
         painter->drawRect(bounds);
         painter->drawLine(QPointF(0., HEADER_HEIGHT), QPointF(this->_width, HEADER_HEIGHT));
 
@@ -487,6 +494,37 @@ namespace PR_tool::widget::schematic {
             HEADER_HEIGHT
         };
         painter->drawText(nameRect, Qt::AlignVCenter | Qt::AlignLeft, nameLabel);
+    }
+
+    void TopDieInstanceItem::setFocusBorder(bool on) {
+        if (this->_focusBorder == on) {
+            return;
+        }
+        this->_focusBorder = on;
+        this->update();
+    }
+
+    void TopDieInstanceItem::hoverEnterEvent(QGraphicsSceneHoverEvent* event) {
+        if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+            sc->setHoverTopDie(this);
+        }
+        QGraphicsItem::hoverEnterEvent(event);
+    }
+
+    void TopDieInstanceItem::hoverLeaveEvent(QGraphicsSceneHoverEvent* event) {
+        if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+            sc->setHoverTopDie(nullptr);
+        }
+        QGraphicsItem::hoverLeaveEvent(event);
+    }
+
+    auto TopDieInstanceItem::itemChange(GraphicsItemChange change, const QVariant& value) -> QVariant {
+        if (change == QGraphicsItem::ItemSelectedHasChanged) {
+            if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+                sc->onTopDieSelectionChanged(this, value.toBool());
+            }
+        }
+        return GridItem::itemChange(change, value);
     }
 
     void TopDieInstanceItem::createPins(int n, qreal side_length, qreal x_offset, qreal y_offset, QVector<QString>::iterator& iter, PinSide side) {
