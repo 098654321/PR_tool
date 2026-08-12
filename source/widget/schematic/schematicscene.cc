@@ -151,23 +151,24 @@ namespace PR_tool::widget {
 
         // Modest spacing between instances (wires may cross bodies).
         constexpr int kSpacingGrids = 3;
-        auto spacing = kSpacingGrids * schematic::GridItem::GRID_SIZE;
+        constexpr qreal kInitialTopDieGapH = 8. * schematic::GridItem::GRID_SIZE; // 160
+        constexpr qreal kInitialTopDieGapV = 8. * schematic::GridItem::GRID_SIZE; // 160
 
         int cols = std::ceil(std::sqrt(this->_topdieinstMap.size()));
         if (cols < 1) {
             cols = 1;
         }
 
-        int startX = spacing;
-        int startY = spacing;
+        const qreal startX = kInitialTopDieGapH;
+        const qreal startY = kInitialTopDieGapV;
 
         auto i = 0;
         for (auto& topdieInstItems : this->_topdieinstMap) {
             int row = i / cols;
             int col = i % cols;
 
-            int x = startX + col * (topdieInstItems->width() + spacing);
-            int y = startY + row * (topdieInstItems->height() + spacing);
+            int x = startX + col * (topdieInstItems->width() + kInitialTopDieGapH);
+            int y = startY + row * (topdieInstItems->height() + kInitialTopDieGapV);
 
             topdieInstItems->setPos(x, y);
 

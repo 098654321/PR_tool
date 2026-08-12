@@ -34,6 +34,10 @@ namespace PR_tool::widget::schematic {
         // Above topdie bodies so hover works on segments that cross instances.
         this->setZValue(0.5);
 
+        // Ch.十二: junction ● follows default net opacity until focus refresh.
+        this->_beginPoint->applyNetVisual(ConnectionFocusStyle::DEFAULT_OPACITY, false);
+        this->_endPoint->applyNetVisual(ConnectionFocusStyle::DEFAULT_OPACITY, false);
+
         auto begin = beginPoint->scenePos();
         auto end = endPoint->scenePos();
 
@@ -71,6 +75,7 @@ namespace PR_tool::widget::schematic {
         this->_beginPoint->setNetItem(this);
         this->setAcceptHoverEvents(true);
         this->setZValue(0.5);
+        this->_beginPoint->applyNetVisual(1.0, true);
         this->setLine(this->_beginPoint->scenePos(), this->_beginPoint->scenePos());
     }
 
@@ -437,7 +442,8 @@ namespace PR_tool::widget::schematic {
         QColor color = this->_paintColor;
         color.setAlphaF(this->_paintOpacity);
         QPen pen(color, this->_paintWidth, this->_paintStyle);
-        pen.setCapStyle(Qt::RoundCap);
+        // FlatCap: mid-wire crossings stay a plain cross (Ch.十二), not a RoundCap blob.
+        pen.setCapStyle(Qt::FlatCap);
         pen.setJoinStyle(Qt::RoundJoin);
         painter->setPen(pen);
         painter->drawPath(this->_path);
@@ -500,6 +506,16 @@ namespace PR_tool::widget::schematic {
                 break;
         }
         this->_width = this->_paintWidth;
+
+        const bool focused = role == NetFocusRole::NetFocused
+            || role == NetFocusRole::DieRelated;
+        if (this->_beginPoint) {
+            this->_beginPoint->applyNetVisual(this->_paintOpacity, focused);
+        }
+        if (this->_endPoint) {
+            this->_endPoint->applyNetVisual(this->_paintOpacity, focused);
+        }
+
         this->update();
     }
 
@@ -527,6 +543,12 @@ namespace PR_tool::widget::schematic {
         this->_paintWidth = this->_width;
         this->_paintOpacity = ConnectionFocusStyle::DEFAULT_OPACITY;
         this->_paintStyle = Qt::SolidLine;
+        if (this->_beginPoint) {
+            this->_beginPoint->applyNetVisual(this->_paintOpacity, false);
+        }
+        if (this->_endPoint) {
+            this->_endPoint->applyNetVisual(this->_paintOpacity, false);
+        }
         this->update();
     }
 
