@@ -20,6 +20,9 @@
 #include <QMessageBox>
 #include <QGraphicsSceneMouseEvent>
 
+#include <algorithm>
+#include <cstddef>
+
 namespace PR_tool::widget {
 
     static_assert(AllUnique<
@@ -210,8 +213,19 @@ namespace PR_tool::widget {
         return item;
     }
 
+    namespace {
+        auto maxTopDiePinCount(circuit::BaseDie* basedie) -> std::size_t {
+            std::size_t maxPins = 0;
+            for (const auto& [name, topdie] : basedie->topdies()) {
+                (void)name;
+                maxPins = std::max(maxPins, topdie->pins_map().size());
+            }
+            return maxPins;
+        }
+    }
+
     auto SchematicScene::addTopDieInst(circuit::TopDieInstance* inst) -> schematic::TopDieInstanceItem* {
-        auto item = new schematic::TopDieInstanceItem{inst};
+        auto item = new schematic::TopDieInstanceItem{inst, maxTopDiePinCount(this->_basedie)};
         this->_topdieinstMap.insert(inst, item);
         this->addItem(item);
         return item;
