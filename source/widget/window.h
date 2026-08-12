@@ -24,6 +24,7 @@ class QPushButton;
 class QLabel;
 class QAction;
 class QActionGroup;
+class QMenu;
 
 namespace PR_tool::widget {
 
@@ -63,6 +64,11 @@ namespace PR_tool::widget {
         
         void executePlaceRoute();
         void generateControlBitAs();
+        void onPrimaryCta();
+        void editDesign();
+        void updateStageUi();
+        void switchToView(QWidget* page, QAction* action, const QString& tip);
+        void tryShortcutView(QWidget* page, QAction* action, const QString& tip, bool requiresResults);
 
         /// Write in-memory project into `destFolder` (JSON config set).
         /// When `copyStaticFrom` is set and differs from dest, copy static
@@ -74,13 +80,15 @@ namespace PR_tool::widget {
 
     private:
         auto hasConfigPath() -> bool;
-        void disableEdit();
+        void enterResultsStage();
+        void applyDesignEditability();
         void updateStatusLabel();
         auto currentPageName() const -> QString;
         auto currentGraphicsView() const -> GraphicsView*;
 
     private:
         QMenuBar* _menuBar {nullptr};
+        QMenu* _viewMenu {nullptr};
         QToolBar* _toolBar {nullptr};
         QStackedWidget* _stackedWidget {nullptr};
 
@@ -95,12 +103,16 @@ namespace PR_tool::widget {
         QAction* _view2DAction {nullptr};
         QAction* _view3DAction {nullptr};
         QAction* _settingsAction {nullptr};
+        QAction* _showNavigatorAction {nullptr};
+        QAction* _showInspectorAction {nullptr};
         QActionGroup* _pageActionGroup {nullptr};
 
         QAction* _loadAction {nullptr};
         QAction* _placeRouteAction {nullptr};
+        QAction* _primaryCtaAction {nullptr};
         QAction* _generateControlBitAction {nullptr};
 
+        QLabel* _stageLabel {nullptr};
         QLabel* _statusLabel {nullptr};
 
     private:
@@ -113,4 +125,3 @@ namespace PR_tool::widget {
     };
 
 }
-

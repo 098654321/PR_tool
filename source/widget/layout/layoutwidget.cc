@@ -61,4 +61,14 @@ namespace PR_tool::widget {
         return this->_view;
     }
 
+    void LayoutWidget::setInspectorVisible(bool visible) {
+        if (this->_infoWidget != nullptr) {
+            this->_infoWidget->setVisible(visible);
+        }
+    }
+
+    auto LayoutWidget::isInspectorVisible() const -> bool {
+        return this->_infoWidget != nullptr && this->_infoWidget->isVisible();
+    }
+
 }

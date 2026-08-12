@@ -48,6 +48,26 @@ namespace PR_tool::widget {
         return this->_view;
     }
 
+    void SchematicWidget::setNavigatorVisible(bool visible) {
+        if (this->_libWidget != nullptr) {
+            this->_libWidget->setVisible(visible);
+        }
+    }
+
+    void SchematicWidget::setInspectorVisible(bool visible) {
+        if (this->_infoWidget != nullptr) {
+            this->_infoWidget->setVisible(visible);
+        }
+    }
+
+    auto SchematicWidget::isNavigatorVisible() const -> bool {
+        return this->_libWidget != nullptr && this->_libWidget->isVisible();
+    }
+
+    auto SchematicWidget::isInspectorVisible() const -> bool {
+        return this->_infoWidget != nullptr && this->_infoWidget->isVisible();
+    }
+
     void SchematicWidget::initTopdieLibWidget() {
         this->_libWidget = new SchematicLibWidget {this->_basedie, this->_splitter};
         this->_libWidget->setFixedWidth(200);

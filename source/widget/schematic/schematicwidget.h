@@ -38,6 +38,11 @@ namespace PR_tool::widget {
         /// Schematic main splitter (lib | view | info) for geometry persistence.
         auto splitter() const -> QSplitter* { return this->_splitter; }
 
+        void setNavigatorVisible(bool visible);
+        void setInspectorVisible(bool visible);
+        auto isNavigatorVisible() const -> bool;
+        auto isInspectorVisible() const -> bool;
+
     signals:
         // MARK: More detail infomation
         void layoutChanged();

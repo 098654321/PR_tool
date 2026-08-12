@@ -44,6 +44,8 @@
 #include <QStackedWidget>
 #include <QToolButton>
 #include <QKeySequence>
+#include <QShortcut>
+#include <QMenu>
 #include <QMenuBar>
 #include <QFileDialog>
 #include <QMessageBox>
@@ -77,6 +79,8 @@ namespace PR_tool::widget {
         constexpr auto kGeometryKey = "geometry";
         constexpr auto kWindowStateKey = "windowState";
         constexpr auto kSchematicSplitterKey = "schematicSplitter";
+        constexpr auto kShowNavigatorKey = "showNavigator";
+        constexpr auto kShowInspectorKey = "showInspector";
     }
 
     void Window::restoreWindowSettings() {
@@ -103,6 +107,22 @@ namespace PR_tool::widget {
                 }
             }
         }
+
+        const bool showNavigator = settings.value(kShowNavigatorKey, true).toBool();
+        const bool showInspector = settings.value(kShowInspectorKey, true).toBool();
+        if (this->_showNavigatorAction != nullptr) {
+            this->_showNavigatorAction->setChecked(showNavigator);
+        }
+        if (this->_showInspectorAction != nullptr) {
+            this->_showInspectorAction->setChecked(showInspector);
+        }
+        if (this->_schematicWidget != nullptr) {
+            this->_schematicWidget->setNavigatorVisible(showNavigator);
+            this->_schematicWidget->setInspectorVisible(showInspector);
+        }
+        if (this->_layoutWidget != nullptr) {
+            this->_layoutWidget->setInspectorVisible(showInspector);
+        }
     }
 
     void Window::saveWindowSettings() const {
@@ -114,6 +134,13 @@ namespace PR_tool::widget {
             if (auto* splitter = this->_schematicWidget->splitter()) {
                 settings.setValue(kSchematicSplitterKey, splitter->saveState());
             }
+        }
+
+        if (this->_showNavigatorAction != nullptr) {
+            settings.setValue(kShowNavigatorKey, this->_showNavigatorAction->isChecked());
+        }
+        if (this->_showInspectorAction != nullptr) {
+            settings.setValue(kShowInspectorKey, this->_showInspectorAction->isChecked());
         }
     }
 
@@ -147,6 +174,21 @@ namespace PR_tool::widget {
         auto saveAsAction= new QAction("Save as", fileMenu);
         fileMenu->addAction(saveAsAction);
 
+        fileMenu->addSeparator();
+
+        // Place & Route (same command as Design CTA; keep shortcut)
+        this->_placeRouteAction = new QAction(QStringLiteral("Place & Route"), fileMenu);
+        this->_placeRouteAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
+        this->_placeRouteAction->setStatusTip(QStringLiteral("Run place and route"));
+        fileMenu->addAction(this->_placeRouteAction);
+
+        // Export Controlbits (Results only)
+        this->_generateControlBitAction = new QAction(QStringLiteral("Export Controlbits"), fileMenu);
+        this->_generateControlBitAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
+        this->_generateControlBitAction->setStatusTip(QStringLiteral("Export controlbits to output directory"));
+        this->_generateControlBitAction->setEnabled(false);
+        fileMenu->addAction(this->_generateControlBitAction);
+
         fileMenu->addSeparator(); 
 
         // Exit
@@ -158,27 +200,79 @@ namespace PR_tool::widget {
         connect(this->_loadAction, &QAction::triggered, this, &Window::loadConfig);
         connect(saveAction, &QAction::triggered, this, &Window::saveConfig);
         connect(saveAsAction, &QAction::triggered, this, &Window::saveConfigAs);
+        connect(this->_placeRouteAction, &QAction::triggered, this, &Window::executePlaceRoute);
+        connect(this->_generateControlBitAction, &QAction::triggered, this, &Window::generateControlBitAs);
         connect(exitAction, &QAction::triggered, this, &Window::close);
 
         // ====================== View ======================
-        auto viewMenu= new QMenu("View", this->_menuBar);
-        auto themesAction = new QAction{"Themes", viewMenu};
-        themesAction->setEnabled(false);
-        themesAction->setToolTip("Not available yet");
-        viewMenu->addAction(themesAction);
+        this->_viewMenu = new QMenu("View", this->_menuBar);
 
-        viewMenu->addSeparator();
+        this->_pageActionGroup = new QActionGroup{this};
+        this->_pageActionGroup->setExclusive(true);
 
-        auto fitInViewAction = new QAction{"Fit in View", viewMenu};
+        this->_schematicAction = new QAction(QStringLiteral("Schematic"), this->_viewMenu);
+        this->_schematicAction->setCheckable(true);
+        this->_schematicAction->setStatusTip(QStringLiteral("Switch to Schematic view"));
+        this->_pageActionGroup->addAction(this->_schematicAction);
+        this->_viewMenu->addAction(this->_schematicAction);
+
+        this->_layoutAction = new QAction(QStringLiteral("Layout"), this->_viewMenu);
+        this->_layoutAction->setCheckable(true);
+        this->_layoutAction->setStatusTip(QStringLiteral("Switch to Layout view"));
+        this->_pageActionGroup->addAction(this->_layoutAction);
+        this->_viewMenu->addAction(this->_layoutAction);
+
+        this->_view2DAction = new QAction(QStringLiteral("2D"), this->_viewMenu);
+        this->_view2DAction->setCheckable(true);
+        this->_view2DAction->setStatusTip(QStringLiteral("Switch to 2D view"));
+        this->_pageActionGroup->addAction(this->_view2DAction);
+        this->_viewMenu->addAction(this->_view2DAction);
+
+        this->_view3DAction = new QAction(QStringLiteral("3D"), this->_viewMenu);
+        this->_view3DAction->setCheckable(true);
+        this->_view3DAction->setStatusTip(QStringLiteral("Switch to 3D view"));
+        this->_pageActionGroup->addAction(this->_view3DAction);
+        this->_viewMenu->addAction(this->_view3DAction);
+
+        this->_schematicAction->setChecked(true);
+
+        this->_viewMenu->addSeparator();
+
+        this->_showNavigatorAction = new QAction(QStringLiteral("Show Navigator"), this->_viewMenu);
+        this->_showNavigatorAction->setCheckable(true);
+        this->_showNavigatorAction->setChecked(true);
+        this->_showNavigatorAction->setStatusTip(QStringLiteral("Show or hide the left navigator panel"));
+        this->_viewMenu->addAction(this->_showNavigatorAction);
+
+        this->_showInspectorAction = new QAction(QStringLiteral("Show Inspector"), this->_viewMenu);
+        this->_showInspectorAction->setCheckable(true);
+        this->_showInspectorAction->setChecked(true);
+        this->_showInspectorAction->setStatusTip(QStringLiteral("Show or hide the right inspector panel"));
+        this->_viewMenu->addAction(this->_showInspectorAction);
+
+        this->_viewMenu->addSeparator();
+
+        auto fitInViewAction = new QAction{QStringLiteral("Fit in View"), this->_viewMenu};
         fitInViewAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
-        fitInViewAction->setStatusTip("Fit current canvas content into the viewport");
-        viewMenu->addAction(fitInViewAction);
+        fitInViewAction->setStatusTip(QStringLiteral("Fit current canvas content into the viewport"));
+        this->_viewMenu->addAction(fitInViewAction);
 
-        auto resetZoomAction = new QAction{"Reset Zoom", viewMenu};
-        resetZoomAction->setStatusTip("Restore default zoom for the current canvas");
-        viewMenu->addAction(resetZoomAction);
+        auto resetZoomAction = new QAction{QStringLiteral("Reset Zoom"), this->_viewMenu};
+        resetZoomAction->setStatusTip(QStringLiteral("Restore default zoom for the current canvas"));
+        this->_viewMenu->addAction(resetZoomAction);
 
-        this->_menuBar->addMenu(viewMenu);
+        this->_viewMenu->addSeparator();
+
+        auto themesAction = new QAction{QStringLiteral("Themes"), this->_viewMenu};
+        themesAction->setEnabled(false);
+        themesAction->setToolTip(QStringLiteral("Not available yet"));
+        this->_viewMenu->addAction(themesAction);
+
+        this->_settingsAction = new QAction(QStringLiteral("Settings"), this->_viewMenu);
+        this->_settingsAction->setStatusTip(QStringLiteral("Open Settings"));
+        this->_viewMenu->addAction(this->_settingsAction);
+
+        this->_menuBar->addMenu(this->_viewMenu);
 
         connect(fitInViewAction, &QAction::triggered, this, [this]() {
             if (auto* view = this->currentGraphicsView()) {
@@ -212,115 +306,117 @@ namespace PR_tool::widget {
     }
 
     void Window::createToolBar() {
-        this->_toolBar = new QToolBar(this);
-        this->_toolBar->setOrientation(Qt::Vertical);
+        this->_toolBar = new QToolBar(QStringLiteral("Main"), this);
+        this->_toolBar->setObjectName(QStringLiteral("MainChromeToolBar"));
         this->_toolBar->setMovable(false);
-        this->_toolBar->setMinimumWidth(50);
-        this->_toolBar->setIconSize(QSize(35, 35));
-        this->_toolBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
-        this->addToolBar(Qt::LeftToolBarArea, this->_toolBar);
+        this->_toolBar->setFloatable(false);
+        this->_toolBar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        this->addToolBar(Qt::TopToolBarArea, this->_toolBar);
 
-        this->_pageActionGroup = new QActionGroup{this};
-        this->_pageActionGroup->setExclusive(true);
-
-        // Page buttons (icon-only; text/tooltip for recognition; checkable for wayfinding)
-        this->_schematicAction = this->_toolBar->addAction(QIcon(":/image/image/icon/chip.png"), "Schematic");
-        this->_schematicAction->setToolTip("Schematic");
-        this->_schematicAction->setStatusTip("Switch to Schematic view");
-        this->_schematicAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
-        this->_schematicAction->setCheckable(true);
-        this->_pageActionGroup->addAction(this->_schematicAction);
-
-        this->_layoutAction = this->_toolBar->addAction(QIcon(":/image/image/icon/layout.png"), "Layout");
-        this->_layoutAction->setToolTip("Layout");
-        this->_layoutAction->setStatusTip("Switch to Layout view");
-        this->_layoutAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_2));
-        this->_layoutAction->setCheckable(true);
-        this->_pageActionGroup->addAction(this->_layoutAction);
-
-        this->_view2DAction = this->_toolBar->addAction(QIcon(":/image/image/icon/view2d.png"), "View 2D");
-        this->_view2DAction->setToolTip("View 2D");
-        this->_view2DAction->setStatusTip("Switch to 2D view");
-        this->_view2DAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_3));
-        this->_view2DAction->setCheckable(true);
-        this->_pageActionGroup->addAction(this->_view2DAction);
-
-        this->_view3DAction = this->_toolBar->addAction(QIcon(":/image/image/icon/view3d.png"), "View 3D");
-        this->_view3DAction->setToolTip("View 3D");
-        this->_view3DAction->setStatusTip("Switch to 3D view");
-        this->_view3DAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_4));
-        this->_view3DAction->setCheckable(true);
-        this->_pageActionGroup->addAction(this->_view3DAction);
-
-        this->_schematicAction->setChecked(true);
-
-        connect(this->_schematicAction, &QAction::triggered, [this]() {
-            this->_stackedWidget->setCurrentWidget(this->_schematicWidget);
-            this->updateStatusLabel();
-            this->statusBar()->showMessage(QStringLiteral(
-                "Ctrl+Wheel zoom · Middle-drag pan · Right-click / Esc cancel placement"));
-        });
-        connect(this->_layoutAction, &QAction::triggered, [this]() {
-            this->_stackedWidget->setCurrentWidget(this->_layoutWidget);
-            this->updateStatusLabel();
-            this->statusBar()->showMessage(QStringLiteral(
-                "Ctrl+Wheel zoom · Middle-drag pan"));
-        });
-        connect(this->_view2DAction, &QAction::triggered, [this] () {
-            this->_stackedWidget->setCurrentWidget(this->_view2DWidget);
-            this->updateStatusLabel();
-            this->statusBar()->showMessage(QStringLiteral(
-                "Ctrl+Wheel zoom · Middle-drag pan"));
-        });
-        connect(this->_view3DAction, &QAction::triggered, [this] () {
-            this->_stackedWidget->setCurrentWidget(this->_view3DWidget);
-            this->updateStatusLabel();
-            this->statusBar()->clearMessage();
-        });
+        // Segmented view switcher (same actions as View menu)
+        this->_toolBar->addAction(this->_schematicAction);
+        this->_toolBar->addAction(this->_layoutAction);
+        this->_toolBar->addAction(this->_view2DAction);
+        this->_toolBar->addAction(this->_view3DAction);
 
         this->_toolBar->addSeparator();
 
-        QWidget *stretch = new QWidget(this->_toolBar);
-        stretch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        QWidget* stretch = new QWidget(this->_toolBar);
+        stretch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         this->_toolBar->addWidget(stretch);
 
-        this->_placeRouteAction = this->_toolBar->addAction(QIcon{":/image/image/icon/execute.png"}, "Place & Route");
-        this->_placeRouteAction->setToolTip("Place & Route");
-        this->_placeRouteAction->setStatusTip("Run place and route");
-        this->_placeRouteAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
-        connect(this->_placeRouteAction, &QAction::triggered, this, &Window::executePlaceRoute);
+        // Single primary CTA slot: Run P&R ↔ Edit Design
+        this->_primaryCtaAction = this->_toolBar->addAction(QStringLiteral("Run P&R"));
+        this->_primaryCtaAction->setToolTip(QStringLiteral("Run Place & Route"));
+        this->_primaryCtaAction->setStatusTip(QStringLiteral("Run place and route"));
+        connect(this->_primaryCtaAction, &QAction::triggered, this, &Window::onPrimaryCta);
 
-        this->_generateControlBitAction = this->_toolBar->addAction(QIcon{":/image/image/icon/save.png"}, "Export Controlbits");
-        this->_generateControlBitAction->setToolTip("Export Controlbits");
-        this->_generateControlBitAction->setStatusTip("Export controlbits to output directory");
-        this->_generateControlBitAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
-        this->_generateControlBitAction->setEnabled(false);
-        connect(this->_generateControlBitAction, &QAction::triggered, this, &Window::generateControlBitAs);
+        this->_toolBar->addAction(this->_generateControlBitAction);
 
-        this->_toolBar->addSeparator();
+        connect(this->_schematicAction, &QAction::triggered, this, [this]() {
+            this->switchToView(
+                this->_schematicWidget,
+                this->_schematicAction,
+                QStringLiteral(
+                    "Ctrl+Wheel zoom · Middle-drag pan · Right-click / Esc cancel placement"));
+        });
+        connect(this->_layoutAction, &QAction::triggered, this, [this]() {
+            this->switchToView(
+                this->_layoutWidget,
+                this->_layoutAction,
+                QStringLiteral("Ctrl+Wheel zoom · Middle-drag pan"));
+        });
+        connect(this->_view2DAction, &QAction::triggered, this, [this]() {
+            this->switchToView(
+                this->_view2DWidget,
+                this->_view2DAction,
+                QStringLiteral("Ctrl+Wheel zoom · Middle-drag pan"));
+        });
+        connect(this->_view3DAction, &QAction::triggered, this, [this]() {
+            this->switchToView(this->_view3DWidget, this->_view3DAction, QString{});
+        });
 
-        this->_settingsAction = this->_toolBar->addAction(QIcon{":/image/image/icon/setting.png"}, "Settings");
-        this->_settingsAction->setToolTip("Settings");
-        this->_settingsAction->setStatusTip("Open Settings");
-        this->_settingsAction->setCheckable(true);
-        this->_pageActionGroup->addAction(this->_settingsAction);
-        connect(this->_settingsAction, &QAction::triggered, [this] () {
+        connect(this->_settingsAction, &QAction::triggered, this, [this]() {
             this->_stackedWidget->setCurrentWidget(this->_settingWidget);
             this->updateStatusLabel();
             this->statusBar()->clearMessage();
         });
 
-        // Accessible names live on the icon-only tool buttons (QAction has no
-        // setAccessibleName in this Qt build).
-        for (QAction *action : {
+        connect(this->_showNavigatorAction, &QAction::toggled, this, [this](bool visible) {
+            if (this->_schematicWidget != nullptr) {
+                this->_schematicWidget->setNavigatorVisible(visible);
+            }
+        });
+        connect(this->_showInspectorAction, &QAction::toggled, this, [this](bool visible) {
+            if (this->_schematicWidget != nullptr) {
+                this->_schematicWidget->setInspectorVisible(visible);
+            }
+            if (this->_layoutWidget != nullptr) {
+                this->_layoutWidget->setInspectorVisible(visible);
+            }
+        });
+
+        // Ctrl+1..4 always active: locked views toast instead of switching.
+        auto* shortcut1 = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_1), this);
+        connect(shortcut1, &QShortcut::activated, this, [this]() {
+            this->tryShortcutView(
+                this->_schematicWidget,
+                this->_schematicAction,
+                QStringLiteral(
+                    "Ctrl+Wheel zoom · Middle-drag pan · Right-click / Esc cancel placement"),
+                false);
+        });
+        auto* shortcut2 = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_2), this);
+        connect(shortcut2, &QShortcut::activated, this, [this]() {
+            this->tryShortcutView(
+                this->_layoutWidget,
+                this->_layoutAction,
+                QStringLiteral("Ctrl+Wheel zoom · Middle-drag pan"),
+                false);
+        });
+        auto* shortcut3 = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_3), this);
+        connect(shortcut3, &QShortcut::activated, this, [this]() {
+            this->tryShortcutView(
+                this->_view2DWidget,
+                this->_view2DAction,
+                QStringLiteral("Ctrl+Wheel zoom · Middle-drag pan"),
+                true);
+        });
+        auto* shortcut4 = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_4), this);
+        connect(shortcut4, &QShortcut::activated, this, [this]() {
+            this->tryShortcutView(this->_view3DWidget, this->_view3DAction, QString{}, true);
+        });
+
+        for (QAction* action : {
                  this->_schematicAction, this->_layoutAction, this->_view2DAction,
-                 this->_view3DAction, this->_placeRouteAction, this->_generateControlBitAction,
-                 this->_settingsAction}) {
-            if (auto *button = qobject_cast<QToolButton *>(this->_toolBar->widgetForAction(action))) {
+                 this->_view3DAction, this->_primaryCtaAction, this->_generateControlBitAction}) {
+            if (auto* button = qobject_cast<QToolButton*>(this->_toolBar->widgetForAction(action))) {
                 button->setAccessibleName(action->text());
                 button->setAccessibleDescription(action->statusTip());
             }
         }
+
+        this->updateStageUi();
     }
 
     void Window::createCentralWidget() {
@@ -351,6 +447,10 @@ namespace PR_tool::widget {
     void Window::createStatusBar() {
         auto statusBar = this->statusBar();
 
+        this->_stageLabel = new QLabel{this};
+        this->_stageLabel->setMinimumWidth(120);
+        statusBar->addWidget(this->_stageLabel);
+
         this->_statusLabel = new QLabel{this};
         this->_statusLabel->setAlignment(Qt::AlignCenter);
         this->_statusLabel->setMinimumWidth(200);
@@ -366,13 +466,12 @@ namespace PR_tool::widget {
 
     void Window::loadConfig() {
         if (this->_finishPR) {
-            QMessageBox::critical(
+            QMessageBox::information(
                 this,
                 QStringLiteral("Load Config"),
                 QStringLiteral(
-                    "This session is locked after Place & Route.\n"
-                    "Loading a new config is disabled.\n\n"
-                    "Restart the application to begin a new session.")
+                    "Results stage is active.\n"
+                    "Use Edit Design to discard routing results before loading a new config.")
             );
             return;
         }
@@ -785,7 +884,7 @@ namespace PR_tool::widget {
             "\nNote: GUI routes with the current Layout placement only "
             "(no automatic placer).\n"
             "Router: maze (mode 0). SAT/router picker not in GUI this phase.\n"
-            "Editing will be locked after a successful run.");
+            "On success the app enters Results stage (Edit Design to return).");
 
         const auto answer = QMessageBox::question(
             this,
@@ -858,21 +957,17 @@ namespace PR_tool::widget {
         this->_view3DWidget->reload();
         this->_view3DWidget->displayRoutingResult();
 
-        this->_finishPR = true;
-        this->disableEdit();
-
-        assert(this->_generateControlBitAction != nullptr);
-        this->_generateControlBitAction->setEnabled(true);
-        this->_placeRouteAction->setEnabled(false);
+        this->enterResultsStage();
 
         QMessageBox::information(
             this,
             QStringLiteral("Place & Route Complete"),
             QStringLiteral(
-                "Schematic and layout editing are now locked for this session.\n"
-                "View 2D / View 3D remain available for viewing results (view-only).\n"
-                "File → Load is disabled until you restart the application.\n\n"
-                "Export Controlbits is enabled."));
+                "Entered Results stage.\n"
+                "Schematic and Layout are read-only lookback.\n"
+                "2D / 3D are unlocked for viewing results.\n"
+                "Export Controlbits is enabled.\n\n"
+                "Use Edit Design to discard results and resume editing."));
     }
     QMESSAGEBOX_REPORT_EXCEPTION("Execute Place & Routing")
 
@@ -914,30 +1009,179 @@ namespace PR_tool::widget {
         return this->_configPath.has_value();
     }
 
-    void Window::disableEdit() {
-        // Keep View2D / View3D / Settings enterable for result viewing.
-        this->_schematicWidget->setEnabled(false);
-        this->_layoutWidget->setEnabled(false);
+    void Window::onPrimaryCta() {
+        if (this->_finishPR) {
+            this->editDesign();
+        } else {
+            this->executePlaceRoute();
+        }
+    }
 
-        if (this->_loadAction != nullptr) {
-            this->_loadAction->setEnabled(false);
-            this->_loadAction->setToolTip(
-                QStringLiteral("Disabled after P&R — restart the application to load a new config"));
+    void Window::editDesign() {
+        const auto reply = QMessageBox::question(
+            this,
+            QStringLiteral("Edit Design"),
+            QStringLiteral(
+                "Return to Design stage?\n\n"
+                "Current routing results will be discarded for editing purposes.\n"
+                "2D / 3D will be locked again until Place & Route succeeds."),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No
+        );
+        if (reply != QMessageBox::Yes) {
+            return;
         }
 
-        // View3D COB register edit is no longer allowed after P&R.
-        this->_view3DWidget->setCobRegisterEditEnabled(false);
+        this->_finishPR = false;
 
+        // If looking at result views, return to Schematic for editing.
+        if (this->_stackedWidget != nullptr) {
+            const auto* current = this->_stackedWidget->currentWidget();
+            if (current == this->_view2DWidget || current == this->_view3DWidget) {
+                this->switchToView(
+                    this->_schematicWidget,
+                    this->_schematicAction,
+                    QStringLiteral(
+                        "Ctrl+Wheel zoom · Middle-drag pan · Right-click / Esc cancel placement"));
+            }
+        }
+
+        this->applyDesignEditability();
+        this->updateStageUi();
         this->updateStatusLabel();
 
-        const auto suffix = QStringLiteral(" — read-only after P&R");
+        this->statusBar()->showMessage(
+            QStringLiteral("Returned to Design — routing results discarded for editing"),
+            8000);
+    }
+
+    void Window::enterResultsStage() {
+        this->_finishPR = true;
+        this->applyDesignEditability();
+        this->updateStageUi();
+        this->updateStatusLabel();
+    }
+
+    void Window::applyDesignEditability() {
+        const bool results = this->_finishPR;
+
+        // Results: Sch/Layout read-only lookback; Design: editable again.
+        if (this->_schematicWidget != nullptr) {
+            this->_schematicWidget->setEnabled(!results);
+        }
+        if (this->_layoutWidget != nullptr) {
+            this->_layoutWidget->setEnabled(!results);
+        }
+
+        if (this->_loadAction != nullptr) {
+            this->_loadAction->setEnabled(!results);
+            this->_loadAction->setToolTip(
+                results
+                    ? QStringLiteral("Disabled in Results — use Edit Design first")
+                    : QString{});
+        }
+
+        if (this->_view3DWidget != nullptr) {
+            this->_view3DWidget->setCobRegisterEditEnabled(!results);
+        }
+
+        constexpr auto kReadOnlySuffix = " — Results (read-only lookback)";
         auto title = this->windowTitle();
         if (title.isEmpty()) {
             title = QStringLiteral("PR_tool");
         }
-        if (!title.endsWith(suffix)) {
-            this->setWindowTitle(title + suffix);
+        if (title.endsWith(QLatin1String(kReadOnlySuffix))) {
+            title.chop(static_cast<int>(sizeof(kReadOnlySuffix) - 1));
         }
+        // Also strip the older permanent-lock suffix if present.
+        constexpr auto kLegacySuffix = " — read-only after P&R";
+        if (title.endsWith(QLatin1String(kLegacySuffix))) {
+            title.chop(static_cast<int>(sizeof(kLegacySuffix) - 1));
+        }
+        if (results) {
+            this->setWindowTitle(title + QLatin1String(kReadOnlySuffix));
+        } else {
+            this->setWindowTitle(title);
+        }
+    }
+
+    void Window::updateStageUi() {
+        const bool results = this->_finishPR;
+
+        if (this->_stageLabel != nullptr) {
+            this->_stageLabel->setText(
+                results ? QStringLiteral("Stage: Results")
+                        : QStringLiteral("Stage: Design"));
+        }
+
+        if (this->_view2DAction != nullptr) {
+            this->_view2DAction->setEnabled(results);
+            this->_view2DAction->setText(
+                results ? QStringLiteral("2D") : QStringLiteral("2D 🔒"));
+            this->_view2DAction->setToolTip(
+                results ? QStringLiteral("2D")
+                        : QStringLiteral("Locked until Place & Route succeeds"));
+        }
+        if (this->_view3DAction != nullptr) {
+            this->_view3DAction->setEnabled(results);
+            this->_view3DAction->setText(
+                results ? QStringLiteral("3D") : QStringLiteral("3D 🔒"));
+            this->_view3DAction->setToolTip(
+                results ? QStringLiteral("3D")
+                        : QStringLiteral("Locked until Place & Route succeeds"));
+        }
+
+        if (this->_placeRouteAction != nullptr) {
+            this->_placeRouteAction->setEnabled(!results);
+        }
+        if (this->_generateControlBitAction != nullptr) {
+            this->_generateControlBitAction->setEnabled(results);
+        }
+
+        if (this->_primaryCtaAction != nullptr) {
+            if (results) {
+                this->_primaryCtaAction->setText(QStringLiteral("Edit Design"));
+                this->_primaryCtaAction->setToolTip(
+                    QStringLiteral("Discard routing results and resume design editing"));
+                this->_primaryCtaAction->setStatusTip(
+                    QStringLiteral("Return to Design stage (discards routing results)"));
+            } else {
+                this->_primaryCtaAction->setText(QStringLiteral("Run P&R"));
+                this->_primaryCtaAction->setToolTip(QStringLiteral("Run Place & Route"));
+                this->_primaryCtaAction->setStatusTip(QStringLiteral("Run place and route"));
+            }
+        }
+    }
+
+    void Window::switchToView(QWidget* page, QAction* action, const QString& tip) {
+        if (this->_stackedWidget == nullptr || page == nullptr) {
+            return;
+        }
+        this->_stackedWidget->setCurrentWidget(page);
+        if (action != nullptr) {
+            action->setChecked(true);
+        }
+        this->updateStatusLabel();
+        if (tip.isEmpty()) {
+            this->statusBar()->clearMessage();
+        } else {
+            this->statusBar()->showMessage(tip);
+        }
+    }
+
+    void Window::tryShortcutView(
+        QWidget* page,
+        QAction* action,
+        const QString& tip,
+        bool requiresResults
+    ) {
+        if (requiresResults && !this->_finishPR) {
+            this->statusBar()->showMessage(
+                QStringLiteral("View locked until Place & Route succeeds"),
+                5000);
+            return;
+        }
+        this->switchToView(page, action, tip);
     }
 
     auto Window::currentPageName() const -> QString {
@@ -949,10 +1193,10 @@ namespace PR_tool::widget {
             return QStringLiteral("Layout");
         }
         if (current == this->_view2DWidget) {
-            return QStringLiteral("View 2D");
+            return QStringLiteral("2D");
         }
         if (current == this->_view3DWidget) {
-            return QStringLiteral("View 3D");
+            return QStringLiteral("3D");
         }
         if (current == this->_settingWidget) {
             return QStringLiteral("Settings");
@@ -982,20 +1226,18 @@ namespace PR_tool::widget {
             return;
         }
 
+        if (this->_stageLabel != nullptr) {
+            this->_stageLabel->setText(
+                this->_finishPR ? QStringLiteral("Stage: Results")
+                                : QStringLiteral("Stage: Design"));
+        }
+
         const auto path = this->hasConfigPath()
             ? QString::fromStdString(this->_configPath->string())
             : QStringLiteral("unsaved");
         const auto page = this->currentPageName();
 
-        if (this->_finishPR) {
-            // Schematic/Layout locked; 2D/3D remain view-only for results.
-            this->_statusLabel->setText(
-                QStringLiteral("Editing locked (2D/3D view-only) | %1 | %2")
-                    .arg(page, path));
-        } else {
-            this->_statusLabel->setText(
-                QStringLiteral("%1 | %2").arg(page, path));
-        }
+        this->_statusLabel->setText(QStringLiteral("%1 | %2").arg(page, path));
     }
 
     Window::~Window() {}

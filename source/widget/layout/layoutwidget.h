@@ -32,6 +32,11 @@ namespace PR_tool::widget {
         void reload();
         auto graphicsView() const -> GraphicsView*;
 
+        auto splitter() const -> QSplitter* { return this->_splitter; }
+
+        void setInspectorVisible(bool visible);
+        auto isInspectorVisible() const -> bool;
+
     signals:
         /// Emitted after layout placement changes (e.g. TOB drag/swap).
         void layoutChanged();
