@@ -5,6 +5,7 @@
 #include "./item/pinitem.h"
 #include "./item/exportitem.h"
 #include "./item/topdieinstitem.h"
+#include "./item/portgroupitem.h"
 #include "./item/griditem.h"
 #include "./item/sourceportitem.h"
 
@@ -19,9 +20,14 @@
 #include <debug/debug.hh>
 #include <QMessageBox>
 #include <QGraphicsSceneMouseEvent>
+#include <QTimer>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <limits>
+#include <optional>
+#include <vector>
 
 namespace PR_tool::widget {
 
@@ -31,7 +37,9 @@ namespace PR_tool::widget {
         (int)schematic::TopDieInstanceItem::Type,
         (int)schematic::NetPointItem::Type,
         (int)schematic::ExternalPortItem::Type,
-        (int)schematic::SourcePortItem::Type
+        (int)schematic::SourcePortItem::Type,
+        (int)schematic::PortGroupItem::Type,
+        (int)schematic::ExportPortGroupHost::Type
     >::value);
 
     SchematicScene::SchematicScene(circuit::BaseDie* basedie, hardware::Interposer* interposer) :
@@ -53,15 +61,66 @@ namespace PR_tool::widget {
         this->_floatingNet = nullptr;
         this->_floatingTopdDieInst = nullptr;
         this->_floatingExPort = nullptr;
+        this->_exportGroupHost = nullptr;
+        this->_pendingTopDieGroupSync.clear();
+        this->_pendingExportGroupSync = false;
+        this->_portGroupFlushScheduled = false;
 
         this->clear();
 
         this->addSceneItems();
     }
 
+    void SchematicScene::requestPortGroupSync(schematic::TopDieInstanceItem* item) {
+        if (!item) {
+            return;
+        }
+        this->_pendingTopDieGroupSync.insert(item);
+        if (this->_portGroupFlushScheduled) {
+            return;
+        }
+        this->_portGroupFlushScheduled = true;
+        QTimer::singleShot(0, this, &SchematicScene::flushPortGroupSync);
+    }
+
+    void SchematicScene::requestExportPortGroupSync() {
+        this->_pendingExportGroupSync = true;
+        if (this->_portGroupFlushScheduled) {
+            return;
+        }
+        this->_portGroupFlushScheduled = true;
+        QTimer::singleShot(0, this, &SchematicScene::flushPortGroupSync);
+    }
+
+    void SchematicScene::flushPortGroupSync() {
+        this->_portGroupFlushScheduled = false;
+
+        const auto pendingTop = this->_pendingTopDieGroupSync;
+        this->_pendingTopDieGroupSync.clear();
+        for (auto* item : pendingTop) {
+            if (item && this->_topdieinstMap.values().contains(item)) {
+                item->syncPortGroups();
+                item->update();
+                for (auto* pin : item->pins()) {
+                    pin->update();
+                }
+            }
+        }
+
+        if (this->_pendingExportGroupSync) {
+            this->_pendingExportGroupSync = false;
+            if (this->_exportGroupHost) {
+                this->_exportGroupHost->syncGroups();
+                this->_exportGroupHost->update();
+            }
+        }
+    }
+
     void SchematicScene::addSceneItems() {
         this->addTopDieInstItems();
         this->addExternalPortItems();
+        this->placeExternalPortsByConnections();
+        this->syncExportPortGroups();
         this->addNetItems();
     }
 
@@ -71,10 +130,14 @@ namespace PR_tool::widget {
             auto t = this->addTopDieInst(topdie.get());
         }
 
-        auto spacing = schematic::GridItem::GRID_SIZE;
+        // Modest spacing between instances (wires may cross bodies).
+        constexpr int kSpacingGrids = 3;
+        auto spacing = kSpacingGrids * schematic::GridItem::GRID_SIZE;
 
         int cols = std::ceil(std::sqrt(this->_topdieinstMap.size()));
-        int rows = std::ceil(static_cast<double>(this->_topdieinstMap.size()) / cols);
+        if (cols < 1) {
+            cols = 1;
+        }
 
         int startX = spacing;
         int startY = spacing;
@@ -94,16 +157,135 @@ namespace PR_tool::widget {
     }
 
     void SchematicScene::addExternalPortItems() {
-        auto i = 0;
         for (auto& [name, eport] : this->_basedie->external_ports()) {
-            auto p = this->addExPort(eport.get());
-            p->setPos(QPointF{
-                -20. * schematic::GridItem::GRID_SIZE, 
-                i * (schematic::ExternalPortItem::HEIGHT + schematic::GridItem::GRID_SIZE)
-            });
-
-            i += 1;
+            this->addExPort(eport.get());
         }
+    }
+
+    void SchematicScene::placeExternalPortsByConnections() {
+        // Place exports left/right of the topdie array so wires leave toward the array
+        // without crossing the pin name: Left side uses PinSide::Right (name left of
+        // origin); Right side uses PinSide::Left (name right of origin).
+        QHash<circuit::ExternalPort*, qreal> targetY;
+        QHash<circuit::ExternalPort*, qreal> targetX;
+        QHash<circuit::ExternalPort*, int> targetCount;
+
+        auto bumpPinPos = [this](const circuit::Pin& pin) -> std::optional<QPointF> {
+            if (!pin.is_bump()) {
+                return std::nullopt;
+            }
+            const auto& bump = pin.to_connect_bump();
+            auto* top = this->_topdieinstMap.value(bump.inst, nullptr);
+            if (!top) {
+                return std::nullopt;
+            }
+            auto* pinItem = top->pins().value(QString::fromStdString(bump.name), nullptr);
+            if (!pinItem) {
+                return std::nullopt;
+            }
+            return pinItem->scenePos();
+        };
+
+        for (auto& [mode, inner] : this->_basedie->connections()) {
+            for (auto& [sync, connections] : inner) {
+                for (const auto& connection : connections) {
+                    const auto& in = connection->input_pin();
+                    const auto& out = connection->output_pin();
+
+                    if (in.is_external_port()) {
+                        if (auto p = bumpPinPos(out)) {
+                            auto* port = in.to_connect_export().port;
+                            targetX[port] += p->x();
+                            targetY[port] += p->y();
+                            targetCount[port] += 1;
+                        }
+                    }
+                    if (out.is_external_port()) {
+                        if (auto p = bumpPinPos(in)) {
+                            auto* port = out.to_connect_export().port;
+                            targetX[port] += p->x();
+                            targetY[port] += p->y();
+                            targetCount[port] += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        QRectF arrayBounds;
+        bool hasTop = false;
+        for (auto* item : this->_topdieinstMap) {
+            const auto r = item->sceneBoundingRect();
+            arrayBounds = hasTop ? arrayBounds.united(r) : r;
+            hasTop = true;
+        }
+        const qreal arrayCenterX = hasTop ? arrayBounds.center().x() : 0.;
+        const qreal gap = 6 * schematic::GridItem::GRID_SIZE;
+
+        const qreal leftX = (hasTop ? arrayBounds.left() : 0.) - gap;
+        const qreal rightX = (hasTop ? arrayBounds.right() : 0.) + gap;
+
+        struct Place {
+            schematic::ExternalPortItem* item;
+            qreal y;
+            bool onRight;
+        };
+        std::vector<Place> leftPlaces;
+        std::vector<Place> rightPlaces;
+
+        int fallbackIndex = 0;
+        for (auto it = this->_exportMap.begin(); it != this->_exportMap.end(); ++it) {
+            auto* port = it.key();
+            auto* item = it.value();
+            qreal y = 0;
+            qreal xAvg = arrayCenterX;
+            if (targetCount.value(port, 0) > 0) {
+                y = targetY.value(port) / targetCount.value(port);
+                xAvg = targetX.value(port) / targetCount.value(port);
+            } else {
+                y = fallbackIndex
+                    * (schematic::ExternalPortItem::HEIGHT + schematic::GridItem::GRID_SIZE);
+                ++fallbackIndex;
+            }
+            // Prefer the side closer to the connected bump; default right when equal
+            // so PinSide::Left name (to the right of origin) stays clear of the wire.
+            const bool onRight = xAvg >= arrayCenterX;
+            (onRight ? rightPlaces : leftPlaces).push_back(Place{item, y, onRight});
+        }
+
+        auto packColumn = [](std::vector<Place>& places, qreal x, schematic::PinSide side) {
+            std::sort(places.begin(), places.end(), [](const Place& a, const Place& b) {
+                return a.y < b.y;
+            });
+            const qreal minGap =
+                schematic::ExternalPortItem::HEIGHT + schematic::GridItem::GRID_SIZE;
+            qreal lastY = -std::numeric_limits<qreal>::infinity();
+            for (auto& place : places) {
+                if (place.y < lastY + minGap) {
+                    place.y = lastY + minGap;
+                }
+                place.item->setAnchorSide(side);
+                place.item->setPos(QPointF{x, place.y});
+                lastY = place.y;
+            }
+        };
+
+        packColumn(leftPlaces, leftX, schematic::PinSide::Right);
+        packColumn(rightPlaces, rightX, schematic::PinSide::Left);
+    }
+
+    void SchematicScene::syncExportPortGroups() {
+        QVector<schematic::ExternalPortItem*> exports;
+        exports.reserve(this->_exportMap.size());
+        for (auto* item : this->_exportMap) {
+            exports.push_back(item);
+        }
+
+        if (!this->_exportGroupHost) {
+            this->_exportGroupHost = new schematic::ExportPortGroupHost{};
+            this->addItem(this->_exportGroupHost);
+        }
+        this->_exportGroupHost->setExports(exports);
     }
 
     void SchematicScene::addNetItems() {
@@ -114,8 +296,8 @@ namespace PR_tool::widget {
                 }
             }
         }
-        
     }
+
 
     void SchematicScene::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
         if (this->_floatingNet != nullptr) {
@@ -143,10 +325,34 @@ namespace PR_tool::widget {
             emit this->netSelected(dynamic_cast<schematic::NetItem*>(item));
         }
         else if (item->type() == schematic::TopDieInstanceItem::Type) {
-            emit this->topdieInstSelected(dynamic_cast<schematic::TopDieInstanceItem*>(item));
+            auto* top = dynamic_cast<schematic::TopDieInstanceItem*>(item);
+            if (top) {
+                top->setSelected(true);
+            }
+            emit this->topdieInstSelected(top);
         }
         else if (item->type() == schematic::ExternalPortItem::Type) {
-            emit this->exportSelected(dynamic_cast<schematic::ExternalPortItem*>(item));
+            auto* eport = dynamic_cast<schematic::ExternalPortItem*>(item);
+            if (eport) {
+                eport->setSelected(true);
+            }
+            emit this->exportSelected(eport);
+        }
+        else if (item->type() == schematic::PortGroupItem::Type) {
+            auto* group = dynamic_cast<schematic::PortGroupItem*>(item);
+            if (group && group->ownerTopDie()) {
+                group->ownerTopDie()->setSelected(true);
+                emit this->topdieInstSelected(group->ownerTopDie());
+            } else if (group && group->isExportGroup() && !group->exportMembers().isEmpty()) {
+                for (auto* e : group->exportMembers()) {
+                    if (e) {
+                        e->setSelected(true);
+                    }
+                }
+                emit this->exportSelected(group->exportMembers().first());
+            } else {
+                emit this->viewSelected();
+            }
         }
     }
 
@@ -214,14 +420,15 @@ namespace PR_tool::widget {
     }
 
     namespace {
+
         auto maxTopDiePinCount(circuit::BaseDie* basedie) -> std::size_t {
             std::size_t maxPins = 0;
-            for (const auto& [name, topdie] : basedie->topdies()) {
-                (void)name;
+            for (const auto& [_, topdie] : basedie->topdies()) {
                 maxPins = std::max(maxPins, topdie->pins_map().size());
             }
             return maxPins;
         }
+
     }
 
     auto SchematicScene::addTopDieInst(circuit::TopDieInstance* inst) -> schematic::TopDieInstanceItem* {
@@ -294,6 +501,7 @@ namespace PR_tool::widget {
         this->removeItem(eport);
 
         delete eport;
+        this->syncExportPortGroups();
     }
 
     void SchematicScene::removeTopDieInstance(schematic::TopDieInstanceItem* inst) {
@@ -500,6 +708,7 @@ namespace PR_tool::widget {
     void SchematicScene::placeFloatingExPort() {
         assert(this->_floatingExPort != nullptr);
         this->_floatingExPort = nullptr;
+        this->syncExportPortGroups();
         this->adjustSceneRect();
     }
 

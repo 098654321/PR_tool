@@ -31,6 +31,10 @@ namespace PR_tool::widget::schematic {
     public:
         ExternalPortItem(circuit::ExternalPort* eport);
 
+        /// PinSide::Left: body/name to the right of origin, wire should leave leftward.
+        /// PinSide::Right: body/name to the left of origin, wire should leave rightward.
+        void setAnchorSide(PinSide side);
+
     protected:
         auto boundingRect() const -> QRectF override;
         void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
@@ -45,6 +49,13 @@ namespace PR_tool::widget::schematic {
         auto pin() const -> PinItem* 
         { return this->_pin; }
 
+        auto anchorSide() const -> PinSide
+        { return this->_anchorSide; }
+
+        /// When true, body/name paint is skipped (Port Group bars own the display).
+        void setAggregateBodyHidden(bool hidden);
+        auto aggregateBodyHidden() const -> bool { return this->_aggregateBodyHidden; }
+
         auto unwrap() const -> circuit::ExternalPort* { 
             assert(this->_externalPort != nullptr);
             return this->_externalPort;
@@ -53,8 +64,10 @@ namespace PR_tool::widget::schematic {
     private:
         circuit::ExternalPort* const _externalPort;
         PinItem* _pin;
+        PinSide _anchorSide {PinSide::Left};
 
         qreal _width;
+        bool _aggregateBodyHidden {false};
     };
 
 

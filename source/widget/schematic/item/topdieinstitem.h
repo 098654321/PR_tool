@@ -8,6 +8,7 @@
 #include "qmap.h"
 #include <QGraphicsItem>
 #include <cstddef>
+#include <optional>
 #include <string_view>
 
 namespace PR_tool::circuit {
@@ -19,6 +20,8 @@ namespace PR_tool::widget {
 }
 
 namespace PR_tool::widget::schematic {
+
+    class PortGroupItem;
 
     class TopDieInstanceItem : public GridItem {
     public:
@@ -71,6 +74,23 @@ namespace PR_tool::widget::schematic {
 
         void setName(const QString& name) { this->_name = name; }
 
+        /// View scale s = transform().m11().
+        auto viewScale() const -> qreal;
+        /// Effective Port Group size after zoom LOD + click expand (0 = Far / hide).
+        auto effectiveGroupSize() const -> int;
+        /// Click-expand one LOD step (halve group size).
+        void expandPortGroups();
+        /// Rebuild child PortGroupItems for current effective size.
+        void syncPortGroups();
+        /// When expand reaches size 1 at Medium zoom, pins should paint.
+        auto shouldRevealPins() const -> bool;
+
+    private:
+        void clearPortGroups();
+        void rebuildPortGroups(int groupSize);
+        void schedulePortGroupSync();
+        auto barRectForPins(PinSide side, const QVector<PinItem*>& pins) const -> QRectF;
+
     protected:
         QString _name {};
         QString _typeName {};
@@ -80,6 +100,17 @@ namespace PR_tool::widget::schematic {
 
         circuit::TopDieInstance* const _topdieinstance {nullptr};
         QMap<QString, PinItem*> _pins {};
+
+        // Pins in creation order per side (Top, Right, Bottom, Left).
+        QVector<PinItem*> _pinsTop {};
+        QVector<PinItem*> _pinsRight {};
+        QVector<PinItem*> _pinsBottom {};
+        QVector<PinItem*> _pinsLeft {};
+
+        QVector<PortGroupItem*> _portGroups {};
+        std::optional<int> _expandGroupSize {};
+        int _syncedGroupSize {-1};
+        bool _portGroupSyncPending {false};
     };
 
 

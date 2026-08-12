@@ -63,7 +63,18 @@ namespace PR_tool::widget::schematic {
     auto PinItem::shouldForceShowPin() const -> bool {
         // Selected / hover always force-show. NetItem hover already calls setHovered on
         // connected pins. Full "related net" focus force-show lands with Ch.七.
-        return this->isSelected() || this->_hovered;
+        if (this->isSelected() || this->_hovered) {
+            return true;
+        }
+        // Ch.六: click-expand to group size 1 at Medium zoom reveals pins.
+        if (this->isTopDieInstancePin()) {
+            if (auto* top = this->parentTopDieInstance()) {
+                if (top->shouldRevealPins()) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     void PinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {

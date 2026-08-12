@@ -6,6 +6,7 @@
 #include "qvector.h"
 #include "widget/schematic/item/sourceportitem.h"
 #include <QGraphicsScene>
+#include <QSet>
 
 namespace PR_tool::circuit {
     class TopDieInstance;
@@ -28,6 +29,8 @@ namespace PR_tool::widget {
         class PinItem;
         class TopDieInstanceItem;
         class ExternalPortItem;
+        class PortGroupItem;
+        class ExportPortGroupHost;
         class SourcePortItem;
     }
 
@@ -44,8 +47,14 @@ namespace PR_tool::widget {
         void viewSelected();
         void layoutChanged();
 
+    public slots:
+        void flushPortGroupSync();
+
     public:
         void reloadItems();
+        /// Deferred Port Group rebuild (safe vs paint / item lifetime).
+        void requestPortGroupSync(schematic::TopDieInstanceItem* item);
+        void requestExportPortGroupSync();
 
     protected:
         void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override;
@@ -93,6 +102,8 @@ namespace PR_tool::widget {
     private:
         void addTopDieInstItems();
         void addExternalPortItems();
+        void placeExternalPortsByConnections();
+        void syncExportPortGroups();
         void addNetItems();
 
     private:
@@ -124,6 +135,11 @@ namespace PR_tool::widget {
         schematic::NetItem* _floatingNet {nullptr};
         schematic::TopDieInstanceItem* _floatingTopdDieInst {nullptr};
         schematic::ExternalPortItem* _floatingExPort {nullptr};
+        schematic::ExportPortGroupHost* _exportGroupHost {nullptr};
+
+        QSet<schematic::TopDieInstanceItem*> _pendingTopDieGroupSync {};
+        bool _pendingExportGroupSync {false};
+        bool _portGroupFlushScheduled {false};
     };
 
 }
