@@ -22,18 +22,40 @@ namespace PR_tool::widget::schematic {
 
     namespace {
 
+        // Spec 4.0: deeper type-colored header bar (more visible than body),
+        // still semi-transparent so nets under/through remain readable.
         auto headerFillFrom(const QColor& base) -> QColor {
-            auto c = base;
-            c = c.darker(115);
-            c.setAlpha(210);
-            return c;
+            const qreal h = base.hslHueF();
+            const qreal s = base.hslSaturationF();
+            const qreal l = base.lightnessF();
+            if (h < 0.) {
+                auto c = base.darker(130);
+                c.setAlpha(185);
+                return c;
+            }
+            return QColor::fromHslF(
+                h,
+                std::clamp(s * 0.90, 0.0, 1.0),
+                std::clamp(l * 0.62, 0.18, 0.55),
+                0.72);
         }
 
+        // Spec 4.0: same-hue low-sat wash (not near-white, not high-sat slab),
+        // transparent enough for connections crossing the body.
         auto bodyFillFrom(const QColor& base) -> QColor {
-            auto c = base;
-            c = c.lighter(135);
-            c.setAlpha(90);
-            return c;
+            const qreal h = base.hslHueF();
+            const qreal s = base.hslSaturationF();
+            const qreal l = base.lightnessF();
+            if (h < 0.) {
+                auto c = base.lighter(160);
+                c.setAlpha(70);
+                return c;
+            }
+            return QColor::fromHslF(
+                h,
+                std::clamp(s * 0.38, 0.0, 1.0),
+                std::clamp(std::min(0.90, l + 0.28), 0.72, 0.92),
+                0.28);
         }
 
     } // namespace
@@ -57,16 +79,17 @@ namespace PR_tool::widget::schematic {
     }
 
     auto TopDieInstanceItem::colorForTopDieType(std::string_view typeName) -> QColor {
-        // Morandi fills with wider hue spacing so common types stay distinct.
+        // Expandable restrained base hues (opaque). Header/body derive alpha +
+        // saturation/lightness; unknown types hash into this table.
         static const QColor kPalette[] = {
-            QColor::fromRgb(186, 132, 142, 160), // dusty rose
-            QColor::fromRgb(126, 162, 138, 160), // sage green
-            QColor::fromRgb(120, 148, 186, 160), // soft blue
-            QColor::fromRgb(196, 168, 110, 160), // muted ochre
-            QColor::fromRgb(152, 132, 178, 160), // lavender
-            QColor::fromRgb(110, 160, 158, 160), // teal
-            QColor::fromRgb(176, 120, 102, 160), // terracotta
-            QColor::fromRgb(148, 152, 128, 160), // olive stone
+            QColor(186, 132, 142), // dusty rose
+            QColor(126, 162, 138), // sage green
+            QColor(120, 148, 186), // soft blue
+            QColor(196, 168, 110), // muted ochre
+            QColor(152, 132, 178), // lavender
+            QColor(110, 160, 158), // teal
+            QColor(176, 120, 102), // terracotta
+            QColor(148, 152, 128), // olive stone
         };
 
         std::size_t hash = 1469598103934665603ull;
