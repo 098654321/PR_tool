@@ -20,9 +20,13 @@ namespace PR_tool::widget::schematic {
     class NetPointItem;
 
     /// Tunable Ch.七 “弱背景 + 强交互” visual params (schematic connections).
+    /// Ch.八: General / External / other non-power share one encoding; bus may be
+    /// slightly thicker (BUNDLE_WIDTH). Selected/hover is focus, not a third linestyle.
     struct ConnectionFocusStyle {
         static constexpr qreal DEFAULT_WIDTH = 1.0;
         static constexpr qreal DEFAULT_OPACITY = 0.35;
+        /// Mild bus/bundle thickening (same color family). Full bundling is Ch.九.
+        static constexpr qreal BUNDLE_WIDTH = 1.8;
 
         static constexpr qreal DIE_RELATED_WIDTH = 2.0;
         static constexpr qreal DIE_RELATED_OPACITY = 1.0;
@@ -79,6 +83,10 @@ namespace PR_tool::widget::schematic {
         void setRoutePoints(const QVector<QPointF>& points);
         /// Apply Ch.七 focus role (width / opacity / contrast). Floating nets ignored.
         void applyFocusRole(NetFocusRole role);
+
+        /// Ch.八 / Ch.九 hook: mark as bus-bundle member for mild default thickening.
+        void setBundleMember(bool on) { this->_bundleMember = on; }
+        auto isBundleMember() const -> bool { return this->_bundleMember; }
 
     protected:
         auto boundingRect() const -> QRectF override;
@@ -140,6 +148,7 @@ namespace PR_tool::widget::schematic {
         QPainterPath _path;
         std::Option<QPointF> _tempPoint;
         QPointF _end;
+        bool _bundleMember {false};
     };
 
 }

@@ -32,6 +32,7 @@ namespace PR_tool::widget {
         class PortGroupItem;
         class ExportPortGroupHost;
         class SourcePortItem;
+        class PowerRailItem;
     }
 
     class SchematicScene : public QGraphicsScene {
@@ -63,6 +64,8 @@ namespace PR_tool::widget {
         void setHoverPortGroup(schematic::PortGroupItem* group);
         void onTopDieSelectionChanged(schematic::TopDieInstanceItem* die, bool selected);
         void refreshConnectionFocus();
+        /// Ch.八: rebuild VDD/GND rail + stubs after die move / power net change.
+        void refreshPowerRails();
 
     protected:
         void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override;
@@ -119,6 +122,11 @@ namespace PR_tool::widget {
         void placeExternalPortsByConnections();
         void syncExportPortGroups();
         void addNetItems();
+        /// Ch.八: hide physical VDD/GND nets; draw rail + stubs instead.
+        void applyPowerNetPresentation(schematic::NetItem* net);
+        /// Ch.八: mild thickening for multi-net port-group members (Ch.九 owns full bundle).
+        void markBundleNets();
+        static auto isPowerConnection(const circuit::Connection* connection) -> bool;
 
     private:
         auto circuitPinToPinItem(const circuit::Pin& pin) -> schematic::PinItem*;
@@ -144,6 +152,8 @@ namespace PR_tool::widget {
         QSet<schematic::NetItem*> _nets;
         QVector<schematic::SourcePortItem*> _vddPorts;
         QVector<schematic::SourcePortItem*> _gndPorts;
+        schematic::PowerRailItem* _vddRail {nullptr};
+        schematic::PowerRailItem* _gndRail {nullptr};
 
         // Temp var 
         schematic::NetItem* _floatingNet {nullptr};

@@ -428,7 +428,9 @@ namespace PR_tool::widget::schematic {
 
         switch (role) {
             case NetFocusRole::Default:
-                this->_paintWidth = ConnectionFocusStyle::DEFAULT_WIDTH;
+                this->_paintWidth = this->_bundleMember
+                    ? ConnectionFocusStyle::BUNDLE_WIDTH
+                    : ConnectionFocusStyle::DEFAULT_WIDTH;
                 this->_paintOpacity = ConnectionFocusStyle::DEFAULT_OPACITY;
                 this->setZValue(0.5);
                 break;

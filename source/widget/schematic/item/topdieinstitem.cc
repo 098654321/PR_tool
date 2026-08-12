@@ -524,6 +524,11 @@ namespace PR_tool::widget::schematic {
                 sc->onTopDieSelectionChanged(this, value.toBool());
             }
         }
+        if (change == QGraphicsItem::ItemScenePositionHasChanged) {
+            if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+                sc->refreshPowerRails();
+            }
+        }
         return GridItem::itemChange(change, value);
     }
 

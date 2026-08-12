@@ -8,6 +8,7 @@
 #include "./item/portgroupitem.h"
 #include "./item/griditem.h"
 #include "./item/sourceportitem.h"
+#include "./item/powerrailitem.h"
 
 #include <circuit/connection/pin.hh>
 #include <circuit/connection/connection.hh>
@@ -39,7 +40,8 @@ namespace PR_tool::widget {
         (int)schematic::ExternalPortItem::Type,
         (int)schematic::SourcePortItem::Type,
         (int)schematic::PortGroupItem::Type,
-        (int)schematic::ExportPortGroupHost::Type
+        (int)schematic::ExportPortGroupHost::Type,
+        (int)schematic::PowerRailItem::Type
     >::value);
 
     SchematicScene::SchematicScene(circuit::BaseDie* basedie, hardware::Interposer* interposer) :
@@ -58,6 +60,8 @@ namespace PR_tool::widget {
         this->_nets.clear();
         this->_vddPorts.clear();
         this->_gndPorts.clear();
+        this->_vddRail = nullptr;
+        this->_gndRail = nullptr;
 
         this->_floatingNet = nullptr;
         this->_floatingTopdDieInst = nullptr;
@@ -121,6 +125,8 @@ namespace PR_tool::widget {
                 this->_exportGroupHost->update();
             }
         }
+
+        this->markBundleNets();
     }
 
     void SchematicScene::addSceneItems() {
@@ -129,6 +135,8 @@ namespace PR_tool::widget {
         this->placeExternalPortsByConnections();
         this->syncExportPortGroups();
         this->addNetItems();
+        this->refreshPowerRails();
+        this->markBundleNets();
     }
 
     void SchematicScene::addTopDieInstItems() {
@@ -299,12 +307,163 @@ namespace PR_tool::widget {
         for (auto& [mode, inner_connection]: this->_basedie->connections()) {
             for (auto& [sync, connections] : inner_connection) {
                 for (const auto& connection : connections) {
-                    this->addNet(connection.get());
+                    auto* net = this->addNet(connection.get());
+                    this->applyPowerNetPresentation(net);
                 }
             }
         }
     }
 
+
+    auto SchematicScene::isPowerConnection(const circuit::Connection* connection) -> bool {
+        if (!connection) {
+            return false;
+        }
+        return connection->input_pin().is_fixed() || connection->output_pin().is_fixed();
+    }
+
+    void SchematicScene::applyPowerNetPresentation(schematic::NetItem* net) {
+        if (!net || net->isFloating() || !net->unwrap()) {
+            return;
+        }
+        if (!isPowerConnection(net->unwrap())) {
+            return;
+        }
+
+        // Ch.八: do not draw physical power nets like signals.
+        net->setVisible(false);
+
+        for (auto* pin : this->endpointPins(net)) {
+            if (!pin) {
+                continue;
+            }
+            if (auto* port = dynamic_cast<schematic::SourcePortItem*>(pin->parentItem())) {
+                port->setVisible(false);
+            }
+        }
+    }
+
+    void SchematicScene::refreshPowerRails() {
+        QSet<schematic::TopDieInstanceItem*> vddDies;
+        QSet<schematic::TopDieInstanceItem*> gndDies;
+
+        for (auto* net : this->_nets) {
+            if (!net || net->isFloating() || !net->unwrap()) {
+                continue;
+            }
+            if (!isPowerConnection(net->unwrap())) {
+                continue;
+            }
+
+            const auto& in = net->unwrap()->input_pin();
+            const auto& out = net->unwrap()->output_pin();
+            const bool isVdd = in.is_vdd() || out.is_vdd();
+            const bool isGnd = in.is_gnd() || out.is_gnd();
+
+            for (auto* die : this->endpointTopDies(net)) {
+                if (!die) {
+                    continue;
+                }
+                if (isVdd) {
+                    vddDies.insert(die);
+                }
+                if (isGnd) {
+                    gndDies.insert(die);
+                }
+            }
+        }
+
+        QRectF arrayBounds;
+        bool hasTop = false;
+        for (auto* top : this->_topdieinstMap) {
+            if (!top) {
+                continue;
+            }
+            const auto r = top->sceneBoundingRect();
+            arrayBounds = hasTop ? arrayBounds.united(r) : r;
+            hasTop = true;
+        }
+
+        const qreal gap = 2.5 * schematic::GridItem::GRID_SIZE;
+        const qreal pad = schematic::GridItem::GRID_SIZE;
+
+        auto ensureRail = [this](schematic::PowerRailItem*& rail, schematic::PowerRailItem::Kind kind) {
+            if (!rail) {
+                rail = new schematic::PowerRailItem{kind};
+                this->addItem(rail);
+            }
+        };
+
+        auto layoutRail = [&](
+            schematic::PowerRailItem*& rail,
+            schematic::PowerRailItem::Kind kind,
+            const QSet<schematic::TopDieInstanceItem*>& dies,
+            bool isVdd
+        ) {
+            if (dies.isEmpty() || !hasTop) {
+                if (rail) {
+                    rail->setVisible(false);
+                }
+                return;
+            }
+
+            ensureRail(rail, kind);
+            rail->setVisible(true);
+
+            const qreal railY = isVdd
+                ? arrayBounds.top() - gap
+                : arrayBounds.bottom() + gap;
+            const qreal x0 = arrayBounds.left() - pad;
+            const qreal x1 = arrayBounds.right() + pad;
+
+            QVector<QPointF> stubs;
+            stubs.reserve(dies.size());
+            for (auto* die : dies) {
+                const auto r = die->sceneBoundingRect();
+                const qreal x = r.center().x();
+                const qreal y = isVdd ? r.top() : r.bottom();
+                stubs.push_back(QPointF{x, y});
+            }
+            std::sort(stubs.begin(), stubs.end(), [](const QPointF& a, const QPointF& b) {
+                return a.x() < b.x();
+            });
+            rail->setLayout(railY, x0, x1, stubs);
+        };
+
+        layoutRail(this->_vddRail, schematic::PowerRailItem::Kind::Vdd, vddDies, true);
+        layoutRail(this->_gndRail, schematic::PowerRailItem::Kind::Gnd, gndDies, false);
+    }
+
+    void SchematicScene::markBundleNets() {
+        for (auto* net : this->_nets) {
+            if (net) {
+                net->setBundleMember(false);
+            }
+        }
+
+        for (auto* top : this->_topdieinstMap) {
+            if (!top) {
+                continue;
+            }
+            for (auto* group : top->portGroups()) {
+                if (!group) {
+                    continue;
+                }
+                const auto nets = this->netsForPortGroup(group);
+                if (nets.size() < 2) {
+                    continue;
+                }
+                for (auto* net : nets) {
+                    if (net && net->isVisible()) {
+                        net->setBundleMember(true);
+                    }
+                }
+            }
+        }
+
+        // Re-apply default/focus widths so BUNDLE_WIDTH takes effect.
+        this->refreshConnectionFocus();
+    }
 
     void SchematicScene::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
         if (this->_floatingNet != nullptr) {
@@ -604,7 +763,7 @@ namespace PR_tool::widget {
         }
 
         for (auto* net : this->_nets) {
-            if (!net || net->isFloating()) {
+            if (!net || net->isFloating() || !net->isVisible()) {
                 continue;
             }
             if (netFocus) {
@@ -843,6 +1002,9 @@ namespace PR_tool::widget {
         delete net;
         delete beginPoint;
         delete endPoint;
+
+        this->refreshPowerRails();
+        this->markBundleNets();
     }
 
     auto SchematicScene::circuitPinToPinItem(const circuit::Pin& pin) -> schematic::PinItem* {
@@ -901,6 +1063,9 @@ namespace PR_tool::widget {
             this->_floatingNet->resetPaint();
             endPoint->setNetItem(this->_floatingNet);
             this->_nets.insert(this->_floatingNet);
+            this->applyPowerNetPresentation(this->_floatingNet);
+            this->refreshPowerRails();
+            this->markBundleNets();
 
             this->_floatingNet = nullptr;
 
