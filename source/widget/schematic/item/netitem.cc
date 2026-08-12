@@ -12,6 +12,8 @@
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsScene>
+#include <QFontMetricsF>
+#include <QPainter>
 
 #include <QDebug>
 
@@ -396,8 +398,31 @@ namespace PR_tool::widget::schematic {
         this->update();
     }
 
+    void NetItem::setBundleLabel(const QString& label) {
+        if (this->_bundleLabel == label) {
+            return;
+        }
+        this->prepareGeometryChange();
+        this->_bundleLabel = label;
+        this->update();
+    }
+
     auto NetItem::boundingRect() const -> QRectF {
-        return this->_path.boundingRect().adjusted(-4, -4, 4, 4);
+        QRectF rect = this->_path.boundingRect().adjusted(-4, -4, 4, 4);
+        if (!this->_bundleLabel.isEmpty() && !this->_path.isEmpty()) {
+            QFont font;
+            font.setPixelSize(11);
+            const QFontMetricsF fm(font);
+            const QRectF textRect = fm.boundingRect(this->_bundleLabel);
+            const QPointF mid = this->_path.pointAtPercent(0.5);
+            rect = rect.united(QRectF(
+                mid.x() - textRect.width() / 2. - 4.,
+                mid.y() - textRect.height() - 6.,
+                textRect.width() + 8.,
+                textRect.height() + 4.
+            ));
+        }
+        return rect;
     }
 
     auto NetItem::shape() const -> QPainterPath {
@@ -416,6 +441,25 @@ namespace PR_tool::widget::schematic {
         pen.setJoinStyle(Qt::RoundJoin);
         painter->setPen(pen);
         painter->drawPath(this->_path);
+
+        if (!this->_bundleLabel.isEmpty() && !this->_path.isEmpty()) {
+            auto font = painter->font();
+            font.setPixelSize(11);
+            painter->setFont(font);
+            QColor labelColor = this->_paintColor;
+            labelColor.setAlphaF(qMin(1.0, this->_paintOpacity + 0.35));
+            painter->setPen(labelColor);
+            const QPointF mid = this->_path.pointAtPercent(0.5);
+            const QFontMetricsF fm(font);
+            const QRectF textRect = fm.boundingRect(this->_bundleLabel);
+            const QRectF drawRect {
+                mid.x() - textRect.width() / 2.,
+                mid.y() - textRect.height() - 4.,
+                textRect.width(),
+                textRect.height()
+            };
+            painter->drawText(drawRect, Qt::AlignCenter, this->_bundleLabel);
+        }
     }
 
     void NetItem::applyFocusRole(NetFocusRole role) {

@@ -7,6 +7,7 @@
 #include <std/utility.hh>
 #include <QGraphicsLineItem>
 #include <QPen>
+#include <QString>
 #include <QVector>
 #include <QDebug>
 
@@ -84,9 +85,13 @@ namespace PR_tool::widget::schematic {
         /// Apply Ch.七 focus role (width / opacity / contrast). Floating nets ignored.
         void applyFocusRole(NetFocusRole role);
 
-        /// Ch.八 / Ch.九 hook: mark as bus-bundle member for mild default thickening.
+        /// Ch.八 / Ch.九: mark as bus-bundle member for mild default thickening.
         void setBundleMember(bool on) { this->_bundleMember = on; }
         auto isBundleMember() const -> bool { return this->_bundleMember; }
+
+        /// Ch.九: count/range label on the visible representative when collapsed.
+        void setBundleLabel(const QString& label);
+        auto bundleLabel() const -> const QString& { return this->_bundleLabel; }
 
     protected:
         auto boundingRect() const -> QRectF override;
@@ -149,6 +154,7 @@ namespace PR_tool::widget::schematic {
         std::Option<QPointF> _tempPoint;
         QPointF _end;
         bool _bundleMember {false};
+        QString _bundleLabel {};
     };
 
 }

@@ -35,6 +35,16 @@ namespace PR_tool::widget {
 
     SchematicView::~SchematicView() noexcept {}
 
+    void SchematicView::wheelEvent(QWheelEvent* event) {
+        GraphicsView::wheelEvent(event);
+        // Ch.九: bundle collapse/expand follows zoom immediately.
+        if (event->modifiers() & Qt::ControlModifier) {
+            if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+                sc->refreshBusBundling();
+            }
+        }
+    }
+
     void SchematicView::drawBackground(QPainter* painter, const QRectF& rect) {
         QGraphicsView::drawBackground(painter, rect);
 

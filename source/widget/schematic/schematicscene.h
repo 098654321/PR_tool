@@ -6,7 +6,9 @@
 #include "qvector.h"
 #include "widget/schematic/item/sourceportitem.h"
 #include <QGraphicsScene>
+#include <QPair>
 #include <QSet>
+#include <optional>
 
 namespace PR_tool::circuit {
     class TopDieInstance;
@@ -66,6 +68,8 @@ namespace PR_tool::widget {
         void refreshConnectionFocus();
         /// Ch.八: rebuild VDD/GND rail + stubs after die move / power net change.
         void refreshPowerRails();
+        /// Ch.九: recompute bus bundles (endpoint-pair collapse / Near expand).
+        void refreshBusBundling();
 
     protected:
         void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override;
@@ -80,6 +84,9 @@ namespace PR_tool::widget {
         auto netsTouchingDie(schematic::TopDieInstanceItem* die) const -> QSet<schematic::NetItem*>;
         auto endpointTopDies(schematic::NetItem* net) const -> QSet<schematic::TopDieInstanceItem*>;
         auto endpointPins(schematic::NetItem* net) const -> QSet<schematic::PinItem*>;
+        /// Stable endpoint-container pair key (TopDieInst / ExternalPort); nullopt if ineligible.
+        auto endpointPairKey(schematic::NetItem* net) const -> std::optional<QPair<quintptr, quintptr>>;
+        auto viewScale() const -> qreal;
 
     public:
         auto addExPort(circuit::ExternalPort*) -> schematic::ExternalPortItem*;
@@ -124,7 +131,7 @@ namespace PR_tool::widget {
         void addNetItems();
         /// Ch.八: hide physical VDD/GND nets; draw rail + stubs instead.
         void applyPowerNetPresentation(schematic::NetItem* net);
-        /// Ch.八: mild thickening for multi-net port-group members (Ch.九 owns full bundle).
+        /// Ch.九: auto-bundle parallel nets between the same endpoint pair (zoom expand).
         void markBundleNets();
         static auto isPowerConnection(const circuit::Connection* connection) -> bool;
 

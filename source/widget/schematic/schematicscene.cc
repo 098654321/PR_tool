@@ -21,7 +21,11 @@
 #include <debug/debug.hh>
 #include <QMessageBox>
 #include <QGraphicsSceneMouseEvent>
+#include <QGraphicsView>
 #include <QTimer>
+#include <QHash>
+#include <QPair>
+#include <QVector>
 
 #include <algorithm>
 #include <cmath>
@@ -434,35 +438,124 @@ namespace PR_tool::widget {
         layoutRail(this->_gndRail, schematic::PowerRailItem::Kind::Gnd, gndDies, false);
     }
 
-    void SchematicScene::markBundleNets() {
-        for (auto* net : this->_nets) {
-            if (net) {
-                net->setBundleMember(false);
-            }
-        }
+    void SchematicScene::refreshBusBundling() {
+        this->markBundleNets();
+    }
 
-        for (auto* top : this->_topdieinstMap) {
-            if (!top) {
+    void SchematicScene::markBundleNets() {
+        // Reset non-power nets: clear prior collapse; power stays handled separately.
+        for (auto* net : this->_nets) {
+            if (!net || net->isFloating() || !net->unwrap()) {
                 continue;
             }
-            for (auto* group : top->portGroups()) {
-                if (!group) {
-                    continue;
-                }
-                const auto nets = this->netsForPortGroup(group);
-                if (nets.size() < 2) {
-                    continue;
-                }
-                for (auto* net : nets) {
-                    if (net && net->isVisible()) {
-                        net->setBundleMember(true);
-                    }
-                }
+            if (isPowerConnection(net->unwrap())) {
+                continue;
+            }
+            net->setBundleMember(false);
+            net->setBundleLabel(QString());
+            net->setVisible(true);
+        }
+
+        const qreal s = this->viewScale();
+        // Expand only by zoom to Near (Ch.九 9.0). Port Group size 0 (Far) must stay collapsed.
+        const bool expand = s >= schematic::PinItem::LOD_NEAR_MIN;
+
+        QHash<QPair<quintptr, quintptr>, QVector<schematic::NetItem*>> groups;
+        for (auto* net : this->_nets) {
+            if (!net || net->isFloating() || !net->unwrap()) {
+                continue;
+            }
+            if (isPowerConnection(net->unwrap())) {
+                continue;
+            }
+            const auto key = this->endpointPairKey(net);
+            if (!key.has_value()) {
+                continue;
+            }
+            groups[*key].push_back(net);
+        }
+
+        for (auto it = groups.begin(); it != groups.end(); ++it) {
+            auto& members = it.value();
+            if (members.size() < 2) {
+                continue;
+            }
+
+            std::sort(members.begin(), members.end(), [](schematic::NetItem* a, schematic::NetItem* b) {
+                return reinterpret_cast<quintptr>(a) < reinterpret_cast<quintptr>(b);
+            });
+
+            for (auto* net : members) {
+                net->setBundleMember(true);
+            }
+
+            if (expand) {
+                continue;
+            }
+
+            // Collapse: one thicker representative + count label; hide siblings.
+            // Do not re-autoroute — keep the representative's existing path (Ch.九 hint).
+            auto* rep = members.first();
+            rep->setBundleLabel(QString::number(members.size()));
+            for (int i = 1; i < members.size(); ++i) {
+                members[i]->setVisible(false);
             }
         }
 
-        // Re-apply default/focus widths so BUNDLE_WIDTH takes effect.
+        // Re-apply default/focus widths so BUNDLE_WIDTH takes effect on visibles.
         this->refreshConnectionFocus();
+    }
+
+    auto SchematicScene::viewScale() const -> qreal {
+        const auto vs = this->views();
+        if (!vs.isEmpty() && vs.first()) {
+            return vs.first()->transform().m11();
+        }
+        return 1.0;
+    }
+
+    auto SchematicScene::endpointPairKey(schematic::NetItem* net) const
+        -> std::optional<QPair<quintptr, quintptr>>
+    {
+        if (!net || net->isFloating()) {
+            return std::nullopt;
+        }
+
+        auto containerId = [](schematic::PinItem* pin) -> std::optional<quintptr> {
+            if (!pin) {
+                return std::nullopt;
+            }
+            if (pin->isTopDieInstancePin()) {
+                if (auto* top = pin->parentTopDieInstance()) {
+                    return reinterpret_cast<quintptr>(top);
+                }
+                return std::nullopt;
+            }
+            if (pin->isExternalPortPin()) {
+                if (auto* eport = pin->parentExternalPort()) {
+                    return reinterpret_cast<quintptr>(eport);
+                }
+                return std::nullopt;
+            }
+            // SourcePort (VDD/GND) — excluded from bus bundling.
+            return std::nullopt;
+        };
+
+        schematic::PinItem* beginPin = nullptr;
+        schematic::PinItem* endPin = nullptr;
+        if (net->beginPoint()) {
+            beginPin = net->beginPoint()->connectedPin();
+        }
+        if (net->endPoint()) {
+            endPin = net->endPoint()->connectedPin();
+        }
+
+        const auto a = containerId(beginPin);
+        const auto b = containerId(endPin);
+        if (!a.has_value() || !b.has_value() || *a == *b) {
+            return std::nullopt;
+        }
+        return (*a < *b) ? qMakePair(*a, *b) : qMakePair(*b, *a);
     }
 
     void SchematicScene::mouseMoveEvent(QGraphicsSceneMouseEvent* event) {
@@ -694,34 +787,22 @@ namespace PR_tool::widget {
         }
         out.insert(seed);
 
-        auto expandPinGroup = [&](schematic::PinItem* pin) {
-            if (!pin || !pin->isTopDieInstancePin()) {
-                return;
+        // Ch.九: focus expands to the full endpoint-pair bundle (incl. hidden members).
+        const auto key = this->endpointPairKey(seed);
+        if (!key.has_value()) {
+            return out;
+        }
+        for (auto* net : this->_nets) {
+            if (!net || net->isFloating() || !net->unwrap()) {
+                continue;
             }
-            auto* top = pin->parentTopDieInstance();
-            if (!top || top->portGroups().isEmpty()) {
-                return;
+            if (isPowerConnection(net->unwrap())) {
+                continue;
             }
-            for (auto* group : top->portGroups()) {
-                if (!group || !group->pinMembers().contains(pin)) {
-                    continue;
-                }
-                for (auto* member : group->pinMembers()) {
-                    if (!member) {
-                        continue;
-                    }
-                    for (auto* point : member->connectedPoints()) {
-                        if (point && point->netItem() && !point->netItem()->isFloating()) {
-                            out.insert(point->netItem());
-                        }
-                    }
-                }
-                break;
+            const auto other = this->endpointPairKey(net);
+            if (other.has_value() && *other == *key) {
+                out.insert(net);
             }
-        };
-
-        for (auto* pin : this->endpointPins(seed)) {
-            expandPinGroup(pin);
         }
         return out;
     }

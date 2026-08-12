@@ -29,6 +29,7 @@ namespace PR_tool::widget {
 
     protected:
         void drawBackground(QPainter* painter, const QRectF& rect) override;
+        void wheelEvent(QWheelEvent* event) override;
 
     public:
         void updateBack();
