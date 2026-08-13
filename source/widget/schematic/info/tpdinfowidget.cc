@@ -86,16 +86,17 @@ namespace PR_tool::widget::schematic {
 
     void TopDieInstanceInfoWidget::buildUi() {
         auto* outer = new QVBoxLayout{this};
-        outer->setContentsMargins(4, 4, 4, 4);
-        outer->setSpacing(6);
+        outer->setContentsMargins(8, 8, 8, 8);
+        outer->setSpacing(8);
 
         this->_titleLabel = new QLabel{QStringLiteral("TOPDIE INSTANCE"), this};
         SchematicTypography::applyInspectorTitle(this->_titleLabel);
         outer->addWidget(this->_titleLabel);
 
         auto* line = new QFrame{this};
+        line->setObjectName(QStringLiteral("SideHairline"));
         line->setFrameShape(QFrame::HLine);
-        line->setFrameShadow(QFrame::Sunken);
+        line->setFrameShadow(QFrame::Plain);
         outer->addWidget(line);
 
         auto* scroll = new QScrollArea{this};
@@ -112,9 +113,9 @@ namespace PR_tool::widget::schematic {
         // —— General ——
         auto* generalBody = new QWidget{content};
         auto* generalGrid = new QGridLayout{generalBody};
-        generalGrid->setContentsMargins(4, 2, 4, 2);
-        generalGrid->setHorizontalSpacing(10);
-        generalGrid->setVerticalSpacing(6);
+        generalGrid->setContentsMargins(0, 0, 0, 0);
+        generalGrid->setHorizontalSpacing(8);
+        generalGrid->setVerticalSpacing(8);
         generalGrid->setColumnStretch(1, 1);
 
         this->_nameEdit = new QLineEdit{generalBody};
@@ -132,7 +133,7 @@ namespace PR_tool::widget::schematic {
         this->_visibleToggle->setFocusPolicy(Qt::TabFocus);
         this->_statusLabel = new QLabel{QStringLiteral("● Valid"), generalBody};
         SchematicTypography::applyPropertyValue(this->_statusLabel);
-        this->_statusLabel->setStyleSheet(QStringLiteral("color: #2e7d32;"));
+        SchematicTypography::applyForeground(this->_statusLabel, ChromeTokens::success);
 
         auto addPropRow = [&](QGridLayout* grid, QWidget* parent, int row, const QString& text, QWidget* value) {
             auto* label = new QLabel{text, parent};
@@ -155,9 +156,9 @@ namespace PR_tool::widget::schematic {
         // —— Connectivity ——
         auto* connBody = new QWidget{content};
         auto* connGrid = new QGridLayout{connBody};
-        connGrid->setContentsMargins(4, 2, 4, 2);
-        connGrid->setHorizontalSpacing(10);
-        connGrid->setVerticalSpacing(6);
+        connGrid->setContentsMargins(0, 0, 0, 0);
+        connGrid->setHorizontalSpacing(8);
+        connGrid->setVerticalSpacing(8);
         connGrid->setColumnStretch(1, 1);
 
         this->_connectionsLabel = new QLabel{connBody};
@@ -178,8 +179,8 @@ namespace PR_tool::widget::schematic {
         // —— Pin Map ——
         auto* pinBody = new QWidget{content};
         auto* pinLayout = new QVBoxLayout{pinBody};
-        pinLayout->setContentsMargins(4, 2, 4, 2);
-        pinLayout->setSpacing(4);
+        pinLayout->setContentsMargins(0, 0, 0, 0);
+        pinLayout->setSpacing(8);
 
         this->_pinSearchEdit = new QLineEdit{pinBody};
         this->_pinSearchEdit->setPlaceholderText(QStringLiteral("Search pins..."));
@@ -260,7 +261,7 @@ namespace PR_tool::widget::schematic {
         auto* wrap = new QWidget{this};
         auto* layout = new QVBoxLayout{wrap};
         layout->setContentsMargins(0, 0, 0, 0);
-        layout->setSpacing(2);
+        layout->setSpacing(8);
 
         auto* header = new QToolButton{wrap};
         header->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -269,8 +270,14 @@ namespace PR_tool::widget::schematic {
         header->setCheckable(true);
         header->setChecked(*expandedState);
         header->setAutoRaise(true);
+        header->setCursor(Qt::PointingHandCursor);
+        header->setFocusPolicy(Qt::TabFocus);
         header->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        SchematicTypography::applyInspectorTitle(header);
+        header->setStyleSheet(ChromeTokens::applyToQss(QStringLiteral(
+            "QToolButton { background: transparent; border: none; color: @textMuted; padding: 4px 0px; text-align: left; }"
+            "QToolButton:hover { background: @bg; border-radius: @radiusSmpx; }"
+            "QToolButton:focus { border: 1px solid @accent; border-radius: @radiusSmpx; }")));
+        SchematicTypography::applyPanelSectionTitle(header);
         layout->addWidget(header);
 
         body->setVisible(*expandedState);
@@ -325,7 +332,7 @@ namespace PR_tool::widget::schematic {
             this->_visibleToggle->setChecked(this->_topdieInstance->isVisible());
         }
         this->_statusLabel->setText(QStringLiteral("● Valid"));
-        this->_statusLabel->setStyleSheet(QStringLiteral("color: #2e7d32;"));
+        SchematicTypography::applyForeground(this->_statusLabel, ChromeTokens::success);
 
         this->updateConnectivityStats();
         this->rebuildPinMapModel();

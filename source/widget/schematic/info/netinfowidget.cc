@@ -24,22 +24,23 @@ namespace PR_tool::widget::schematic {
         QWidget{parent}
     {
         auto* thisLayout = new QVBoxLayout{this};
-        thisLayout->setContentsMargins(4, 4, 4, 4);
-        thisLayout->setSpacing(6);
+        thisLayout->setContentsMargins(8, 8, 8, 8);
+        thisLayout->setSpacing(8);
 
         auto* title = new QLabel{QStringLiteral("NET"), this};
         SchematicTypography::applyInspectorTitle(title);
         thisLayout->addWidget(title);
 
         auto* line = new QFrame{this};
+        line->setObjectName(QStringLiteral("SideHairline"));
         line->setFrameShape(QFrame::HLine);
-        line->setFrameShadow(QFrame::Sunken);
+        line->setFrameShadow(QFrame::Plain);
         thisLayout->addWidget(line);
 
         auto* layout = new QGridLayout{};
-        layout->setContentsMargins(4, 2, 4, 2);
-        layout->setHorizontalSpacing(10);
-        layout->setVerticalSpacing(6);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setHorizontalSpacing(8);
+        layout->setVerticalSpacing(8);
         layout->setColumnStretch(1, 1);
         thisLayout->addLayout(layout);
         thisLayout->addStretch();

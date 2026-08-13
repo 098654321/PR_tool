@@ -66,6 +66,37 @@ QLineEdit:focus {
     border: 1px solid @accent;
 }
 
+QSpinBox, QComboBox {
+    background: @surface;
+    color: @text;
+    border: 1px solid @borderStrong;
+    border-radius: @radiusSmpx;
+    padding: 4px 8px;
+    min-height: 24px;
+    selection-background-color: @accent;
+    selection-color: @onAccent;
+}
+
+QSpinBox:focus, QComboBox:focus {
+    border: 1px solid @accent;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 20px;
+    border: none;
+}
+
+QComboBox QAbstractItemView {
+    background: @surface;
+    color: @text;
+    border: 1px solid @borderStrong;
+    selection-background-color: @selectionFill;
+    selection-color: @text;
+    outline: 0;
+}
+
 QTreeWidget, QTableView, QListView {
     background: @surface;
     border: 1px solid @border;
@@ -211,10 +242,25 @@ QFrame#SideHairline {
 #SidePanel QTableView,
 #SidePanel QListView,
 #SidePanel QScrollArea,
-#SidePanel QScrollArea > QWidget,
+#SidePanel QScrollArea > QWidget {
+    background: @panel;
+    border: none;
+}
+
 #SidePanel QGroupBox {
     background: @panel;
     border: none;
+    margin-top: 8px;
+    padding: 8px 0 0 0;
+}
+
+#SidePanel QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 0;
+    padding: 0 0 8px 0;
+    color: @textMuted;
+    font-size: 11pt;
 }
 
 #SidePanel QTreeWidget {

@@ -28,7 +28,8 @@ namespace PR_tool::widget::schematic {
         }
 
         auto* thisLayout = new QVBoxLayout{this};
-        thisLayout->setContentsMargins(0, 4, 0, 0);
+        thisLayout->setContentsMargins(8, 8, 8, 8);
+        thisLayout->setSpacing(8);
 
         auto* placeholder = new QLabel{QStringLiteral("Select an object to inspect"), this};
         placeholder->setWordWrap(true);
@@ -37,17 +38,20 @@ namespace PR_tool::widget::schematic {
         thisLayout->addWidget(placeholder);
 
         auto* line = new QFrame{this};
+        line->setObjectName(QStringLiteral("SideHairline"));
         line->setFrameShape(QFrame::HLine);
-        line->setFrameShadow(QFrame::Sunken);
+        line->setFrameShadow(QFrame::Plain);
         thisLayout->addWidget(line);
 
         auto* widget = new QGroupBox{QStringLiteral("Canvas"), this};
-        SchematicTypography::applyInspectorTitle(widget);
+        SchematicTypography::applyPanelSectionTitle(widget);
         thisLayout->addWidget(widget);
         thisLayout->addStretch();
 
         auto* layout = new QGridLayout{widget};
-        layout->setSpacing(10);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setHorizontalSpacing(8);
+        layout->setVerticalSpacing(8);
 
         auto addPropRow = [&](int row, const QString& text, QWidget* value) {
             auto* label = new QLabel{text, widget};
