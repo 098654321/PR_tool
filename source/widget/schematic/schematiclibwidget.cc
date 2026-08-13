@@ -7,6 +7,7 @@
 #include "./item/pinitem.h"
 #include "./item/sourceportitem.h"
 #include "./schematicscene.h"
+#include "./schematictypography.h"
 
 #include <circuit/basedie.hh>
 #include <circuit/topdie/topdie.hh>
@@ -92,9 +93,7 @@ namespace PR_tool::widget {
         thisLayout->setSpacing(8);
 
         auto* designLabel = new QLabel{QStringLiteral("DESIGN"), this};
-        auto font = designLabel->font();
-        font.setBold(true);
-        designLabel->setFont(font);
+        schematic::SchematicTypography::applyPanelSectionTitle(designLabel);
         thisLayout->addWidget(designLabel);
 
         auto* line = new QFrame{this};
@@ -128,12 +127,11 @@ namespace PR_tool::widget {
         connLayout->setSpacing(2);
 
         auto* connTitle = new QLabel{QStringLiteral("Connections"), connBox};
-        auto connFont = connTitle->font();
-        connFont.setBold(true);
-        connTitle->setFont(connFont);
+        schematic::SchematicTypography::applyPanelSectionTitle(connTitle);
         connLayout->addWidget(connTitle);
 
         auto* showLabel = new QLabel{QStringLiteral("Show:"), connBox};
+        schematic::SchematicTypography::applyPropertyLabel(showLabel);
         connLayout->addWidget(showLabel);
 
         auto makeFilterCheck = [this, connBox](const QString& text) {
@@ -156,6 +154,7 @@ namespace PR_tool::widget {
         thisLayout->addWidget(connBox);
 
         this->_tree = new QTreeWidget{this};
+        schematic::SchematicTypography::applyTree(this->_tree);
         this->_tree->setHeaderHidden(true);
         this->_tree->setRootIsDecorated(true);
         this->_tree->setUniformRowHeights(true);
@@ -194,7 +193,6 @@ namespace PR_tool::widget {
             "  border: 1px solid rgba(%1, %2, %3, 220);"
             "  border-radius: 4px;"
             "  padding: 2px 8px;"
-            "  font-weight: 600;"
             "}"
             "QPushButton:hover:!disabled {"
             "  background-color: rgba(%1, %2, %3, 200);"
@@ -212,6 +210,7 @@ namespace PR_tool::widget {
             "}"
         )).arg(fill.red()).arg(fill.green()).arg(fill.blue()).arg(fill.alpha());
         button->setStyleSheet(qss);
+        schematic::SchematicTypography::applyPaletteButton(button);
         return button;
     }
 

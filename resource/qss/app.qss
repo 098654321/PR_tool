@@ -91,6 +91,7 @@ QHeaderView::section {
     border: none;
     border-bottom: 1px solid @border;
     padding: 6px 8px;
+    font-size: 10pt;
 }
 
 QSplitter::handle {
@@ -149,10 +150,12 @@ QStatusBar {
     background: @surface;
     border-top: 1px solid @border;
     color: @textMuted;
+    font-size: 10pt;
 }
 
 QStatusBar QLabel {
     color: @textMuted;
+    font-size: 10pt;
 }
 
 QGroupBox {
@@ -168,6 +171,7 @@ QGroupBox::title {
     left: 10px;
     padding: 0 4px;
     color: @textMuted;
+    font-size: 11pt;
 }
 
 QFrame#SideHairline {
@@ -190,6 +194,16 @@ QFrame#SideHairline {
 #SidePanel QGroupBox {
     background: @panel;
     border: none;
+}
+
+#SidePanel QTreeWidget {
+    font-size: 12pt;
+    color: @text;
+}
+
+#SidePanel QTableView {
+    font-size: 12pt;
+    color: @text;
 }
 
 #SidePanel QTreeWidget:focus,

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../chrometokens.h"
+
 #include <QColor>
 #include <QFont>
 #include <QPalette>
@@ -7,15 +9,19 @@
 
 namespace PR_tool::widget::schematic {
 
-    /// Ch.22 named pointSize table (initial values). System UI = QFont default.
-    /// Header roles are fixed table sizes — no Far zoom step-down.
+    /// Ch.22 named pointSize table (canvas) plus P1-2 chrome roles.
+    /// Do not reuse canvas pin / topdie fonts on chrome widgets.
     struct SchematicTypography {
-        static constexpr int TOPDIE_NAME_PT = 14;       // 13–14 semibold
-        static constexpr int TOPDIE_TYPE_PT = 12;       // 11–12 medium
-        static constexpr int PIN_NAME_PT = 9;           // 9–10 regular
-        static constexpr int PROPERTY_LABEL_PT = 11;    // 11 secondary
-        static constexpr int PROPERTY_VALUE_PT = 11;    // 11–12 regular
-        static constexpr int STATUS_PT = 10;            // 10–11 secondary
+        static constexpr int TOPDIE_NAME_PT = 14;       // 13–14 semibold (canvas)
+        static constexpr int TOPDIE_TYPE_PT = 12;       // 11–12 medium (canvas)
+        static constexpr int PIN_NAME_PT = 9;           // 9–10 regular (canvas)
+        static constexpr int PANEL_SECTION_PT = 11;     // 11–12 muted, open tracking
+        static constexpr int TREE_PT = 12;              // tree nodes
+        static constexpr int PROPERTY_LABEL_PT = 11;    // 10–11 muted
+        static constexpr int PROPERTY_VALUE_PT = 12;    // 12 regular
+        static constexpr int STATUS_PT = 10;            // 10–11 muted
+        static constexpr int PALETTE_PT = 10;           // smaller than tree 12pt
+        static constexpr qreal PANEL_SECTION_TRACKING = 112.0;
 
         static auto baseFont() -> QFont {
             return QFont{};
@@ -40,6 +46,16 @@ namespace PR_tool::widget::schematic {
             return withRole(PIN_NAME_PT, QFont::Normal);
         }
 
+        static auto panelSectionFont() -> QFont {
+            auto font = withRole(PANEL_SECTION_PT, QFont::Normal);
+            font.setLetterSpacing(QFont::PercentageSpacing, PANEL_SECTION_TRACKING);
+            return font;
+        }
+
+        static auto treeFont() -> QFont {
+            return withRole(TREE_PT, QFont::Normal);
+        }
+
         static auto propertyLabelFont() -> QFont {
             return withRole(PROPERTY_LABEL_PT, QFont::Normal);
         }
@@ -52,18 +68,40 @@ namespace PR_tool::widget::schematic {
             return withRole(STATUS_PT, QFont::Normal);
         }
 
-        static auto secondaryColor(const QWidget* widget) -> QColor {
-            if (widget == nullptr) {
-                return QColor(102, 102, 102);
-            }
-            return widget->palette().color(QPalette::PlaceholderText);
+        static auto paletteFont() -> QFont {
+            return withRole(PALETTE_PT, QFont::Medium);
         }
 
-        static void applyInspectorTitle(QWidget* widget) {
+        static void applyForeground(QWidget* widget, const char* hex) {
             if (widget == nullptr) {
                 return;
             }
-            widget->setFont(topDieTypeFont());
+            const auto color = ChromeTokens::color(hex);
+            auto pal = widget->palette();
+            pal.setColor(QPalette::WindowText, color);
+            pal.setColor(QPalette::Text, color);
+            pal.setColor(QPalette::ButtonText, color);
+            widget->setPalette(pal);
+        }
+
+        static void applyPanelSectionTitle(QWidget* widget) {
+            if (widget == nullptr) {
+                return;
+            }
+            widget->setFont(panelSectionFont());
+            applyForeground(widget, ChromeTokens::textMuted);
+        }
+
+        static void applyInspectorTitle(QWidget* widget) {
+            applyPanelSectionTitle(widget);
+        }
+
+        static void applyTree(QWidget* widget) {
+            if (widget == nullptr) {
+                return;
+            }
+            widget->setFont(treeFont());
+            applyForeground(widget, ChromeTokens::text);
         }
 
         static void applyPropertyLabel(QWidget* widget) {
@@ -71,9 +109,7 @@ namespace PR_tool::widget::schematic {
                 return;
             }
             widget->setFont(propertyLabelFont());
-            auto pal = widget->palette();
-            pal.setColor(QPalette::WindowText, secondaryColor(widget));
-            widget->setPalette(pal);
+            applyForeground(widget, ChromeTokens::textMuted);
         }
 
         static void applyPropertyValue(QWidget* widget) {
@@ -81,6 +117,7 @@ namespace PR_tool::widget::schematic {
                 return;
             }
             widget->setFont(propertyValueFont());
+            applyForeground(widget, ChromeTokens::text);
         }
 
         static void applyStatus(QWidget* widget) {
@@ -88,9 +125,14 @@ namespace PR_tool::widget::schematic {
                 return;
             }
             widget->setFont(statusFont());
-            auto pal = widget->palette();
-            pal.setColor(QPalette::WindowText, secondaryColor(widget));
-            widget->setPalette(pal);
+            applyForeground(widget, ChromeTokens::textMuted);
+        }
+
+        static void applyPaletteButton(QWidget* widget) {
+            if (widget == nullptr) {
+                return;
+            }
+            widget->setFont(paletteFont());
         }
     };
 
