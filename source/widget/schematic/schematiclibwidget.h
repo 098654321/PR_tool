@@ -9,6 +9,7 @@ class QTreeWidget;
 class QTreeWidgetItem;
 class QHBoxLayout;
 class QPushButton;
+class QCheckBox;
 class QColor;
 class QGraphicsItem;
 
@@ -57,6 +58,7 @@ namespace PR_tool::widget {
         void applySearchFilter();
         void filterTreeItem(QTreeWidgetItem* item, const QString& filter, bool forceVisible);
         void onTreeItemClicked(QTreeWidgetItem* item, int column);
+        void pushConnectionFilter();
         auto makePaletteButton(const QString& text, const QColor& fill) -> QPushButton*;
 
         static constexpr int kNavRoleType = Qt::UserRole;
@@ -74,6 +76,11 @@ namespace PR_tool::widget {
         QWidget* _paletteStrip {nullptr};
         QHBoxLayout* _paletteLayout {nullptr};
         QLineEdit* _searchEdit {nullptr};
+        QCheckBox* _filterSignal {nullptr};
+        QCheckBox* _filterBus {nullptr};
+        QCheckBox* _filterPower {nullptr};
+        QCheckBox* _filterGround {nullptr};
+        QCheckBox* _filterExternal {nullptr};
         QTreeWidget* _tree {nullptr};
         QTreeWidgetItem* _topDiesRoot {nullptr};
         QTreeWidgetItem* _portsRoot {nullptr};

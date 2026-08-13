@@ -20,6 +20,7 @@
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QCheckBox>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QFileDialog>
@@ -120,6 +121,37 @@ namespace PR_tool::widget {
         this->_searchEdit->setClearButtonEnabled(true);
         thisLayout->addWidget(this->_searchEdit);
 
+        auto* connBox = new QWidget{this};
+        auto* connLayout = new QVBoxLayout{connBox};
+        connLayout->setContentsMargins(0, 0, 0, 0);
+        connLayout->setSpacing(2);
+
+        auto* connTitle = new QLabel{QStringLiteral("Connections"), connBox};
+        auto connFont = connTitle->font();
+        connFont.setBold(true);
+        connTitle->setFont(connFont);
+        connLayout->addWidget(connTitle);
+
+        auto* showLabel = new QLabel{QStringLiteral("Show:"), connBox};
+        connLayout->addWidget(showLabel);
+
+        auto makeFilterCheck = [this, connBox](const QString& text) {
+            auto* cb = new QCheckBox{text, connBox};
+            cb->setChecked(true);
+            return cb;
+        };
+        this->_filterSignal = makeFilterCheck(QStringLiteral("Signal"));
+        this->_filterBus = makeFilterCheck(QStringLiteral("Bus"));
+        this->_filterPower = makeFilterCheck(QStringLiteral("Power"));
+        this->_filterGround = makeFilterCheck(QStringLiteral("Ground"));
+        this->_filterExternal = makeFilterCheck(QStringLiteral("External"));
+        connLayout->addWidget(this->_filterSignal);
+        connLayout->addWidget(this->_filterBus);
+        connLayout->addWidget(this->_filterPower);
+        connLayout->addWidget(this->_filterGround);
+        connLayout->addWidget(this->_filterExternal);
+        thisLayout->addWidget(connBox);
+
         this->_tree = new QTreeWidget{this};
         this->_tree->setHeaderHidden(true);
         this->_tree->setRootIsDecorated(true);
@@ -139,6 +171,11 @@ namespace PR_tool::widget {
 
         connect(this->_searchEdit, &QLineEdit::textChanged, this, &SchematicLibWidget::applySearchFilter);
         connect(this->_tree, &QTreeWidget::itemClicked, this, &SchematicLibWidget::onTreeItemClicked);
+        connect(this->_filterSignal, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterBus, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterPower, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterGround, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterExternal, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
     }
 
     auto SchematicLibWidget::makePaletteButton(const QString& text, const QColor& fill) -> QPushButton* {
@@ -369,6 +406,19 @@ namespace PR_tool::widget {
         for (int i = 0; i < this->_tree->topLevelItemCount(); ++i) {
             this->filterTreeItem(this->_tree->topLevelItem(i), filter, false);
         }
+    }
+
+    void SchematicLibWidget::pushConnectionFilter() {
+        if (!this->_scene) {
+            return;
+        }
+        ConnectionFilter filter;
+        filter.signal = this->_filterSignal && this->_filterSignal->isChecked();
+        filter.bus = this->_filterBus && this->_filterBus->isChecked();
+        filter.power = this->_filterPower && this->_filterPower->isChecked();
+        filter.ground = this->_filterGround && this->_filterGround->isChecked();
+        filter.external = this->_filterExternal && this->_filterExternal->isChecked();
+        this->_scene->setConnectionFilter(filter);
     }
 
     void SchematicLibWidget::onTreeItemClicked(QTreeWidgetItem* item, int) {

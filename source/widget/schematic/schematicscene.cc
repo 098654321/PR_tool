@@ -141,6 +141,7 @@ namespace PR_tool::widget {
         this->addNetItems();
         this->refreshPowerRails();
         this->markBundleNets();
+        this->applyConnectionFilter();
     }
 
     void SchematicScene::addTopDieInstItems() {
@@ -504,8 +505,98 @@ namespace PR_tool::widget {
         }
 
         // Re-apply default/focus widths so BUNDLE_WIDTH takes effect on visibles.
+        this->applyConnectionFilter();
         this->refreshConnectionFocus();
     }
+
+    void SchematicScene::setConnectionFilter(const ConnectionFilter& filter) {
+        this->_connectionFilter = filter;
+        this->refreshPowerRails();
+        this->markBundleNets();
+    }
+
+    auto SchematicScene::netPassesFilter(schematic::NetItem* net) const -> bool {
+        if (!net || net->isFloating() || !net->unwrap()) {
+            return true;
+        }
+        const auto& in = net->unwrap()->input_pin();
+        const auto& out = net->unwrap()->output_pin();
+        if (in.is_vdd() || out.is_vdd()) {
+            return this->_connectionFilter.power;
+        }
+        if (in.is_gnd() || out.is_gnd()) {
+            return this->_connectionFilter.ground;
+        }
+        if (in.is_external_port() || out.is_external_port()) {
+            return this->_connectionFilter.external;
+        }
+        if (net->isBundleMember()) {
+            return this->_connectionFilter.bus;
+        }
+        return this->_connectionFilter.signal;
+    }
+
+    auto SchematicScene::sourcePortTiedToPowerNet(schematic::SourcePortItem* port) const -> bool {
+        if (!port || !port->pin()) {
+            return false;
+        }
+        for (auto* point : port->pin()->connectedPoints()) {
+            if (!point || !point->netItem() || point->netItem()->isFloating()) {
+                continue;
+            }
+            if (point->netItem()->unwrap() && isPowerConnection(point->netItem()->unwrap())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void SchematicScene::applyConnectionFilter() {
+        for (auto* net : this->_nets) {
+            if (!net || net->isFloating()) {
+                continue;
+            }
+            if (!this->netPassesFilter(net)) {
+                net->setVisible(false);
+            }
+            const bool vis = net->isVisible();
+            if (auto* p = net->beginPoint()) {
+                p->setVisible(vis);
+            }
+            if (auto* p = net->endPoint()) {
+                p->setVisible(vis);
+            }
+        }
+
+        if (this->_vddRail && !this->_connectionFilter.power) {
+            this->_vddRail->setVisible(false);
+        }
+        if (this->_gndRail && !this->_connectionFilter.ground) {
+            this->_gndRail->setVisible(false);
+        }
+
+        for (auto* port : this->_vddPorts) {
+            if (!port) {
+                continue;
+            }
+            if (!this->_connectionFilter.power) {
+                port->setVisible(false);
+            } else if (!this->sourcePortTiedToPowerNet(port)) {
+                port->setVisible(true);
+            }
+        }
+        for (auto* port : this->_gndPorts) {
+            if (!port) {
+                continue;
+            }
+            if (!this->_connectionFilter.ground) {
+                port->setVisible(false);
+            } else if (!this->sourcePortTiedToPowerNet(port)) {
+                port->setVisible(true);
+            }
+        }
+    }
+
 
     auto SchematicScene::viewScale() const -> qreal {
         const auto vs = this->views();

@@ -37,6 +37,15 @@ namespace PR_tool::widget {
         class PowerRailItem;
     }
 
+    /// Canvas connection categories (Navi checkboxes). Default: all on.
+    struct ConnectionFilter {
+        bool signal {true};
+        bool bus {true};
+        bool power {true};
+        bool ground {true};
+        bool external {true};
+    };
+
     class SchematicScene : public QGraphicsScene {
         Q_OBJECT
         
@@ -75,6 +84,9 @@ namespace PR_tool::widget {
         void refreshPowerRails();
         /// Ch.九: recompute bus bundles (endpoint-pair collapse / Near expand).
         void refreshBusBundling();
+        void setConnectionFilter(const ConnectionFilter& filter);
+        auto connectionFilter() const -> const ConnectionFilter& { return this->_connectionFilter; }
+
 
     protected:
         void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override;
@@ -92,6 +104,10 @@ namespace PR_tool::widget {
         /// Stable endpoint-container pair key (TopDieInst / ExternalPort); nullopt if ineligible.
         auto endpointPairKey(schematic::NetItem* net) const -> std::optional<QPair<quintptr, quintptr>>;
         auto viewScale() const -> qreal;
+        auto netPassesFilter(schematic::NetItem* net) const -> bool;
+        auto sourcePortTiedToPowerNet(schematic::SourcePortItem* port) const -> bool;
+        void applyConnectionFilter();
+
 
     public:
         auto addExPort(circuit::ExternalPort*) -> schematic::ExternalPortItem*;
@@ -177,6 +193,7 @@ namespace PR_tool::widget {
         QSet<schematic::NetItem*> _nets;
         QVector<schematic::SourcePortItem*> _vddPorts;
         QVector<schematic::SourcePortItem*> _gndPorts;
+        ConnectionFilter _connectionFilter {};
         schematic::PowerRailItem* _vddRail {nullptr};
         schematic::PowerRailItem* _gndRail {nullptr};
 
