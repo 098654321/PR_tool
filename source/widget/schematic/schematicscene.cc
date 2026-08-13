@@ -631,6 +631,15 @@ namespace PR_tool::widget {
             }
             this->refreshConnectionFocus();
         }
+        else if (item->type() == schematic::SourcePortItem::Type) {
+            auto* port = dynamic_cast<schematic::SourcePortItem*>(item);
+            if (port) {
+                port->setSelected(true);
+            }
+            this->_selectedFocusNets.clear();
+            emit this->sourcePortSelected(port);
+            this->refreshConnectionFocus();
+        }
     }
 
     void SchematicScene::enforceSingleTopDieSelection(schematic::TopDieInstanceItem* keep) {
@@ -937,6 +946,34 @@ namespace PR_tool::widget {
                 }
             }
         }
+    }
+
+
+    void SchematicScene::selectFromNavigator(QGraphicsItem* item) {
+        this->clearSelection();
+        this->_selectedFocusNets.clear();
+        this->_selectedTopDie = nullptr;
+
+        if (!item) {
+            emit this->viewSelected();
+            this->refreshConnectionFocus();
+            return;
+        }
+
+        item->setSelected(true);
+
+        if (item->type() == schematic::SourcePortItem::Type) {
+            auto* port = dynamic_cast<schematic::SourcePortItem*>(item);
+            if (port && port->pin()) {
+                this->focusPin(port->pin(), /*locate=*/false);
+            } else {
+                this->refreshConnectionFocus();
+            }
+            emit this->sourcePortSelected(port);
+            return;
+        }
+
+        this->emitSelectionForItem(item);
     }
 
 

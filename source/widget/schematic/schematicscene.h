@@ -47,6 +47,7 @@ namespace PR_tool::widget {
         void netSelected(schematic::NetItem* net);
         void topdieInstSelected(schematic::TopDieInstanceItem* topdieinst);
         void exportSelected(schematic::ExternalPortItem* eport);
+        void sourcePortSelected(schematic::SourcePortItem* port);
         void viewSelected();
         void layoutChanged();
 
@@ -68,6 +69,8 @@ namespace PR_tool::widget {
         void refreshConnectionFocus();
         /// Select pin + highlight connected nets; locate zooms to Near.
         void focusPin(schematic::PinItem* pin, bool locate);
+        /// Navigator tree click — select + highlight, no zoom.
+        void selectFromNavigator(QGraphicsItem* item);
         /// Ch.八: rebuild VDD/GND rail + stubs after die move / power net change.
         void refreshPowerRails();
         /// Ch.九: recompute bus bundles (endpoint-pair collapse / Near expand).
@@ -124,6 +127,19 @@ namespace PR_tool::widget {
     public:
         auto topdieinstMap() -> QHash<circuit::TopDieInstance*, schematic::TopDieInstanceItem*>& 
         { return this->_topdieinstMap; }
+
+        auto exportMap() -> QHash<circuit::ExternalPort*, schematic::ExternalPortItem*>&
+        { return this->_exportMap; }
+
+        auto nets() -> QSet<schematic::NetItem*>&
+        { return this->_nets; }
+
+        auto vddPorts() const -> const QVector<schematic::SourcePortItem*>&
+        { return this->_vddPorts; }
+
+        auto gndPorts() const -> const QVector<schematic::SourcePortItem*>&
+        { return this->_gndPorts; }
+
 
     private:
         void addTopDieInstItems();

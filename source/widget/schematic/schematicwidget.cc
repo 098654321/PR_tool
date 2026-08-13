@@ -7,6 +7,7 @@
 #include "./item/topdieinstitem.h"
 #include "./item/netitem.h"
 #include "./item/exportitem.h"
+#include "./item/sourceportitem.h"
 
 #include <QSplitter>
 #include <QVBoxLayout>
@@ -69,9 +70,9 @@ namespace PR_tool::widget {
     }
 
     void SchematicWidget::initTopdieLibWidget() {
-        this->_libWidget = new SchematicLibWidget {this->_basedie, this->_splitter};
-        this->_libWidget->setFixedWidth(200);
-        this->_libWidget->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
+        this->_libWidget = new SchematicLibWidget {this->_basedie, this->_scene, this->_splitter};
+        this->_libWidget->setMinimumWidth(200);
+        this->_libWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 
         this->_splitter->addWidget(this->_libWidget);
 
@@ -131,6 +132,36 @@ namespace PR_tool::widget {
         QObject::connect(
             this->_infoWidget, &SchematicInfoWidget::layoutChanged,
             this, &SchematicWidget::layoutChanged);
+
+        // Ch.十五: canvas selection ↔ navigator tree cross-probe
+        QObject::connect(
+            this->_scene, &SchematicScene::viewSelected,
+            this->_libWidget, [this]() {
+                this->_libWidget->syncSelectionFromCanvas(nullptr);
+            });
+        QObject::connect(
+            this->_scene, &SchematicScene::netSelected,
+            this->_libWidget, [this](schematic::NetItem* net) {
+                this->_libWidget->syncSelectionFromCanvas(net);
+            });
+        QObject::connect(
+            this->_scene, &SchematicScene::exportSelected,
+            this->_libWidget, [this](schematic::ExternalPortItem* eport) {
+                this->_libWidget->syncSelectionFromCanvas(eport);
+            });
+        QObject::connect(
+            this->_scene, &SchematicScene::topdieInstSelected,
+            this->_libWidget, [this](schematic::TopDieInstanceItem* inst) {
+                this->_libWidget->syncSelectionFromCanvas(inst);
+            });
+        QObject::connect(
+            this->_scene, &SchematicScene::sourcePortSelected,
+            this->_libWidget, [this](schematic::SourcePortItem* port) {
+                this->_libWidget->syncSelectionFromCanvas(port);
+            });
+        QObject::connect(
+            this, &SchematicWidget::layoutChanged,
+            this->_libWidget, &SchematicLibWidget::reload);
 
         // Delete/Backspace on the canvas removes the item shown in the property panel (S9).
         auto* deleteShortcut = new QShortcut{QKeySequence::Delete, this->_view};
