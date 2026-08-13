@@ -645,21 +645,31 @@ QPushButton:focus {
         auto statusBar = this->statusBar();
 
         this->_stageLabel = new QLabel{this};
+        this->_stageLabel->setObjectName(QStringLiteral("StatusStage"));
         this->_stageLabel->setMinimumWidth(120);
-        schematic::SchematicTypography::applyStatus(this->_stageLabel);
+        schematic::SchematicTypography::applyStatusEmphasis(this->_stageLabel);
         statusBar->addWidget(this->_stageLabel);
 
         this->_detailLabel = new QLabel{this};
+        this->_detailLabel->setObjectName(QStringLiteral("StatusDetail"));
         this->_detailLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         schematic::SchematicTypography::applyStatus(this->_detailLabel);
         statusBar->addWidget(this->_detailLabel, 1);
 
         this->_statusLabel = new QLabel{this};
+        this->_statusLabel->setObjectName(QStringLiteral("StatusPage"));
         this->_statusLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         this->_statusLabel->setMinimumWidth(160);
         schematic::SchematicTypography::applyStatus(this->_statusLabel);
-
         statusBar->addPermanentWidget(this->_statusLabel);
+
+        this->_routeLabel = new QLabel{this};
+        this->_routeLabel->setObjectName(QStringLiteral("StatusRoute"));
+        this->_routeLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        this->_routeLabel->setMinimumWidth(88);
+        schematic::SchematicTypography::applyStatusEmphasis(this->_routeLabel);
+        statusBar->addPermanentWidget(this->_routeLabel);
+
         this->updateStatusLabel();
     }
 
@@ -1441,16 +1451,11 @@ QPushButton:focus {
     }
 
     void Window::updateStatusLabel() {
-        if (this->_statusLabel == nullptr) {
-            return;
-        }
-
         if (this->_stageLabel != nullptr) {
             this->_stageLabel->setText(
                 this->_finishPR ? QStringLiteral("Stage: Results")
                                 : QStringLiteral("Stage: Design"));
         }
-
         if (this->isSchematicPage()
             && this->_schematicWidget != nullptr
             && this->_schematicWidget->schematicView() != nullptr) {
@@ -1458,17 +1463,50 @@ QPushButton:focus {
                 this->statusBar()->clearMessage();
             }
             if (this->_detailLabel != nullptr) {
-                this->_detailLabel->setText(this->_schematicWidget->schematicView()->statusLine());
+                const auto line = this->_schematicWidget->schematicView()->statusLine();
+                schematic::SchematicTypography::applyStatus(this->_detailLabel);
+                if (line.startsWith(QLatin1String("Ctrl+Wheel"))) {
+                    const int sep = line.indexOf(QLatin1String(" | "));
+                    const auto hint = sep < 0 ? line : line.left(sep);
+                    const auto rest = sep < 0 ? QString{} : line.mid(sep);
+                    this->_detailLabel->setTextFormat(Qt::RichText);
+                    this->_detailLabel->setText(
+                        QStringLiteral("<span style='color:%1'>%2</span>"
+                                       "<span style='color:%3'>%4</span>")
+                            .arg(
+                                QLatin1String(ChromeTokens::disabledText),
+                                hint.toHtmlEscaped(),
+                                QLatin1String(ChromeTokens::textMuted),
+                                rest.toHtmlEscaped()));
+                } else {
+                    this->_detailLabel->setTextFormat(Qt::PlainText);
+                    this->_detailLabel->setText(line);
+                }
                 this->_detailLabel->show();
             }
-            this->_statusLabel->setText(
-                QStringLiteral("Schematic | %1").arg(this->routeStatusText()));
+            if (this->_statusLabel != nullptr) {
+                this->_statusLabel->setText(QStringLiteral("Schematic"));
+            }
+            if (this->_routeLabel != nullptr) {
+                this->_routeLabel->setText(this->routeStatusText());
+                this->_routeLabel->show();
+            }
             return;
         }
 
         if (this->_detailLabel != nullptr) {
             this->_detailLabel->clear();
+            this->_detailLabel->setTextFormat(Qt::PlainText);
+            schematic::SchematicTypography::applyStatus(this->_detailLabel);
             this->_detailLabel->hide();
+        }
+        if (this->_routeLabel != nullptr) {
+            this->_routeLabel->clear();
+            this->_routeLabel->hide();
+        }
+
+        if (this->_statusLabel == nullptr) {
+            return;
         }
 
         const auto path = this->hasConfigPath()

@@ -208,6 +208,14 @@ QStatusBar {
 QStatusBar QLabel {
     color: @textMuted;
     font-size: 10pt;
+    font-weight: 400;
+}
+
+QStatusBar QLabel#StatusStage,
+QStatusBar QLabel#StatusRoute {
+    color: @text;
+    font-size: 11pt;
+    font-weight: 500;
 }
 
 QGroupBox {

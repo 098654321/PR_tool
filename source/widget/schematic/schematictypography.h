@@ -20,6 +20,7 @@ namespace PR_tool::widget::schematic {
         static constexpr int PROPERTY_LABEL_PT = 11;    // 10–11 muted
         static constexpr int PROPERTY_VALUE_PT = 12;    // 12 regular
         static constexpr int STATUS_PT = 10;            // 10–11 muted
+        static constexpr int STATUS_EMPHASIS_PT = 11;   // Stage / Ready
         static constexpr int PALETTE_PT = 10;           // smaller than tree 12pt
         static constexpr qreal PANEL_SECTION_TRACKING = 112.0;
 
@@ -66,6 +67,10 @@ namespace PR_tool::widget::schematic {
 
         static auto statusFont() -> QFont {
             return withRole(STATUS_PT, QFont::Normal);
+        }
+
+        static auto statusEmphasisFont() -> QFont {
+            return withRole(STATUS_EMPHASIS_PT, QFont::Medium);
         }
 
         static auto paletteFont() -> QFont {
@@ -126,6 +131,22 @@ namespace PR_tool::widget::schematic {
             }
             widget->setFont(statusFont());
             applyForeground(widget, ChromeTokens::textMuted);
+        }
+
+        static void applyStatusEmphasis(QWidget* widget) {
+            if (widget == nullptr) {
+                return;
+            }
+            widget->setFont(statusEmphasisFont());
+            applyForeground(widget, ChromeTokens::text);
+        }
+
+        static void applyStatusHint(QWidget* widget) {
+            if (widget == nullptr) {
+                return;
+            }
+            widget->setFont(statusFont());
+            applyForeground(widget, ChromeTokens::disabledText);
         }
 
         static void applyPaletteButton(QWidget* widget) {

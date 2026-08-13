@@ -117,6 +117,7 @@ namespace PR_tool::widget {
         QLabel* _stageLabel {nullptr};
         QLabel* _detailLabel {nullptr};
         QLabel* _statusLabel {nullptr};
+        QLabel* _routeLabel {nullptr};
 
     private:
         std::Box<hardware::Interposer> _interposer {nullptr};
