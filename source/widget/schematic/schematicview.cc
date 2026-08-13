@@ -1,5 +1,6 @@
 #include "./schematicview.h"
 #include "./schematicminimap.h"
+#include "./schematictypography.h"
 #include "../chrometokens.h"
 
 #include "qglobal.h"
@@ -17,6 +18,7 @@
 #include <QBrush>
 #include <QPen>
 #include <QPalette>
+#include <QLabel>
 #include <cassert>
 #include <hardware/interposer.hh>
 #include <circuit/basedie.hh>
@@ -154,6 +156,18 @@ namespace PR_tool::widget {
 
         this->_minimap = new SchematicMiniMap {this};
         this->repositionMiniMap();
+
+        this->_emptyHint = new QLabel{
+            QStringLiteral("Load a config or place from the Palette"),
+            this->viewport()};
+        this->_emptyHint->setAttribute(Qt::WA_TransparentForMouseEvents);
+        this->_emptyHint->setFocusPolicy(Qt::NoFocus);
+        this->_emptyHint->setAlignment(Qt::AlignCenter);
+        this->_emptyHint->setWordWrap(false);
+        this->_emptyHint->setAutoFillBackground(false);
+        SchematicTypography::applyStatus(this->_emptyHint);
+        SchematicTypography::applyForeground(this->_emptyHint, ChromeTokens::textMuted);
+        this->updateEmptyHint();
     }
 
     SchematicView::~SchematicView() noexcept {}
@@ -184,7 +198,12 @@ namespace PR_tool::widget {
                 sc, &QGraphicsScene::selectionChanged,
                 this, &SchematicView::emitStatusContext,
                 Qt::UniqueConnection);
+            QObject::connect(
+                sc, &QGraphicsScene::changed,
+                this, &SchematicView::updateEmptyHint,
+                Qt::UniqueConnection);
         }
+        this->updateEmptyHint();
     }
 
     void SchematicView::repositionMiniMap() {
@@ -201,9 +220,59 @@ namespace PR_tool::widget {
         this->_minimap->show();
     }
 
+    void SchematicView::repositionEmptyHint() {
+        if (this->_emptyHint == nullptr || this->viewport() == nullptr) {
+            return;
+        }
+        this->_emptyHint->adjustSize();
+        const QRect vr = this->viewport()->rect();
+        const QSize sz = this->_emptyHint->sizeHint();
+        const int x = qMax(0, (vr.width() - sz.width()) / 2);
+        const int y = qMax(0, (vr.height() - sz.height()) / 2);
+        this->_emptyHint->setGeometry(x, y, sz.width(), sz.height());
+    }
+
+    auto SchematicView::schematicCanvasIsEmpty() const -> bool {
+        auto* sc = this->scene();
+        if (sc == nullptr) {
+            return true;
+        }
+        for (QGraphicsItem* item : sc->items()) {
+            if (item == nullptr) {
+                continue;
+            }
+            switch (item->type()) {
+            case schematic::TopDieInstanceItem::Type:
+            case schematic::ExternalPortItem::Type:
+            case schematic::SourcePortItem::Type:
+            case schematic::NetItem::Type:
+                return false;
+            default:
+                break;
+            }
+        }
+        return true;
+    }
+
+    void SchematicView::updateEmptyHint() {
+        if (this->_emptyHint == nullptr) {
+            return;
+        }
+        const bool empty = this->schematicCanvasIsEmpty();
+        this->_emptyHint->setVisible(empty);
+        if (empty) {
+            this->repositionEmptyHint();
+            this->_emptyHint->raise();
+            if (this->_minimap != nullptr) {
+                this->_minimap->raise();
+            }
+        }
+    }
+
     void SchematicView::resizeEvent(QResizeEvent* event) {
         GraphicsView::resizeEvent(event);
         this->repositionMiniMap();
+        this->repositionEmptyHint();
     }
 
     void SchematicView::mouseMoveEvent(QMouseEvent* event) {
@@ -228,6 +297,7 @@ namespace PR_tool::widget {
         const bool handled = GraphicsView::viewportEvent(event);
         if (event->type() == QEvent::Resize) {
             this->repositionMiniMap();
+            this->repositionEmptyHint();
         }
         return handled;
     }

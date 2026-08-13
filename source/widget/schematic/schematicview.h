@@ -2,6 +2,7 @@
 
 #include <widget/frame/graphicsview.h>
 #include <QGraphicsView>
+#include <QLabel>
 #include <QObject>
 #include <QPointF>
 #include <QString>
@@ -43,6 +44,7 @@ namespace PR_tool::widget {
 
     private slots:
         void emitStatusContext();
+        void updateEmptyHint();
 
     protected:
         void drawBackground(QPainter* painter, const QRectF& rect) override;
@@ -55,6 +57,8 @@ namespace PR_tool::widget {
         void ensureVisibleAtMinScale(QGraphicsItem* item, qreal minScale) override;
 
         void repositionMiniMap();
+        void repositionEmptyHint();
+        auto schematicCanvasIsEmpty() const -> bool;
 
     public:
         void updateBack();
@@ -85,6 +89,7 @@ namespace PR_tool::widget {
         qreal _gridSize {20};
 
         SchematicMiniMap* _minimap {nullptr};
+        QLabel* _emptyHint {nullptr};
         QPointF _statusScenePos {};
         bool _hasStatusPos {false};
     };
