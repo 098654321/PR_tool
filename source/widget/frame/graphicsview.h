@@ -20,6 +20,8 @@ namespace PR_tool::widget {
         void fitContent();
         /// Restore the default zoom (constructor scale 1/2.5).
         void resetZoom();
+        /// Ch.十四 Locate: raise scale to at least minScale, then center on item.
+        void ensureVisibleAtMinScale(QGraphicsItem* item, qreal minScale);
 
         static constexpr qreal kDefaultScale = 1.0 / 2.5;
 

@@ -66,6 +66,8 @@ namespace PR_tool::widget {
         void setHoverPortGroup(schematic::PortGroupItem* group);
         void onTopDieSelectionChanged(schematic::TopDieInstanceItem* die, bool selected);
         void refreshConnectionFocus();
+        /// Select pin + highlight connected nets; locate zooms to Near.
+        void focusPin(schematic::PinItem* pin, bool locate);
         /// Ch.八: rebuild VDD/GND rail + stubs after die move / power net change.
         void refreshPowerRails();
         /// Ch.九: recompute bus bundles (endpoint-pair collapse / Near expand).

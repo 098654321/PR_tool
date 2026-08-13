@@ -893,6 +893,52 @@ namespace PR_tool::widget {
         this->_refreshingFocus = false;
     }
 
+    void SchematicScene::focusPin(schematic::PinItem* pin, bool locate) {
+        if (pin == nullptr) {
+            return;
+        }
+
+        this->clearSelection();
+        pin->setSelected(true);
+
+        QSet<schematic::NetItem*> nets;
+        for (auto* point : pin->connectedPoints()) {
+            if (point && point->netItem() && !point->netItem()->isFloating()) {
+                nets.unite(this->expandToBundleNets(point->netItem()));
+            }
+        }
+        this->_selectedFocusNets = std::move(nets);
+
+        if (pin->isTopDieInstancePin()) {
+            if (auto* top = pin->parentTopDieInstance()) {
+                this->enforceSingleTopDieSelection(top);
+                top->setSelected(true);
+                this->_selectedTopDie = top;
+                emit this->topdieInstSelected(top);
+            }
+        } else if (pin->isExternalPortPin()) {
+            this->_selectedTopDie = nullptr;
+            if (auto* eport = pin->parentExternalPort()) {
+                eport->setSelected(true);
+                emit this->exportSelected(eport);
+            }
+        } else {
+            this->_selectedTopDie = nullptr;
+        }
+
+        this->refreshConnectionFocus();
+
+        if (locate) {
+            const auto views = this->views();
+            if (!views.isEmpty()) {
+                if (auto* gv = qobject_cast<GraphicsView*>(views.first())) {
+                    gv->ensureVisibleAtMinScale(pin, schematic::PinItem::LOD_NEAR_MIN);
+                }
+            }
+        }
+    }
+
+
     void SchematicScene::mousePressEvent(QGraphicsSceneMouseEvent* event) {
         const bool wasFloating = this->_floatingNet != nullptr
             || this->_floatingTopdDieInst != nullptr

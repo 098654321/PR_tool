@@ -74,7 +74,7 @@ namespace PR_tool::widget {
     }
 
     void SchematicInfoWidget::createTopDieInstanceInfoWidget() {
-        this->_topdieInstInfoWidget = new TopDieInstanceInfoWidget {this};
+        this->_topdieInstInfoWidget = new TopDieInstanceInfoWidget {this->_scene, this};
         this->addWidget(this->_topdieInstInfoWidget);
 
         connect(this->_topdieInstInfoWidget, &TopDieInstanceInfoWidget::topdieInstanceRename, this,&SchematicInfoWidget::topdieInstanceRename);

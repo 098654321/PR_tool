@@ -3,16 +3,10 @@
 #include <QWidget>
 #include <hardware/track/trackcoord.hh>
 
-class QLabel;
 class QSpinBox;
-class QTableView;
 class QLineEdit;
 class QComboBox;
 class QPushButton;
-
-namespace PR_tool::widget {
-    class LineEditWithButton;
-}
 
 namespace PR_tool::widget::schematic {
 
@@ -36,7 +30,7 @@ namespace PR_tool::widget::schematic {
     protected:
         ExternalPortItem* _externalPort {nullptr};
 
-        LineEditWithButton* _nameEdit {nullptr};
+        QLineEdit* _nameEdit {nullptr};
         QSpinBox* _rowSpinBox {nullptr};
         QSpinBox* _colSpinBox {nullptr};
         QComboBox* _dirComboBox {nullptr};

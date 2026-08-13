@@ -63,6 +63,21 @@ namespace PR_tool::widget {
         this->scale(kDefaultScale, kDefaultScale);
     }
 
+    void GraphicsView::ensureVisibleAtMinScale(QGraphicsItem* item, qreal minScale) {
+        if (item == nullptr) {
+            return;
+        }
+        const qreal s = this->transform().m11();
+        if (s < minScale && s > 0.0) {
+            const qreal factor = minScale / s;
+            const auto oldAnchor = this->transformationAnchor();
+            this->setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+            this->scale(factor, factor);
+            this->setTransformationAnchor(oldAnchor);
+        }
+        this->centerOn(item);
+    }
+
     void GraphicsView::wheelEvent(QWheelEvent* event) {
         if (event->modifiers() & Qt::ControlModifier) {
             const double scaleFactor = 1.15;
