@@ -1,4 +1,5 @@
 #include "./window.h"
+#include "./chrometokens.h"
 #include "./prthread.h"
 #include "./view2d/view2dwidget.h"
 #include "./view3d/view3dwidget.h"
@@ -44,7 +45,10 @@
 #include <QVBoxLayout>
 #include <QToolBar>
 #include <QStackedWidget>
-#include <QToolButton>
+#include <QPushButton>
+#include <QHBoxLayout>
+#include <QFrame>
+#include <QSignalBlocker>
 #include <QKeySequence>
 #include <QShortcut>
 #include <QMenu>
@@ -67,7 +71,8 @@ namespace PR_tool::widget {
         : QMainWindow{parent}
     {
         this->createSystem();
-        
+        this->setUnifiedTitleAndToolBarOnMac(false);
+
         this->createMenuBar();
         this->createToolBar();
         this->createCentralWidget();
@@ -84,6 +89,78 @@ namespace PR_tool::widget {
         constexpr auto kSchematicSplitterKey = "schematicSplitter";
         constexpr auto kShowNavigatorKey = "showNavigator";
         constexpr auto kShowInspectorKey = "showInspector";
+
+        constexpr auto kSwitcherStyle = R"(
+QFrame#ViewSwitcher {
+    background-color: @surface;
+    border: 1px solid @borderStrong;
+    border-radius: @radiuspx;
+}
+QFrame#ViewSwitcher QPushButton {
+    background-color: @surface;
+    color: @text;
+    border: none;
+    border-right: 1px solid @borderStrong;
+    border-radius: 0px;
+    padding: 7px 14px;
+    min-height: 26px;
+}
+QFrame#ViewSwitcher QPushButton[viewSwitch="trail"] {
+    border-right: none;
+}
+QFrame#ViewSwitcher QPushButton:checked {
+    background-color: @accent;
+    color: @onAccent;
+}
+QFrame#ViewSwitcher QPushButton:hover:!checked:!disabled {
+    background-color: @bg;
+}
+QFrame#ViewSwitcher QPushButton:disabled {
+    color: @disabledText;
+    background-color: @bg;
+}
+)";
+
+        constexpr auto kPrimaryCtaStyle = R"(
+QPushButton {
+    background-color: @accent;
+    color: @onAccent;
+    border: none;
+    border-radius: @radiusSmpx;
+    padding: 7px 16px;
+    min-height: 28px;
+    font-weight: 600;
+}
+QPushButton:hover:!disabled {
+    background-color: @accentHover;
+}
+QPushButton:pressed {
+    background-color: @accentPressed;
+}
+QPushButton:disabled {
+    background-color: @disabledBg;
+    color: @onAccent;
+}
+)";
+
+        void bindButtonToAction(QPushButton* button, QAction* action) {
+            button->setCheckable(action->isCheckable());
+            button->setFocusPolicy(Qt::TabFocus);
+            auto sync = [button, action]() {
+                const QSignalBlocker blocker{button};
+                button->setText(action->text());
+                button->setToolTip(action->toolTip());
+                button->setEnabled(action->isEnabled());
+                button->setChecked(action->isChecked());
+                button->setAccessibleName(action->text());
+                button->setAccessibleDescription(action->statusTip());
+            };
+            sync();
+            QObject::connect(action, &QAction::changed, button, sync);
+            QObject::connect(button, &QPushButton::clicked, action, [action]() {
+                action->trigger();
+            });
+        }
     }
 
     void Window::restoreWindowSettings() {
@@ -314,27 +391,63 @@ namespace PR_tool::widget {
         this->_toolBar->setMovable(false);
         this->_toolBar->setFloatable(false);
         this->_toolBar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        this->_toolBar->setAttribute(Qt::WA_StyledBackground, true);
+        this->_toolBar->setStyleSheet(ChromeTokens::applyToQss(QStringLiteral(
+            "QToolBar {"
+            "  background-color: @surface;"
+            "  border: none;"
+            "  border-bottom: 1px solid @border;"
+            "  spacing: 10px;"
+            "  padding: 8px 12px;"
+            "}")));
         this->addToolBar(Qt::TopToolBarArea, this->_toolBar);
 
-        // Segmented view switcher (same actions as View menu)
-        this->_toolBar->addAction(this->_schematicAction);
-        this->_toolBar->addAction(this->_layoutAction);
-        this->_toolBar->addAction(this->_view2DAction);
-        this->_toolBar->addAction(this->_view3DAction);
+        auto* switcher = new QFrame{this->_toolBar};
+        switcher->setObjectName(QStringLiteral("ViewSwitcher"));
+        switcher->setAttribute(Qt::WA_StyledBackground, true);
+        switcher->setStyleSheet(ChromeTokens::applyToQss(QString::fromUtf8(kSwitcherStyle)));
+        auto* switcherRow = new QHBoxLayout{switcher};
+        switcherRow->setContentsMargins(0, 0, 0, 0);
+        switcherRow->setSpacing(0);
 
-        this->_toolBar->addSeparator();
+        auto addViewButton = [switcher, switcherRow](QAction* action, const char* slot) {
+            auto* button = new QPushButton{switcher};
+            button->setProperty("viewSwitch", QLatin1String(slot));
+            button->setFlat(false);
+            button->setCursor(Qt::PointingHandCursor);
+            bindButtonToAction(button, action);
+            switcherRow->addWidget(button);
+            return button;
+        };
+        addViewButton(this->_schematicAction, "lead");
+        addViewButton(this->_layoutAction, "mid");
+        addViewButton(this->_view2DAction, "mid");
+        addViewButton(this->_view3DAction, "trail");
+        this->_toolBar->addWidget(switcher);
 
         QWidget* stretch = new QWidget(this->_toolBar);
         stretch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         this->_toolBar->addWidget(stretch);
 
         // Single primary CTA slot: Run P&R ↔ Edit Design
-        this->_primaryCtaAction = this->_toolBar->addAction(QStringLiteral("Run P&R"));
+        this->_primaryCtaAction = new QAction(QStringLiteral("Run P&R"), this);
         this->_primaryCtaAction->setToolTip(QStringLiteral("Run Place & Route"));
         this->_primaryCtaAction->setStatusTip(QStringLiteral("Run place and route"));
         connect(this->_primaryCtaAction, &QAction::triggered, this, &Window::onPrimaryCta);
 
-        this->_toolBar->addAction(this->_generateControlBitAction);
+        auto* primaryButton = new QPushButton{this->_toolBar};
+        primaryButton->setObjectName(QStringLiteral("PrimaryCta"));
+        primaryButton->setCursor(Qt::PointingHandCursor);
+        primaryButton->setStyleSheet(ChromeTokens::applyToQss(QString::fromUtf8(kPrimaryCtaStyle)));
+        bindButtonToAction(primaryButton, this->_primaryCtaAction);
+        this->_toolBar->addWidget(primaryButton);
+
+        auto* exportButton = new QPushButton{this->_toolBar};
+        exportButton->setObjectName(QStringLiteral("SecondaryCta"));
+        exportButton->setCursor(Qt::PointingHandCursor);
+        exportButton->setStyleSheet(ChromeTokens::applyToQss(QString::fromUtf8(kPrimaryCtaStyle)));
+        bindButtonToAction(exportButton, this->_generateControlBitAction);
+        this->_toolBar->addWidget(exportButton);
 
         connect(this->_schematicAction, &QAction::triggered, this, [this]() {
             this->switchToView(this->_schematicWidget, this->_schematicAction, QString{});
@@ -404,15 +517,6 @@ namespace PR_tool::widget {
         connect(shortcut4, &QShortcut::activated, this, [this]() {
             this->tryShortcutView(this->_view3DWidget, this->_view3DAction, QString{}, true);
         });
-
-        for (QAction* action : {
-                 this->_schematicAction, this->_layoutAction, this->_view2DAction,
-                 this->_view3DAction, this->_primaryCtaAction, this->_generateControlBitAction}) {
-            if (auto* button = qobject_cast<QToolButton*>(this->_toolBar->widgetForAction(action))) {
-                button->setAccessibleName(action->text());
-                button->setAccessibleDescription(action->statusTip());
-            }
-        }
 
         this->updateStageUi();
     }

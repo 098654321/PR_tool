@@ -27,6 +27,7 @@
         <file>image/icon/list.png</file>
     </qresource>
     <qresource prefix="/qss">
+        <file>qss/app.qss</file>
         <file>qss/button.qss</file>
         <file>qss/switch.qss</file>
     </qresource>

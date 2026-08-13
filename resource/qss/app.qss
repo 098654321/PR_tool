@@ -1,0 +1,216 @@
+/* Kiwi chrome — Companion-style light skin. Colours come from
+   ChromeTokens via @role placeholders in gui.cc. Do not style QWidget
+   globally: that blocks QPushButton/QToolBar backgrounds on macOS. */
+
+QMainWindow, QDialog {
+    background-color: @bg;
+    color: @text;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+QMenuBar {
+    background: @surface;
+    border-bottom: 1px solid @border;
+    color: @text;
+    padding: 2px 8px;
+}
+
+QMenuBar::item {
+    padding: 4px 10px;
+    border-radius: @radiusSmpx;
+}
+
+QMenuBar::item:selected {
+    background: @selectionFill;
+}
+
+QMenu {
+    background: @surface;
+    border: 1px solid @borderStrong;
+    border-radius: @radiuspx;
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 6px 24px 6px 12px;
+    border-radius: @radiusSmpx;
+}
+
+QMenu::item:selected {
+    background: @selectionFill;
+    color: @text;
+}
+
+QMenu::item:disabled {
+    color: @disabledText;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: @border;
+    margin: 4px 8px;
+}
+
+QLineEdit {
+    background: @surface;
+    color: @text;
+    border: 1px solid @borderStrong;
+    border-radius: @radiusSmpx;
+    padding: 5px 8px;
+    min-height: 24px;
+    selection-background-color: @accent;
+    selection-color: @onAccent;
+}
+
+QLineEdit:focus {
+    border: 1px solid @accent;
+}
+
+QTreeWidget, QTableView, QListView {
+    background: @surface;
+    border: 1px solid @border;
+    border-radius: @radiuspx;
+    color: @text;
+    outline: none;
+    selection-background-color: @selectionFill;
+    selection-color: @text;
+}
+
+QHeaderView::section {
+    background: @panel;
+    color: @textMuted;
+    border: none;
+    border-bottom: 1px solid @border;
+    padding: 6px 8px;
+}
+
+QSplitter::handle {
+    background: @border;
+}
+
+QSplitter::handle:horizontal {
+    width: 1px;
+}
+
+QSplitter::handle:vertical {
+    height: 1px;
+}
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background: @borderStrong;
+    border-radius: 5px;
+    min-height: 24px;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: none;
+    height: 0;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 10px;
+    margin: 0;
+}
+
+QScrollBar::handle:horizontal {
+    background: @borderStrong;
+    border-radius: 5px;
+    min-width: 24px;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    background: none;
+    width: 0;
+}
+
+QStatusBar {
+    background: @surface;
+    border-top: 1px solid @border;
+    color: @textMuted;
+}
+
+QStatusBar QLabel {
+    color: @textMuted;
+}
+
+QGroupBox {
+    border: 1px solid @border;
+    border-radius: @radiuspx;
+    margin-top: 10px;
+    padding: 8px;
+    background: @surface;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+    color: @textMuted;
+}
+
+QFrame#SideHairline {
+    color: @border;
+    max-height: 1px;
+    background: @border;
+    border: none;
+}
+
+#SidePanel {
+    background: @panel;
+    border: none;
+}
+
+#ChromePage {
+    background: @bg;
+}
+
+QToolTip {
+    background: @surface;
+    color: @text;
+    border: 1px solid @borderStrong;
+    padding: 4px 8px;
+}
+
+QPushButton#PrimaryCta {
+    background-color: @accent;
+    color: @onAccent;
+    border: none;
+    border-radius: @radiusSmpx;
+    padding: 7px 16px;
+    min-height: 28px;
+    font-weight: 600;
+}
+
+QPushButton#PrimaryCta:hover {
+    background-color: @accentHover;
+}
+
+QPushButton#PrimaryCta:pressed {
+    background-color: @accentPressed;
+}
+
+QPushButton#SecondaryCta {
+    background-color: @surface;
+    color: @text;
+    border: 1px solid @borderStrong;
+    border-radius: @radiusSmpx;
+    padding: 7px 16px;
+    min-height: 28px;
+}
+
+QPushButton#SecondaryCta:hover {
+    background-color: @bg;
+}
