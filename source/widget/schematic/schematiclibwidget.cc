@@ -88,8 +88,8 @@ namespace PR_tool::widget {
 
     void SchematicLibWidget::buildUi() {
         auto* thisLayout = new QVBoxLayout{this};
-        thisLayout->setContentsMargins(6, 6, 6, 6);
-        thisLayout->setSpacing(6);
+        thisLayout->setContentsMargins(8, 8, 8, 8);
+        thisLayout->setSpacing(8);
 
         auto* designLabel = new QLabel{QStringLiteral("DESIGN"), this};
         auto font = designLabel->font();

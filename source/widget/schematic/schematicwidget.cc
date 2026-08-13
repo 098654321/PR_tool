@@ -3,6 +3,7 @@
 #include "./schematicview.h"
 #include "./schematicinfowidget.h"
 #include "./schematiclibwidget.h"
+#include "../chrometokens.h"
 
 #include "./item/topdieinstitem.h"
 #include "./item/netitem.h"
@@ -12,10 +13,26 @@
 #include <QSplitter>
 #include <QVBoxLayout>
 #include <QLineEdit>
+#include <QPalette>
 #include <QShortcut>
 #include <QKeySequence>
 
 namespace PR_tool::widget {
+
+    namespace {
+        void fillChrome(QWidget* w, const char* hex) {
+            if (w == nullptr) {
+                return;
+            }
+            w->setAttribute(Qt::WA_StyledBackground, true);
+            w->setAutoFillBackground(true);
+            QPalette pal = w->palette();
+            pal.setColor(QPalette::Window, ChromeTokens::color(hex));
+            pal.setColor(QPalette::Base, ChromeTokens::color(hex));
+            pal.setColor(QPalette::AlternateBase, ChromeTokens::color(hex));
+            w->setPalette(pal);
+        }
+    }
 
     SchematicWidget::SchematicWidget(hardware::Interposer* interposer, circuit::BaseDie* basedie, QWidget *parent) :
         QWidget{parent},
@@ -24,10 +41,13 @@ namespace PR_tool::widget {
     {
         this->_scene = new SchematicScene{this->_basedie, interposer};
 
+        this->setObjectName(QStringLiteral("ChromePage"));
+        fillChrome(this, ChromeTokens::bg);
         QVBoxLayout* layout = new QVBoxLayout(this);
-        layout->setContentsMargins(10, 10, 10, 10);
+        layout->setContentsMargins(8, 8, 8, 8);
 
         this->_splitter = new QSplitter{Qt::Horizontal, this};
+        this->_splitter->setHandleWidth(1);
         layout->addWidget(this->_splitter);
 
         this->initTopdieLibWidget();
@@ -72,6 +92,8 @@ namespace PR_tool::widget {
 
     void SchematicWidget::initTopdieLibWidget() {
         this->_libWidget = new SchematicLibWidget {this->_basedie, this->_scene, this->_splitter};
+        this->_libWidget->setObjectName(QStringLiteral("SidePanel"));
+        fillChrome(this->_libWidget, ChromeTokens::panel);
         this->_libWidget->setMinimumWidth(200);
         this->_libWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 
@@ -106,6 +128,9 @@ namespace PR_tool::widget {
 
     void SchematicWidget::initInfoWidget() {
         this->_infoWidget = new SchematicInfoWidget{this->_basedie, this->_scene, this->_view, this->_splitter};
+        this->_infoWidget->setObjectName(QStringLiteral("SidePanel"));
+        fillChrome(this->_infoWidget, ChromeTokens::panel);
+        this->_infoWidget->setContentsMargins(8, 8, 8, 8);
         this->_infoWidget->setMinimumWidth(250);
         this->_infoWidget->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
 

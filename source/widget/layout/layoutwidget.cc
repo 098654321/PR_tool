@@ -2,12 +2,29 @@
 #include "./layoutscene.h"
 #include "./layoutview.h"
 #include "./layoutinfowidget.h"
+#include "../chrometokens.h"
 
 #include <QSplitter>
 #include <QVBoxLayout>
+#include <QPalette>
 #include <QDebug>
 
 namespace PR_tool::widget {
+
+    namespace {
+        void fillChrome(QWidget* w, const char* hex) {
+            if (w == nullptr) {
+                return;
+            }
+            w->setAttribute(Qt::WA_StyledBackground, true);
+            w->setAutoFillBackground(true);
+            QPalette pal = w->palette();
+            pal.setColor(QPalette::Window, ChromeTokens::color(hex));
+            pal.setColor(QPalette::Base, ChromeTokens::color(hex));
+            pal.setColor(QPalette::AlternateBase, ChromeTokens::color(hex));
+            w->setPalette(pal);
+        }
+    }
 
     using namespace layout;
 
@@ -20,10 +37,13 @@ namespace PR_tool::widget {
         // MARK
         this->_scene->setItemIndexMethod(QGraphicsScene::NoIndex);
 
+        this->setObjectName(QStringLiteral("ChromePage"));
+        fillChrome(this, ChromeTokens::bg);
         auto* layout = new QVBoxLayout(this);
-        layout->setContentsMargins(10, 10, 10, 10);
+        layout->setContentsMargins(8, 8, 8, 8);
 
         this->_splitter = new QSplitter{Qt::Horizontal, this};
+        this->_splitter->setHandleWidth(1);
         layout->addWidget(this->_splitter);
 
         // View
@@ -35,8 +55,14 @@ namespace PR_tool::widget {
 
         // Info
         this->_infoWidget = new LayoutInfoWidget {this->_interposer, this->_basedie, this->_scene, this->_splitter};
+        this->_infoWidget->setObjectName(QStringLiteral("SidePanel"));
+        fillChrome(this->_infoWidget, ChromeTokens::panel);
         this->_infoWidget->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
         this->_infoWidget->setMinimumWidth(300);
+        if (auto* infoLayout = this->_infoWidget->layout()) {
+            infoLayout->setContentsMargins(8, 8, 8, 8);
+            infoLayout->setSpacing(8);
+        }
         this->_splitter->addWidget(this->_infoWidget);
 
         connect(this->_scene, &LayoutScene::layoutChanged, [this]() {

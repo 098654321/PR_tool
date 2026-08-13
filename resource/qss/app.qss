@@ -182,8 +182,29 @@ QFrame#SideHairline {
     border: none;
 }
 
+#SidePanel QTreeWidget,
+#SidePanel QTableView,
+#SidePanel QListView,
+#SidePanel QScrollArea,
+#SidePanel QScrollArea > QWidget,
+#SidePanel QGroupBox {
+    background: @panel;
+    border: none;
+}
+
+#SidePanel QTreeWidget:focus,
+#SidePanel QTableView:focus,
+#SidePanel QListView:focus {
+    border: 1px solid @accent;
+}
+
 #ChromePage {
     background: @bg;
+}
+
+#CanvasWorkSurface {
+    background: @surface;
+    border: none;
 }
 
 QToolTip {

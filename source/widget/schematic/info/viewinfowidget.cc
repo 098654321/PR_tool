@@ -28,7 +28,7 @@ namespace PR_tool::widget::schematic {
         }
 
         auto* thisLayout = new QVBoxLayout{this};
-        thisLayout->setContentsMargins(8, 12, 8, 8);
+        thisLayout->setContentsMargins(0, 4, 0, 0);
 
         auto* placeholder = new QLabel{QStringLiteral("Select an object to inspect"), this};
         placeholder->setWordWrap(true);

@@ -1,5 +1,6 @@
 #include "./schematicview.h"
 #include "./schematicminimap.h"
+#include "../chrometokens.h"
 
 #include "qglobal.h"
 #include "qnamespace.h"
@@ -15,6 +16,7 @@
 #include <QPainter>
 #include <QBrush>
 #include <QPen>
+#include <QPalette>
 #include <cassert>
 #include <hardware/interposer.hh>
 #include <circuit/basedie.hh>
@@ -125,14 +127,28 @@ namespace PR_tool::widget {
         _interposer{interposer},
         _basedie{basedie}
     {
-        this->setBackColor(Qt::white);
-
+        this->setObjectName(QStringLiteral("CanvasWorkSurface"));
+        this->setAttribute(Qt::WA_StyledBackground, true);
+        this->setAutoFillBackground(true);
+        this->setFrameShape(QFrame::NoFrame);
+        this->setBackColor(ChromeTokens::color(ChromeTokens::surface));
+        {
+            QPalette pal = this->palette();
+            pal.setColor(QPalette::Window, ChromeTokens::color(ChromeTokens::surface));
+            pal.setColor(QPalette::Base, ChromeTokens::color(ChromeTokens::surface));
+            this->setPalette(pal);
+        }
         this->setDragMode(QGraphicsView::RubberBandDrag);
         this->setInteractive(true);
         this->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
         this->setMouseTracking(true);
-        if (this->viewport() != nullptr) {
-            this->viewport()->setMouseTracking(true);
+        if (QWidget* vp = this->viewport()) {
+            vp->setAutoFillBackground(true);
+            QPalette pal = vp->palette();
+            pal.setColor(QPalette::Window, ChromeTokens::color(ChromeTokens::surface));
+            pal.setColor(QPalette::Base, ChromeTokens::color(ChromeTokens::surface));
+            vp->setPalette(pal);
+            vp->setMouseTracking(true);
         }
         this->_gridSize = schematic::GridItem::GRID_SIZE;
 
