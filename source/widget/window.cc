@@ -99,14 +99,23 @@ QFrame#ViewSwitcher {
 QFrame#ViewSwitcher QPushButton {
     background-color: @surface;
     color: @text;
-    border: none;
+    border: 0px solid @borderStrong;
     border-right: 1px solid @borderStrong;
-    border-radius: 0px;
+    border-top-left-radius: 0px;
+    border-top-right-radius: 0px;
+    border-bottom-right-radius: 0px;
+    border-bottom-left-radius: 0px;
     padding: 7px 14px;
     min-height: 26px;
 }
+QFrame#ViewSwitcher QPushButton[viewSwitch="lead"] {
+    border-top-left-radius: @radiuspx;
+    border-bottom-left-radius: @radiuspx;
+}
 QFrame#ViewSwitcher QPushButton[viewSwitch="trail"] {
-    border-right: none;
+    border-right: 0px solid @borderStrong;
+    border-top-right-radius: @radiuspx;
+    border-bottom-right-radius: @radiuspx;
 }
 QFrame#ViewSwitcher QPushButton:checked {
     background-color: @accent;
@@ -404,6 +413,7 @@ QPushButton:disabled {
 
         auto* switcher = new QFrame{this->_toolBar};
         switcher->setObjectName(QStringLiteral("ViewSwitcher"));
+        switcher->setFrameShape(QFrame::NoFrame);
         switcher->setAttribute(Qt::WA_StyledBackground, true);
         switcher->setStyleSheet(ChromeTokens::applyToQss(QString::fromUtf8(kSwitcherStyle)));
         auto* switcherRow = new QHBoxLayout{switcher};
@@ -414,8 +424,14 @@ QPushButton:disabled {
             auto* button = new QPushButton{switcher};
             button->setProperty("viewSwitch", QLatin1String(slot));
             button->setFlat(false);
-            button->setCursor(Qt::PointingHandCursor);
+            button->setAttribute(Qt::WA_StyledBackground, true);
             bindButtonToAction(button, action);
+            auto syncCursor = [button, action]() {
+                button->setCursor(action->isEnabled() ? Qt::PointingHandCursor
+                                                      : Qt::ForbiddenCursor);
+            };
+            syncCursor();
+            QObject::connect(action, &QAction::changed, button, syncCursor);
             switcherRow->addWidget(button);
             return button;
         };
