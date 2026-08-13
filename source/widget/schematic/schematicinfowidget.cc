@@ -92,7 +92,13 @@ namespace PR_tool::widget {
     }
 
     void SchematicInfoWidget::showTopDieInstanceInfoWidget(TopDieInstanceItem* inst) {
+        const bool alreadyShown =
+            this->currentWidget() == this->_topdieInstInfoWidget
+            && this->_topdieInstInfoWidget->currentTopDieInstance() == inst;
         this->setCurrentWidget(this->_topdieInstInfoWidget);
+        if (alreadyShown) {
+            return;
+        }
         this->_topdieInstInfoWidget->loadTopDieInstance(inst);
     }
 

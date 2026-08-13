@@ -191,7 +191,9 @@ namespace PR_tool::widget::schematic {
         this->_pinMapView->setModel(this->_pinProxy);
         this->_pinMapView->setSelectionBehavior(QAbstractItemView::SelectRows);
         this->_pinMapView->setSelectionMode(QAbstractItemView::SingleSelection);
+        this->_pinMapView->setEditTriggers(QAbstractItemView::NoEditTriggers);
         this->_pinMapView->setSortingEnabled(true);
+        this->_pinMapView->sortByColumn(0, Qt::AscendingOrder);
         this->_pinMapView->setContextMenuPolicy(Qt::CustomContextMenu);
         this->_pinMapView->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
         this->_pinMapView->verticalHeader()->setVisible(false);

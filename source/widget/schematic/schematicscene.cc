@@ -927,6 +927,7 @@ namespace PR_tool::widget {
         }
 
         this->refreshConnectionFocus();
+        pin->setFocusRelated(true);
 
         if (locate) {
             const auto views = this->views();
