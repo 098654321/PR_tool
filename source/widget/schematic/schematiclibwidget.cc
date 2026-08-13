@@ -22,7 +22,6 @@
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QCheckBox>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QFileDialog>
@@ -38,6 +37,7 @@
 #include <QToolButton>
 #include <QMenu>
 #include <QSizePolicy>
+#include <QGridLayout>
 #include <algorithm>
 
 namespace PR_tool::widget {
@@ -121,37 +121,78 @@ namespace PR_tool::widget {
         this->_searchEdit->setClearButtonEnabled(true);
         thisLayout->addWidget(this->_searchEdit);
 
-        auto* connBox = new QWidget{this};
-        auto* connLayout = new QVBoxLayout{connBox};
-        connLayout->setContentsMargins(0, 0, 0, 0);
-        connLayout->setSpacing(2);
+        auto* filterBox = new QWidget{this};
+        auto* filterLayout = new QVBoxLayout{filterBox};
+        filterLayout->setContentsMargins(0, 0, 0, 0);
+        filterLayout->setSpacing(4);
 
-        auto* connTitle = new QLabel{QStringLiteral("Connections"), connBox};
-        schematic::SchematicTypography::applyPanelSectionTitle(connTitle);
-        connLayout->addWidget(connTitle);
-
-        auto* showLabel = new QLabel{QStringLiteral("Show:"), connBox};
+        auto* showLabel = new QLabel{QStringLiteral("Show:"), filterBox};
         schematic::SchematicTypography::applyPropertyLabel(showLabel);
-        connLayout->addWidget(showLabel);
+        filterLayout->addWidget(showLabel);
 
-        auto makeFilterCheck = [this, connBox](const QString& text) {
-            auto* cb = new QCheckBox{text, connBox};
-            cb->setChecked(true);
-            cb->setCursor(Qt::PointingHandCursor);
-            cb->setFocusPolicy(Qt::TabFocus);
-            return cb;
+        const auto chipQss = ChromeTokens::applyToQss(QStringLiteral(
+            "QPushButton {"
+            "  background-color: @surface;"
+            "  color: @text;"
+            "  border: 1px solid @borderStrong;"
+            "  border-radius: @radiusSmpx;"
+            "  padding: 2px 8px;"
+            "  min-height: 24px;"
+            "}"
+            "QPushButton:checked {"
+            "  background-color: @selectionFill;"
+            "  color: @text;"
+            "}"
+            "QPushButton:hover:!checked:!disabled {"
+            "  background-color: @bg;"
+            "}"
+            "QPushButton:checked:hover:!disabled {"
+            "  background-color: @selectionFill;"
+            "}"
+            "QPushButton:pressed:!disabled {"
+            "  background-color: @panel;"
+            "}"
+            "QPushButton:focus {"
+            "  border: 1px solid @accent;"
+            "}"
+            "QPushButton:disabled {"
+            "  background-color: @bg;"
+            "  color: @disabledText;"
+            "  border: 1px solid @border;"
+            "}"
+        ));
+        auto makeFilterChip = [filterBox, &chipQss](const QString& text) {
+            auto* chip = new QPushButton{text, filterBox};
+            chip->setCheckable(true);
+            chip->setChecked(true);
+            chip->setCursor(Qt::PointingHandCursor);
+            chip->setFocusPolicy(Qt::TabFocus);
+            chip->setAttribute(Qt::WA_StyledBackground, true);
+            chip->setMinimumHeight(24);
+            chip->setMaximumHeight(26);
+            chip->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+            chip->setStyleSheet(chipQss);
+            schematic::SchematicTypography::applyPaletteButton(chip);
+            return chip;
         };
-        this->_filterSignal = makeFilterCheck(QStringLiteral("Signal"));
-        this->_filterBus = makeFilterCheck(QStringLiteral("Bus"));
-        this->_filterPower = makeFilterCheck(QStringLiteral("Power"));
-        this->_filterGround = makeFilterCheck(QStringLiteral("Ground"));
-        this->_filterExternal = makeFilterCheck(QStringLiteral("External"));
-        connLayout->addWidget(this->_filterSignal);
-        connLayout->addWidget(this->_filterBus);
-        connLayout->addWidget(this->_filterPower);
-        connLayout->addWidget(this->_filterGround);
-        connLayout->addWidget(this->_filterExternal);
-        thisLayout->addWidget(connBox);
+        this->_filterSignal = makeFilterChip(QStringLiteral("Signal"));
+        this->_filterBus = makeFilterChip(QStringLiteral("Bus"));
+        this->_filterPower = makeFilterChip(QStringLiteral("Power"));
+        this->_filterGround = makeFilterChip(QStringLiteral("Ground"));
+        this->_filterExternal = makeFilterChip(QStringLiteral("External"));
+
+        auto* chipGrid = new QGridLayout{};
+        chipGrid->setContentsMargins(0, 0, 0, 0);
+        chipGrid->setHorizontalSpacing(4);
+        chipGrid->setVerticalSpacing(4);
+        chipGrid->addWidget(this->_filterSignal, 0, 0, Qt::AlignLeft);
+        chipGrid->addWidget(this->_filterBus, 0, 1, Qt::AlignLeft);
+        chipGrid->addWidget(this->_filterPower, 0, 2, Qt::AlignLeft);
+        chipGrid->addWidget(this->_filterGround, 1, 0, Qt::AlignLeft);
+        chipGrid->addWidget(this->_filterExternal, 1, 1, Qt::AlignLeft);
+        chipGrid->setColumnStretch(3, 1);
+        filterLayout->addLayout(chipGrid);
+        thisLayout->addWidget(filterBox);
 
         this->_tree = new QTreeWidget{this};
         schematic::SchematicTypography::applyTree(this->_tree);
@@ -173,11 +214,11 @@ namespace PR_tool::widget {
 
         connect(this->_searchEdit, &QLineEdit::textChanged, this, &SchematicLibWidget::applySearchFilter);
         connect(this->_tree, &QTreeWidget::itemClicked, this, &SchematicLibWidget::onTreeItemClicked);
-        connect(this->_filterSignal, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
-        connect(this->_filterBus, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
-        connect(this->_filterPower, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
-        connect(this->_filterGround, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
-        connect(this->_filterExternal, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterSignal, &QPushButton::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterBus, &QPushButton::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterPower, &QPushButton::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterGround, &QPushButton::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterExternal, &QPushButton::toggled, this, &SchematicLibWidget::pushConnectionFilter);
     }
 
     auto SchematicLibWidget::makePaletteButton(const QString& text, const QColor& fill) -> QPushButton* {

@@ -9,7 +9,6 @@ class QTreeWidget;
 class QTreeWidgetItem;
 class QHBoxLayout;
 class QPushButton;
-class QCheckBox;
 class QColor;
 class QGraphicsItem;
 
@@ -76,11 +75,11 @@ namespace PR_tool::widget {
         QWidget* _paletteStrip {nullptr};
         QHBoxLayout* _paletteLayout {nullptr};
         QLineEdit* _searchEdit {nullptr};
-        QCheckBox* _filterSignal {nullptr};
-        QCheckBox* _filterBus {nullptr};
-        QCheckBox* _filterPower {nullptr};
-        QCheckBox* _filterGround {nullptr};
-        QCheckBox* _filterExternal {nullptr};
+        QPushButton* _filterSignal {nullptr};
+        QPushButton* _filterBus {nullptr};
+        QPushButton* _filterPower {nullptr};
+        QPushButton* _filterGround {nullptr};
+        QPushButton* _filterExternal {nullptr};
         QTreeWidget* _tree {nullptr};
         QTreeWidgetItem* _topDiesRoot {nullptr};
         QTreeWidgetItem* _portsRoot {nullptr};
