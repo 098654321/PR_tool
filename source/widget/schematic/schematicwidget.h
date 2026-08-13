@@ -34,6 +34,7 @@ namespace PR_tool::widget {
     public:
         void reload();
         auto graphicsView() const -> GraphicsView*;
+        auto schematicView() const -> SchematicView* { return this->_view; }
 
         /// Schematic main splitter (lib | view | info) for geometry persistence.
         auto splitter() const -> QSplitter* { return this->_splitter; }

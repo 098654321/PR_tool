@@ -3,6 +3,7 @@
 #include "./view2d/view2dwidget.h"
 #include "./view3d/view3dwidget.h"
 #include "./schematic/schematicwidget.h"
+#include "./schematic/schematicview.h"
 #include "./layout/layoutwidget.h"
 
 #include "algo/netbuilder/netbuilder.hh"
@@ -54,6 +55,7 @@
 #include <QProgressBar>
 #include <QThread>
 #include <QStatusBar>
+#include <QSizePolicy>
 
 #include <fstream>
 #include <filesystem>
@@ -334,11 +336,7 @@ namespace PR_tool::widget {
         this->_toolBar->addAction(this->_generateControlBitAction);
 
         connect(this->_schematicAction, &QAction::triggered, this, [this]() {
-            this->switchToView(
-                this->_schematicWidget,
-                this->_schematicAction,
-                QStringLiteral(
-                    "Ctrl+Wheel zoom · Middle-drag pan · Right-click / Esc cancel placement"));
+            this->switchToView(this->_schematicWidget, this->_schematicAction, QString{});
         });
         connect(this->_layoutAction, &QAction::triggered, this, [this]() {
             this->switchToView(
@@ -382,8 +380,7 @@ namespace PR_tool::widget {
             this->tryShortcutView(
                 this->_schematicWidget,
                 this->_schematicAction,
-                QStringLiteral(
-                    "Ctrl+Wheel zoom · Middle-drag pan · Right-click / Esc cancel placement"),
+                QString{},
                 false);
         });
         auto* shortcut2 = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_2), this);
@@ -442,6 +439,10 @@ namespace PR_tool::widget {
         connect(this->_schematicWidget, &SchematicWidget::layoutChanged, this->_layoutWidget, &LayoutWidget::reload);
         // S14: Layout TOB place/swap → refresh Schematic from basedie (positions are independent of TOB).
         connect(this->_layoutWidget, &LayoutWidget::layoutChanged, this->_schematicWidget, &SchematicWidget::reload);
+
+        if (auto* view = this->_schematicWidget->schematicView()) {
+            connect(view, &SchematicView::statusContextChanged, this, &Window::updateStatusLabel);
+        }
     }
 
     void Window::createStatusBar() {
@@ -451,17 +452,16 @@ namespace PR_tool::widget {
         this->_stageLabel->setMinimumWidth(120);
         statusBar->addWidget(this->_stageLabel);
 
+        this->_detailLabel = new QLabel{this};
+        this->_detailLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        statusBar->addWidget(this->_detailLabel, 1);
+
         this->_statusLabel = new QLabel{this};
-        this->_statusLabel->setAlignment(Qt::AlignCenter);
-        this->_statusLabel->setMinimumWidth(200);
+        this->_statusLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        this->_statusLabel->setMinimumWidth(160);
 
         statusBar->addPermanentWidget(this->_statusLabel);
         this->updateStatusLabel();
-
-        // Default page is Schematic — surface gesture tips (U8/S5/X1).
-        // Temporary message; permanent page/path label stays on _statusLabel.
-        statusBar->showMessage(QStringLiteral(
-            "Ctrl+Wheel zoom · Middle-drag pan · Right-click / Esc cancel placement"));
     }
 
     void Window::loadConfig() {
@@ -928,6 +928,9 @@ namespace PR_tool::widget {
 
         dialog.setFixedSize(400, 200);
 
+        this->_routing = true;
+        this->updateStatusLabel();
+
         bool success = false;
         QString message;
 
@@ -943,6 +946,9 @@ namespace PR_tool::widget {
 
         dialog.exec();
         worker->wait();
+
+        this->_routing = false;
+        this->updateStatusLabel();
 
         if (!success) {
             QMessageBox::critical(
@@ -1041,8 +1047,7 @@ namespace PR_tool::widget {
                 this->switchToView(
                     this->_schematicWidget,
                     this->_schematicAction,
-                    QStringLiteral(
-                        "Ctrl+Wheel zoom · Middle-drag pan · Right-click / Esc cancel placement"));
+                    QString{});
             }
         }
 
@@ -1204,6 +1209,21 @@ namespace PR_tool::widget {
         return QStringLiteral("Schematic");
     }
 
+    auto Window::isSchematicPage() const -> bool {
+        return this->_stackedWidget != nullptr
+            && this->_stackedWidget->currentWidget() == this->_schematicWidget;
+    }
+
+    auto Window::routeStatusText() const -> QString {
+        if (this->_routing) {
+            return QStringLiteral("Routing…");
+        }
+        if (this->_finishPR) {
+            return QStringLiteral("Routed");
+        }
+        return QStringLiteral("Ready");
+    }
+
     auto Window::currentGraphicsView() const -> GraphicsView* {
         if (this->_stackedWidget == nullptr) {
             return nullptr;
@@ -1230,6 +1250,26 @@ namespace PR_tool::widget {
             this->_stageLabel->setText(
                 this->_finishPR ? QStringLiteral("Stage: Results")
                                 : QStringLiteral("Stage: Design"));
+        }
+
+        if (this->isSchematicPage()
+            && this->_schematicWidget != nullptr
+            && this->_schematicWidget->schematicView() != nullptr) {
+            if (this->statusBar() != nullptr) {
+                this->statusBar()->clearMessage();
+            }
+            if (this->_detailLabel != nullptr) {
+                this->_detailLabel->setText(this->_schematicWidget->schematicView()->statusLine());
+                this->_detailLabel->show();
+            }
+            this->_statusLabel->setText(
+                QStringLiteral("Schematic | %1").arg(this->routeStatusText()));
+            return;
+        }
+
+        if (this->_detailLabel != nullptr) {
+            this->_detailLabel->clear();
+            this->_detailLabel->hide();
         }
 
         const auto path = this->hasConfigPath()

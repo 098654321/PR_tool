@@ -3,8 +3,14 @@
 
 #include "qglobal.h"
 #include "qnamespace.h"
+#include "widget/schematic/item/exportitem.h"
 #include "widget/schematic/item/griditem.h"
+#include "widget/schematic/item/netitem.h"
+#include "widget/schematic/item/netpointitem.h"
 #include "widget/schematic/item/pinitem.h"
+#include "widget/schematic/item/portgroupitem.h"
+#include "widget/schematic/item/sourceportitem.h"
+#include "widget/schematic/item/topdieinstitem.h"
 #include "widget/schematic/schematicscene.h"
 #include <QPainter>
 #include <QBrush>
@@ -18,6 +24,9 @@
 #include <QScrollBar>
 #include <QResizeEvent>
 #include <QEvent>
+#include <QGraphicsItem>
+#include <QGraphicsScene>
+#include <QObject>
 #include <cmath>
 
 namespace PR_tool::widget {
@@ -30,6 +39,59 @@ namespace PR_tool::widget {
         constexpr qreal kGridMajorFactor = 5.;
         const QColor kGridMajorColor {0xE6, 0xE6, 0xE6};
         const QColor kGridMinorColor {0xF0, 0xF0, 0xF0};
+
+        auto netDisplayName(schematic::NetItem* net) -> QString {
+            if (!net || net->isFloating()) {
+                return QStringLiteral("(floating)");
+            }
+            QString begin = QStringLiteral("?");
+            QString end = QStringLiteral("?");
+            if (net->beginPoint() && net->beginPoint()->connectedPin()) {
+                begin = net->beginPoint()->connectedPin()->toString();
+            }
+            if (net->endPoint() && net->endPoint()->connectedPin()) {
+                end = net->endPoint()->connectedPin()->toString();
+            }
+            return QStringLiteral("%1 → %2").arg(begin, end);
+        }
+
+        auto nameForItem(QGraphicsItem* item) -> QString {
+            if (!item) {
+                return {};
+            }
+            switch (item->type()) {
+            case schematic::TopDieInstanceItem::Type: {
+                auto* die = static_cast<schematic::TopDieInstanceItem*>(item);
+                if (!die->typeName().isEmpty()) {
+                    return QStringLiteral("%1 (%2)").arg(die->name(), die->typeName());
+                }
+                return die->name();
+            }
+            case schematic::ExternalPortItem::Type:
+                return static_cast<schematic::ExternalPortItem*>(item)->name();
+            case schematic::SourcePortItem::Type:
+                return static_cast<schematic::SourcePortItem*>(item)->name();
+            case schematic::NetItem::Type:
+                return netDisplayName(static_cast<schematic::NetItem*>(item));
+            case schematic::NetPointItem::Type:
+                return netDisplayName(static_cast<schematic::NetPointItem*>(item)->netItem());
+            case schematic::PinItem::Type:
+                return static_cast<schematic::PinItem*>(item)->toString();
+            case schematic::PortGroupItem::Type: {
+                auto* group = static_cast<schematic::PortGroupItem*>(item);
+                const QString range = QStringLiteral("%1[%2:%3]")
+                    .arg(group->isExportGroup() ? QStringLiteral("exports") : QStringLiteral("bumps"))
+                    .arg(group->startIndex())
+                    .arg(group->endIndex());
+                if (!group->isExportGroup() && group->ownerTopDie()) {
+                    return QStringLiteral("%1 %2").arg(group->ownerTopDie()->name(), range);
+                }
+                return range;
+            }
+            default:
+                return {};
+            }
+        }
 
         void drawGridLines(
             QPainter* painter,
@@ -68,6 +130,10 @@ namespace PR_tool::widget {
         this->setDragMode(QGraphicsView::RubberBandDrag);
         this->setInteractive(true);
         this->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+        this->setMouseTracking(true);
+        if (this->viewport() != nullptr) {
+            this->viewport()->setMouseTracking(true);
+        }
         this->_gridSize = schematic::GridItem::GRID_SIZE;
 
         this->_minimap = new SchematicMiniMap {this};
@@ -89,6 +155,7 @@ namespace PR_tool::widget {
         if (this->_minimap != nullptr) {
             this->_minimap->update();
         }
+        this->emitStatusContext();
     }
 
     void SchematicView::bindMiniMap() {
@@ -96,6 +163,12 @@ namespace PR_tool::widget {
             this->_minimap->bindScene();
         }
         this->repositionMiniMap();
+        if (auto* sc = this->scene()) {
+            QObject::connect(
+                sc, &QGraphicsScene::selectionChanged,
+                this, &SchematicView::emitStatusContext,
+                Qt::UniqueConnection);
+        }
     }
 
     void SchematicView::repositionMiniMap() {
@@ -121,6 +194,17 @@ namespace PR_tool::widget {
         GraphicsView::mouseMoveEvent(event);
         if (this->_isPanning && this->_minimap != nullptr) {
             this->_minimap->update();
+        }
+
+        const QPointF sp = this->mapToScene(event->pos());
+        const int x = qRound(sp.x());
+        const int y = qRound(sp.y());
+        if (!this->_hasStatusPos
+            || qRound(this->_statusScenePos.x()) != x
+            || qRound(this->_statusScenePos.y()) != y) {
+            this->_statusScenePos = sp;
+            this->_hasStatusPos = true;
+            this->emitStatusContext();
         }
     }
 
@@ -160,5 +244,90 @@ namespace PR_tool::widget {
         // QGraphicsView background/grid is painted on the viewport;
         // QWidget::update() on the view itself is unreliable here.
         this->viewport()->update();
+    }
+
+    void SchematicView::setGridVisible(bool visible) {
+        this->_gridVisible = visible;
+        this->emitStatusContext();
+    }
+
+    void SchematicView::setGridSize(qreal size) {
+        this->_gridSize = size;
+        this->emitStatusContext();
+    }
+
+    void SchematicView::fitContent() {
+        GraphicsView::fitContent();
+        this->emitStatusContext();
+    }
+
+    void SchematicView::resetZoom() {
+        GraphicsView::resetZoom();
+        this->emitStatusContext();
+    }
+
+    void SchematicView::ensureVisibleAtMinScale(QGraphicsItem* item, qreal minScale) {
+        GraphicsView::ensureVisibleAtMinScale(item, minScale);
+        this->emitStatusContext();
+    }
+
+    void SchematicView::emitStatusContext() {
+        emit this->statusContextChanged();
+    }
+
+    auto SchematicView::statusScenePos() const -> QPointF {
+        if (this->_hasStatusPos) {
+            return this->_statusScenePos;
+        }
+        if (this->viewport() == nullptr) {
+            return {};
+        }
+        return this->mapToScene(this->viewport()->rect().center());
+    }
+
+    auto SchematicView::selectionField() const -> QString {
+        if (this->scene() == nullptr) {
+            return QStringLiteral("Ctrl+Wheel: Zoom · Middle Drag: Pan · Esc: Cancel");
+        }
+        const auto items = this->scene()->selectedItems();
+        for (auto* item : items) {
+            const QString name = nameForItem(item);
+            if (!name.isEmpty()) {
+                return QStringLiteral("Selected: %1").arg(name);
+            }
+        }
+        return QStringLiteral("Ctrl+Wheel: Zoom · Middle Drag: Pan · Esc: Cancel");
+    }
+
+    auto SchematicView::gridField() const -> QString {
+        if (!this->gridVisible()) {
+            return QStringLiteral("Grid off");
+        }
+        const qreal s = this->transform().m11();
+        if (s < schematic::PinItem::LOD_FAR_MAX) {
+            return QStringLiteral("Grid off");
+        }
+        const qreal minor = this->gridSize() > 0. ? this->gridSize() : schematic::GridItem::GRID_SIZE;
+        const qreal major = kGridMajorFactor * minor;
+        if (s >= 1.0) {
+            return QStringLiteral("Grid %1/%2").arg(qRound(major)).arg(qRound(minor));
+        }
+        return QStringLiteral("Grid %1").arg(qRound(major));
+    }
+
+    auto SchematicView::zoomField() const -> QString {
+        return QStringLiteral("Zoom ") + QString::number(qRound(this->transform().m11() * 100.0))
+            + QLatin1Char('%');
+    }
+
+    auto SchematicView::statusLine() const -> QString {
+        const QPointF p = this->statusScenePos();
+        return QStringLiteral("%1 | X: %2 Y: %3 | %4 | %5")
+            .arg(
+                this->selectionField(),
+                QString::number(qRound(p.x())),
+                QString::number(qRound(p.y())),
+                this->gridField(),
+                this->zoomField());
     }
 }

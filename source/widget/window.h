@@ -85,6 +85,8 @@ namespace PR_tool::widget {
         void updateStatusLabel();
         auto currentPageName() const -> QString;
         auto currentGraphicsView() const -> GraphicsView*;
+        auto isSchematicPage() const -> bool;
+        auto routeStatusText() const -> QString;
 
     private:
         QMenuBar* _menuBar {nullptr};
@@ -113,6 +115,7 @@ namespace PR_tool::widget {
         QAction* _generateControlBitAction {nullptr};
 
         QLabel* _stageLabel {nullptr};
+        QLabel* _detailLabel {nullptr};
         QLabel* _statusLabel {nullptr};
 
     private:
@@ -122,6 +125,7 @@ namespace PR_tool::widget {
 
         std::Option<std::FilePath> _configPath {}; 
         bool _finishPR {false};
+        bool _routing {false};
     };
 
 }
