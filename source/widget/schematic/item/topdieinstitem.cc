@@ -432,23 +432,29 @@ namespace PR_tool::widget::schematic {
         const QRectF headerRect {0., 0., this->_width, HEADER_HEIGHT};
         const QRectF bodyRect {0., HEADER_HEIGHT, this->_width, this->_height - HEADER_HEIGHT};
 
-        const QColor borderColor = this->_focusBorder
-            ? QColor::fromRgb(20, 20, 20)
-            : QColor::fromRgb(80, 80, 80);
-        const qreal borderWidth = this->_focusBorder
-            ? ConnectionFocusStyle::DIE_BORDER_FOCUS
-            : ConnectionFocusStyle::DIE_BORDER_DEFAULT;
+        const QColor borderColor = itemChromeBorder(this->_chromeState);
+        const qreal borderWidth = itemChromeWidth(this->_chromeState);
+        const qreal dim = qBound(0., this->_chromeOpacity, 1.);
+        // Labels stay at least Ch.七 default opacity — do not invent a 40% dim.
+        const qreal textDim = qMax(dim, ConnectionFocusStyle::DEFAULT_OPACITY);
 
-        // Body (lighter) then header (more visible) — sharp corners only.
+        QColor bodyFill = bodyFillFrom(this->_fillColor);
+        QColor headerFill = headerFillFrom(this->_fillColor);
+        bodyFill.setAlphaF(bodyFill.alphaF() * dim);
+        headerFill.setAlphaF(headerFill.alphaF() * dim);
+        QColor border = borderColor;
+        border.setAlphaF(dim);
+
+        // Body (lighter) then header (more visible) — sharp corners only. No glow/shadow.
         painter->setPen(Qt::NoPen);
-        painter->setBrush(bodyFillFrom(this->_fillColor));
+        painter->setBrush(bodyFill);
         painter->drawRect(bodyRect);
 
-        painter->setBrush(headerFillFrom(this->_fillColor));
+        painter->setBrush(headerFill);
         painter->drawRect(headerRect);
 
         painter->setBrush(Qt::NoBrush);
-        painter->setPen(QPen(borderColor, borderWidth));
+        painter->setPen(QPen(border, borderWidth));
         painter->drawRect(bounds);
         painter->drawLine(QPointF(0., HEADER_HEIGHT), QPointF(this->_width, HEADER_HEIGHT));
 
@@ -468,7 +474,9 @@ namespace PR_tool::widget::schematic {
         font.setPixelSize(HEADER_FONT_PIXEL_SIZE);
         font.setBold(true);
         painter->setFont(font);
-        painter->setPen(Qt::black);
+        QColor textColor = Qt::black;
+        textColor.setAlphaF(textDim);
+        painter->setPen(textColor);
 
         const QFontMetricsF fm {font};
         const qreal textLeft = iconRect.right() + pad;
@@ -496,11 +504,13 @@ namespace PR_tool::widget::schematic {
         painter->drawText(nameRect, Qt::AlignVCenter | Qt::AlignLeft, nameLabel);
     }
 
-    void TopDieInstanceItem::setFocusBorder(bool on) {
-        if (this->_focusBorder == on) {
+    void TopDieInstanceItem::setChromeState(ItemChromeState state, qreal opacity) {
+        opacity = qBound(0., opacity, 1.);
+        if (this->_chromeState == state && qAbs(this->_chromeOpacity - opacity) < 0.0001) {
             return;
         }
-        this->_focusBorder = on;
+        this->_chromeState = state;
+        this->_chromeOpacity = opacity;
         this->update();
     }
 

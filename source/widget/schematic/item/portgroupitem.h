@@ -83,6 +83,7 @@ namespace PR_tool::widget::schematic {
     private:
         auto labelText() const -> QString;
         auto parentExportContextActive() const -> bool;
+        auto interactionChromeAllowed() const -> bool;
 
     private:
         TopDieInstanceItem* _owner {nullptr};

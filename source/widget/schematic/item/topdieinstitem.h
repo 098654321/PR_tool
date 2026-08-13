@@ -1,6 +1,7 @@
 #pragma once
 
 #include "./griditem.h"
+#include "./netitem.h"
 #include "./pinitem.h"
 #include "qchar.h"
 #include "qcolor.h"
@@ -87,8 +88,8 @@ namespace PR_tool::widget::schematic {
 
         auto portGroups() const -> const QVector<PortGroupItem*>& { return this->_portGroups; }
 
-        /// Ch.七: strong border when this die is focus target or a focused-net endpoint.
-        void setFocusBorder(bool on);
+        /// Ch.21 chrome: Normal / Hover / Selected / Related / Dimmed.
+        void setChromeState(ItemChromeState state, qreal opacity = 1.0);
 
     protected:
         void hoverEnterEvent(QGraphicsSceneHoverEvent* event) override;
@@ -107,7 +108,8 @@ namespace PR_tool::widget::schematic {
         qreal _width {};
         qreal _height {};
         QColor _fillColor {};
-        bool _focusBorder {false};
+        ItemChromeState _chromeState {ItemChromeState::Normal};
+        qreal _chromeOpacity {1.0};
 
         circuit::TopDieInstance* const _topdieinstance {nullptr};
         QMap<QString, PinItem*> _pins {};

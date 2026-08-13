@@ -830,8 +830,16 @@ namespace PR_tool::widget {
         schematic::TopDieInstanceItem* focusDie =
             this->_hoverTopDie ? this->_hoverTopDie : this->_selectedTopDie;
 
+        bool pinSelected = false;
+        for (auto* item : this->selectedItems()) {
+            if (item && item->type() == schematic::PinItem::Type) {
+                pinSelected = true;
+                break;
+            }
+        }
+
         const bool netFocus = !focusNets.isEmpty();
-        const bool dieFocus = !netFocus && focusDie != nullptr;
+        const bool dieFocus = !netFocus && focusDie != nullptr && !pinSelected;
 
         QSet<schematic::NetItem*> dieRelated;
         if (dieFocus) {
@@ -846,10 +854,15 @@ namespace PR_tool::widget {
                 highlightPins.unite(this->endpointPins(net));
             }
         } else if (dieFocus) {
+            // Only the focused die is chrome-emphasized. Far-end dies stay Dimmed (Ch.21 P2).
             highlightDies.insert(focusDie);
             for (auto* net : dieRelated) {
-                highlightDies.unite(this->endpointTopDies(net));
-                highlightPins.unite(this->endpointPins(net));
+                for (auto* pin : this->endpointPins(net)) {
+                    if (pin && pin->isTopDieInstancePin()
+                        && pin->parentTopDieInstance() == focusDie) {
+                        highlightPins.insert(pin);
+                    }
+                }
             }
         }
 
@@ -874,29 +887,84 @@ namespace PR_tool::widget {
             }
         }
 
-        for (auto* top : this->_topdieinstMap) {
-            if (top) {
-                top->setFocusBorder(highlightDies.contains(top));
-            }
-        }
+        const bool anyFocus = netFocus || dieFocus;
+        const qreal dimOpacity = schematic::itemChromeDimOpacity(netFocus);
 
-        // Force-show related pins (Ch.五 LOD override via Ch.七 focus).
+        auto applyPinChrome = [&](schematic::PinItem* pin) {
+            if (!pin) {
+                return;
+            }
+            const bool related = highlightPins.contains(pin);
+            pin->setFocusRelated(related);
+            if (pin->isSelected()) {
+                pin->setChromeState(schematic::ItemChromeState::Selected);
+            } else if (related) {
+                pin->setChromeState(schematic::ItemChromeState::Related);
+            } else if (anyFocus) {
+                pin->setChromeState(schematic::ItemChromeState::Dimmed, dimOpacity);
+            } else {
+                pin->setChromeState(schematic::ItemChromeState::Normal);
+            }
+        };
+
         for (auto* top : this->_topdieinstMap) {
             if (!top) {
                 continue;
             }
-            for (auto* pin : top->pins()) {
-                if (pin) {
-                    pin->setFocusRelated(highlightPins.contains(pin));
+            schematic::ItemChromeState st = schematic::ItemChromeState::Normal;
+            qreal op = 1.0;
+            const bool endpoint = highlightDies.contains(top);
+            if (netFocus) {
+                // Net/bundle focus > die selection. Unrelated selected dies Dim (8%).
+                if (endpoint) {
+                    if (top == this->_hoverTopDie && !top->isSelected()) {
+                        st = schematic::ItemChromeState::Hover;
+                    } else if (top->isSelected() || top == this->_selectedTopDie) {
+                        st = schematic::ItemChromeState::Selected;
+                    } else {
+                        st = schematic::ItemChromeState::Related;
+                    }
+                } else {
+                    st = schematic::ItemChromeState::Dimmed;
+                    op = dimOpacity;
                 }
+            } else if (dieFocus) {
+                if (top == focusDie) {
+                    if (top == this->_hoverTopDie && !top->isSelected()) {
+                        st = schematic::ItemChromeState::Hover;
+                    } else {
+                        st = schematic::ItemChromeState::Selected;
+                    }
+                } else {
+                    st = schematic::ItemChromeState::Dimmed;
+                    op = dimOpacity;
+                }
+            } else if (top == this->_hoverTopDie && !top->isSelected()) {
+                st = schematic::ItemChromeState::Hover;
+            } else if (top->isSelected() || top == this->_selectedTopDie) {
+                st = schematic::ItemChromeState::Selected;
+            }
+            top->setChromeState(st, op);
+            for (auto* pin : top->pins()) {
+                applyPinChrome(pin);
             }
         }
+
         for (auto* eport : this->_exportMap) {
             if (!eport || !eport->pin()) {
                 continue;
             }
-            auto* pin = eport->pin();
-            pin->setFocusRelated(highlightPins.contains(pin));
+            applyPinChrome(eport->pin());
+        }
+        for (auto* port : this->_vddPorts) {
+            if (port) {
+                applyPinChrome(port->pin());
+            }
+        }
+        for (auto* port : this->_gndPorts) {
+            if (port) {
+                applyPinChrome(port->pin());
+            }
         }
 
         this->_refreshingFocus = false;

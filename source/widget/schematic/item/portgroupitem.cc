@@ -1,6 +1,7 @@
 #include "./portgroupitem.h"
 #include "./topdieinstitem.h"
 #include "./exportitem.h"
+#include "./netitem.h"
 #include "../schematicscene.h"
 
 #include <QGraphicsScene>
@@ -140,8 +141,20 @@ namespace PR_tool::widget::schematic {
             return;
         }
 
-        const bool emphasis = this->isSelected() || this->_hovered;
-        painter->setPen(QPen(emphasis ? SELECTED_COLOR.darker(120) : COLOR.darker(130), 1.2));
+        const bool chromeOk = this->interactionChromeAllowed();
+        ItemChromeState chrome = ItemChromeState::Normal;
+        if (chromeOk) {
+            if (this->isSelected()) {
+                chrome = ItemChromeState::Selected;
+            } else if (this->_hovered) {
+                chrome = ItemChromeState::Hover;
+            }
+        }
+        const bool emphasis = chrome == ItemChromeState::Selected
+            || chrome == ItemChromeState::Hover;
+        painter->setPen(QPen(
+            emphasis ? itemChromeBorder(chrome) : COLOR.darker(130),
+            itemChromeWidth(chrome)));
         painter->setBrush(emphasis ? SELECTED_COLOR : COLOR);
         painter->drawRect(this->_barRect);
 
@@ -196,16 +209,17 @@ namespace PR_tool::widget::schematic {
         return false;
     }
 
-    void PortGroupItem::hoverEnterEvent(QGraphicsSceneHoverEvent* event) {
-        this->_hovered = true;
-        this->update();
-
-        bool canSelect = false;
+    auto PortGroupItem::interactionChromeAllowed() const -> bool {
         if (this->_exportMode) {
-            canSelect = this->parentExportContextActive();
-        } else if (this->_owner) {
-            canSelect = this->_owner->isSelected();
+            return this->parentExportContextActive();
         }
+        return this->_owner && this->_owner->isSelected();
+    }
+
+    void PortGroupItem::hoverEnterEvent(QGraphicsSceneHoverEvent* event) {
+        const bool canSelect = this->interactionChromeAllowed();
+        this->_hovered = canSelect;
+        this->update();
 
         if (canSelect) {
             this->setSelected(true);

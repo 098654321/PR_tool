@@ -91,13 +91,30 @@ namespace PR_tool::widget::schematic {
             }
         }
 
-        if (this->_hovered) {
-            painter->setPen(QPen(HOVERED_COLOR, 2, Qt::DashLine));
-            painter->setBrush(HOVERED_COLOR);
-        } else {
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(COLOR);
+        ItemChromeState chrome = this->_chromeState;
+        if (this->isSelected()) {
+            chrome = ItemChromeState::Selected;
+        } else if (this->_hovered) {
+            chrome = ItemChromeState::Hover;
+        } else if (this->_focusRelated) {
+            chrome = ItemChromeState::Related;
         }
+
+        QColor fill = COLOR;
+        QColor ring = itemChromeBorder(chrome);
+        const qreal width = itemChromeWidth(chrome);
+        const qreal alpha = (chrome == ItemChromeState::Dimmed)
+            ? qBound(0., this->_chromeOpacity, 1.)
+            : 1.0;
+        fill.setAlphaF(alpha);
+        ring.setAlphaF(alpha);
+
+        if (chrome == ItemChromeState::Normal || chrome == ItemChromeState::Dimmed) {
+            painter->setPen(Qt::NoPen);
+        } else {
+            painter->setPen(QPen(ring, width));
+        }
+        painter->setBrush(chrome == ItemChromeState::Selected ? ring : fill);
         painter->drawEllipse(QPointF{0., 0.}, this->_raduis, this->_raduis);
 
         auto length = this->_name.size() * CHAR_WIDTH_;
@@ -209,6 +226,9 @@ namespace PR_tool::widget::schematic {
                 point->updatePos();
             }
         }
+        if (change == QGraphicsItem::ItemSelectedHasChanged) {
+            this->update();
+        }
         return QGraphicsItem::itemChange(change, value);
     }
 
@@ -230,6 +250,16 @@ namespace PR_tool::widget::schematic {
             return;
         }
         this->_focusRelated = related;
+        this->update();
+    }
+
+    void PinItem::setChromeState(ItemChromeState state, qreal opacity) {
+        opacity = qBound(0., opacity, 1.);
+        if (this->_chromeState == state && qAbs(this->_chromeOpacity - opacity) < 0.0001) {
+            return;
+        }
+        this->_chromeState = state;
+        this->_chromeOpacity = opacity;
         this->update();
     }
 

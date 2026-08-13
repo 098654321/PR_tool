@@ -38,6 +38,7 @@ namespace PR_tool::widget::schematic {
         static constexpr qreal NET_UNRELATED_OPACITY = 0.08;
 
         static constexpr qreal DIE_BORDER_DEFAULT = 1.5;
+        /// Ch.七 strong die border; Ch.21 selected uses DIE_RELATED_WIDTH (2px), not this.
         static constexpr qreal DIE_BORDER_FOCUS = 3.0;
     };
 
@@ -48,6 +49,47 @@ namespace PR_tool::widget::schematic {
         NetFocused,
         NetUnrelated,
     };
+
+    /// Ch.21 item chrome (TopDie / pin / port group). Dim % comes from Ch.七 only.
+    enum class ItemChromeState {
+        Normal,
+        Hover,
+        Selected,
+        Related,
+        Dimmed,
+    };
+
+    inline auto itemChromeWidth(ItemChromeState state) -> qreal {
+        switch (state) {
+            case ItemChromeState::Hover:
+            case ItemChromeState::Selected:
+                return ConnectionFocusStyle::DIE_RELATED_WIDTH;
+            default:
+                return ConnectionFocusStyle::DIE_BORDER_DEFAULT;
+        }
+    }
+
+    inline auto itemChromeBorder(ItemChromeState state) -> QColor {
+        switch (state) {
+            case ItemChromeState::Hover:
+                return QColor(50, 50, 50);
+            case ItemChromeState::Selected:
+                return QColor(24, 24, 24);
+            case ItemChromeState::Related:
+                return QColor(70, 100, 140);
+            case ItemChromeState::Dimmed:
+                return QColor(130, 130, 130);
+            case ItemChromeState::Normal:
+            default:
+                return QColor(80, 80, 80);
+        }
+    }
+
+    inline auto itemChromeDimOpacity(bool netLevelFocus) -> qreal {
+        return netLevelFocus
+            ? ConnectionFocusStyle::NET_UNRELATED_OPACITY
+            : ConnectionFocusStyle::DIE_UNRELATED_OPACITY;
+    }
 
     class NetItem : public QGraphicsItem {
     public:

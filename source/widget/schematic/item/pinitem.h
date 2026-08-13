@@ -1,5 +1,7 @@
 #pragma once
 
+#include "./netitem.h"
+
 #include <QColor>
 #include <QGraphicsItem>
 #include <QPainter>
@@ -97,6 +99,8 @@ namespace PR_tool::widget::schematic {
         void setHovered(bool hovered);
         /// Ch.七: force-show when pin is on a focused / related net.
         void setFocusRelated(bool related);
+        /// Ch.21 scene chrome (Related / Dimmed / Normal). Hover/Selected override in paint.
+        void setChromeState(ItemChromeState state, qreal opacity = 1.0);
 
     public:
         auto parentExternalPort() const -> ExternalPortItem*;
@@ -116,6 +120,8 @@ namespace PR_tool::widget::schematic {
         qreal _raduis {PIN_RADIUS};
         bool _hovered {false};
         bool _focusRelated {false};
+        ItemChromeState _chromeState {ItemChromeState::Normal};
+        qreal _chromeOpacity {1.0};
 
         QVector<NetPointItem*> _connectedNetPoints {};
     };
