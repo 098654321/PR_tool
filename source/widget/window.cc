@@ -1330,16 +1330,14 @@ QPushButton:focus {
 
         if (this->_view2DAction != nullptr) {
             this->_view2DAction->setEnabled(results);
-            this->_view2DAction->setText(
-                results ? QStringLiteral("2D") : QStringLiteral("2D 🔒"));
+            this->_view2DAction->setText(QStringLiteral("2D"));
             this->_view2DAction->setToolTip(
                 results ? QStringLiteral("2D")
                         : QStringLiteral("Locked until Place & Route succeeds"));
         }
         if (this->_view3DAction != nullptr) {
             this->_view3DAction->setEnabled(results);
-            this->_view3DAction->setText(
-                results ? QStringLiteral("3D") : QStringLiteral("3D 🔒"));
+            this->_view3DAction->setText(QStringLiteral("3D"));
             this->_view3DAction->setToolTip(
                 results ? QStringLiteral("3D")
                         : QStringLiteral("Locked until Place & Route succeeds"));
