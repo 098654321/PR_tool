@@ -17,7 +17,9 @@ namespace PR_tool::circuit {
 };
 
 namespace PR_tool::widget {
-   
+
+    class SchematicMiniMap;
+
     class SchematicView : public GraphicsView {
     public:
         explicit SchematicView(
@@ -27,9 +29,16 @@ namespace PR_tool::widget {
 
         ~SchematicView() noexcept;
 
+        void bindMiniMap();
+
     protected:
         void drawBackground(QPainter* painter, const QRectF& rect) override;
         void wheelEvent(QWheelEvent* event) override;
+        void resizeEvent(QResizeEvent* event) override;
+        void mouseMoveEvent(QMouseEvent* event) override;
+        auto viewportEvent(QEvent* event) -> bool override;
+
+        void repositionMiniMap();
 
     public:
         void updateBack();
@@ -52,6 +61,8 @@ namespace PR_tool::widget {
         bool _gridVisible {true};
         QColor _gridColor {Qt::lightGray};
         qreal _gridSize {20};
+
+        SchematicMiniMap* _minimap {nullptr};
     };
 
 }

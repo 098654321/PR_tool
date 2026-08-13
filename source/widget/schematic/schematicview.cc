@@ -1,4 +1,5 @@
 #include "./schematicview.h"
+#include "./schematicminimap.h"
 
 #include "qglobal.h"
 #include "qnamespace.h"
@@ -13,7 +14,10 @@
 #include <circuit/basedie.hh>
 #include <QDebug>
 #include <QWheelEvent>
+#include <QMouseEvent>
 #include <QScrollBar>
+#include <QResizeEvent>
+#include <QEvent>
 #include <cmath>
 
 namespace PR_tool::widget {
@@ -65,6 +69,9 @@ namespace PR_tool::widget {
         this->setInteractive(true);
         this->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
         this->_gridSize = schematic::GridItem::GRID_SIZE;
+
+        this->_minimap = new SchematicMiniMap {this};
+        this->repositionMiniMap();
     }
 
     SchematicView::~SchematicView() noexcept {}
@@ -79,6 +86,50 @@ namespace PR_tool::widget {
         }
         // Ch.十: grid LOD depends on s = transform().m11().
         this->viewport()->update();
+        if (this->_minimap != nullptr) {
+            this->_minimap->update();
+        }
+    }
+
+    void SchematicView::bindMiniMap() {
+        if (this->_minimap != nullptr) {
+            this->_minimap->bindScene();
+        }
+        this->repositionMiniMap();
+    }
+
+    void SchematicView::repositionMiniMap() {
+        if (this->_minimap == nullptr || this->viewport() == nullptr) {
+            return;
+        }
+        constexpr int kMargin = 8;
+        const QSize sz = this->_minimap->size();
+        const QRect vr = this->viewport()->rect();
+        const int x = qMax(0, vr.width() - sz.width() - kMargin);
+        const int y = qMax(0, vr.height() - sz.height() - kMargin);
+        this->_minimap->move(x, y);
+        this->_minimap->raise();
+        this->_minimap->show();
+    }
+
+    void SchematicView::resizeEvent(QResizeEvent* event) {
+        GraphicsView::resizeEvent(event);
+        this->repositionMiniMap();
+    }
+
+    void SchematicView::mouseMoveEvent(QMouseEvent* event) {
+        GraphicsView::mouseMoveEvent(event);
+        if (this->_isPanning && this->_minimap != nullptr) {
+            this->_minimap->update();
+        }
+    }
+
+    auto SchematicView::viewportEvent(QEvent* event) -> bool {
+        const bool handled = GraphicsView::viewportEvent(event);
+        if (event->type() == QEvent::Resize) {
+            this->repositionMiniMap();
+        }
+        return handled;
     }
 
     void SchematicView::drawBackground(QPainter* painter, const QRectF& rect) {

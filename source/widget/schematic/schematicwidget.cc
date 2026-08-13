@@ -41,6 +41,7 @@ namespace PR_tool::widget {
     void SchematicWidget::reload() {
         this->_scene->reloadItems();
         this->_view->adjustSceneRect();
+        this->_view->bindMiniMap();
         this->_libWidget->reload();
         this->_infoWidget->reload();
     }
@@ -98,6 +99,7 @@ namespace PR_tool::widget {
         this->_view->setScene(this->_scene);
         this->_view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         this->_view->adjustSceneRect();
+        this->_view->bindMiniMap();
 
         this->_splitter->addWidget(this->_view);
     }
