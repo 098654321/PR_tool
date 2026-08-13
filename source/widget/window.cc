@@ -99,13 +99,13 @@ QFrame#ViewSwitcher {
 QFrame#ViewSwitcher QPushButton {
     background-color: @surface;
     color: @text;
-    border: 0px solid @borderStrong;
+    border: 1px solid @surface;
     border-right: 1px solid @borderStrong;
     border-top-left-radius: 0px;
     border-top-right-radius: 0px;
     border-bottom-right-radius: 0px;
     border-bottom-left-radius: 0px;
-    padding: 7px 14px;
+    padding: 6px 13px;
     min-height: 26px;
 }
 QFrame#ViewSwitcher QPushButton[viewSwitch="lead"] {
@@ -113,20 +113,53 @@ QFrame#ViewSwitcher QPushButton[viewSwitch="lead"] {
     border-bottom-left-radius: @radiuspx;
 }
 QFrame#ViewSwitcher QPushButton[viewSwitch="trail"] {
-    border-right: 0px solid @borderStrong;
+    border-right: 1px solid @surface;
     border-top-right-radius: @radiuspx;
     border-bottom-right-radius: @radiuspx;
 }
 QFrame#ViewSwitcher QPushButton:checked {
     background-color: @accent;
     color: @onAccent;
+    border-color: @accent;
 }
 QFrame#ViewSwitcher QPushButton:hover:!checked:!disabled {
     background-color: @bg;
+    border-color: @bg;
+    border-right-color: @borderStrong;
+}
+QFrame#ViewSwitcher QPushButton[viewSwitch="trail"]:hover:!checked:!disabled {
+    border-right-color: @bg;
+}
+QFrame#ViewSwitcher QPushButton:pressed:!checked:!disabled {
+    background-color: @panel;
+    border-color: @panel;
+    border-right-color: @borderStrong;
+}
+QFrame#ViewSwitcher QPushButton[viewSwitch="trail"]:pressed:!checked:!disabled {
+    border-right-color: @panel;
+}
+QFrame#ViewSwitcher QPushButton:checked:hover:!disabled {
+    background-color: @accentHover;
+    border-color: @accentHover;
+}
+QFrame#ViewSwitcher QPushButton:checked:pressed {
+    background-color: @accentPressed;
+    border-color: @accentPressed;
 }
 QFrame#ViewSwitcher QPushButton:disabled {
     color: @disabledText;
     background-color: @bg;
+    border-color: @bg;
+    border-right-color: @borderStrong;
+}
+QFrame#ViewSwitcher QPushButton[viewSwitch="trail"]:disabled {
+    border-right-color: @bg;
+}
+QFrame#ViewSwitcher QPushButton:focus {
+    border: 1px solid @accent;
+}
+QFrame#ViewSwitcher QPushButton:checked:focus {
+    border: 1px solid @onAccent;
 }
 )";
 
@@ -134,21 +167,27 @@ QFrame#ViewSwitcher QPushButton:disabled {
 QPushButton {
     background-color: @accent;
     color: @onAccent;
-    border: none;
+    border: 2px solid @accent;
     border-radius: @radiusSmpx;
-    padding: 7px 16px;
+    padding: 5px 14px;
     min-height: 28px;
     font-weight: 600;
 }
 QPushButton:hover:!disabled {
     background-color: @accentHover;
+    border-color: @accentHover;
 }
 QPushButton:pressed {
     background-color: @accentPressed;
+    border-color: @accentPressed;
 }
 QPushButton:disabled {
     background-color: @disabledBg;
+    border-color: @disabledBg;
     color: @onAccent;
+}
+QPushButton:focus {
+    border: 2px solid @onAccent;
 }
 )";
 
@@ -171,6 +210,9 @@ QPushButton:disabled {
     background-color: @bg;
     color: @disabledText;
     border: 1px solid @border;
+}
+QPushButton:focus {
+    border: 1px solid @accent;
 }
 )";
 
@@ -475,9 +517,14 @@ QPushButton:disabled {
 
         auto* primaryButton = new QPushButton{this->_toolBar};
         primaryButton->setObjectName(QStringLiteral("PrimaryCta"));
-        primaryButton->setCursor(Qt::PointingHandCursor);
         primaryButton->setStyleSheet(ChromeTokens::applyToQss(QString::fromUtf8(kPrimaryCtaStyle)));
         bindButtonToAction(primaryButton, this->_primaryCtaAction);
+        auto syncPrimaryCursor = [primaryButton, action = this->_primaryCtaAction]() {
+            primaryButton->setCursor(action->isEnabled() ? Qt::PointingHandCursor
+                                                         : Qt::ForbiddenCursor);
+        };
+        syncPrimaryCursor();
+        connect(this->_primaryCtaAction, &QAction::changed, primaryButton, syncPrimaryCursor);
         this->_toolBar->addWidget(primaryButton);
 
         auto* exportButton = new QPushButton{this->_toolBar};

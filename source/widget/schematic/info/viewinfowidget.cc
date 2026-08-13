@@ -59,6 +59,8 @@ namespace PR_tool::widget::schematic {
 
         auto* gridVisibleCheckBox = new QCheckBox{widget};
         gridVisibleCheckBox->setMinimumHeight(MIN_HEIGHT);
+        gridVisibleCheckBox->setCursor(Qt::PointingHandCursor);
+        gridVisibleCheckBox->setFocusPolicy(Qt::TabFocus);
         gridVisibleCheckBox->setChecked(this->_view->gridVisible());
         addPropRow(0, QStringLiteral("Grid Visible"), gridVisibleCheckBox);
 

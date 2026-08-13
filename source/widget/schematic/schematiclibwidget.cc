@@ -1,4 +1,5 @@
 #include "./schematiclibwidget.h"
+#include "../chrometokens.h"
 #include "./item/topdieinstitem.h"
 #include "./item/exportitem.h"
 #include "./item/netitem.h"
@@ -138,6 +139,8 @@ namespace PR_tool::widget {
         auto makeFilterCheck = [this, connBox](const QString& text) {
             auto* cb = new QCheckBox{text, connBox};
             cb->setChecked(true);
+            cb->setCursor(Qt::PointingHandCursor);
+            cb->setFocusPolicy(Qt::TabFocus);
             return cb;
         };
         this->_filterSignal = makeFilterCheck(QStringLiteral("Signal"));
@@ -183,8 +186,9 @@ namespace PR_tool::widget {
         button->setMinimumHeight(28);
         button->setMaximumHeight(32);
         button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        button->setFocusPolicy(Qt::TabFocus);
         button->setCursor(Qt::PointingHandCursor);
-        button->setStyleSheet(QStringLiteral(
+        auto qss = ChromeTokens::applyToQss(QStringLiteral(
             "QPushButton {"
             "  background-color: rgba(%1, %2, %3, %4);"
             "  border: 1px solid rgba(%1, %2, %3, 220);"
@@ -192,13 +196,22 @@ namespace PR_tool::widget {
             "  padding: 2px 8px;"
             "  font-weight: 600;"
             "}"
-            "QPushButton:hover {"
+            "QPushButton:hover:!disabled {"
             "  background-color: rgba(%1, %2, %3, 200);"
             "}"
-            "QPushButton:pressed {"
+            "QPushButton:pressed:!disabled {"
             "  background-color: rgba(%1, %2, %3, 230);"
             "}"
-        ).arg(fill.red()).arg(fill.green()).arg(fill.blue()).arg(fill.alpha()));
+            "QPushButton:focus {"
+            "  border: 1px solid @accent;"
+            "}"
+            "QPushButton:disabled {"
+            "  background-color: rgba(%1, %2, %3, 80);"
+            "  color: @disabledText;"
+            "  border: 1px solid @border;"
+            "}"
+        )).arg(fill.red()).arg(fill.green()).arg(fill.blue()).arg(fill.alpha());
+        button->setStyleSheet(qss);
         return button;
     }
 
@@ -242,6 +255,11 @@ namespace PR_tool::widget {
         moreBtn->setPopupMode(QToolButton::InstantPopup);
         moreBtn->setFixedHeight(32);
         moreBtn->setAutoRaise(true);
+        moreBtn->setFocusPolicy(Qt::TabFocus);
+        moreBtn->setCursor(Qt::PointingHandCursor);
+        moreBtn->setStyleSheet(ChromeTokens::applyToQss(QStringLiteral(
+            "QToolButton:focus { border: 1px solid @accent; }"
+            "QToolButton:disabled { color: @disabledText; }")));
         auto* moreMenu = new QMenu{moreBtn};
         moreMenu->addAction(
             QStringLiteral("Load TopDie…"),

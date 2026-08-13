@@ -128,6 +128,8 @@ namespace PR_tool::widget::schematic {
         SchematicTypography::applyPropertyValue(this->_orientationLabel);
         this->_visibleToggle = new QCheckBox{generalBody};
         SchematicTypography::applyPropertyValue(this->_visibleToggle);
+        this->_visibleToggle->setCursor(Qt::PointingHandCursor);
+        this->_visibleToggle->setFocusPolicy(Qt::TabFocus);
         this->_statusLabel = new QLabel{QStringLiteral("● Valid"), generalBody};
         SchematicTypography::applyPropertyValue(this->_statusLabel);
         this->_statusLabel->setStyleSheet(QStringLiteral("color: #2e7d32;"));

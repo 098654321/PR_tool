@@ -71,9 +71,18 @@ QTreeWidget, QTableView, QListView {
     border: 1px solid @border;
     border-radius: @radiuspx;
     color: @text;
-    outline: none;
     selection-background-color: @selectionFill;
     selection-color: @text;
+}
+
+QTreeWidget:focus, QTableView:focus, QListView:focus {
+    border: 1px solid @accent;
+}
+
+QTreeWidget::item:hover:!selected,
+QTableView::item:hover:!selected,
+QListView::item:hover:!selected {
+    background: @bg;
 }
 
 QHeaderView::section {
@@ -187,24 +196,31 @@ QToolTip {
 QPushButton#PrimaryCta {
     background-color: @accent;
     color: @onAccent;
-    border: none;
+    border: 2px solid @accent;
     border-radius: @radiusSmpx;
-    padding: 7px 16px;
+    padding: 5px 14px;
     min-height: 28px;
     font-weight: 600;
 }
 
 QPushButton#PrimaryCta:hover:!disabled {
     background-color: @accentHover;
+    border-color: @accentHover;
 }
 
 QPushButton#PrimaryCta:pressed {
     background-color: @accentPressed;
+    border-color: @accentPressed;
 }
 
 QPushButton#PrimaryCta:disabled {
     background-color: @disabledBg;
+    border-color: @disabledBg;
     color: @onAccent;
+}
+
+QPushButton#PrimaryCta:focus {
+    border: 2px solid @onAccent;
 }
 
 QPushButton#SecondaryCta {
@@ -228,4 +244,32 @@ QPushButton#SecondaryCta:disabled {
     background-color: @bg;
     color: @disabledText;
     border: 1px solid @border;
+}
+
+QPushButton#SecondaryCta:focus {
+    border: 1px solid @accent;
+}
+
+QCheckBox {
+    color: @text;
+    spacing: 6px;
+    border: 1px solid transparent;
+    border-radius: @radiusSmpx;
+    padding: 1px 2px;
+}
+
+QCheckBox:hover:!disabled {
+    background-color: @bg;
+}
+
+QCheckBox:pressed:!disabled {
+    background-color: @panel;
+}
+
+QCheckBox:focus {
+    border: 1px solid @accent;
+}
+
+QCheckBox:disabled {
+    color: @disabledText;
 }
