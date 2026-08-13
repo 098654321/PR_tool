@@ -11,6 +11,7 @@
 #include "./sourceportitem.h"
 #include "../schematicscene.h"
 #include "./exportitem.h"
+#include "../schematictypography.h"
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsView>
 #include <cassert>
@@ -118,6 +119,7 @@ namespace PR_tool::widget::schematic {
         painter->drawEllipse(QPointF{0., 0.}, this->_raduis, this->_raduis);
 
         auto length = this->_name.size() * CHAR_WIDTH_;
+        painter->setFont(SchematicTypography::pinNameFont());
         painter->setPen(Qt::blue);
         switch (this->_side) {
             case PinSide::Top: {

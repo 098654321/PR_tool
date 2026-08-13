@@ -33,7 +33,6 @@ namespace PR_tool::widget::schematic {
         static constexpr qreal PIN_INTERVAL = GridItem::gridLength(PIN_INTERVAL_SIZE);
         static constexpr qreal SPACE_LENGTH = GridItem::gridLength(SPACE_LENGTH_SIZE);
         static constexpr qreal HEADER_HEIGHT = GridItem::gridLength(HEADER_HEIGHT_SIZE);
-        static constexpr int HEADER_FONT_PIXEL_SIZE = 28;
         static constexpr qreal HEADER_ICON_SIZE = 32.;
 
         enum { Type = UserType + 6 };

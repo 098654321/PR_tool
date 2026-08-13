@@ -16,6 +16,8 @@
 #include <QFrame>
 #include <QMessageBox>
 
+#include "../schematictypography.h"
+
 namespace PR_tool::widget::schematic {
 
     NetInfoWidget::NetInfoWidget(QWidget* parent) :
@@ -26,10 +28,7 @@ namespace PR_tool::widget::schematic {
         thisLayout->setSpacing(6);
 
         auto* title = new QLabel{QStringLiteral("NET"), this};
-        auto titleFont = title->font();
-        titleFont.setBold(true);
-        titleFont.setPointSize(titleFont.pointSize() + 1);
-        title->setFont(titleFont);
+        SchematicTypography::applyInspectorTitle(title);
         thisLayout->addWidget(title);
 
         auto* line = new QFrame{this};
@@ -45,34 +44,37 @@ namespace PR_tool::widget::schematic {
         thisLayout->addLayout(layout);
         thisLayout->addStretch();
 
-        layout->addWidget(new QLabel{QStringLiteral("Begin"), this}, 0, 0);
+        auto addPropRow = [&](int row, const QString& text, QWidget* value) {
+            auto* label = new QLabel{text, this};
+            SchematicTypography::applyPropertyLabel(label);
+            SchematicTypography::applyPropertyValue(value);
+            layout->addWidget(label, row, 0);
+            layout->addWidget(value, row, 1);
+        };
+
         this->_beginPinLabel = new QLabel{this};
         this->_beginPinLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        layout->addWidget(this->_beginPinLabel, 0, 1);
+        addPropRow(0, QStringLiteral("Begin"), this->_beginPinLabel);
 
-        layout->addWidget(new QLabel{QStringLiteral("End"), this}, 1, 0);
         this->_endPinLabel = new QLabel{this};
         this->_endPinLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        layout->addWidget(this->_endPinLabel, 1, 1);
+        addPropRow(1, QStringLiteral("End"), this->_endPinLabel);
 
-        layout->addWidget(new QLabel{QStringLiteral("Sync"), this}, 2, 0);
         this->_syncSpinBox = new QSpinBox{this};
         this->_syncSpinBox->setMinimum(-1);
         this->_syncSpinBox->setMaximum(32);
         this->_syncSpinBox->setMinimumHeight(30);
-        layout->addWidget(this->_syncSpinBox, 2, 1);
+        addPropRow(2, QStringLiteral("Sync"), this->_syncSpinBox);
 
-        layout->addWidget(new QLabel{QStringLiteral("Color"), this}, 3, 0);
         this->_colorButton = new ColorPickerButton{this};
         this->_colorButton->setMinimumHeight(30);
-        layout->addWidget(this->_colorButton, 3, 1);
+        addPropRow(3, QStringLiteral("Color"), this->_colorButton);
 
-        layout->addWidget(new QLabel{QStringLiteral("Width"), this}, 4, 0);
         this->_widthSpinBox = new QSpinBox{this};
         this->_widthSpinBox->setMinimum(1);
         this->_widthSpinBox->setMaximum(20);
         this->_widthSpinBox->setMinimumHeight(30);
-        layout->addWidget(this->_widthSpinBox, 4, 1);
+        addPropRow(4, QStringLiteral("Width"), this->_widthSpinBox);
 
         connect(this->_colorButton, &ColorPickerButton::colorChanged, this, [this](const QColor& color) {
             assert(this->_net != nullptr);

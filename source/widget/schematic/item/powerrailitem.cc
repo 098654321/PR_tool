@@ -1,8 +1,9 @@
 #include "./powerrailitem.h"
 
+#include "../schematictypography.h"
+
 #include <QPainter>
 #include <QPen>
-#include <QFont>
 #include <algorithm>
 
 namespace PR_tool::widget::schematic {
@@ -81,10 +82,7 @@ namespace PR_tool::widget::schematic {
             }
         }
 
-        QFont font;
-        font.setPixelSize(12);
-        font.setBold(true);
-        painter->setFont(font);
+        painter->setFont(SchematicTypography::topDieTypeFont());
         painter->setPen(color);
         const QString label = this->_kind == Kind::Vdd ? QStringLiteral("VDD") : QStringLiteral("GND");
         const qreal labelX = this->_x1 - 28.;

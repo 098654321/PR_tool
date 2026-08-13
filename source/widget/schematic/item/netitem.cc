@@ -8,10 +8,12 @@
 #include "qpoint.h"
 #include "widget/schematic/info/netinfowidget.h"
 #include "widget/schematic/schematicscene.h"
+#include "widget/schematic/schematictypography.h"
 #include <circuit/connection/connection.hh>
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsScene>
+#include <QFont>
 #include <QFontMetricsF>
 #include <QPainter>
 
@@ -415,8 +417,7 @@ namespace PR_tool::widget::schematic {
     auto NetItem::boundingRect() const -> QRectF {
         QRectF rect = this->_path.boundingRect().adjusted(-4, -4, 4, 4);
         if (!this->_bundleLabel.isEmpty() && !this->_path.isEmpty()) {
-            QFont font;
-            font.setPixelSize(11);
+            const QFont font = SchematicTypography::pinNameFont();
             const QFontMetricsF fm(font);
             const QRectF textRect = fm.boundingRect(this->_bundleLabel);
             const QPointF mid = this->_path.pointAtPercent(0.5);
@@ -449,8 +450,7 @@ namespace PR_tool::widget::schematic {
         painter->drawPath(this->_path);
 
         if (!this->_bundleLabel.isEmpty() && !this->_path.isEmpty()) {
-            auto font = painter->font();
-            font.setPixelSize(11);
+            const QFont font = SchematicTypography::pinNameFont();
             painter->setFont(font);
             QColor labelColor = this->_paintColor;
             labelColor.setAlphaF(qMin(1.0, this->_paintOpacity + 0.35));

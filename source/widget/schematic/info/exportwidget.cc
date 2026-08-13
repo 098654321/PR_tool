@@ -19,6 +19,8 @@
 #include <QFrame>
 #include <QMessageBox>
 
+#include "../schematictypography.h"
+
 namespace PR_tool::widget::schematic {
 
     constexpr int MIN_HEIGHT = 30;
@@ -31,10 +33,7 @@ namespace PR_tool::widget::schematic {
         thisLayout->setSpacing(6);
 
         auto* title = new QLabel{QStringLiteral("EXTERNAL PORT"), this};
-        auto titleFont = title->font();
-        titleFont.setBold(true);
-        titleFont.setPointSize(titleFont.pointSize() + 1);
-        title->setFont(titleFont);
+        SchematicTypography::applyInspectorTitle(title);
         thisLayout->addWidget(title);
 
         auto* line = new QFrame{this};
@@ -50,10 +49,17 @@ namespace PR_tool::widget::schematic {
         thisLayout->addLayout(layout);
         thisLayout->addStretch();
 
-        layout->addWidget(new QLabel{QStringLiteral("Name"), this}, 0, 0);
+        auto addPropRow = [&](int row, const QString& text, QWidget* value) {
+            auto* label = new QLabel{text, this};
+            SchematicTypography::applyPropertyLabel(label);
+            SchematicTypography::applyPropertyValue(value);
+            layout->addWidget(label, row, 0);
+            layout->addWidget(value, row, 1);
+        };
+
         this->_nameEdit = new QLineEdit{this};
         this->_nameEdit->setMinimumHeight(MIN_HEIGHT);
-        layout->addWidget(this->_nameEdit, 0, 1);
+        addPropRow(0, QStringLiteral("Name"), this->_nameEdit);
 
         connect(this->_nameEdit, &QLineEdit::editingFinished, this, [this]() {
             if (this->_externalPort == nullptr) {
@@ -62,33 +68,29 @@ namespace PR_tool::widget::schematic {
             emit this->externalPortRename(this->_externalPort, this->_nameEdit->text());
         });
 
-        layout->addWidget(new QLabel{QStringLiteral("Row"), this}, 1, 0);
         this->_rowSpinBox = new QSpinBox{this};
         this->_rowSpinBox->setMinimumHeight(MIN_HEIGHT);
         this->_rowSpinBox->setMinimum(0);
         this->_rowSpinBox->setMaximum(hardware::Interposer::COB_ARRAY_HEIGHT - 1);
-        layout->addWidget(this->_rowSpinBox, 1, 1);
+        addPropRow(1, QStringLiteral("Row"), this->_rowSpinBox);
 
-        layout->addWidget(new QLabel{QStringLiteral("Column"), this}, 2, 0);
         this->_colSpinBox = new QSpinBox{this};
         this->_colSpinBox->setMinimumHeight(MIN_HEIGHT);
         this->_colSpinBox->setMinimum(0);
         this->_colSpinBox->setMaximum(hardware::Interposer::COB_ARRAY_WIDTH - 1);
-        layout->addWidget(this->_colSpinBox, 2, 1);
+        addPropRow(2, QStringLiteral("Column"), this->_colSpinBox);
 
-        layout->addWidget(new QLabel{QStringLiteral("Dir"), this}, 3, 0);
         this->_dirComboBox = new QComboBox{this};
         this->_dirComboBox->setMinimumHeight(MIN_HEIGHT);
         this->_dirComboBox->addItem(QStringLiteral("Hori"));
         this->_dirComboBox->addItem(QStringLiteral("Vert"));
-        layout->addWidget(this->_dirComboBox, 3, 1);
+        addPropRow(3, QStringLiteral("Dir"), this->_dirComboBox);
 
-        layout->addWidget(new QLabel{QStringLiteral("Index"), this}, 4, 0);
         this->_indexSpinBox = new QSpinBox{this};
         this->_indexSpinBox->setMinimumHeight(MIN_HEIGHT);
         this->_indexSpinBox->setMinimum(0);
         this->_indexSpinBox->setMaximum(hardware::COB::INDEX_SIZE);
-        layout->addWidget(this->_indexSpinBox, 4, 1);
+        addPropRow(4, QStringLiteral("Index"), this->_indexSpinBox);
 
         this->_setCoordButton = new QPushButton{QStringLiteral("Set Coord"), this};
         this->_setCoordButton->setMinimumHeight(MIN_HEIGHT);

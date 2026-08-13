@@ -3,6 +3,7 @@
 #include "./portgroupitem.h"
 #include "./netitem.h"
 #include "../schematicscene.h"
+#include "../schematictypography.h"
 #include "qchar.h"
 #include "qcolor.h"
 #include "qnamespace.h"
@@ -459,7 +460,7 @@ namespace PR_tool::widget::schematic {
         painter->drawLine(QPointF(0., HEADER_HEIGHT), QPointF(this->_width, HEADER_HEIGHT));
 
         // Header: icon + type + instance name. Always drawn (never hidden on zoom);
-        // elide to fit — Pin LOD (Ch.五) may hide pins later, not this header.
+        // Ch.22: fixed table pointSize — no Far step-down. Elide to fit.
         const qreal pad = 8.;
         const qreal iconSize = std::min(HEADER_ICON_SIZE, HEADER_HEIGHT - 2. * pad);
         const QRectF iconRect {
@@ -470,37 +471,38 @@ namespace PR_tool::widget::schematic {
         };
         this->paintTypeIcon(painter, iconRect);
 
-        auto font = painter->font();
-        font.setPixelSize(HEADER_FONT_PIXEL_SIZE);
-        font.setBold(true);
-        painter->setFont(font);
         QColor textColor = Qt::black;
         textColor.setAlphaF(textDim);
         painter->setPen(textColor);
 
-        const QFontMetricsF fm {font};
+        const auto typeFont = SchematicTypography::topDieTypeFont();
+        const auto nameFont = SchematicTypography::topDieNameFont();
+        const QFontMetricsF typeFm {typeFont};
+        const QFontMetricsF nameFm {nameFont};
         const qreal textLeft = iconRect.right() + pad;
         const qreal textMaxWidth = std::max(0., this->_width - textLeft - pad);
 
-        const QString typeLabel = fm.elidedText(this->_typeName, Qt::ElideRight, textMaxWidth * 0.35);
-        const qreal typeWidth = fm.horizontalAdvance(typeLabel);
+        const QString typeLabel = typeFm.elidedText(this->_typeName, Qt::ElideRight, textMaxWidth * 0.35);
+        const qreal typeWidth = typeFm.horizontalAdvance(typeLabel);
         const QRectF typeRect {
             textLeft,
             0.,
             typeWidth,
             HEADER_HEIGHT
         };
+        painter->setFont(typeFont);
         painter->drawText(typeRect, Qt::AlignVCenter | Qt::AlignLeft, typeLabel);
 
         const qreal nameLeft = typeRect.right() + pad * 1.5;
         const qreal nameMaxWidth = std::max(0., this->_width - nameLeft - pad);
-        const QString nameLabel = fm.elidedText(this->_name, Qt::ElideRight, nameMaxWidth);
+        const QString nameLabel = nameFm.elidedText(this->_name, Qt::ElideRight, nameMaxWidth);
         const QRectF nameRect {
             nameLeft,
             0.,
             nameMaxWidth,
             HEADER_HEIGHT
         };
+        painter->setFont(nameFont);
         painter->drawText(nameRect, Qt::AlignVCenter | Qt::AlignLeft, nameLabel);
     }
 

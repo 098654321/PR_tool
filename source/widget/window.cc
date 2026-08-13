@@ -4,6 +4,7 @@
 #include "./view3d/view3dwidget.h"
 #include "./schematic/schematicwidget.h"
 #include "./schematic/schematicview.h"
+#include "./schematic/schematictypography.h"
 #include "./layout/layoutwidget.h"
 
 #include "algo/netbuilder/netbuilder.hh"
@@ -450,15 +451,18 @@ namespace PR_tool::widget {
 
         this->_stageLabel = new QLabel{this};
         this->_stageLabel->setMinimumWidth(120);
+        schematic::SchematicTypography::applyStatus(this->_stageLabel);
         statusBar->addWidget(this->_stageLabel);
 
         this->_detailLabel = new QLabel{this};
         this->_detailLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        schematic::SchematicTypography::applyStatus(this->_detailLabel);
         statusBar->addWidget(this->_detailLabel, 1);
 
         this->_statusLabel = new QLabel{this};
         this->_statusLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         this->_statusLabel->setMinimumWidth(160);
+        schematic::SchematicTypography::applyStatus(this->_statusLabel);
 
         statusBar->addPermanentWidget(this->_statusLabel);
         this->updateStatusLabel();

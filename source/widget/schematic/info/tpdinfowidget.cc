@@ -37,6 +37,8 @@
 #include <QSizePolicy>
 #include <QSettings>
 
+#include "../schematictypography.h"
+
 namespace PR_tool::widget::schematic {
 
     namespace {
@@ -88,10 +90,7 @@ namespace PR_tool::widget::schematic {
         outer->setSpacing(6);
 
         this->_titleLabel = new QLabel{QStringLiteral("TOPDIE INSTANCE"), this};
-        auto titleFont = this->_titleLabel->font();
-        titleFont.setBold(true);
-        titleFont.setPointSize(titleFont.pointSize() + 1);
-        this->_titleLabel->setFont(titleFont);
+        SchematicTypography::applyInspectorTitle(this->_titleLabel);
         outer->addWidget(this->_titleLabel);
 
         auto* line = new QFrame{this};
@@ -120,26 +119,33 @@ namespace PR_tool::widget::schematic {
 
         this->_nameEdit = new QLineEdit{generalBody};
         this->_nameEdit->setMinimumHeight(kMinHeight);
+        SchematicTypography::applyPropertyValue(this->_nameEdit);
         this->_typeLabel = new QLabel{generalBody};
+        SchematicTypography::applyPropertyValue(this->_typeLabel);
         this->_positionLabel = new QLabel{generalBody};
+        SchematicTypography::applyPropertyValue(this->_positionLabel);
         this->_orientationLabel = new QLabel{QStringLiteral("R0"), generalBody};
+        SchematicTypography::applyPropertyValue(this->_orientationLabel);
         this->_visibleToggle = new QCheckBox{generalBody};
+        SchematicTypography::applyPropertyValue(this->_visibleToggle);
         this->_statusLabel = new QLabel{QStringLiteral("● Valid"), generalBody};
+        SchematicTypography::applyPropertyValue(this->_statusLabel);
         this->_statusLabel->setStyleSheet(QStringLiteral("color: #2e7d32;"));
 
+        auto addPropRow = [&](QGridLayout* grid, QWidget* parent, int row, const QString& text, QWidget* value) {
+            auto* label = new QLabel{text, parent};
+            SchematicTypography::applyPropertyLabel(label);
+            grid->addWidget(label, row, 0);
+            grid->addWidget(value, row, 1);
+        };
+
         int row = 0;
-        generalGrid->addWidget(new QLabel{QStringLiteral("Name"), generalBody}, row, 0);
-        generalGrid->addWidget(this->_nameEdit, row++, 1);
-        generalGrid->addWidget(new QLabel{QStringLiteral("Type"), generalBody}, row, 0);
-        generalGrid->addWidget(this->_typeLabel, row++, 1);
-        generalGrid->addWidget(new QLabel{QStringLiteral("Position"), generalBody}, row, 0);
-        generalGrid->addWidget(this->_positionLabel, row++, 1);
-        generalGrid->addWidget(new QLabel{QStringLiteral("Orientation"), generalBody}, row, 0);
-        generalGrid->addWidget(this->_orientationLabel, row++, 1);
-        generalGrid->addWidget(new QLabel{QStringLiteral("Visible"), generalBody}, row, 0);
-        generalGrid->addWidget(this->_visibleToggle, row++, 1);
-        generalGrid->addWidget(new QLabel{QStringLiteral("Status"), generalBody}, row, 0);
-        generalGrid->addWidget(this->_statusLabel, row++, 1);
+        addPropRow(generalGrid, generalBody, row++, QStringLiteral("Name"), this->_nameEdit);
+        addPropRow(generalGrid, generalBody, row++, QStringLiteral("Type"), this->_typeLabel);
+        addPropRow(generalGrid, generalBody, row++, QStringLiteral("Position"), this->_positionLabel);
+        addPropRow(generalGrid, generalBody, row++, QStringLiteral("Orientation"), this->_orientationLabel);
+        addPropRow(generalGrid, generalBody, row++, QStringLiteral("Visible"), this->_visibleToggle);
+        addPropRow(generalGrid, generalBody, row++, QStringLiteral("Status"), this->_statusLabel);
 
         contentLayout->addWidget(
             this->makeCollapsibleGroup(QStringLiteral("General"), generalBody, &this->_generalExpanded));
@@ -153,16 +159,16 @@ namespace PR_tool::widget::schematic {
         connGrid->setColumnStretch(1, 1);
 
         this->_connectionsLabel = new QLabel{connBody};
+        SchematicTypography::applyPropertyValue(this->_connectionsLabel);
         this->_signalPinsLabel = new QLabel{connBody};
+        SchematicTypography::applyPropertyValue(this->_signalPinsLabel);
         this->_powerPinsLabel = new QLabel{connBody};
+        SchematicTypography::applyPropertyValue(this->_powerPinsLabel);
 
         row = 0;
-        connGrid->addWidget(new QLabel{QStringLiteral("Connections"), connBody}, row, 0);
-        connGrid->addWidget(this->_connectionsLabel, row++, 1);
-        connGrid->addWidget(new QLabel{QStringLiteral("Signal Pins"), connBody}, row, 0);
-        connGrid->addWidget(this->_signalPinsLabel, row++, 1);
-        connGrid->addWidget(new QLabel{QStringLiteral("Power Pins"), connBody}, row, 0);
-        connGrid->addWidget(this->_powerPinsLabel, row++, 1);
+        addPropRow(connGrid, connBody, row++, QStringLiteral("Connections"), this->_connectionsLabel);
+        addPropRow(connGrid, connBody, row++, QStringLiteral("Signal Pins"), this->_signalPinsLabel);
+        addPropRow(connGrid, connBody, row++, QStringLiteral("Power Pins"), this->_powerPinsLabel);
 
         contentLayout->addWidget(
             this->makeCollapsibleGroup(QStringLiteral("Connectivity"), connBody, &this->_connectivityExpanded));
@@ -176,6 +182,7 @@ namespace PR_tool::widget::schematic {
         this->_pinSearchEdit = new QLineEdit{pinBody};
         this->_pinSearchEdit->setPlaceholderText(QStringLiteral("Search pins..."));
         this->_pinSearchEdit->setClearButtonEnabled(true);
+        SchematicTypography::applyPropertyValue(this->_pinSearchEdit);
         pinLayout->addWidget(this->_pinSearchEdit);
 
         this->_pinMapModel = new QStandardItemModel{0, 2, this};
@@ -198,6 +205,7 @@ namespace PR_tool::widget::schematic {
         this->_pinMapView->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
         this->_pinMapView->verticalHeader()->setVisible(false);
         this->_pinMapView->setAlternatingRowColors(true);
+        SchematicTypography::applyPropertyValue(this->_pinMapView);
         pinLayout->addWidget(this->_pinMapView, 1);
 
         contentLayout->addWidget(
@@ -257,6 +265,7 @@ namespace PR_tool::widget::schematic {
         header->setChecked(*expandedState);
         header->setAutoRaise(true);
         header->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        SchematicTypography::applyInspectorTitle(header);
         layout->addWidget(header);
 
         body->setVisible(*expandedState);

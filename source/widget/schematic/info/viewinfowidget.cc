@@ -13,6 +13,8 @@
 #include <QIntValidator>
 #include <QFrame>
 
+#include "../schematictypography.h"
+
 namespace PR_tool::widget::schematic {
 
     constexpr int MIN_HEIGHT = 30;
@@ -31,7 +33,7 @@ namespace PR_tool::widget::schematic {
         auto* placeholder = new QLabel{QStringLiteral("Select an object to inspect"), this};
         placeholder->setWordWrap(true);
         placeholder->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-        placeholder->setStyleSheet(QStringLiteral("color: #666666; font-size: 13px;"));
+        SchematicTypography::applyPropertyLabel(placeholder);
         thisLayout->addWidget(placeholder);
 
         auto* line = new QFrame{this};
@@ -40,31 +42,37 @@ namespace PR_tool::widget::schematic {
         thisLayout->addWidget(line);
 
         auto* widget = new QGroupBox{QStringLiteral("Canvas"), this};
+        SchematicTypography::applyInspectorTitle(widget);
         thisLayout->addWidget(widget);
         thisLayout->addStretch();
 
         auto* layout = new QGridLayout{widget};
         layout->setSpacing(10);
 
-        layout->addWidget(new QLabel{QStringLiteral("Grid Visible"), widget}, 0, 0);
+        auto addPropRow = [&](int row, const QString& text, QWidget* value) {
+            auto* label = new QLabel{text, widget};
+            SchematicTypography::applyPropertyLabel(label);
+            SchematicTypography::applyPropertyValue(value);
+            layout->addWidget(label, row, 0);
+            layout->addWidget(value, row, 1);
+        };
+
         auto* gridVisibleCheckBox = new QCheckBox{widget};
         gridVisibleCheckBox->setMinimumHeight(MIN_HEIGHT);
         gridVisibleCheckBox->setChecked(this->_view->gridVisible());
-        layout->addWidget(gridVisibleCheckBox, 0, 1);
+        addPropRow(0, QStringLiteral("Grid Visible"), gridVisibleCheckBox);
 
-        layout->addWidget(new QLabel{QStringLiteral("Grid Color"), widget}, 1, 0);
         auto* gridColorButton = new ColorPickerButton{widget};
         gridColorButton->setMinimumHeight(MIN_HEIGHT);
         gridColorButton->setColor(this->_view->gridColor());
-        layout->addWidget(gridColorButton, 1, 1);
+        addPropRow(1, QStringLiteral("Grid Color"), gridColorButton);
 
-        layout->addWidget(new QLabel{QStringLiteral("Grid Size"), widget}, 2, 0);
         auto* gridSizeEdit = new QLineEdit{widget};
         auto* validator = new QIntValidator(GridItem::GRID_SIZE, 100, gridSizeEdit);
         gridSizeEdit->setValidator(validator);
         gridSizeEdit->setMinimumHeight(MIN_HEIGHT);
         gridSizeEdit->setText(QStringLiteral("%1").arg(this->_view->gridSize()));
-        layout->addWidget(gridSizeEdit, 2, 1);
+        addPropRow(2, QStringLiteral("Grid Size"), gridSizeEdit);
 
         layout->setColumnMinimumWidth(0, 50);
         layout->setColumnStretch(0, 0);

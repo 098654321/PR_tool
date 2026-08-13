@@ -3,6 +3,7 @@
 #include "./exportitem.h"
 #include "./netitem.h"
 #include "../schematicscene.h"
+#include "../schematictypography.h"
 
 #include <QGraphicsScene>
 #include <QGraphicsSceneMouseEvent>
@@ -158,9 +159,7 @@ namespace PR_tool::widget::schematic {
         painter->setBrush(emphasis ? SELECTED_COLOR : COLOR);
         painter->drawRect(this->_barRect);
 
-        auto font = painter->font();
-        font.setPixelSize(11);
-        painter->setFont(font);
+        painter->setFont(SchematicTypography::pinNameFont());
         painter->setPen(Qt::white);
 
         const QString text = this->labelText();
