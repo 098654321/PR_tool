@@ -79,10 +79,31 @@ QTreeWidget:focus, QTableView:focus, QListView:focus {
     border: 1px solid @accent;
 }
 
+QTreeWidget::item,
+QTableView::item,
+QListView::item {
+    padding: 2px 4px;
+    min-height: 20px;
+    color: @text;
+}
+
 QTreeWidget::item:hover:!selected,
 QTableView::item:hover:!selected,
 QListView::item:hover:!selected {
     background: @bg;
+}
+
+QTreeWidget::item:selected,
+QTreeWidget::item:selected:active,
+QTreeWidget::item:selected:!active,
+QTableView::item:selected,
+QTableView::item:selected:active,
+QTableView::item:selected:!active,
+QListView::item:selected,
+QListView::item:selected:active,
+QListView::item:selected:!active {
+    background-color: @selectionFill;
+    color: @text;
 }
 
 QHeaderView::section {
@@ -203,6 +224,22 @@ QFrame#SideHairline {
 
 #SidePanel QTableView {
     font-size: 12pt;
+    color: @text;
+}
+
+#SidePanel QTreeWidget::item,
+#SidePanel QTableView::item {
+    padding: 2px 4px;
+    min-height: 20px;
+}
+
+#SidePanel QTreeWidget::item:selected,
+#SidePanel QTreeWidget::item:selected:active,
+#SidePanel QTreeWidget::item:selected:!active,
+#SidePanel QTableView::item:selected,
+#SidePanel QTableView::item:selected:active,
+#SidePanel QTableView::item:selected:!active {
+    background-color: @selectionFill;
     color: @text;
 }
 

@@ -206,6 +206,9 @@ namespace PR_tool::widget::schematic {
         this->_pinMapView->setContextMenuPolicy(Qt::CustomContextMenu);
         this->_pinMapView->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
         this->_pinMapView->verticalHeader()->setVisible(false);
+        this->_pinMapView->verticalHeader()->setDefaultSectionSize(22);
+        this->_pinMapView->verticalHeader()->setMinimumSectionSize(20);
+        this->_pinMapView->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
         this->_pinMapView->setAlternatingRowColors(true);
         SchematicTypography::applyPropertyValue(this->_pinMapView);
         pinLayout->addWidget(this->_pinMapView, 1);
