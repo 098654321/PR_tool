@@ -187,28 +187,36 @@ namespace PR_tool::widget {
         button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         button->setFocusPolicy(Qt::TabFocus);
         button->setCursor(Qt::PointingHandCursor);
+        button->setAttribute(Qt::WA_StyledBackground, true);
+        const auto bar = QStringLiteral("rgb(%1, %2, %3)")
+            .arg(fill.red()).arg(fill.green()).arg(fill.blue());
         auto qss = ChromeTokens::applyToQss(QStringLiteral(
             "QPushButton {"
-            "  background-color: rgba(%1, %2, %3, %4);"
-            "  border: 1px solid rgba(%1, %2, %3, 220);"
-            "  border-radius: 4px;"
-            "  padding: 2px 8px;"
+            "  background-color: @surface;"
+            "  color: @text;"
+            "  border: 1px solid @borderStrong;"
+            "  border-left: 3px solid %1;"
+            "  border-radius: @radiusSmpx;"
+            "  padding: 4px 10px 4px 8px;"
+            "  min-height: 28px;"
             "}"
             "QPushButton:hover:!disabled {"
-            "  background-color: rgba(%1, %2, %3, 200);"
+            "  background-color: @bg;"
             "}"
             "QPushButton:pressed:!disabled {"
-            "  background-color: rgba(%1, %2, %3, 230);"
+            "  background-color: @panel;"
             "}"
             "QPushButton:focus {"
             "  border: 1px solid @accent;"
+            "  border-left: 3px solid %1;"
             "}"
             "QPushButton:disabled {"
-            "  background-color: rgba(%1, %2, %3, 80);"
+            "  background-color: @bg;"
             "  color: @disabledText;"
             "  border: 1px solid @border;"
+            "  border-left: 3px solid %1;"
             "}"
-        )).arg(fill.red()).arg(fill.green()).arg(fill.blue()).arg(fill.alpha());
+        )).arg(bar);
         button->setStyleSheet(qss);
         schematic::SchematicTypography::applyPaletteButton(button);
         return button;
