@@ -194,12 +194,17 @@ QPushButton#PrimaryCta {
     font-weight: 600;
 }
 
-QPushButton#PrimaryCta:hover {
+QPushButton#PrimaryCta:hover:!disabled {
     background-color: @accentHover;
 }
 
 QPushButton#PrimaryCta:pressed {
     background-color: @accentPressed;
+}
+
+QPushButton#PrimaryCta:disabled {
+    background-color: @disabledBg;
+    color: @onAccent;
 }
 
 QPushButton#SecondaryCta {
@@ -211,6 +216,16 @@ QPushButton#SecondaryCta {
     min-height: 28px;
 }
 
-QPushButton#SecondaryCta:hover {
+QPushButton#SecondaryCta:hover:!disabled {
     background-color: @bg;
+}
+
+QPushButton#SecondaryCta:pressed:!disabled {
+    background-color: @panel;
+}
+
+QPushButton#SecondaryCta:disabled {
+    background-color: @bg;
+    color: @disabledText;
+    border: 1px solid @border;
 }

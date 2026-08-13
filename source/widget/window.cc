@@ -152,6 +152,28 @@ QPushButton:disabled {
 }
 )";
 
+        constexpr auto kSecondaryCtaStyle = R"(
+QPushButton {
+    background-color: @surface;
+    color: @text;
+    border: 1px solid @borderStrong;
+    border-radius: @radiusSmpx;
+    padding: 7px 16px;
+    min-height: 28px;
+}
+QPushButton:hover:!disabled {
+    background-color: @bg;
+}
+QPushButton:pressed:!disabled {
+    background-color: @panel;
+}
+QPushButton:disabled {
+    background-color: @bg;
+    color: @disabledText;
+    border: 1px solid @border;
+}
+)";
+
         void bindButtonToAction(QPushButton* button, QAction* action) {
             button->setCheckable(action->isCheckable());
             button->setFocusPolicy(Qt::TabFocus);
@@ -460,9 +482,15 @@ QPushButton:disabled {
 
         auto* exportButton = new QPushButton{this->_toolBar};
         exportButton->setObjectName(QStringLiteral("SecondaryCta"));
-        exportButton->setCursor(Qt::PointingHandCursor);
-        exportButton->setStyleSheet(ChromeTokens::applyToQss(QString::fromUtf8(kPrimaryCtaStyle)));
+        exportButton->setAttribute(Qt::WA_StyledBackground, true);
+        exportButton->setStyleSheet(ChromeTokens::applyToQss(QString::fromUtf8(kSecondaryCtaStyle)));
         bindButtonToAction(exportButton, this->_generateControlBitAction);
+        auto syncExportCursor = [exportButton, action = this->_generateControlBitAction]() {
+            exportButton->setCursor(action->isEnabled() ? Qt::PointingHandCursor
+                                                        : Qt::ForbiddenCursor);
+        };
+        syncExportCursor();
+        connect(this->_generateControlBitAction, &QAction::changed, exportButton, syncExportCursor);
         this->_toolBar->addWidget(exportButton);
 
         connect(this->_schematicAction, &QAction::triggered, this, [this]() {
