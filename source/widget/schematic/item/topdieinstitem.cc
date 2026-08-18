@@ -29,7 +29,7 @@ namespace PR_tool::widget::schematic {
 
     namespace {
 
-        // Spec 4.0: deeper type-colored header bar (more visible than body),
+        // Spec 4.0: deeper type-colored cap (more visible than body),
         // still semi-transparent so nets under/through remain readable.
         auto headerFillFrom(const QColor& base) -> QColor {
             const qreal h = base.hslHueF();
@@ -127,33 +127,17 @@ namespace PR_tool::widget::schematic {
         this->_fillColor = colorForTopDieType(topdieinst->topdie()->name());
 
         /*
-            Header (type icon + type + instance name) sits above the pin body.
+            Type-color cap on the top edge. Name + type sit in the body center.
             Pins live on the body edges; nets may enter/cross the body.
-        
-            +----+-------------------------+----+
-            | ICON TYPE      instance name      |  header
-            +----+-------------------------+----+
-            |    |        up pin           |    |
-            +----+-------------------------+----+
-            |    |                         |    |
-            | l  |                         |    |
-            | e  |                         |    |
-            | f  |          BODY           |    |
-            | t  |                         |    |
-            |    |                         |    |
-            +----+-------------------------+----+
-            |    |       bottom pin        |    |
-            +----+-------------------------+----+
-        
         */
         const auto bodyPinCount = std::max(maxPinCount, pinmap.size());
         const auto body = bodySizeForPinCount(bodyPinCount);
         this->_width = body.width();
-        this->_height = HEADER_HEIGHT + body.height();
+        this->_height = body.height();
 
         auto pinAreaWidth  = this->_width - 2 * SPACE_LENGTH;
         auto pinAreaHeight = body.height() - 2 * SPACE_LENGTH;
-        const qreal bodyTop = HEADER_HEIGHT;
+        const qreal bodyTop = 0.;
 
         auto pinsCount = pinmap.size();
         auto pinsPeSide = pinsCount / 4;
@@ -175,55 +159,6 @@ namespace PR_tool::widget::schematic {
         return QRectF{0., 0., this->_width,  this->_height};
     }
 
-    void TopDieInstanceItem::paintTypeIcon(QPainter* painter, const QRectF& iconRect) const {
-        const auto kind = this->_typeName.toUpper();
-        painter->setRenderHint(QPainter::Antialiasing, false);
-
-        if (kind == QLatin1String("CPU")) {
-            // ▣ filled square with inner frame
-            painter->setBrush(Qt::black);
-            painter->setPen(QPen(Qt::black, 1.5));
-            painter->drawRect(iconRect);
-            painter->setBrush(Qt::NoBrush);
-            painter->drawRect(iconRect.adjusted(6., 6., -6., -6.));
-        } else if (kind == QLatin1String("MEM")) {
-            // ▤ rectangle with horizontal bars
-            painter->setBrush(Qt::NoBrush);
-            painter->setPen(QPen(Qt::black, 1.5));
-            painter->drawRect(iconRect);
-            const qreal y1 = iconRect.top() + iconRect.height() / 3.;
-            const qreal y2 = iconRect.top() + 2. * iconRect.height() / 3.;
-            painter->drawLine(QPointF(iconRect.left(), y1), QPointF(iconRect.right(), y1));
-            painter->drawLine(QPointF(iconRect.left(), y2), QPointF(iconRect.right(), y2));
-        } else if (kind == QLatin1String("AI")) {
-            // ◈ diamond with inner diamond
-            const QPointF c = iconRect.center();
-            const qreal hx = iconRect.width() / 2.;
-            const qreal hy = iconRect.height() / 2.;
-            QPolygonF outer;
-            outer << QPointF(c.x(), c.y() - hy)
-                  << QPointF(c.x() + hx, c.y())
-                  << QPointF(c.x(), c.y() + hy)
-                  << QPointF(c.x() - hx, c.y());
-            painter->setBrush(Qt::NoBrush);
-            painter->setPen(QPen(Qt::black, 1.5));
-            painter->drawPolygon(outer);
-            const qreal ix = hx * 0.45;
-            const qreal iy = hy * 0.45;
-            QPolygonF inner;
-            inner << QPointF(c.x(), c.y() - iy)
-                  << QPointF(c.x() + ix, c.y())
-                  << QPointF(c.x(), c.y() + iy)
-                  << QPointF(c.x() - ix, c.y());
-            painter->drawPolygon(inner);
-        } else {
-            // Default: simple square outline
-            painter->setBrush(Qt::NoBrush);
-            painter->setPen(QPen(Qt::black, 1.5));
-            painter->drawRect(iconRect);
-        }
-    }
-
     auto TopDieInstanceItem::viewScale() const -> qreal {
         if (auto* sc = this->scene()) {
             const auto views = sc->views();
@@ -235,29 +170,18 @@ namespace PR_tool::widget::schematic {
     }
 
     auto TopDieInstanceItem::effectiveGroupSize() const -> int {
-        const qreal s = this->viewScale();
-        if (s < PinItem::LOD_FAR_MAX) {
-            return 0;
-        }
-        // Near LOD: pins take over unless click-expand is still coarser... at Near always pins.
-        if (s >= PinItem::LOD_NEAR_MIN) {
-            return 1;
-        }
-
-        int zoomSize = PortGroupLod::groupSizeForScale(s);
-        if (zoomSize <= 0) {
-            return 0;
-        }
-        // Fixed-128 ladder: clamp to actual side length happens at rebuild time.
-        if (this->_expandGroupSize.has_value() && *this->_expandGroupSize < zoomSize) {
-            return std::max(1, *this->_expandGroupSize);
-        }
-        return zoomSize;
+        // Port-group bars on TopDie edges are not used; pins own the four sides.
+        return 1;
     }
 
     auto TopDieInstanceItem::shouldRevealPins() const -> bool {
-        // Expand-to-single-pin at Medium zoom, or Near LOD.
-        return this->effectiveGroupSize() <= 1 && this->viewScale() >= PinItem::LOD_FAR_MAX;
+        return this->viewScale() >= PinItem::LOD_FAR_MAX;
+    }
+
+    auto TopDieInstanceItem::emphasizePins() const -> bool {
+        return this->isSelected()
+            || this->_chromeState == ItemChromeState::Hover
+            || this->_chromeState == ItemChromeState::Selected;
     }
 
     void TopDieInstanceItem::schedulePortGroupSync() {
@@ -430,80 +354,62 @@ namespace PR_tool::widget::schematic {
         }
 
         const QRectF bounds = this->boundingRect();
-        const QRectF headerRect {0., 0., this->_width, HEADER_HEIGHT};
-        const QRectF bodyRect {0., HEADER_HEIGHT, this->_width, this->_height - HEADER_HEIGHT};
+        const QRectF capRect {0., 0., this->_width, TYPE_CAP_HEIGHT};
 
         const QColor borderColor = itemChromeBorder(this->_chromeState);
         const qreal borderWidth = itemChromeWidth(this->_chromeState);
         const qreal dim = qBound(0., this->_chromeOpacity, 1.);
-        // Labels stay at least Ch.七 default opacity — do not invent a 40% dim.
         const qreal textDim = qMax(dim, ConnectionFocusStyle::DEFAULT_OPACITY);
 
         QColor bodyFill = bodyFillFrom(this->_fillColor);
-        QColor headerFill = headerFillFrom(this->_fillColor);
+        QColor capFill = headerFillFrom(this->_fillColor);
         bodyFill.setAlphaF(bodyFill.alphaF() * dim);
-        headerFill.setAlphaF(headerFill.alphaF() * dim);
+        capFill.setAlphaF(capFill.alphaF() * dim);
         QColor border = borderColor;
         border.setAlphaF(dim);
 
-        // Body (lighter) then header (more visible) — sharp corners only. No glow/shadow.
+        painter->setRenderHint(QPainter::Antialiasing, false);
         painter->setPen(Qt::NoPen);
         painter->setBrush(bodyFill);
-        painter->drawRect(bodyRect);
-
-        painter->setBrush(headerFill);
-        painter->drawRect(headerRect);
+        painter->drawRect(bounds);
+        painter->setBrush(capFill);
+        painter->drawRect(capRect);
 
         painter->setBrush(Qt::NoBrush);
         painter->setPen(QPen(border, borderWidth));
         painter->drawRect(bounds);
-        painter->drawLine(QPointF(0., HEADER_HEIGHT), QPointF(this->_width, HEADER_HEIGHT));
 
-        // Header: icon + type + instance name. Always drawn (never hidden on zoom);
-        // Ch.22: fixed table pointSize — no Far step-down. Elide to fit.
+        // Name + type centered in the body. Always drawn (never hidden on zoom).
         const qreal pad = 8.;
-        const qreal iconSize = std::min(HEADER_ICON_SIZE, HEADER_HEIGHT - 2. * pad);
-        const QRectF iconRect {
-            pad,
-            (HEADER_HEIGHT - iconSize) / 2.,
-            iconSize,
-            iconSize
-        };
-        this->paintTypeIcon(painter, iconRect);
-
-        QColor textColor = Qt::black;
-        textColor.setAlphaF(textDim);
-        painter->setPen(textColor);
-
-        const auto typeFont = SchematicTypography::topDieTypeFont();
+        const QRectF labelArea = bounds.adjusted(pad, TYPE_CAP_HEIGHT + pad, -pad, -pad);
         const auto nameFont = SchematicTypography::topDieNameFont();
-        const QFontMetricsF typeFm {typeFont};
+        const auto typeFont = SchematicTypography::topDieTypeFont();
         const QFontMetricsF nameFm {nameFont};
-        const qreal textLeft = iconRect.right() + pad;
-        const qreal textMaxWidth = std::max(0., this->_width - textLeft - pad);
+        const QFontMetricsF typeFm {typeFont};
+        const QString nameLabel = nameFm.elidedText(this->_name, Qt::ElideRight, labelArea.width());
+        const QString typeLabel = typeFm.elidedText(this->_typeName, Qt::ElideRight, labelArea.width());
+        const qreal gap = 4.;
+        const qreal blockH = nameFm.height() + gap + typeFm.height();
+        const qreal blockTop = labelArea.center().y() - blockH / 2.;
 
-        const QString typeLabel = typeFm.elidedText(this->_typeName, Qt::ElideRight, textMaxWidth * 0.35);
-        const qreal typeWidth = typeFm.horizontalAdvance(typeLabel);
-        const QRectF typeRect {
-            textLeft,
-            0.,
-            typeWidth,
-            HEADER_HEIGHT
-        };
-        painter->setFont(typeFont);
-        painter->drawText(typeRect, Qt::AlignVCenter | Qt::AlignLeft, typeLabel);
-
-        const qreal nameLeft = typeRect.right() + pad * 1.5;
-        const qreal nameMaxWidth = std::max(0., this->_width - nameLeft - pad);
-        const QString nameLabel = nameFm.elidedText(this->_name, Qt::ElideRight, nameMaxWidth);
-        const QRectF nameRect {
-            nameLeft,
-            0.,
-            nameMaxWidth,
-            HEADER_HEIGHT
-        };
+        painter->setRenderHint(QPainter::TextAntialiasing, true);
+        QColor nameColor = ChromeTokens::color(ChromeTokens::text);
+        nameColor.setAlphaF(textDim);
+        painter->setPen(nameColor);
         painter->setFont(nameFont);
-        painter->drawText(nameRect, Qt::AlignVCenter | Qt::AlignLeft, nameLabel);
+        painter->drawText(
+            QRectF{labelArea.left(), blockTop, labelArea.width(), nameFm.height()},
+            Qt::AlignHCenter | Qt::AlignVCenter,
+            nameLabel);
+
+        QColor typeColor = ChromeTokens::color(ChromeTokens::textMuted);
+        typeColor.setAlphaF(textDim);
+        painter->setPen(typeColor);
+        painter->setFont(typeFont);
+        painter->drawText(
+            QRectF{labelArea.left(), blockTop + nameFm.height() + gap, labelArea.width(), typeFm.height()},
+            Qt::AlignHCenter | Qt::AlignVCenter,
+            typeLabel);
     }
 
     void TopDieInstanceItem::setChromeState(ItemChromeState state, qreal opacity) {
@@ -525,7 +431,9 @@ namespace PR_tool::widget::schematic {
 
     void TopDieInstanceItem::hoverLeaveEvent(QGraphicsSceneHoverEvent* event) {
         if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
-            sc->setHoverTopDie(nullptr);
+            if (!sc->hoverMovesWithin(this, event->scenePos())) {
+                sc->setHoverTopDie(nullptr);
+            }
         }
         QGraphicsItem::hoverLeaveEvent(event);
     }

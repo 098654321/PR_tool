@@ -30,5 +30,6 @@
         <file>qss/app.qss</file>
         <file>qss/button.qss</file>
         <file>qss/switch.qss</file>
+        <file>qss/check-on.svg</file>
     </qresource>
 </RCC>

@@ -243,7 +243,7 @@ namespace PR_tool::widget::schematic {
         this->update();
         if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
             sc->setHoverPortGroup(nullptr);
-            if (this->_owner) {
+            if (this->_owner && !sc->hoverMovesWithin(this->_owner, event->scenePos())) {
                 sc->setHoverTopDie(nullptr);
             }
         }
@@ -295,23 +295,8 @@ namespace PR_tool::widget::schematic {
     }
 
     auto ExportPortGroupHost::effectiveGroupSize() const -> int {
-        const qreal s = this->viewScale();
-        if (s < PinItem::LOD_FAR_MAX) {
-            return 0;
-        }
-        // Near: hand off to per-export pins.
-        if (s >= PinItem::LOD_NEAR_MIN && !this->_expandGroupSize.has_value()) {
-            return 1;
-        }
-
-        int zoomSize = PortGroupLod::exportGroupSizeForScale(s, this->_exports.size());
-        if (zoomSize <= 0) {
-            return 0;
-        }
-        if (this->_expandGroupSize.has_value() && *this->_expandGroupSize < zoomSize) {
-            return std::max(1, *this->_expandGroupSize);
-        }
-        return zoomSize;
+        // Export aggregate bars are unused: keep individual gray export boxes at all zooms.
+        return 1;
     }
 
     void ExportPortGroupHost::expandGroups() {
@@ -347,9 +332,7 @@ namespace PR_tool::widget::schematic {
 
     void ExportPortGroupHost::rebuildGroups(int groupSize) {
         this->clearGroups();
-        // Hide individual export bodies while aggregate bars are shown (groupSize > 1).
-        const bool hideBodies = groupSize > 1;
-        this->applyExportBodyVisibility(hideBodies);
+        this->applyExportBodyVisibility(false);
 
         if (groupSize <= 1 || this->_exports.isEmpty()) {
             this->_syncedGroupSize = groupSize;

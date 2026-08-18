@@ -31,11 +31,16 @@ namespace PR_tool::widget::schematic {
 
         static constexpr qreal DIE_RELATED_WIDTH = 2.0;
         static constexpr qreal DIE_RELATED_OPACITY = 1.0;
-        static constexpr qreal DIE_UNRELATED_OPACITY = 0.15;
+        /// Selection only: keep idle items close to default so the scene does not flash.
+        static constexpr qreal DIE_UNRELATED_OPACITY = 0.28;
 
         static constexpr qreal NET_FOCUS_WIDTH = 2.5;
         static constexpr qreal NET_FOCUS_OPACITY = 1.0;
-        static constexpr qreal NET_UNRELATED_OPACITY = 0.08;
+        static constexpr qreal NET_UNRELATED_OPACITY = 0.22;
+
+        /// Hover: boost related nets without crushing the rest of the canvas.
+        static constexpr qreal HOVER_RELATED_WIDTH = 1.5;
+        static constexpr qreal HOVER_RELATED_OPACITY = 0.55;
 
         static constexpr qreal DIE_BORDER_DEFAULT = 1.5;
         /// Ch.七 strong die border; Ch.21 selected uses DIE_RELATED_WIDTH (2px), not this.
@@ -44,6 +49,7 @@ namespace PR_tool::widget::schematic {
 
     enum class NetFocusRole {
         Default,
+        HoverRelated,
         DieRelated,
         DieUnrelated,
         NetFocused,

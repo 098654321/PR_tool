@@ -37,7 +37,7 @@ namespace PR_tool::widget {
         class PowerRailItem;
     }
 
-    /// Canvas connection categories (Navi checkboxes). Default: all on.
+    /// Ch.二十五: canvas connection categories (Navi checkboxes). Default: all on.
     struct ConnectionFilter {
         bool signal {true};
         bool bus {true};
@@ -74,19 +74,21 @@ namespace PR_tool::widget {
         void setHoverPin(schematic::PinItem* pin);
         void setHoverNet(schematic::NetItem* net);
         void setHoverPortGroup(schematic::PortGroupItem* group);
+        /// True if `scenePos` still hits `keep` or a nested part of it.
+        auto hoverMovesWithin(QGraphicsItem* keep, const QPointF& scenePos) const -> bool;
         void onTopDieSelectionChanged(schematic::TopDieInstanceItem* die, bool selected);
         void refreshConnectionFocus();
-        /// Select pin + highlight connected nets; locate zooms to Near.
+        /// Ch.十四: select pin + highlight connected nets; locate zooms to Near.
         void focusPin(schematic::PinItem* pin, bool locate);
-        /// Navigator tree click — select + highlight, no zoom.
+        /// Ch.十五: navigator tree click — select + highlight, no zoom.
         void selectFromNavigator(QGraphicsItem* item);
         /// Ch.八: rebuild VDD/GND rail + stubs after die move / power net change.
         void refreshPowerRails();
         /// Ch.九: recompute bus bundles (endpoint-pair collapse / Near expand).
         void refreshBusBundling();
+        /// Ch.二十五: show/hide canvas nets and power graphics; Navi tree is unchanged.
         void setConnectionFilter(const ConnectionFilter& filter);
         auto connectionFilter() const -> const ConnectionFilter& { return this->_connectionFilter; }
-
 
     protected:
         void mouseMoveEvent(QGraphicsSceneMouseEvent* event) override;
@@ -104,10 +106,6 @@ namespace PR_tool::widget {
         /// Stable endpoint-container pair key (TopDieInst / ExternalPort); nullopt if ineligible.
         auto endpointPairKey(schematic::NetItem* net) const -> std::optional<QPair<quintptr, quintptr>>;
         auto viewScale() const -> qreal;
-        auto netPassesFilter(schematic::NetItem* net) const -> bool;
-        auto sourcePortTiedToPowerNet(schematic::SourcePortItem* port) const -> bool;
-        void applyConnectionFilter();
-
 
     public:
         auto addExPort(circuit::ExternalPort*) -> schematic::ExternalPortItem*;
@@ -156,18 +154,22 @@ namespace PR_tool::widget {
         auto gndPorts() const -> const QVector<schematic::SourcePortItem*>&
         { return this->_gndPorts; }
 
-
     private:
         void addTopDieInstItems();
         void addExternalPortItems();
         void placeExternalPortsByConnections();
         void syncExportPortGroups();
         void addNetItems();
+        void autorouteAllNets();
         /// Ch.八: hide physical VDD/GND nets; draw rail + stubs instead.
         void applyPowerNetPresentation(schematic::NetItem* net);
         /// Ch.九: auto-bundle parallel nets between the same endpoint pair (zoom expand).
         void markBundleNets();
         static auto isPowerConnection(const circuit::Connection* connection) -> bool;
+        auto netPassesFilter(schematic::NetItem* net) const -> bool;
+        void applyConnectionFilter();
+        auto sourcePortTiedToPowerNet(schematic::SourcePortItem* port) const -> bool;
+        void scheduleConnectionFocusRefresh();
 
     private:
         auto circuitPinToPinItem(const circuit::Pin& pin) -> schematic::PinItem*;
@@ -193,7 +195,6 @@ namespace PR_tool::widget {
         QSet<schematic::NetItem*> _nets;
         QVector<schematic::SourcePortItem*> _vddPorts;
         QVector<schematic::SourcePortItem*> _gndPorts;
-        ConnectionFilter _connectionFilter {};
         schematic::PowerRailItem* _vddRail {nullptr};
         schematic::PowerRailItem* _gndRail {nullptr};
 
@@ -207,12 +208,16 @@ namespace PR_tool::widget {
         bool _pendingExportGroupSync {false};
         bool _portGroupFlushScheduled {false};
 
+        // Ch.二十五: connection category filter (canvas only).
+        ConnectionFilter _connectionFilter {};
+
         // Ch.七 focus state (hover temporarily overrides selected when both set).
         schematic::TopDieInstanceItem* _hoverTopDie {nullptr};
         schematic::TopDieInstanceItem* _selectedTopDie {nullptr};
         QSet<schematic::NetItem*> _hoverFocusNets {};
         QSet<schematic::NetItem*> _selectedFocusNets {};
         bool _refreshingFocus {false};
+        bool _focusRefreshQueued {false};
     };
 
 }

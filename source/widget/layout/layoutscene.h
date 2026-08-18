@@ -71,17 +71,24 @@ namespace PR_tool::widget {
         void addTopDieInstanceItems();
         void addExternalPortItems();
         void addNetItems();
+        void syncDefaultPlacement();
 
     public:
-        auto totalNetLenght() -> qreal;
+        /// Estimated total wire length (HPWL), same formula as SA placer net_cost.
+        auto estimatedTotalWireLength() -> qint64;
         void choiseSourcePort();
 
         /// Highlight the TOB hosting the named TopDieInstance and center views on it.
         void focusTopDieInstance(const QString& name);
         void clearTopDieHighlight();
 
+        /// Restore each TopDieInstance to the TOB captured before manual Layout edits.
+        void restoreDefaultPlacement();
+
     private:
         auto circuitPinToPinItem(const circuit::Pin& pin) -> layout::PinItem*;
+        auto estimatedHpwlFromNets() -> qint64;
+        auto estimatedHpwlFromConnections() -> qint64;
         
     private:
         static auto getMinDistancePort(const QVector<layout::SourcePortItem*> ports, const QPointF& targetPos) -> layout::SourcePortItem*;
@@ -102,6 +109,7 @@ namespace PR_tool::widget {
         QVector<layout::NetItem*> _netsWithSourcePorts {};
         layout::TOBItem* _highlightedTOB {nullptr};
         layout::TopDieInstanceItem* _highlightedTopDie {nullptr};
+        QHash<circuit::TopDieInstance*, hardware::TOB*> _defaultPlacement {};
     };
 
 

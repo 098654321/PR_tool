@@ -26,9 +26,6 @@ namespace PR_tool::widget::layout {
         static constexpr qreal BUMP_AREA_BEGIN_X = 250.;
         static constexpr qreal BUMP_AREA_BEGIN_Y = 250.;
 
-        static constexpr qreal NAME_AREA_BEGIN_X = 100.;
-        static constexpr qreal NAME_AREA_BEGIN_Y = 100.;
-        
         static constexpr int BUMP_ARRAY_COL = 16;
         static constexpr int BUMP_ARRAY_ROW = 8;
 
@@ -37,7 +34,7 @@ namespace PR_tool::widget::layout {
 
         static const    QColor COLOR;
         static const    QColor HIGHLIGHT_COLOR;
-        static constexpr int FONT_SIZE = 30;
+        static constexpr int FONT_SIZE = 48;
     
         static_assert(WIDTH > BUMP_AREA_WIDTH);
         static_assert(HEIGHT > BUMP_AREA_HEIGHT);

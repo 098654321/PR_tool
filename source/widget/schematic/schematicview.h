@@ -52,6 +52,7 @@ namespace PR_tool::widget {
         void resizeEvent(QResizeEvent* event) override;
         void mouseMoveEvent(QMouseEvent* event) override;
         auto viewportEvent(QEvent* event) -> bool override;
+        void scrollContentsBy(int dx, int dy) override;
         void fitContent() override;
         void resetZoom() override;
         void ensureVisibleAtMinScale(QGraphicsItem* item, qreal minScale) override;

@@ -12,8 +12,8 @@ namespace PR_tool::widget::schematic {
     /// Ch.22 named pointSize table (canvas) plus P1-2 chrome roles.
     /// Do not reuse canvas pin / topdie fonts on chrome widgets.
     struct SchematicTypography {
-        static constexpr int TOPDIE_NAME_PT = 14;       // 13–14 semibold (canvas)
-        static constexpr int TOPDIE_TYPE_PT = 12;       // 11–12 medium (canvas)
+        static constexpr int TOPDIE_NAME_PT = 64;       // centered instance name (canvas)
+        static constexpr int TOPDIE_TYPE_PT = 36;       // centered type subtitle (canvas)
         static constexpr int PIN_NAME_PT = 9;           // 9–10 regular (canvas)
         static constexpr int PANEL_SECTION_PT = 11;     // 11–12 muted, open tracking
         static constexpr int TREE_PT = 12;              // tree nodes

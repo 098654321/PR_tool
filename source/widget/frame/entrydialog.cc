@@ -6,23 +6,9 @@ namespace PR_tool::widget {
     EntryDialog::EntryDialog(QWidget *parent)
         : QDialog(parent)
     {
-        this->setStyleSheet(
-            "QPushButton {"
-            "    background-color: white;"
-            "    color: black;"
-            "    border: 1px solid lightgray;"
-            "    border-radius: 7px;"
-            "    padding: 5px;"
-            "}"
-            "QPushButton:hover {"
-            "    background-color: lightgray;"
-            "}"
-            "QPushButton:pressed {"
-            "    background-color: gray;"
-            "    color: white;"
-            "}");
-
         auto layout = new QVBoxLayout(this);
+        layout->setContentsMargins(28, 28, 28, 28);
+        layout->setSpacing(12);
 
         auto label = new QLabel{this};
         label->setText("Welcome to PR_tool");
@@ -39,13 +25,16 @@ namespace PR_tool::widget {
             this};
         flowHint->setWordWrap(true);
         flowHint->setAlignment(Qt::AlignCenter);
+        flowHint->setStyleSheet(QStringLiteral("color: #86868b;"));
         layout->addWidget(flowHint);
 
         auto createButton = new QPushButton("Empty Project", this);
+        createButton->setObjectName(QStringLiteral("PrimaryCta"));
         createButton->setFixedHeight(40);
         createButton->setAccessibleName("Empty Project");
         createButton->setAccessibleDescription("Create an empty project");
         auto openButton = new QPushButton("Load Config", this);
+        openButton->setObjectName(QStringLiteral("SecondaryCta"));
         openButton->setFixedHeight(40);
         openButton->setAccessibleName("Load Config");
         openButton->setAccessibleDescription("Load an existing config directory");

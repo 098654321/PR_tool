@@ -484,6 +484,11 @@ namespace PR_tool::widget::schematic {
                 this->_paintOpacity = ConnectionFocusStyle::DEFAULT_OPACITY;
                 this->setZValue(0.5);
                 break;
+            case NetFocusRole::HoverRelated:
+                this->_paintWidth = ConnectionFocusStyle::HOVER_RELATED_WIDTH;
+                this->_paintOpacity = ConnectionFocusStyle::HOVER_RELATED_OPACITY;
+                this->setZValue(0.7);
+                break;
             case NetFocusRole::DieRelated:
                 this->_paintWidth = ConnectionFocusStyle::DIE_RELATED_WIDTH;
                 this->_paintOpacity = ConnectionFocusStyle::DIE_RELATED_OPACITY;
@@ -531,7 +536,9 @@ namespace PR_tool::widget::schematic {
     void NetItem::hoverLeaveEvent(QGraphicsSceneHoverEvent* event) {
         if (!this->isFloating()) {
             if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
-                sc->setHoverNet(nullptr);
+                if (!sc->hoverMovesWithin(this, event->scenePos())) {
+                    sc->setHoverNet(nullptr);
+                }
             }
         }
         QGraphicsItem::hoverLeaveEvent(event);

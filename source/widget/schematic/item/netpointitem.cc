@@ -139,7 +139,10 @@ namespace PR_tool::widget::schematic {
         this->refreshRect();
         this->update();
         if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
-            sc->setHoverNet(nullptr);
+            if (this->_netitem == nullptr
+                || !sc->hoverMovesWithin(this->_netitem, event->scenePos())) {
+                sc->setHoverNet(nullptr);
+            }
         }
         QGraphicsEllipseItem::hoverLeaveEvent(event);
     }

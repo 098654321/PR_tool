@@ -22,6 +22,7 @@
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QCheckBox>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QFileDialog>
@@ -38,6 +39,9 @@
 #include <QMenu>
 #include <QSizePolicy>
 #include <QGridLayout>
+#include <QStyledItemDelegate>
+#include <QPainter>
+#include <QFontMetrics>
 #include <algorithm>
 
 namespace PR_tool::widget {
@@ -58,6 +62,49 @@ namespace PR_tool::widget {
             }
             return QStringLiteral("%1 → %2").arg(begin, end);
         }
+
+        class NavTreeDelegate final : public QStyledItemDelegate {
+        public:
+            using QStyledItemDelegate::QStyledItemDelegate;
+
+            void paint(
+                QPainter* painter,
+                const QStyleOptionViewItem& option,
+                const QModelIndex& index
+            ) const override {
+                QStyleOptionViewItem opt{option};
+                initStyleOption(&opt, index);
+
+                painter->save();
+                painter->setRenderHint(QPainter::Antialiasing, true);
+
+                const bool selected = opt.state.testFlag(QStyle::State_Selected);
+                const bool hovered = opt.state.testFlag(QStyle::State_MouseOver);
+                const QRect bubble = opt.rect.adjusted(2, 1, -2, -1);
+                if (selected || hovered) {
+                    painter->setPen(Qt::NoPen);
+                    painter->setBrush(ChromeTokens::color(ChromeTokens::selectionFill));
+                    painter->drawRoundedRect(bubble, 4, 4);
+                }
+
+                const auto name = index.data(Qt::DisplayRole).toString();
+                const auto type = index.data(Qt::UserRole + 2).toString();
+                QRect textRect = bubble.adjusted(6, 0, -6, 0);
+                if (!type.isEmpty()) {
+                    painter->setPen(ChromeTokens::color(ChromeTokens::textMuted));
+                    painter->setFont(opt.font);
+                    const int typeW = QFontMetrics{opt.font}.horizontalAdvance(type);
+                    painter->drawText(textRect, Qt::AlignRight | Qt::AlignVCenter, type);
+                    textRect.adjust(0, 0, -(typeW + 8), 0);
+                }
+                painter->setPen(ChromeTokens::color(ChromeTokens::text));
+                painter->setFont(opt.font);
+                const auto elided = QFontMetrics{opt.font}.elidedText(
+                    name, Qt::ElideRight, std::max(0, textRect.width()));
+                painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, elided);
+                painter->restore();
+            }
+        };
 
         void clearLayout(QLayout* layout) {
             if (!layout) {
@@ -98,109 +145,119 @@ namespace PR_tool::widget {
 
         auto* line = new QFrame{this};
         line->setFrameShape(QFrame::HLine);
-        line->setFrameShadow(QFrame::Sunken);
+        line->setFrameShadow(QFrame::Plain);
+        line->setFixedHeight(1);
+        line->setStyleSheet(ChromeTokens::applyToQss(
+            QStringLiteral("background-color: @border; border: none; max-height: 1px;")));
         thisLayout->addWidget(line);
 
         // Palette strip (placement) — Ch.十五: Navi top, not a global toolbar
+        // 36px chips + room for a non-overlay horizontal scrollbar so labels are not clipped.
+        constexpr int kPaletteScrollH = 52;
         auto* paletteScroll = new QScrollArea{this};
         paletteScroll->setWidgetResizable(true);
         paletteScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         paletteScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        paletteScroll->setFixedHeight(40);
+        paletteScroll->setFixedHeight(kPaletteScrollH);
         paletteScroll->setFrameShape(QFrame::NoFrame);
 
         this->_paletteStrip = new QWidget{paletteScroll};
         this->_paletteLayout = new QHBoxLayout{this->_paletteStrip};
         this->_paletteLayout->setContentsMargins(0, 0, 0, 0);
         this->_paletteLayout->setSpacing(4);
+        this->_paletteLayout->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         paletteScroll->setWidget(this->_paletteStrip);
         thisLayout->addWidget(paletteScroll);
-
-        this->_searchEdit = new QLineEdit{this};
-        this->_searchEdit->setPlaceholderText(QStringLiteral("Search..."));
-        this->_searchEdit->setClearButtonEnabled(true);
-        thisLayout->addWidget(this->_searchEdit);
+        thisLayout->addSpacing(12);
 
         auto* filterBox = new QWidget{this};
         auto* filterLayout = new QVBoxLayout{filterBox};
         filterLayout->setContentsMargins(0, 0, 0, 0);
         filterLayout->setSpacing(4);
 
-        auto* showLabel = new QLabel{QStringLiteral("Show:"), filterBox};
-        schematic::SchematicTypography::applyPropertyLabel(showLabel);
-        filterLayout->addWidget(showLabel);
-
-        const auto chipQss = ChromeTokens::applyToQss(QStringLiteral(
-            "QPushButton {"
-            "  background-color: @surface;"
-            "  color: @text;"
+        const auto checkQss = ChromeTokens::applyToQss(QStringLiteral(
+            "QCheckBox {"
+            "  spacing: 6px;"
+            "  padding: 1px 2px;"
+            "  background-color: transparent;"
+            "  border: 1px solid transparent;"
+            "}"
+            "QCheckBox:hover:!disabled,"
+            "QCheckBox:checked,"
+            "QCheckBox:checked:hover:!disabled,"
+            "QCheckBox:pressed:!disabled {"
+            "  background-color: transparent;"
+            "}"
+            "QCheckBox:focus {"
+            "  border: 1px solid transparent;"
+            "}"
+            "QCheckBox::indicator {"
+            "  width: 14px;"
+            "  height: 14px;"
             "  border: 1px solid @borderStrong;"
-            "  border-radius: @radiusSmpx;"
-            "  padding: 2px 8px;"
-            "  min-height: 24px;"
+            "  border-radius: 3px;"
+            "  background-color: @surface;"
             "}"
-            "QPushButton:checked {"
-            "  background-color: @selectionFill;"
-            "  color: @text;"
+            "QCheckBox::indicator:unchecked {"
+            "  background-color: @surface;"
+            "  image: none;"
             "}"
-            "QPushButton:hover:!checked:!disabled {"
-            "  background-color: @bg;"
+            "QCheckBox::indicator:checked {"
+            "  background-color: @accent;"
+            "  border: 1px solid @accent;"
+            "  image: url(:/qss/qss/check-on.svg);"
             "}"
-            "QPushButton:checked:hover:!disabled {"
-            "  background-color: @selectionFill;"
-            "}"
-            "QPushButton:pressed:!disabled {"
-            "  background-color: @panel;"
-            "}"
-            "QPushButton:focus {"
+            "QCheckBox::indicator:focus {"
             "  border: 1px solid @accent;"
             "}"
-            "QPushButton:disabled {"
-            "  background-color: @bg;"
-            "  color: @disabledText;"
-            "  border: 1px solid @border;"
-            "}"
         ));
-        auto makeFilterChip = [filterBox, &chipQss](const QString& text) {
-            auto* chip = new QPushButton{text, filterBox};
-            chip->setCheckable(true);
-            chip->setChecked(true);
-            chip->setCursor(Qt::PointingHandCursor);
-            chip->setFocusPolicy(Qt::TabFocus);
-            chip->setAttribute(Qt::WA_StyledBackground, true);
-            chip->setMinimumHeight(24);
-            chip->setMaximumHeight(26);
-            chip->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
-            chip->setStyleSheet(chipQss);
-            schematic::SchematicTypography::applyPaletteButton(chip);
-            return chip;
+        auto makeNetCheck = [filterBox, &checkQss](const QString& text) {
+            auto* box = new QCheckBox{text, filterBox};
+            box->setChecked(true);
+            box->setCursor(Qt::PointingHandCursor);
+            box->setFocusPolicy(Qt::TabFocus);
+            box->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            box->setStyleSheet(checkQss);
+            schematic::SchematicTypography::applyPropertyValue(box);
+            return box;
         };
-        this->_filterSignal = makeFilterChip(QStringLiteral("Signal"));
-        this->_filterBus = makeFilterChip(QStringLiteral("Bus"));
-        this->_filterPower = makeFilterChip(QStringLiteral("Power"));
-        this->_filterGround = makeFilterChip(QStringLiteral("Ground"));
-        this->_filterExternal = makeFilterChip(QStringLiteral("External"));
+        this->_filterSignal = makeNetCheck(QStringLiteral("Signal Net"));
+        this->_filterBus = makeNetCheck(QStringLiteral("Bus Net"));
+        this->_filterPower = makeNetCheck(QStringLiteral("Power Net"));
+        this->_filterGround = makeNetCheck(QStringLiteral("Ground Net"));
+        this->_filterExternal = makeNetCheck(QStringLiteral("External Net"));
 
-        auto* chipGrid = new QGridLayout{};
-        chipGrid->setContentsMargins(0, 0, 0, 0);
-        chipGrid->setHorizontalSpacing(4);
-        chipGrid->setVerticalSpacing(4);
-        chipGrid->addWidget(this->_filterSignal, 0, 0, Qt::AlignLeft);
-        chipGrid->addWidget(this->_filterBus, 0, 1, Qt::AlignLeft);
-        chipGrid->addWidget(this->_filterPower, 0, 2, Qt::AlignLeft);
-        chipGrid->addWidget(this->_filterGround, 1, 0, Qt::AlignLeft);
-        chipGrid->addWidget(this->_filterExternal, 1, 1, Qt::AlignLeft);
-        chipGrid->setColumnStretch(3, 1);
-        filterLayout->addLayout(chipGrid);
+        auto* checkGrid = new QGridLayout{};
+        checkGrid->setContentsMargins(0, 0, 0, 0);
+        checkGrid->setHorizontalSpacing(8);
+        checkGrid->setVerticalSpacing(2);
+        checkGrid->addWidget(this->_filterSignal, 0, 0);
+        checkGrid->addWidget(this->_filterBus, 0, 1);
+        checkGrid->addWidget(this->_filterPower, 1, 0);
+        checkGrid->addWidget(this->_filterGround, 1, 1);
+        checkGrid->addWidget(this->_filterExternal, 2, 0);
+        checkGrid->setColumnStretch(0, 1);
+        checkGrid->setColumnStretch(1, 1);
+        filterLayout->addLayout(checkGrid);
         thisLayout->addWidget(filterBox);
+        thisLayout->addSpacing(12);
+
+        this->_searchEdit = new QLineEdit{this};
+        this->_searchEdit->setPlaceholderText(QStringLiteral("Search..."));
+        this->_searchEdit->setClearButtonEnabled(true);
+        thisLayout->addWidget(this->_searchEdit);
 
         this->_tree = new QTreeWidget{this};
+        this->_tree->setObjectName(QStringLiteral("NaviTree"));
         schematic::SchematicTypography::applyTree(this->_tree);
         this->_tree->setHeaderHidden(true);
         this->_tree->setRootIsDecorated(true);
         this->_tree->setUniformRowHeights(true);
         this->_tree->setSelectionMode(QAbstractItemView::SingleSelection);
         this->_tree->setExpandsOnDoubleClick(false);
+        this->_tree->setMouseTracking(true);
+        this->_tree->viewport()->setAttribute(Qt::WA_Hover);
+        this->_tree->setItemDelegate(new NavTreeDelegate{this->_tree});
         thisLayout->addWidget(this->_tree, 1);
 
         this->_topDiesRoot = new QTreeWidgetItem{this->_tree, {QStringLiteral("TopDie Instances")}};
@@ -214,17 +271,16 @@ namespace PR_tool::widget {
 
         connect(this->_searchEdit, &QLineEdit::textChanged, this, &SchematicLibWidget::applySearchFilter);
         connect(this->_tree, &QTreeWidget::itemClicked, this, &SchematicLibWidget::onTreeItemClicked);
-        connect(this->_filterSignal, &QPushButton::toggled, this, &SchematicLibWidget::pushConnectionFilter);
-        connect(this->_filterBus, &QPushButton::toggled, this, &SchematicLibWidget::pushConnectionFilter);
-        connect(this->_filterPower, &QPushButton::toggled, this, &SchematicLibWidget::pushConnectionFilter);
-        connect(this->_filterGround, &QPushButton::toggled, this, &SchematicLibWidget::pushConnectionFilter);
-        connect(this->_filterExternal, &QPushButton::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterSignal, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterBus, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterPower, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterGround, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
+        connect(this->_filterExternal, &QCheckBox::toggled, this, &SchematicLibWidget::pushConnectionFilter);
     }
 
     auto SchematicLibWidget::makePaletteButton(const QString& text, const QColor& fill) -> QPushButton* {
         auto* button = new QPushButton{QStringLiteral("+ %1").arg(text), this->_paletteStrip};
-        button->setMinimumHeight(28);
-        button->setMaximumHeight(32);
+        button->setFixedHeight(36);
         button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         button->setFocusPolicy(Qt::TabFocus);
         button->setCursor(Qt::PointingHandCursor);
@@ -238,8 +294,8 @@ namespace PR_tool::widget {
             "  border: 1px solid @borderStrong;"
             "  border-left: 3px solid %1;"
             "  border-radius: @radiusSmpx;"
-            "  padding: 4px 10px 4px 8px;"
-            "  min-height: 28px;"
+            "  padding: 0px 10px 0px 8px;"
+            "  min-height: 36px;"
             "}"
             "QPushButton:hover:!disabled {"
             "  background-color: @bg;"
@@ -301,7 +357,7 @@ namespace PR_tool::widget {
         moreBtn->setText(QStringLiteral("⋯"));
         moreBtn->setToolTip(QStringLiteral("More actions"));
         moreBtn->setPopupMode(QToolButton::InstantPopup);
-        moreBtn->setFixedHeight(32);
+        moreBtn->setFixedHeight(36);
         moreBtn->setAutoRaise(true);
         moreBtn->setFocusPolicy(Qt::TabFocus);
         moreBtn->setCursor(Qt::PointingHandCursor);
@@ -352,12 +408,10 @@ namespace PR_tool::widget {
             if (!top) {
                 continue;
             }
-            auto* item = new QTreeWidgetItem{
-                this->_topDiesRoot,
-                {QStringLiteral("%1   %2").arg(top->name(), top->typeName())}
-            };
+            auto* item = new QTreeWidgetItem{this->_topDiesRoot, {top->name()}};
             item->setData(0, kNavRoleType, static_cast<int>(NavKind::TopDieInst));
             item->setData(0, kNavRolePtr, QVariant::fromValue(static_cast<void*>(top)));
+            item->setData(0, kNavRoleTypeLabel, top->typeName());
         }
         this->_topDiesRoot->setText(
             0, QStringLiteral("TopDie Instances (%1)").arg(tops.size()));
@@ -442,13 +496,16 @@ namespace PR_tool::widget {
         }
         const bool selfMatch = filter.isEmpty()
             || forceVisible
-            || item->text(0).contains(filter, Qt::CaseInsensitive);
+            || item->text(0).contains(filter, Qt::CaseInsensitive)
+            || item->data(0, kNavRoleTypeLabel).toString().contains(filter, Qt::CaseInsensitive);
 
         bool anyChildVisible = false;
         for (int i = 0; i < item->childCount(); ++i) {
             auto* child = item->child(i);
             const bool childMatch = filter.isEmpty()
-                || child->text(0).contains(filter, Qt::CaseInsensitive);
+                || child->text(0).contains(filter, Qt::CaseInsensitive)
+                || child->data(0, kNavRoleTypeLabel).toString().contains(
+                    filter, Qt::CaseInsensitive);
             // Recurse one level (roots only have leaves in our tree).
             child->setHidden(!childMatch && !filter.isEmpty());
             if (!child->isHidden()) {

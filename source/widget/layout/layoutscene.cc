@@ -4,6 +4,8 @@
 #include "./item/tobitem.h"
 #include "./item/topdieinstitem.h"
 #include "circuit/connection/pin.hh"
+#include "circuit/connection/connection.hh"
+#include "circuit/net/net.hh"
 #include "hardware/track/trackcoord.hh"
 #include "qglobal.h"
 #include "qpoint.h"
@@ -12,15 +14,18 @@
 #include <cassert>
 #include <circuit/basedie.hh>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <hardware/interposer.hh>
-#include <circuit/basedie.hh>
+#include <optional>
 #include <widget/frame/itemtypecheck.h>
 
 #include <debug/debug.hh>
 #include <QDebug>
 #include <QMessageBox>
 #include <QGraphicsView>
+#include <QSet>
 
 namespace PR_tool::widget {
 
@@ -146,6 +151,53 @@ namespace PR_tool::widget {
             auto tobItem = this->_tobsMaps.value(topdieInst->tob());
             this->addTopDieInstance(topdieInst.get(), tobItem);
         }
+        this->syncDefaultPlacement();
+    }
+
+    void LayoutScene::syncDefaultPlacement() {
+        QSet<circuit::TopDieInstance*> live;
+        for (auto it = this->_topdieinstMap.cbegin(); it != this->_topdieinstMap.cend(); ++it) {
+            auto* inst = it.key();
+            if (inst == nullptr) {
+                continue;
+            }
+            live.insert(inst);
+            if (!this->_defaultPlacement.contains(inst)) {
+                this->_defaultPlacement.insert(inst, inst->tob());
+            }
+        }
+        for (auto it = this->_defaultPlacement.begin(); it != this->_defaultPlacement.end(); ) {
+            if (!live.contains(it.key())) {
+                it = this->_defaultPlacement.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void LayoutScene::restoreDefaultPlacement() {
+        bool changed = false;
+        const auto insts = this->_defaultPlacement.keys();
+        for (auto* inst : insts) {
+            auto* target = this->_defaultPlacement.value(inst, nullptr);
+            if (inst == nullptr || target == nullptr || inst->tob() == target) {
+                continue;
+            }
+            changed = true;
+            if (target->is_idle()) {
+                inst->move_to_tob(target);
+            } else {
+                auto* occupant = target->placed_instance();
+                if (occupant != nullptr && occupant != inst) {
+                    inst->swap_tob_with(occupant);
+                }
+            }
+        }
+        if (!changed) {
+            return;
+        }
+        this->reloadItems();
+        emit this->layoutChanged();
     }
 
     void LayoutScene::addExternalPortItems() {
@@ -275,12 +327,82 @@ namespace PR_tool::widget {
         return portItem;
     }
 
-    auto LayoutScene::totalNetLenght() -> qreal {
-        auto sum = 0.0;
-        for (auto net : this->_nets) {
-            sum += LayoutScene::pinDistance(net->beginPin(), net->endPin());
+    namespace {
+        auto hpwlOfCoords(const std::Vector<hardware::Coord>& coords) -> qint64 {
+            if (coords.empty()) {
+                return 0;
+            }
+            auto min_row = coords[0].row;
+            auto max_row = coords[0].row;
+            auto min_col = coords[0].col;
+            auto max_col = coords[0].col;
+            for (std::size_t i = 1; i < coords.size(); ++i) {
+                min_row = std::min(min_row, coords[i].row);
+                max_row = std::max(max_row, coords[i].row);
+                min_col = std::min(min_col, coords[i].col);
+                max_col = std::max(max_col, coords[i].col);
+            }
+            return (max_row - min_row) + (max_col - min_col);
         }
-        return sum;
+
+        auto placementCoordOfPin(const circuit::Pin& pin) -> std::optional<hardware::Coord> {
+            return std::match(pin.connected_point(),
+                [](const circuit::ConnectVDD&) -> std::optional<hardware::Coord> {
+                    return std::nullopt;
+                },
+                [](const circuit::ConnectGND&) -> std::optional<hardware::Coord> {
+                    return std::nullopt;
+                },
+                [](const circuit::ConnectExPort& eport) -> std::optional<hardware::Coord> {
+                    const auto& c = eport.port->coord();
+                    return hardware::Coord{c.row, c.col};
+                },
+                [](const circuit::ConnectBump& bump) -> std::optional<hardware::Coord> {
+                    if (bump.inst == nullptr || bump.inst->tob() == nullptr) {
+                        return std::nullopt;
+                    }
+                    return bump.inst->tob()->coord();
+                }
+            );
+        }
+    }
+
+    auto LayoutScene::estimatedHpwlFromNets() -> qint64 {
+        qint64 total = 0;
+        bool any = false;
+        for (const auto& [mode, nets] : this->_basedie->nets()) {
+            for (const auto& net : nets) {
+                any = true;
+                total += hpwlOfCoords(net->coords());
+            }
+        }
+        return any ? total : -1;
+    }
+
+    auto LayoutScene::estimatedHpwlFromConnections() -> qint64 {
+        qint64 total = 0;
+        for (const auto& [mode, inner] : this->_basedie->connections()) {
+            for (const auto& [sync, connections] : inner) {
+                for (const auto& connection : connections) {
+                    auto a = placementCoordOfPin(connection->input_pin());
+                    auto b = placementCoordOfPin(connection->output_pin());
+                    if (!a || !b) {
+                        continue;
+                    }
+                    total += std::llabs(a->row - b->row) + std::llabs(a->col - b->col);
+                }
+            }
+        }
+        return total;
+    }
+
+    auto LayoutScene::estimatedTotalWireLength() -> qint64 {
+        // Prefer SA-style HPWL over built circuit nets; fall back to connections.
+        const auto fromNets = this->estimatedHpwlFromNets();
+        if (fromNets >= 0) {
+            return fromNets;
+        }
+        return this->estimatedHpwlFromConnections();
     }
 
     void LayoutScene::choiseSourcePort() {

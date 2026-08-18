@@ -26,7 +26,7 @@ namespace PR_tool::widget {
         layout->addWidget(note);
 
         auto* styleNote = new QLabel{
-            QStringLiteral("Appearance: Fusion style"),
+            QStringLiteral("Appearance: Fusion + light chrome"),
             this};
         layout->addWidget(styleNote);
 

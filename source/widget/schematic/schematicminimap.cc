@@ -50,7 +50,7 @@ namespace PR_tool::widget {
     }
 
     SchematicMiniMap::SchematicMiniMap(SchematicView* view) :
-        QWidget{view != nullptr ? view->viewport() : nullptr},
+        QWidget{view},
         _view{view}
     {
         this->setFixedSize(kMiniMapWidth, kMiniMapHeight);

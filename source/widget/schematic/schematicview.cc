@@ -212,12 +212,20 @@ namespace PR_tool::widget {
         }
         constexpr int kMargin = 8;
         const QSize sz = this->_minimap->size();
-        const QRect vr = this->viewport()->rect();
-        const int x = qMax(0, vr.width() - sz.width() - kMargin);
-        const int y = qMax(0, vr.height() - sz.height() - kMargin);
+        const QRect vr = this->viewport()->geometry();
+        const int x = qMax(vr.left(), vr.right() - sz.width() - kMargin);
+        const int y = qMax(vr.top(), vr.bottom() - sz.height() - kMargin);
         this->_minimap->move(x, y);
         this->_minimap->raise();
         this->_minimap->show();
+    }
+
+    void SchematicView::scrollContentsBy(int dx, int dy) {
+        GraphicsView::scrollContentsBy(dx, dy);
+        this->repositionMiniMap();
+        if (this->_minimap != nullptr) {
+            this->_minimap->update();
+        }
     }
 
     void SchematicView::repositionEmptyHint() {

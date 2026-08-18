@@ -1,11 +1,9 @@
 #pragma once
 
-#include <QHash>
 #include <QWidget>
 
-class QSpinBox;
 class QTableView;
-class QLineEdit;
+class QLabel;
 
 namespace PR_tool::hardware {
     class Interposer;
@@ -34,9 +32,9 @@ namespace PR_tool::widget {
         circuit::BaseDie*     _basedie {nullptr};
         LayoutScene* _scene {nullptr};
     
-        QSpinBox* _topdieInstSizeSpinBox {nullptr};
         QTableView* _instPlaceView {nullptr};
-        QLineEdit* _pathLengthEdit {nullptr};
+        QLabel* _estimatedLengthLabel {nullptr};
+        QLabel* _estimatedLengthValue {nullptr};
     };
 
 }

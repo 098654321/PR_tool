@@ -61,35 +61,41 @@ namespace PR_tool::widget::schematic {
         return 1.0;
     }
 
-    auto PinItem::shouldForceShowPin() const -> bool {
-        // Selected / hover / related-net focus always force-show (Ch.五 + Ch.七).
+    auto PinItem::shouldDrawPinMark() const -> bool {
         if (this->isSelected() || this->_hovered || this->_focusRelated) {
             return true;
         }
-        // Ch.六: click-expand to group size 1 at Medium zoom reveals pins.
-        if (this->isTopDieInstancePin()) {
-            if (auto* top = this->parentTopDieInstance()) {
-                if (top->shouldRevealPins()) {
-                    return true;
-                }
-            }
+        if (this->parentDieEmphasizesPins()) {
+            return true;
         }
-        return false;
+        const qreal s = this->viewScale();
+        if (this->isTopDieInstancePin()) {
+            return s >= LOD_FAR_MAX;
+        }
+        return s >= LOD_NEAR_MIN;
+    }
+
+    auto PinItem::shouldDrawPinName() const -> bool {
+        if (this->viewScale() < LOD_NEAR_MIN) {
+            return false;
+        }
+        if (!this->isTopDieInstancePin()) {
+            return true;
+        }
+        return this->isSelected() || this->_hovered || this->parentDieEmphasizesPins();
+    }
+
+    auto PinItem::parentDieEmphasizesPins() const -> bool {
+        if (!this->isTopDieInstancePin()) {
+            return false;
+        }
+        auto* top = this->parentTopDieInstance();
+        return top != nullptr && top->emphasizePins();
     }
 
     void PinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
-        // LOD (Ch.五): hide per-pin mark+name unless Near or force-show.
-        // boundingRect/shape keep HIT_PADDING so invisible pins remain clickable; anchors stay.
-        const qreal s = this->viewScale();
-        if (!this->shouldForceShowPin()) {
-            if (s < LOD_FAR_MAX) {
-                // Far: do not draw pin / group.
-                return;
-            }
-            if (s < LOD_NEAR_MIN) {
-                // Medium: Ch.六 draws Port Group bars here — no per-pin ticks/names in Ch.五.
-                return;
-            }
+        if (!this->shouldDrawPinMark()) {
+            return;
         }
 
         ItemChromeState chrome = this->_chromeState;
@@ -117,6 +123,10 @@ namespace PR_tool::widget::schematic {
         }
         painter->setBrush(chrome == ItemChromeState::Selected ? ring : fill);
         painter->drawEllipse(QPointF{0., 0.}, this->_raduis, this->_raduis);
+
+        if (!this->shouldDrawPinName()) {
+            return;
+        }
 
         auto length = this->_name.size() * CHAR_WIDTH_;
         painter->setFont(SchematicTypography::pinNameFont());
@@ -270,8 +280,9 @@ namespace PR_tool::widget::schematic {
         if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
             if (this->isTopDieInstancePin()) {
                 sc->setHoverTopDie(this->parentTopDieInstance());
+            } else {
+                sc->setHoverPin(this);
             }
-            sc->setHoverPin(this);
         }
         QGraphicsItem::hoverEnterEvent(event);
     }
@@ -279,9 +290,13 @@ namespace PR_tool::widget::schematic {
     void PinItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *event) {
         this->setHovered(false);
         if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
-            sc->setHoverPin(nullptr);
             if (this->isTopDieInstancePin()) {
-                sc->setHoverTopDie(nullptr);
+                auto* top = this->parentTopDieInstance();
+                if (top && !sc->hoverMovesWithin(top, event->scenePos())) {
+                    sc->setHoverTopDie(nullptr);
+                }
+            } else {
+                sc->setHoverPin(nullptr);
             }
         }
         QGraphicsItem::hoverLeaveEvent(event);

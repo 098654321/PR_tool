@@ -28,12 +28,10 @@ namespace PR_tool::widget::schematic {
     public:
         static constexpr int PIN_INTERVAL_SIZE = 1;
         static constexpr int SPACE_LENGTH_SIZE = 4;
-        static constexpr int HEADER_HEIGHT_SIZE = 3;
+        static constexpr qreal TYPE_CAP_HEIGHT = 4.;
 
         static constexpr qreal PIN_INTERVAL = GridItem::gridLength(PIN_INTERVAL_SIZE);
         static constexpr qreal SPACE_LENGTH = GridItem::gridLength(SPACE_LENGTH_SIZE);
-        static constexpr qreal HEADER_HEIGHT = GridItem::gridLength(HEADER_HEIGHT_SIZE);
-        static constexpr qreal HEADER_ICON_SIZE = 32.;
 
         enum { Type = UserType + 6 };
         int type() const override { return Type; }
@@ -52,7 +50,6 @@ namespace PR_tool::widget::schematic {
 
     protected:
         void createPins(int n, qreal side_length, qreal x_offset, qreal y_offset, QVector<QString>::iterator& iter, PinSide side);
-        void paintTypeIcon(QPainter* painter, const QRectF& iconRect) const;
     
     public: 
         auto name() const -> const QString 
@@ -89,6 +86,8 @@ namespace PR_tool::widget::schematic {
 
         /// Ch.21 chrome: Normal / Hover / Selected / Related / Dimmed.
         void setChromeState(ItemChromeState state, qreal opacity = 1.0);
+        /// Hover or selected: Far shows pin dots; Near also shows pin names.
+        auto emphasizePins() const -> bool;
 
     protected:
         void hoverEnterEvent(QGraphicsSceneHoverEvent* event) override;

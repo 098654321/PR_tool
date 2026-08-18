@@ -39,9 +39,9 @@ namespace PR_tool::widget::schematic {
         static constexpr qreal CHAR_WIDTH_ = 10.;
         static constexpr qreal CHAR_HEIGHT = 20.;
         // Pin LOD (Ch.五): s = QGraphicsView::transform().m11(). Default open ≈ 0.40 → Far.
-        static constexpr qreal LOD_FAR_MAX = 0.45;   // s < Far: hide pin / group graphics
-        static constexpr qreal LOD_NEAR_MIN = 0.90;  // s >= Near: draw pin mark + name
-        // Medium: LOD_FAR_MAX <= s < LOD_NEAR_MIN → Port Group bars (Ch.六), not per-pin ticks/names
+        static constexpr qreal LOD_FAR_MAX = 0.45;   // s < Far: hide idle pin marks
+        static constexpr qreal LOD_NEAR_MIN = 0.90;  // s >= Near: pin names on die hover/select
+        static constexpr qreal LOD_NET_EXPAND_MIN = 0.50; // s >= this: unbundle into individual nets
         static const    QColor COLOR;
         static const    QColor HOVERED_COLOR;
 
@@ -110,8 +110,9 @@ namespace PR_tool::widget::schematic {
     private:
         /// View scale s = transform().m11(); 1.0 if no view yet.
         auto viewScale() const -> qreal;
-        /// Selected / hover / related-net focus force-show (Ch.五 + Ch.七).
-        auto shouldForceShowPin() const -> bool;
+        auto shouldDrawPinMark() const -> bool;
+        auto shouldDrawPinName() const -> bool;
+        auto parentDieEmphasizesPins() const -> bool;
 
     private:
         QString _name;

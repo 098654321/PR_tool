@@ -281,6 +281,25 @@ QFrame#SideHairline {
     color: @text;
 }
 
+#LayoutHpwlMetric {
+    background: @selectionFill;
+    border: 1px solid @border;
+    border-left: 3px solid @accent;
+    border-radius: @radiuspx;
+}
+
+#LayoutHpwlLabel {
+    color: @text;
+    font-size: 12pt;
+    font-weight: 600;
+}
+
+#LayoutHpwlValue {
+    color: @text;
+    font-size: 22pt;
+    font-weight: 700;
+}
+
 #SidePanel QTreeWidget::item,
 #SidePanel QTableView::item {
     padding: 2px 4px;
@@ -301,6 +320,22 @@ QFrame#SideHairline {
 #SidePanel QTableView:focus,
 #SidePanel QListView:focus {
     border: 1px solid @accent;
+}
+
+/* Inset items so hover/selection cannot paint over the focus ring. */
+QTreeWidget#NaviTree {
+    padding: 4px 3px;
+}
+
+QTreeWidget#NaviTree::item,
+QTreeWidget#NaviTree::item:hover,
+QTreeWidget#NaviTree::item:hover:!selected,
+QTreeWidget#NaviTree::item:selected,
+QTreeWidget#NaviTree::item:selected:active,
+QTreeWidget#NaviTree::item:selected:!active {
+    background: transparent;
+    border: none;
+    color: @text;
 }
 
 #ChromePage {
