@@ -3,6 +3,8 @@
 #include <QWidget>
 #include <QSplitter>
 
+class QLabel;
+
 namespace PR_tool::hardware {
     class Interposer;
 };
@@ -36,6 +38,8 @@ namespace PR_tool::widget {
 
         void setInspectorVisible(bool visible);
         auto isInspectorVisible() const -> bool;
+        void setLookbackLocked(bool locked);
+        void setLockBannerText(const QString& text);
 
     signals:
         /// Emitted after layout placement changes (e.g. TOB drag/swap).
@@ -47,6 +51,7 @@ namespace PR_tool::widget {
         LayoutScene* _scene {nullptr};
         LayoutView*  _view {nullptr};  
         LayoutInfoWidget* _infoWidget {nullptr};
+        QLabel* _lockBanner {nullptr};
 
         hardware::Interposer* _interposer {nullptr};
         circuit::BaseDie*     _basedie {nullptr};

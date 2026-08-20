@@ -65,6 +65,8 @@ namespace PR_tool::widget {
 
     public:
         void reloadItems();
+        /// Rough schematic positions from current TOB assignment; keeps nets.
+        void arrangeTopDiesFromPlacement();
         /// Deferred Port Group rebuild (safe vs paint / item lifetime).
         void requestPortGroupSync(schematic::TopDieInstanceItem* item);
         void requestExportPortGroupSync();

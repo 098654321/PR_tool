@@ -21,39 +21,28 @@ namespace PR_tool::widget {
 
         auto flowHint = new QLabel{
             QStringLiteral(
-                "Typical flow: Schematic → Layout → Place & Route → View 2D/3D → Export"),
+                "Configure the design visually, complete place and route, and view the results."),
             this};
         flowHint->setWordWrap(true);
         flowHint->setAlignment(Qt::AlignCenter);
         flowHint->setStyleSheet(QStringLiteral("color: #86868b;"));
         layout->addWidget(flowHint);
 
-        auto createButton = new QPushButton("Empty Project", this);
-        createButton->setObjectName(QStringLiteral("PrimaryCta"));
-        createButton->setFixedHeight(40);
-        createButton->setAccessibleName("Empty Project");
-        createButton->setAccessibleDescription("Create an empty project");
         auto openButton = new QPushButton("Load Config", this);
-        openButton->setObjectName(QStringLiteral("SecondaryCta"));
+        openButton->setObjectName(QStringLiteral("PrimaryCta"));
         openButton->setFixedHeight(40);
         openButton->setAccessibleName("Load Config");
         openButton->setAccessibleDescription("Load an existing config directory");
-        layout->addWidget(createButton);
         layout->addWidget(openButton);
 
-        connect(createButton, &QPushButton::clicked, this, &EntryDialog::onCreateEmptyProject);
         connect(openButton, &QPushButton::clicked, this, &EntryDialog::onOpenExistingProject);
 
-        this->setFixedSize(400, 300);
+        this->setFixedSize(400, 240);
         this->setLayout(layout);
     }
 
     auto EntryDialog::getResult() const -> std::optional<QString> {
         return result;
-    }
-
-    void EntryDialog::onCreateEmptyProject() {
-        this->accept();
     }
 
     void EntryDialog::onOpenExistingProject() {

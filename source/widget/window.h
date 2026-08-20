@@ -3,6 +3,7 @@
 #include "std/file.hh"
 #include "std/memory.hh"
 #include "std/utility.hh"
+#include "std/collection.hh"
 #include <parse/reader/config/config.hh>
 #include <QMainWindow>
 #include <QString>
@@ -11,10 +12,12 @@ class QCloseEvent;
 
 namespace PR_tool::hardware {
     class Interposer;
+    class TOB;
 }
 
 namespace PR_tool::circuit {
     class BaseDie;
+    class TopDieInstance;
 }
 
 class QToolBar;
@@ -62,9 +65,10 @@ namespace PR_tool::widget {
         void saveConfig();
         void saveConfigAs();
         
+        void executePlace();
         void executePlaceRoute();
         void generateControlBitAs();
-        void onPrimaryCta();
+        void onPlaceCta();
         void editDesign();
         void updateStageUi();
         void switchToView(QWidget* page, QAction* action, const QString& tip);
@@ -80,9 +84,13 @@ namespace PR_tool::widget {
 
     private:
         auto hasConfigPath() -> bool;
+        void enterPlacedStage();
         void enterResultsStage();
         void applyDesignEditability();
         void updateStatusLabel();
+        auto collectTopdies() -> std::Vector<circuit::TopDieInstance*>;
+        void capturePlacementSnapshot();
+        void restorePlacementSnapshot();
         auto currentPageName() const -> QString;
         auto currentGraphicsView() const -> GraphicsView*;
         auto isSchematicPage() const -> bool;
@@ -110,6 +118,8 @@ namespace PR_tool::widget {
         QActionGroup* _pageActionGroup {nullptr};
 
         QAction* _loadAction {nullptr};
+        QAction* _placeAction {nullptr};
+        QAction* _placeCtaAction {nullptr};
         QAction* _placeRouteAction {nullptr};
         QAction* _primaryCtaAction {nullptr};
         QAction* _generateControlBitAction {nullptr};
@@ -124,9 +134,12 @@ namespace PR_tool::widget {
         std::Box<circuit::BaseDie> _basedie {nullptr};
         parse::RegisterMapConfig _register_map {};
 
-        std::Option<std::FilePath> _configPath {}; 
+        std::Option<std::FilePath> _configPath {};
         bool _finishPR {false};
+        bool _placed {false};
         bool _routing {false};
+        bool _placing {false};
+        std::HashMap<circuit::TopDieInstance*, hardware::TOB*> _placementSnapshot {};
     };
 
 }

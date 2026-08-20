@@ -8,6 +8,8 @@
 #include <QVBoxLayout>
 #include <QPalette>
 #include <QDebug>
+#include <QLabel>
+#include <QShortcut>
 
 namespace PR_tool::widget {
 
@@ -41,6 +43,14 @@ namespace PR_tool::widget {
         fillChrome(this, ChromeTokens::bg);
         auto* layout = new QVBoxLayout(this);
         layout->setContentsMargins(8, 8, 8, 8);
+
+        this->_lockBanner = new QLabel{
+            QStringLiteral("This view is locked after routing. Use Edit Design to edit."),
+            this};
+        this->_lockBanner->setObjectName(QStringLiteral("LookbackLockBanner"));
+        this->_lockBanner->setWordWrap(true);
+        this->_lockBanner->hide();
+        layout->addWidget(this->_lockBanner);
 
         this->_splitter = new QSplitter{Qt::Horizontal, this};
         this->_splitter->setHandleWidth(1);
@@ -95,6 +105,27 @@ namespace PR_tool::widget {
 
     auto LayoutWidget::isInspectorVisible() const -> bool {
         return this->_infoWidget != nullptr && this->_infoWidget->isVisible();
+    }
+
+    void LayoutWidget::setLookbackLocked(bool locked) {
+        if (this->_lockBanner != nullptr) {
+            this->_lockBanner->setVisible(locked);
+        }
+        if (this->_infoWidget != nullptr) {
+            this->_infoWidget->setEnabled(!locked);
+        }
+        if (this->_view != nullptr) {
+            this->_view->setLookbackLocked(locked);
+            for (auto* shortcut : this->_view->findChildren<QShortcut*>()) {
+                shortcut->setEnabled(!locked);
+            }
+        }
+    }
+
+    void LayoutWidget::setLockBannerText(const QString& text) {
+        if (this->_lockBanner != nullptr) {
+            this->_lockBanner->setText(text);
+        }
     }
 
 }

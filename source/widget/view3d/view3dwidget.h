@@ -193,6 +193,7 @@ namespace PR_tool::widget {
         virtual void mouseMoveEvent(QMouseEvent *event) override;
         virtual void dragEnterEvent(QDragEnterEvent *event) override;
         virtual void resizeEvent(QResizeEvent *event) override;
+        virtual void showEvent(QShowEvent *event) override;
 
     protected:
         virtual void initializeGL() override;
@@ -221,7 +222,7 @@ namespace PR_tool::widget {
         QOpenGLVertexArrayObject _frameVAO {};
         QOpenGLBuffer _frameVBO {QOpenGLBuffer::VertexBuffer};
         QOpenGLShaderProgram _frameShader {};
-        QVector<QVector3D> _frameVertices {24};
+        QVector<QVector3D> _frameVertices;
 
         //! \brief track
         QOpenGLVertexArrayObject _trackVAO;
@@ -251,6 +252,8 @@ namespace PR_tool::widget {
         std::Vector<circuit::TopDieInstance*> _topdieinsts {};
 
         bool _cobRegisterEditEnabled {true};
+        bool _pendingRoutingDisplay {false};
+        bool _glReady {false};
 
         QLabel* _legendLabel {nullptr};
     };

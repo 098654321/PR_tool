@@ -16,6 +16,8 @@ auto Route::execute(hardware::Interposer* interposer, RouteEngine& engine) const
 
     auto nets = engine.nets();
     auto posi = engine.position();
+    const auto total = nets.size();
+    engine.report_progress(posi, total);
     for (std::usize i = posi; i < nets.size(); ++i) {
         auto net = nets[i];
         net->set_reuse_type(false);
@@ -34,6 +36,7 @@ auto Route::execute(hardware::Interposer* interposer, RouteEngine& engine) const
             engine.record_failed_net(net->name());
         }
         engine.move_on();
+        engine.report_progress(i + 1, total);
     }
 }
 

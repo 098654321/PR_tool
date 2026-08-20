@@ -15,6 +15,10 @@ namespace PR_tool::widget {
         this->scale(kDefaultScale, kDefaultScale);
     }
 
+    void GraphicsView::setLookbackLocked(bool locked) {
+        this->_lookbackLocked = locked;
+    }
+
     void GraphicsView::adjustSceneRect() {
         if (this->items().isEmpty()) {
             this->setSceneRect(0, 0, 1000, 1000); // 如果没有 Item，设置一个默认大小
@@ -103,6 +107,9 @@ namespace PR_tool::widget {
             this->_lastMousePos = event->pos();
             this->setDragMode(QGraphicsView::NoDrag);
             this->setCursor(Qt::ClosedHandCursor);
+        } else if (this->_lookbackLocked) {
+            event->accept();
+            return;
         }
 
         QGraphicsView::mousePressEvent(event);
@@ -126,6 +133,14 @@ namespace PR_tool::widget {
         }
 
         QGraphicsView::mouseReleaseEvent(event);
+    }
+
+    void GraphicsView::mouseDoubleClickEvent(QMouseEvent* event) {
+        if (this->_lookbackLocked) {
+            event->accept();
+            return;
+        }
+        QGraphicsView::mouseDoubleClickEvent(event);
     }
 
 }

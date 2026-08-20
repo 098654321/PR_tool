@@ -16,6 +16,7 @@
 #include <circuit/topdieinst/topdieinst.hh>
 #include <circuit/basedie.hh>
 #include <hardware/interposer.hh>
+#include <hardware/tob/tob.hh>
 #include <widget/frame/itemtypecheck.h>
 #include <widget/frame/graphicsview.h>
 
@@ -175,6 +176,52 @@ namespace PR_tool::widget {
 
             i += 1;
         }
+    }
+
+    void SchematicScene::arrangeTopDiesFromPlacement() {
+        if (this->_topdieinstMap.isEmpty()) {
+            return;
+        }
+
+        qreal cellW = 0;
+        qreal cellH = 0;
+        std::i64 minRow = std::numeric_limits<std::i64>::max();
+        std::i64 minCol = std::numeric_limits<std::i64>::max();
+        for (auto it = this->_topdieinstMap.cbegin(); it != this->_topdieinstMap.cend(); ++it) {
+            auto* item = it.value();
+            cellW = std::max(cellW, item->width());
+            cellH = std::max(cellH, item->height());
+            if (auto* tob = it.key()->tob()) {
+                const auto& c = tob->coord();
+                minRow = std::min(minRow, c.row);
+                minCol = std::min(minCol, c.col);
+            }
+        }
+        if (minRow == std::numeric_limits<std::i64>::max()) {
+            return;
+        }
+
+        constexpr qreal kGapH = 8. * schematic::GridItem::GRID_SIZE;
+        constexpr qreal kGapV = 8. * schematic::GridItem::GRID_SIZE;
+        const qreal startX = kGapH;
+        const qreal startY = kGapV;
+
+        for (auto it = this->_topdieinstMap.begin(); it != this->_topdieinstMap.end(); ++it) {
+            auto* tob = it.key()->tob();
+            if (tob == nullptr) {
+                continue;
+            }
+            const auto& c = tob->coord();
+            const qreal x = startX + static_cast<qreal>(c.col - minCol) * (cellW + kGapH);
+            const qreal y = startY + static_cast<qreal>(c.row - minRow) * (cellH + kGapV);
+            it.value()->setPos(x, y);
+        }
+
+        this->placeExternalPortsByConnections();
+        this->syncExportPortGroups();
+        this->autorouteAllNets();
+        this->refreshPowerRails();
+        this->markBundleNets();
     }
 
     void SchematicScene::addExternalPortItems() {

@@ -25,15 +25,21 @@ namespace PR_tool::widget {
 
         static constexpr qreal kDefaultScale = 1.0 / 2.5;
 
+        /// Results lookback: pan/zoom only; left-click editing is blocked.
+        void setLookbackLocked(bool locked);
+        auto isLookbackLocked() const -> bool { return this->_lookbackLocked; }
+
     protected:
         void wheelEvent(QWheelEvent* event) override;
         void mousePressEvent(QMouseEvent* event) override;
         void mouseMoveEvent(QMouseEvent* event) override;
         void mouseReleaseEvent(QMouseEvent* event) override;
+        void mouseDoubleClickEvent(QMouseEvent* event) override;
 
     protected:
         bool _isPanning; 
         QPoint _lastMousePos;
+        bool _lookbackLocked {false};
     };
 
 }

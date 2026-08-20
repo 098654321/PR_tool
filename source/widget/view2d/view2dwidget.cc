@@ -27,16 +27,15 @@ namespace PR_tool::widget {
         auto legend = new QLabel{this};
         legend->setTextFormat(Qt::RichText);
         legend->setText(QStringLiteral(
-            "<span style='color:#CDAD00'>■</span> COB&nbsp;&nbsp;"
-            "<span style='color:#548B54'>■</span> TOB&nbsp;&nbsp;"
-            "<span style='color:#000000'>■</span> Track/Net<br>"
-            "<span style='color:#555555'>Hardware registers: open COB dialog "
-            "(view/edit before P&amp;R lock).</span>"));
+            "<span style='color:#CDAD00'>■</span> COB<br>"
+            "<span style='color:#548B54'>■</span> TOB<br>"
+            "<span style='color:#000000'>■</span> Track/Net"));
         legend->setStyleSheet(QStringLiteral(
-            "QLabel { color: #333333; background: transparent; padding: 6px; }"));
+            "QLabel { color: #333333; background: transparent; padding: 9px;"
+            " font-size: 150%; line-height: 1.45; }"));
         legend->setAttribute(Qt::WA_TransparentForMouseEvents);
         legend->setAccessibleName(QStringLiteral("View 2D color legend"));
-        legend->setWordWrap(true);
+        legend->setWordWrap(false);
 
         // V2-1: thin bottom-right hint (not a full inspector)
         const auto cobCount = this->_interposer != nullptr

@@ -76,6 +76,14 @@ public:
     auto try_all_modes() const -> bool {return this->_try_all_modes;}
     auto path_exists_in_other_modes() const -> bool {return this->_path_exists;}
     auto set_path_exists(bool path_exists) -> void {this->_path_exists = path_exists;}
+    auto set_progress_callback(std::function<void(std::usize, std::usize)> cb) -> void {
+        this->_progress = std::move(cb);
+    }
+    auto report_progress(std::usize done, std::usize total) const -> void {
+        if (this->_progress) {
+            this->_progress(done, total);
+        }
+    }
 
 private:
     std::HashMap<int, std::Vector<circuit::Net*>> _nets;
@@ -91,6 +99,7 @@ private:
     bool _try_all_modes;
     bool _path_exists;
     std::Vector<std::String> _failed_net_names {};
+    std::function<void(std::usize, std::usize)> _progress {};
 };
 
 }

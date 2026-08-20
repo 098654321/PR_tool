@@ -22,8 +22,8 @@
 #include <QMimeData>
 #include <QFileInfo>
 #include <QtDebug>
-#include <QTimer>
 #include <QLabel>
+#include <QShowEvent>
 
 namespace PR_tool::widget {
 
@@ -125,6 +125,7 @@ namespace PR_tool::widget {
         this->_legendLabel->adjustSize();
         this->_legendLabel->move(8, 8);
         this->_legendLabel->raise();
+        this->_frameVertices.resize(24);
     }
 
     //! \brief destruct function
@@ -553,10 +554,11 @@ namespace PR_tool::widget {
     }
 
     auto View3DWidget::displayRoutingResult() -> void {
-        if (!this->isVisible()) {
-            QTimer::singleShot(0, this, &View3DWidget::displayRoutingResult);
+        if (!this->_glReady || !this->isVisible()) {
+            this->_pendingRoutingDisplay = true;
             return;
         }
+        this->_pendingRoutingDisplay = false;
 
         this->makeCurrent();
 
@@ -918,6 +920,13 @@ namespace PR_tool::widget {
         }
     }
 
+    void View3DWidget::showEvent(QShowEvent *event) {
+        QOpenGLWidget::showEvent(event);
+        if (this->_pendingRoutingDisplay && this->_glReady) {
+            this->displayRoutingResult();
+        }
+    }
+
     void View3DWidget::initializeGL() {
         this->initializeOpenGLFunctions();
 
@@ -935,6 +944,11 @@ namespace PR_tool::widget {
         this->initCube(view, projection, bias);
         this->initFrame(view, projection, bias);
         this->initTracks(view, projection, bias);
+        this->_glReady = true;
+
+        if (this->_pendingRoutingDisplay) {
+            this->displayRoutingResult();
+        }
     }
 
     void View3DWidget::resizeGL(int w, int h) {

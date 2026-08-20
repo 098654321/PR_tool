@@ -1,6 +1,8 @@
 #include "./window.h"
 #include "./chrometokens.h"
 #include "./prthread.h"
+#include "./frame/routeprogresstrack.h"
+#include "./frame/placeprogresschart.h"
 #include "./view2d/view2dwidget.h"
 #include "./view3d/view3dwidget.h"
 #include "./schematic/schematicwidget.h"
@@ -17,6 +19,7 @@
 #include "qmessagebox.h"
 #include "widget/setting/settingwidget.h"
 #include <algo/router/route_nets.hh>
+#include <algo/placer/sa/saplacestrategy.hh>
 
 #include <cassert>
 #include <parse/reader/module.hh>
@@ -26,8 +29,10 @@
 
 #include <hardware/interposer.hh>
 #include <hardware/track/trackcoord.hh>
+#include <hardware/tob/tob.hh>
 #include <circuit/basedie.hh>
 #include <circuit/connection/pin.hh>
+#include <circuit/topdieinst/topdieinst.hh>
 
 #include <serde/json/json.hh>
 #include <std/exception.hh>
@@ -57,7 +62,6 @@
 #include <QMessageBox>
 #include <QDialog>
 #include <QLabel>
-#include <QProgressBar>
 #include <QThread>
 #include <QStatusBar>
 #include <QSizePolicy>
@@ -329,10 +333,15 @@ QPushButton:focus {
 
         fileMenu->addSeparator();
 
-        // Place & Route (same command as Design CTA; keep shortcut)
-        this->_placeRouteAction = new QAction(QStringLiteral("Place & Route"), fileMenu);
+        this->_placeAction = new QAction(QStringLiteral("Place"), fileMenu);
+        this->_placeAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_P));
+        this->_placeAction->setStatusTip(QStringLiteral("Run automatic placement"));
+        fileMenu->addAction(this->_placeAction);
+
+        // Route (same command as Design CTA; keep shortcut)
+        this->_placeRouteAction = new QAction(QStringLiteral("Route"), fileMenu);
         this->_placeRouteAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
-        this->_placeRouteAction->setStatusTip(QStringLiteral("Run place and route"));
+        this->_placeRouteAction->setStatusTip(QStringLiteral("Run routing with the current Layout placement"));
         fileMenu->addAction(this->_placeRouteAction);
 
         // Export Controlbits (Results only)
@@ -353,6 +362,7 @@ QPushButton:focus {
         connect(this->_loadAction, &QAction::triggered, this, &Window::loadConfig);
         connect(saveAction, &QAction::triggered, this, &Window::saveConfig);
         connect(saveAsAction, &QAction::triggered, this, &Window::saveConfigAs);
+        connect(this->_placeAction, &QAction::triggered, this, &Window::executePlace);
         connect(this->_placeRouteAction, &QAction::triggered, this, &Window::executePlaceRoute);
         connect(this->_generateControlBitAction, &QAction::triggered, this, &Window::generateControlBitAs);
         connect(exitAction, &QAction::triggered, this, &Window::close);
@@ -509,11 +519,28 @@ QPushButton:focus {
         stretch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
         this->_toolBar->addWidget(stretch);
 
-        // Single primary CTA slot: Run P&R ↔ Edit Design
-        this->_primaryCtaAction = new QAction(QStringLiteral("Run P&R"), this);
-        this->_primaryCtaAction->setToolTip(QStringLiteral("Run Place & Route"));
-        this->_primaryCtaAction->setStatusTip(QStringLiteral("Run place and route"));
-        connect(this->_primaryCtaAction, &QAction::triggered, this, &Window::onPrimaryCta);
+        // Place slot (becomes Edit Design after place/route) then Route.
+        this->_placeCtaAction = new QAction(QStringLiteral("Place"), this);
+        this->_placeCtaAction->setToolTip(QStringLiteral("Run automatic placement"));
+        this->_placeCtaAction->setStatusTip(QStringLiteral("Run placement"));
+        connect(this->_placeCtaAction, &QAction::triggered, this, &Window::onPlaceCta);
+
+        auto* placeButton = new QPushButton{this->_toolBar};
+        placeButton->setObjectName(QStringLiteral("PrimaryCta"));
+        placeButton->setStyleSheet(ChromeTokens::applyToQss(QString::fromUtf8(kPrimaryCtaStyle)));
+        bindButtonToAction(placeButton, this->_placeCtaAction);
+        auto syncPlaceCursor = [placeButton, action = this->_placeCtaAction]() {
+            placeButton->setCursor(action->isEnabled() ? Qt::PointingHandCursor
+                                                       : Qt::ForbiddenCursor);
+        };
+        syncPlaceCursor();
+        connect(this->_placeCtaAction, &QAction::changed, placeButton, syncPlaceCursor);
+        this->_toolBar->addWidget(placeButton);
+
+        this->_primaryCtaAction = new QAction(QStringLiteral("Route"), this);
+        this->_primaryCtaAction->setToolTip(QStringLiteral("Run routing with the current Layout placement"));
+        this->_primaryCtaAction->setStatusTip(QStringLiteral("Run routing"));
+        connect(this->_primaryCtaAction, &QAction::triggered, this, &Window::executePlaceRoute);
 
         auto* primaryButton = new QPushButton{this->_toolBar};
         primaryButton->setObjectName(QStringLiteral("PrimaryCta"));
@@ -674,13 +701,13 @@ QPushButton:focus {
     }
 
     void Window::loadConfig() {
-        if (this->_finishPR) {
+        if (this->_finishPR || this->_placed) {
             QMessageBox::information(
                 this,
                 QStringLiteral("Load Config"),
                 QStringLiteral(
-                    "Results stage is active.\n"
-                    "Use Edit Design to discard routing results before loading a new config.")
+                    "A placed or routed result is active.\n"
+                    "Use Edit Design before loading a new config.")
             );
             return;
         }
@@ -722,6 +749,11 @@ QPushButton:focus {
         this->_view3DWidget->reload();
 
         this->_configPath.emplace(std::move(configPath));
+        this->_finishPR = false;
+        this->_placed = false;
+        this->_placementSnapshot.clear();
+        this->applyDesignEditability();
+        this->updateStageUi();
         this->updateStatusLabel();
     } catch (const std::Exception& err) {
         QMessageBox::critical(
@@ -1038,14 +1070,160 @@ QPushButton:focus {
     }
     QMESSAGEBOX_REPORT_EXCEPTION("Save Config As")
 
+    void Window::executePlace() try {
+        if (this->_placed || this->_finishPR) {
+            QMessageBox::information(
+                this,
+                QStringLiteral("Execute Place"),
+                QStringLiteral("Placement is already applied. Use Edit Design to undo it.")
+            );
+            return;
+        }
+        if (this->_placing || this->_routing) {
+            return;
+        }
+
+        auto topdies = this->collectTopdies();
+        if (topdies.empty()) {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("Execute Place"),
+                QStringLiteral("No chip instances to place.")
+            );
+            return;
+        }
+
+        const auto answer = QMessageBox::question(
+            this,
+            QStringLiteral("Execute Place"),
+            QStringLiteral(
+                "Start automatic placement?\n\n"
+                "Chips will be assigned to TOBs. Layout will lock afterwards.\n"
+                "Use Edit Design to restore the current placement."),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No
+        );
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
+
+        this->capturePlacementSnapshot();
+
+        auto dialog = QDialog(this);
+        dialog.setWindowTitle(QStringLiteral("Place — busy"));
+        dialog.setModal(true);
+        dialog.setWindowFlags(
+            (dialog.windowFlags() | Qt::CustomizeWindowHint | Qt::WindowTitleHint)
+            & ~Qt::WindowCloseButtonHint
+        );
+
+        QVBoxLayout layout(&dialog);
+        layout.setContentsMargins(20, 16, 20, 18);
+        layout.setSpacing(14);
+
+        auto* header = new QHBoxLayout();
+        header->setContentsMargins(0, 0, 0, 0);
+
+        auto title = QLabel(QStringLiteral("Placement Process …"));
+        auto titleFont = title.font();
+        titleFont.setPointSize(15);
+        titleFont.setBold(true);
+        title.setFont(titleFont);
+
+        auto countLabel = QLabel();
+        auto countFont = countLabel.font();
+        countFont.setPointSize(22);
+        countFont.setBold(true);
+        countLabel.setFont(countFont);
+        countLabel.setTextFormat(Qt::RichText);
+        countLabel.setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        auto setCount = [&countLabel](int iteration) {
+            countLabel.setText(
+                QStringLiteral(
+                    "<span style='color:%1'>%2</span>"
+                    "<span style='color:%3;font-size:16pt;font-weight:500'> iteration</span>")
+                    .arg(QLatin1String(ChromeTokens::accent))
+                    .arg(iteration)
+                    .arg(QLatin1String(ChromeTokens::textMuted)));
+        };
+        setCount(0);
+
+        header->addWidget(&title, 1);
+        header->addWidget(&countLabel, 0);
+        layout.addLayout(header);
+
+        auto chart = PlaceProgressChart();
+        layout.addWidget(&chart);
+
+        dialog.setFixedSize(448, 228);
+
+        this->_placing = true;
+        this->updateStatusLabel();
+
+        bool success = false;
+        QString message;
+
+        auto* worker = new PlaceThread{this->_interposer.get(), this->_basedie.get()};
+        connect(worker, &PlaceThread::placeFinished, &dialog,
+            [&dialog, &success, &message](bool ok, const QString& msg) {
+                success = ok;
+                message = msg;
+                dialog.accept();
+            });
+        connect(
+            worker,
+            &PlaceThread::placeProgress,
+            &dialog,
+            [&chart, setCount](int iteration, qint64 cost) {
+                setCount(iteration);
+                chart.append(static_cast<qreal>(cost));
+            },
+            Qt::QueuedConnection);
+        connect(worker, &PlaceThread::finished, worker, &QObject::deleteLater);
+        worker->start();
+
+        dialog.exec();
+        worker->wait();
+
+        this->_placing = false;
+        this->updateStatusLabel();
+
+        if (!success) {
+            this->restorePlacementSnapshot();
+            this->_placementSnapshot.clear();
+            if (this->_layoutWidget != nullptr) {
+                this->_layoutWidget->reload();
+            }
+            QMessageBox::critical(
+                this,
+                QStringLiteral("Execute Place"),
+                message.isEmpty() ? QStringLiteral("Placement failed") : message
+            );
+            return;
+        }
+
+        if (this->_layoutWidget != nullptr) {
+            this->_layoutWidget->reload();
+        }
+        if (this->_schematicWidget != nullptr) {
+            this->_schematicWidget->arrangeFromPlacement();
+        }
+
+        this->enterPlacedStage();
+    }
+    QMESSAGEBOX_REPORT_EXCEPTION("Execute Placement")
+
     void Window::executePlaceRoute() try {
         if (this->_finishPR) {
             QMessageBox::critical(
                 this,
-                "Execute Place & Route",
-                "P&R already finished!"
+                "Execute Route",
+                "Routing already finished!"
             );
 
+            return;
+        }
+        if (this->_placing || this->_routing) {
             return;
         }
 
@@ -1078,7 +1256,7 @@ QPushButton:focus {
         }
 
         auto summary = QStringLiteral(
-            "Start Place & Route?\n\n"
+            "Start routing?\n\n"
             "Connections (nets): %1\n"
             "Idle TOBs: %2\n")
             .arg(connectionCount)
@@ -1089,15 +1267,10 @@ QPushButton:focus {
                 "(Likely unset after Add Export — set coords in Schematic.)\n")
                 .arg(defaultCoordExportCount);
         }
-        summary += QStringLiteral(
-            "\nNote: GUI routes with the current Layout placement only "
-            "(no automatic placer).\n"
-            "Router: maze (mode 0). SAT/router picker not in GUI this phase.\n"
-            "On success the app enters Results stage (Edit Design to return).");
 
         const auto answer = QMessageBox::question(
             this,
-            QStringLiteral("Execute Place & Route"),
+            QStringLiteral("Execute Route"),
             summary,
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No
@@ -1108,7 +1281,7 @@ QPushButton:focus {
 
         // U12: keep modal for wait()/thread correctness; clarify busy (no cancel).
         auto dialog = QDialog(this);
-        dialog.setWindowTitle(QStringLiteral("Place & Route — busy"));
+        dialog.setWindowTitle(QStringLiteral("Route — busy"));
         dialog.setModal(true);
         dialog.setWindowFlags(
             (dialog.windowFlags() | Qt::CustomizeWindowHint | Qt::WindowTitleHint)
@@ -1116,26 +1289,46 @@ QPushButton:focus {
         );
 
         QVBoxLayout layout(&dialog);
-        auto title = QLabel(QStringLiteral("Place & Route in progress…"));
-        auto font = title.font();
-        font.setPointSize(16);
-        font.setBold(true);
-        title.setFont(font);
-        title.setAlignment(Qt::AlignCenter);
-        layout.addWidget(&title);
+        layout.setContentsMargins(20, 16, 20, 18);
+        layout.setSpacing(14);
 
-        auto hint = QLabel(QStringLiteral(
-            "Main window is blocked until P&R finishes. "
-            "This dialog closes when finished (no cancel)."));
-        hint.setAlignment(Qt::AlignCenter);
-        hint.setWordWrap(true);
-        layout.addWidget(&hint);
+        auto* header = new QHBoxLayout();
+        header->setContentsMargins(0, 0, 0, 0);
 
-        auto progress = QProgressBar();
-        progress.setRange(0, 0); // indeterminate — no real % without algo cooperation
-        layout.addWidget(&progress);
+        auto title = QLabel(QStringLiteral("Routing in progress…"));
+        auto titleFont = title.font();
+        titleFont.setPointSize(15);
+        titleFont.setBold(true);
+        title.setFont(titleFont);
 
-        dialog.setFixedSize(400, 200);
+        auto countLabel = QLabel();
+        auto countFont = countLabel.font();
+        countFont.setPointSize(22);
+        countFont.setBold(true);
+        countLabel.setFont(countFont);
+        countLabel.setTextFormat(Qt::RichText);
+        countLabel.setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        auto setCount = [&countLabel](int done, int total) {
+            countLabel.setText(
+                QStringLiteral(
+                    "<span style='color:%1'>%2</span>"
+                    "<span style='color:%3;font-size:16pt;font-weight:500'>/%4</span>")
+                    .arg(QLatin1String(ChromeTokens::accent))
+                    .arg(done)
+                    .arg(QLatin1String(ChromeTokens::textMuted))
+                    .arg(total));
+        };
+        setCount(0, 0);
+
+        header->addWidget(&title, 1);
+        header->addWidget(&countLabel, 0);
+        layout.addLayout(header);
+
+        auto track = RouteProgressTrack();
+        track.setProgress(0, 0);
+        layout.addWidget(&track);
+
+        dialog.setFixedSize(448, 220);
 
         this->_routing = true;
         this->updateStatusLabel();
@@ -1150,6 +1343,15 @@ QPushButton:focus {
                 message = msg;
                 dialog.accept();
             });
+        connect(
+            worker,
+            &PRThread::routeProgress,
+            &dialog,
+            [&track, setCount](int done, int total) {
+                setCount(done, total);
+                track.setProgress(done, total);
+            },
+            Qt::QueuedConnection);
         connect(worker, &PRThread::finished, worker, &QObject::deleteLater);
         worker->start();
 
@@ -1162,8 +1364,8 @@ QPushButton:focus {
         if (!success) {
             QMessageBox::critical(
                 this,
-                "Execute Place & Route",
-                message.isEmpty() ? QStringLiteral("P&R failed") : message
+                "Execute Route",
+                message.isEmpty() ? QStringLiteral("Routing failed") : message
             );
             return;
         }
@@ -1173,18 +1375,8 @@ QPushButton:focus {
         this->_view3DWidget->displayRoutingResult();
 
         this->enterResultsStage();
-
-        QMessageBox::information(
-            this,
-            QStringLiteral("Place & Route Complete"),
-            QStringLiteral(
-                "Entered Results stage.\n"
-                "Schematic and Layout are read-only lookback.\n"
-                "2D / 3D are unlocked for viewing results.\n"
-                "Export Controlbits is enabled.\n\n"
-                "Use Edit Design to discard results and resume editing."));
     }
-    QMESSAGEBOX_REPORT_EXCEPTION("Execute Place & Routing")
+    QMESSAGEBOX_REPORT_EXCEPTION("Execute Routing")
 
     void Window::generateControlBitAs() try {
         assert(this->_finishPR == true);
@@ -1224,22 +1416,41 @@ QPushButton:focus {
         return this->_configPath.has_value();
     }
 
-    void Window::onPrimaryCta() {
-        if (this->_finishPR) {
+    void Window::onPlaceCta() {
+        if (this->_placed || this->_finishPR) {
             this->editDesign();
         } else {
-            this->executePlaceRoute();
+            this->executePlace();
         }
     }
 
     void Window::editDesign() {
+        const bool hadRouting = this->_finishPR;
+        const bool hadPlacement = !this->_placementSnapshot.empty();
+
+        QString body;
+        if (hadRouting && hadPlacement) {
+            body = QStringLiteral(
+                "Return to Design stage?\n\n"
+                "Routing results will be discarded.\n"
+                "Placement will be restored to the positions from before Place.\n"
+                "2D / 3D will be locked again until routing succeeds.");
+        } else if (hadRouting) {
+            body = QStringLiteral(
+                "Return to Design stage?\n\n"
+                "Current routing results will be discarded for editing purposes.\n"
+                "2D / 3D will be locked again until routing succeeds.");
+        } else {
+            body = QStringLiteral(
+                "Undo placement?\n\n"
+                "Chip positions will be restored to those from before Place.\n"
+                "Layout will be editable again.");
+        }
+
         const auto reply = QMessageBox::question(
             this,
             QStringLiteral("Edit Design"),
-            QStringLiteral(
-                "Return to Design stage?\n\n"
-                "Current routing results will be discarded for editing purposes.\n"
-                "2D / 3D will be locked again until Place & Route succeeds."),
+            body,
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No
         );
@@ -1248,8 +1459,19 @@ QPushButton:focus {
         }
 
         this->_finishPR = false;
+        this->_placed = false;
 
-        // If looking at result views, return to Schematic for editing.
+        if (hadPlacement) {
+            this->restorePlacementSnapshot();
+            if (this->_layoutWidget != nullptr) {
+                this->_layoutWidget->reload();
+            }
+            if (this->_schematicWidget != nullptr) {
+                this->_schematicWidget->arrangeFromPlacement();
+            }
+        }
+        this->_placementSnapshot.clear();
+
         if (this->_stackedWidget != nullptr) {
             const auto* current = this->_stackedWidget->currentWidget();
             if (current == this->_view2DWidget || current == this->_view3DWidget) {
@@ -1265,8 +1487,17 @@ QPushButton:focus {
         this->updateStatusLabel();
 
         this->statusBar()->showMessage(
-            QStringLiteral("Returned to Design — routing results discarded for editing"),
+            hadRouting
+                ? QStringLiteral("Returned to Design — routing results discarded for editing")
+                : QStringLiteral("Returned to Design — placement undone"),
             8000);
+    }
+
+    void Window::enterPlacedStage() {
+        this->_placed = true;
+        this->applyDesignEditability();
+        this->updateStageUi();
+        this->updateStatusLabel();
     }
 
     void Window::enterResultsStage() {
@@ -1278,20 +1509,25 @@ QPushButton:focus {
 
     void Window::applyDesignEditability() {
         const bool results = this->_finishPR;
+        const bool layoutLocked = this->_placed || results;
+        const bool loadBlocked = this->_placed || results;
 
-        // Results: Sch/Layout read-only lookback; Design: editable again.
         if (this->_schematicWidget != nullptr) {
-            this->_schematicWidget->setEnabled(!results);
+            this->_schematicWidget->setLookbackLocked(results);
         }
         if (this->_layoutWidget != nullptr) {
-            this->_layoutWidget->setEnabled(!results);
+            this->_layoutWidget->setLookbackLocked(layoutLocked);
+            this->_layoutWidget->setLockBannerText(
+                results
+                    ? QStringLiteral("This view is locked after routing. Use Edit Design to edit.")
+                    : QStringLiteral("This view is locked after placement. Use Edit Design to edit."));
         }
 
         if (this->_loadAction != nullptr) {
-            this->_loadAction->setEnabled(!results);
+            this->_loadAction->setEnabled(!loadBlocked);
             this->_loadAction->setToolTip(
-                results
-                    ? QStringLiteral("Disabled in Results — use Edit Design first")
+                loadBlocked
+                    ? QStringLiteral("Disabled — use Edit Design first")
                     : QString{});
         }
 
@@ -1307,7 +1543,6 @@ QPushButton:focus {
         if (title.endsWith(QLatin1String(kReadOnlySuffix))) {
             title.chop(static_cast<int>(sizeof(kReadOnlySuffix) - 1));
         }
-        // Also strip the older permanent-lock suffix if present.
         constexpr auto kLegacySuffix = " — read-only after P&R";
         if (title.endsWith(QLatin1String(kLegacySuffix))) {
             title.chop(static_cast<int>(sizeof(kLegacySuffix) - 1));
@@ -1321,11 +1556,16 @@ QPushButton:focus {
 
     void Window::updateStageUi() {
         const bool results = this->_finishPR;
+        const bool editMode = this->_placed || results;
 
         if (this->_stageLabel != nullptr) {
-            this->_stageLabel->setText(
-                results ? QStringLiteral("Stage: Results")
-                        : QStringLiteral("Stage: Design"));
+            if (results) {
+                this->_stageLabel->setText(QStringLiteral("Stage: Results"));
+            } else if (this->_placed) {
+                this->_stageLabel->setText(QStringLiteral("Stage: Placed"));
+            } else {
+                this->_stageLabel->setText(QStringLiteral("Stage: Design"));
+            }
         }
 
         if (this->_view2DAction != nullptr) {
@@ -1333,16 +1573,19 @@ QPushButton:focus {
             this->_view2DAction->setText(QStringLiteral("2D"));
             this->_view2DAction->setToolTip(
                 results ? QStringLiteral("2D")
-                        : QStringLiteral("Locked until Place & Route succeeds"));
+                        : QStringLiteral("Locked until routing succeeds"));
         }
         if (this->_view3DAction != nullptr) {
             this->_view3DAction->setEnabled(results);
             this->_view3DAction->setText(QStringLiteral("3D"));
             this->_view3DAction->setToolTip(
                 results ? QStringLiteral("3D")
-                        : QStringLiteral("Locked until Place & Route succeeds"));
+                        : QStringLiteral("Locked until routing succeeds"));
         }
 
+        if (this->_placeAction != nullptr) {
+            this->_placeAction->setEnabled(!editMode);
+        }
         if (this->_placeRouteAction != nullptr) {
             this->_placeRouteAction->setEnabled(!results);
         }
@@ -1350,18 +1593,35 @@ QPushButton:focus {
             this->_generateControlBitAction->setEnabled(results);
         }
 
-        if (this->_primaryCtaAction != nullptr) {
-            if (results) {
-                this->_primaryCtaAction->setText(QStringLiteral("Edit Design"));
-                this->_primaryCtaAction->setToolTip(
-                    QStringLiteral("Discard routing results and resume design editing"));
-                this->_primaryCtaAction->setStatusTip(
-                    QStringLiteral("Return to Design stage (discards routing results)"));
+        if (this->_placeCtaAction != nullptr) {
+            if (editMode) {
+                this->_placeCtaAction->setText(QStringLiteral("Edit Design"));
+                this->_placeCtaAction->setToolTip(
+                    results
+                        ? QStringLiteral("Discard routing results and resume design editing")
+                        : QStringLiteral("Undo placement and resume layout editing"));
+                this->_placeCtaAction->setStatusTip(
+                    results
+                        ? QStringLiteral("Return to Design stage (discards routing and placement)")
+                        : QStringLiteral("Undo placement"));
             } else {
-                this->_primaryCtaAction->setText(QStringLiteral("Run P&R"));
-                this->_primaryCtaAction->setToolTip(QStringLiteral("Run Place & Route"));
-                this->_primaryCtaAction->setStatusTip(QStringLiteral("Run place and route"));
+                this->_placeCtaAction->setText(QStringLiteral("Place"));
+                this->_placeCtaAction->setToolTip(QStringLiteral("Run automatic placement"));
+                this->_placeCtaAction->setStatusTip(QStringLiteral("Run placement"));
             }
+            this->_placeCtaAction->setEnabled(true);
+        }
+
+        if (this->_primaryCtaAction != nullptr) {
+            this->_primaryCtaAction->setText(QStringLiteral("Route"));
+            this->_primaryCtaAction->setEnabled(!results);
+            this->_primaryCtaAction->setToolTip(
+                results
+                    ? QStringLiteral("Locked in Results — use Edit Design first")
+                    : QStringLiteral("Run routing with the current Layout placement"));
+            this->_primaryCtaAction->setStatusTip(
+                results ? QStringLiteral("Locked until Edit Design")
+                        : QStringLiteral("Run routing"));
         }
     }
 
@@ -1389,7 +1649,7 @@ QPushButton:focus {
     ) {
         if (requiresResults && !this->_finishPR) {
             this->statusBar()->showMessage(
-                QStringLiteral("View locked until Place & Route succeeds"),
+                QStringLiteral("View locked until routing succeeds"),
                 5000);
             return;
         }
@@ -1422,11 +1682,17 @@ QPushButton:focus {
     }
 
     auto Window::routeStatusText() const -> QString {
+        if (this->_placing) {
+            return QStringLiteral("Placing…");
+        }
         if (this->_routing) {
             return QStringLiteral("Routing…");
         }
         if (this->_finishPR) {
             return QStringLiteral("Routed");
+        }
+        if (this->_placed) {
+            return QStringLiteral("Placed");
         }
         return QStringLiteral("Ready");
     }
@@ -1450,9 +1716,13 @@ QPushButton:focus {
 
     void Window::updateStatusLabel() {
         if (this->_stageLabel != nullptr) {
-            this->_stageLabel->setText(
-                this->_finishPR ? QStringLiteral("Stage: Results")
-                                : QStringLiteral("Stage: Design"));
+            if (this->_finishPR) {
+                this->_stageLabel->setText(QStringLiteral("Stage: Results"));
+            } else if (this->_placed) {
+                this->_stageLabel->setText(QStringLiteral("Stage: Placed"));
+            } else {
+                this->_stageLabel->setText(QStringLiteral("Stage: Design"));
+            }
         }
         if (this->isSchematicPage()
             && this->_schematicWidget != nullptr
@@ -1513,6 +1783,44 @@ QPushButton:focus {
         const auto page = this->currentPageName();
 
         this->_statusLabel->setText(QStringLiteral("%1 | %2").arg(page, path));
+    }
+
+    auto Window::collectTopdies() -> std::Vector<circuit::TopDieInstance*> {
+        std::Vector<circuit::TopDieInstance*> topdies;
+        if (this->_basedie == nullptr) {
+            return topdies;
+        }
+        for (auto& [name, inst] : this->_basedie->topdie_insts()) {
+            (void)name;
+            topdies.push_back(inst.get());
+        }
+        return topdies;
+    }
+
+    void Window::capturePlacementSnapshot() {
+        this->_placementSnapshot.clear();
+        auto topdies = this->collectTopdies();
+        if (topdies.empty()) {
+            return;
+        }
+        this->_placementSnapshot = algo::SAPlaceStrategy{}.save_current_placement(topdies);
+    }
+
+    void Window::restorePlacementSnapshot() {
+        if (this->_placementSnapshot.empty()) {
+            return;
+        }
+        try {
+            auto topdies = this->collectTopdies();
+            algo::SAPlaceStrategy{}.restore_placement(topdies, this->_placementSnapshot);
+        } catch (const std::exception& e) {
+            QMessageBox::critical(
+                this,
+                QStringLiteral("Restore placement"),
+                QStringLiteral("Failed to restore placement:\n%1")
+                    .arg(QString::fromUtf8(e.what()))
+            );
+        }
     }
 
     Window::~Window() {}
