@@ -15,6 +15,7 @@ test/
 ├── config_3dblox/       # 3DBlox / DEF / LEF style fixtures (optional format track)
 ├── module_test/
 │   ├── test_unit/       # ALL sources linked into `module_test` (xmake: test_unit/**.cc)
+│   ├── test_gui/        # Headless Qt widget tests (xmake target: gui_test)
 │   ├── test_writer/     # Writer golden cases + bash/python harness (no .cc here)
 │   └── test_function/   # Extra datasets (testlength, bbox, …); not linked into module_test
 ├── regression_test/     # Catch2 end-to-end + [flow] orchestrator
@@ -62,6 +63,8 @@ A typical test case directory (e.g., `test/config/case4/`) contains:
 ```bash
 xmake build PR_tool_cli
 xmake build module_test
+xmake build gui_test
+xmake run gui_test                 # runs with QT_QPA_PLATFORM=offscreen
 xmake build regression_test
 xmake build json2txt
 ```

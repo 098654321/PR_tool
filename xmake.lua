@@ -128,6 +128,21 @@ target("module_test")
         "source/serde/**.cc"
     )
 
+target("gui_test")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_includedirs("source", "source/global")
+    add_files(
+        "test/module_test/test_gui/entrydialog_test.cc",
+        "test/module_test/test_gui/entrydialog_test.h",
+        "source/widget/frame/entrydialog.cc",
+        "source/widget/frame/entrydialog.h"
+    )
+    add_frameworks("QtTest")
+    add_rules("qt.widgetapp")
+    add_runenvs("QT_QPA_PLATFORM", "offscreen")
+
 target("regression_test")
     set_kind("binary")
     set_targetdir("./output")
