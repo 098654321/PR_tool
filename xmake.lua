@@ -137,7 +137,9 @@ target("gui_test")
         "test/module_test/test_gui/entrydialog_test.cc",
         "test/module_test/test_gui/entrydialog_test.h",
         "source/widget/frame/entrydialog.cc",
-        "source/widget/frame/entrydialog.h"
+        "source/widget/frame/entrydialog.h",
+        "source/widget/frame/placeprogresschart.cc",
+        "source/widget/frame/placeprogresschart.h"
     )
     add_frameworks("QtTest")
     add_rules("qt.widgetapp")

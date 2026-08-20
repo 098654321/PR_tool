@@ -8,4 +8,5 @@ class EntryDialogTest final : public QObject {
 private slots:
     void showsLoadConfigAction();
     void escapeCancelsWithoutSelectingAConfig();
+    void placeProgressChartKeepsUserScrollPosition();
 };
