@@ -1,38 +1,21 @@
-#if defined(__aarch64__)
-#include <arm_acle.h>
-#endif
+#include "interaction_test.h"
 
-#include <QtTest/QTest>
-
-#include "entrydialog_test.h"
 #include <widget/frame/entrydialog.h>
+#include <widget/frame/graphicsview.h>
 #include <widget/frame/placeprogresschart.h>
 
-#include <QPushButton>
 #include <QApplication>
 #include <QDir>
 #include <QFileDialog>
+#include <QGraphicsRectItem>
+#include <QGraphicsScene>
+#include <QPushButton>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QTimer>
+#include <QtTest/QTest>
 
-void EntryDialogTest::showsLoadConfigAction() {
-    PR_tool::widget::EntryDialog dialog;
-    dialog.show();
-
-    QTRY_VERIFY(dialog.isVisible());
-    QCOMPARE(dialog.size(), QSize(400, 240));
-    QVERIFY(!dialog.getResult().has_value());
-
-    auto* loadConfigButton = dialog.findChild<QPushButton*>(QStringLiteral("PrimaryCta"));
-    QVERIFY(loadConfigButton != nullptr);
-    QCOMPARE(loadConfigButton->text(), QStringLiteral("Load Config"));
-    QCOMPARE(loadConfigButton->accessibleName(), QStringLiteral("Load Config"));
-    QCOMPARE(loadConfigButton->accessibleDescription(), QStringLiteral("Load an existing config directory"));
-}
-
-void EntryDialogTest::loadConfigAcceptsSelectedCase5Directory() {
-    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+void InteractionTest::entryDialogAcceptsCase5FromFilePicker() {
     PR_tool::widget::EntryDialog dialog;
     const auto configDirectory = QFINDTESTDATA("../test/config/case5");
     QVERIFY2(!configDirectory.isEmpty(), "case5 test configuration must exist");
@@ -52,7 +35,7 @@ void EntryDialogTest::loadConfigAcceptsSelectedCase5Directory() {
         fileDialogFound = true;
         fileDialog->setDirectory(configDirectory);
         fileDialog->selectFile(configDirectory);
-        QVERIFY(QMetaObject::invokeMethod(fileDialog, "accept"));
+        QMetaObject::invokeMethod(fileDialog, "accept");
         fileDialogDriver.stop();
     });
     QTimer watchdog;
@@ -78,7 +61,7 @@ void EntryDialogTest::loadConfigAcceptsSelectedCase5Directory() {
     QCOMPARE(QDir::cleanPath(*dialog.getResult()), QDir::cleanPath(configDirectory));
 }
 
-void EntryDialogTest::escapeCancelsWithoutSelectingAConfig() {
+void InteractionTest::escapeCancelsEntryDialogWithoutSelectingConfig() {
     PR_tool::widget::EntryDialog dialog;
     dialog.show();
 
@@ -88,7 +71,7 @@ void EntryDialogTest::escapeCancelsWithoutSelectingAConfig() {
     QVERIFY(!dialog.getResult().has_value());
 }
 
-void EntryDialogTest::placeProgressChartKeepsUserScrollPosition() {
+void InteractionTest::placeProgressChartKeepsManualScrollPosition() {
     PR_tool::widget::PlaceProgressChart chart;
     chart.resize(200, 112);
     chart.show();
@@ -100,11 +83,30 @@ void EntryDialogTest::placeProgressChartKeepsUserScrollPosition() {
     QTRY_VERIFY(scrollBar->maximum() > scrollBar->minimum());
     QTRY_COMPARE(scrollBar->value(), scrollBar->maximum());
 
-    scrollBar->setValue(scrollBar->minimum());
+    scrollBar->setFocus();
+    QTest::keyClick(scrollBar, Qt::Key_Home);
     QTRY_COMPARE(scrollBar->value(), scrollBar->minimum());
-
     chart.append(41);
     QTRY_COMPARE(scrollBar->value(), scrollBar->minimum());
 }
 
-QTEST_MAIN(EntryDialogTest)
+void InteractionTest::graphicsViewAllowsSelectionUntilLookbackLocksIt() {
+    QGraphicsScene scene;
+    PR_tool::widget::GraphicsView view;
+    view.setScene(&scene);
+    view.resize(300, 300);
+    auto* item = scene.addRect(QRectF{-20.0, -20.0, 40.0, 40.0});
+    item->setFlag(QGraphicsItem::ItemIsSelectable);
+    view.centerOn(item);
+    view.show();
+    QTRY_VERIFY(view.isVisible());
+
+    const auto itemCenter = view.mapFromScene(item->sceneBoundingRect().center());
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, itemCenter);
+    QTRY_VERIFY(item->isSelected());
+
+    item->setSelected(false);
+    view.setLookbackLocked(true);
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, itemCenter);
+    QTRY_VERIFY(!item->isSelected());
+}

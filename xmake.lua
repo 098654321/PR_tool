@@ -134,15 +134,20 @@ target("gui_test")
     set_default(false)
     add_includedirs("source", "source/global")
     add_files(
-        "test/module_test/test_gui/entrydialog_test.cc",
-        "test/module_test/test_gui/entrydialog_test.h",
-        "source/widget/frame/entrydialog.cc",
-        "source/widget/frame/entrydialog.h",
-        "source/widget/frame/placeprogresschart.cc",
-        "source/widget/frame/placeprogresschart.h"
+        "test/module_test/test_gui/**.cc",
+        "test/module_test/test_gui/**.h",
+        "source/algo/**.cc",
+        "source/circuit/**.cc",
+        "source/global/**.cc",
+        "source/hardware/**.cc",
+        "source/parse/**.cc",
+        "source/serde/**.cc",
+        "source/widget/**.cc",
+        "source/widget/**.h",
+        "resource/resource.qrc"
     )
     add_frameworks("QtTest")
-    add_rules("qt.widgetapp")
+    add_rules("qt.widgetapp", "qt.opengl")
     add_runenvs("QT_QPA_PLATFORM", "offscreen")
 
 target("regression_test")
