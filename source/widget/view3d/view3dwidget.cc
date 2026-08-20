@@ -307,10 +307,10 @@ namespace PR_tool::widget {
         for (int row = 0; row < hardware::Interposer::COB_ARRAY_HEIGHT - 1; ++row) {
             for (int col = 0; col < hardware::Interposer::COB_ARRAY_WIDTH; ++col) {
                 auto position = this->channelPosition(row, col, hardware::TrackDirection::Vertical);
-                channelPos.push_back(position);
+                vchannelPos.push_back(position);
             }
         }
-        auto vchannelCube = this->makeCube(CubeType::Channel, CHANNEL_WIDTH, CHANNEL_LENGTH, CHANNEL_HEIGHT, qMove(channelPos), ":/texture/texture/channel.jpg", 2);
+        auto vchannelCube = this->makeCube(CubeType::Channel, CHANNEL_WIDTH, CHANNEL_LENGTH, CHANNEL_HEIGHT, qMove(vchannelPos), ":/texture/texture/channel.jpg", 2);
         this->_cubes.push_back(vchannelCube);
     }
 
