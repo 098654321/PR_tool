@@ -9,7 +9,12 @@
 #include <widget/frame/placeprogresschart.h>
 
 #include <QPushButton>
+#include <QApplication>
+#include <QDir>
+#include <QFileDialog>
 #include <QScrollBar>
+#include <QSignalSpy>
+#include <QTimer>
 
 void EntryDialogTest::showsLoadConfigAction() {
     PR_tool::widget::EntryDialog dialog;
@@ -24,6 +29,53 @@ void EntryDialogTest::showsLoadConfigAction() {
     QCOMPARE(loadConfigButton->text(), QStringLiteral("Load Config"));
     QCOMPARE(loadConfigButton->accessibleName(), QStringLiteral("Load Config"));
     QCOMPARE(loadConfigButton->accessibleDescription(), QStringLiteral("Load an existing config directory"));
+}
+
+void EntryDialogTest::loadConfigAcceptsSelectedCase5Directory() {
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    PR_tool::widget::EntryDialog dialog;
+    const auto configDirectory = QFINDTESTDATA("../test/config/case5");
+    QVERIFY2(!configDirectory.isEmpty(), "case5 test configuration must exist");
+
+    auto* loadConfigButton = dialog.findChild<QPushButton*>(QStringLiteral("PrimaryCta"));
+    QVERIFY(loadConfigButton != nullptr);
+
+    QSignalSpy acceptedSpy(&dialog, &QDialog::accepted);
+    bool fileDialogFound = false;
+    QTimer fileDialogDriver;
+    connect(&fileDialogDriver, &QTimer::timeout, this, [&]() {
+        auto* fileDialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+        if (fileDialog == nullptr) {
+            return;
+        }
+
+        fileDialogFound = true;
+        fileDialog->setDirectory(configDirectory);
+        fileDialog->selectFile(configDirectory);
+        QVERIFY(QMetaObject::invokeMethod(fileDialog, "accept"));
+        fileDialogDriver.stop();
+    });
+    QTimer watchdog;
+    watchdog.setSingleShot(true);
+    connect(&watchdog, &QTimer::timeout, this, []() {
+        if (auto* modalDialog = qobject_cast<QDialog*>(QApplication::activeModalWidget())) {
+            modalDialog->reject();
+        }
+    });
+    fileDialogDriver.start(1);
+    watchdog.start(2000);
+
+    dialog.show();
+    QTRY_VERIFY(dialog.isVisible());
+    QTest::mouseClick(loadConfigButton, Qt::LeftButton);
+
+    fileDialogDriver.stop();
+    watchdog.stop();
+    QVERIFY(fileDialogFound);
+    QCOMPARE(acceptedSpy.count(), 1);
+    QCOMPARE(dialog.QDialog::result(), QDialog::Accepted);
+    QVERIFY(dialog.getResult().has_value());
+    QCOMPARE(QDir::cleanPath(*dialog.getResult()), QDir::cleanPath(configDirectory));
 }
 
 void EntryDialogTest::escapeCancelsWithoutSelectingAConfig() {

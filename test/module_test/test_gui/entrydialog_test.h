@@ -7,6 +7,7 @@ class EntryDialogTest final : public QObject {
 
 private slots:
     void showsLoadConfigAction();
+    void loadConfigAcceptsSelectedCase5Directory();
     void escapeCancelsWithoutSelectingAConfig();
     void placeProgressChartKeepsUserScrollPosition();
 };
