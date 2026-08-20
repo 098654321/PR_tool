@@ -1458,6 +1458,17 @@ QPushButton:focus {
             return;
         }
 
+        for (auto& [_, nets] : this->_basedie->nets()) {
+            for (auto& net : nets) {
+                net->clear_path();
+            }
+        }
+        for (auto& [_, instance] : this->_basedie->topdie_insts()) {
+            instance->clear_nets();
+        }
+        this->_basedie->nets().clear();
+        this->_interposer->reset_regs();
+
         this->_finishPR = false;
         this->_placed = false;
 
