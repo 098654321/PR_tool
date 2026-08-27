@@ -206,6 +206,21 @@ namespace PR_tool::widget {
         this->updateEmptyHint();
     }
 
+    void SchematicView::applyInitialView() {
+        this->resetTransform();
+        this->scale(kInitialScale, kInitialScale);
+        if (this->scene() != nullptr && !this->items().isEmpty()) {
+            const QRectF bounds = this->scene()->itemsBoundingRect();
+            if (bounds.isValid() && !bounds.isEmpty()) {
+                this->centerOn(bounds.center());
+            }
+        }
+        if (this->_minimap != nullptr) {
+            this->_minimap->update();
+        }
+        this->emitStatusContext();
+    }
+
     void SchematicView::repositionMiniMap() {
         if (this->_minimap == nullptr || this->viewport() == nullptr) {
             return;
@@ -356,8 +371,7 @@ namespace PR_tool::widget {
     }
 
     void SchematicView::resetZoom() {
-        GraphicsView::resetZoom();
-        this->emitStatusContext();
+        this->applyInitialView();
     }
 
     void SchematicView::ensureVisibleAtMinScale(QGraphicsItem* item, qreal minScale) {

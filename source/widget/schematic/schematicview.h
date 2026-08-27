@@ -35,6 +35,8 @@ namespace PR_tool::widget {
         ~SchematicView() noexcept;
 
         void bindMiniMap();
+        /// After load: 25% zoom, centered on schematic content (matches the default overview).
+        void applyInitialView();
 
         /// Ch.二十: Selected/hints | X Y | Grid | Zoom (Stage / view / ready live on Window).
         auto statusLine() const -> QString;
@@ -84,6 +86,8 @@ namespace PR_tool::widget {
     protected:
         hardware::Interposer* _interposer {nullptr};
         circuit::BaseDie* _basedie {nullptr};
+
+        static constexpr qreal kInitialScale = 0.25;
 
         bool _gridVisible {true};
         QColor _gridColor {Qt::lightGray};

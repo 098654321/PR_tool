@@ -71,6 +71,7 @@ namespace PR_tool::widget {
         this->_scene->reloadItems();
         this->_view->adjustSceneRect();
         this->_view->bindMiniMap();
+        this->_view->applyInitialView();
         this->_libWidget->reload();
         this->_infoWidget->reload();
     }
