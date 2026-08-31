@@ -20,7 +20,8 @@ namespace PR_tool::algo {
         int m,
         bool incremental,
         bool try_all_modes, 
-        bool path_exists
+        bool path_exists,
+        RouteProgressFn on_progress
     ) -> RouteNetsResult {
         debug::info(
             "\n\
@@ -31,6 +32,7 @@ namespace PR_tool::algo {
         );
         auto invoker = Invoker{};
         auto engine = RouteEngine{basedie->nets(), strateg, allocator, m, incremental, try_all_modes, path_exists, interposer};
+        engine.set_progress_callback(std::move(on_progress));
         invoker.set_route_commands(incremental, try_all_modes, path_exists);
         
         while (!invoker.check_command()) {

@@ -184,6 +184,38 @@ target("module_test")
     add_includedirs("source/algo/router/sat_ilp")
     add_sat_ilp_deps()
 
+target("gui_test")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_includedirs("source", "source/global")
+    add_files(
+        "test/module_test/test_gui/**.cc",
+        "test/module_test/test_gui/**.h",
+        "source/algo/**.cc",
+        "source/circuit/**.cc",
+        "source/global/**.cc",
+        "source/hardware/**.cc",
+        "source/parse/**.cc",
+        "source/serde/**.cc",
+        "source/widget/**.cc",
+        "source/widget/**.h",
+        "resource/resource.qrc"
+    )
+    add_frameworks("QtTest")
+    add_rules("qt.widgetapp", "qt.opengl")
+    add_runenvs("QT_QPA_PLATFORM", "offscreen")
+    if has_config("sat_router") then
+        add_defines("PR_TOOL_HAS_SAT_ROUTER=1")
+        add_includedirs("source/algo/router/sat_ilp")
+        add_sat_ilp_deps()
+    else
+        remove_files("source/algo/router/sat_ilp/**.cc")
+        remove_files("source/algo/router/backend/sat_backend.cc")
+        remove_files("source/algo/router/sat_ilp/commit_paths.cc")
+        add_defines("PR_TOOL_HAS_SAT_ROUTER=0")
+    end
+
 target("regression_test")
     set_kind("binary")
     set_targetdir("./output")

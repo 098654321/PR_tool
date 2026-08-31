@@ -1,8 +1,11 @@
 #pragma once
 
+#include "./netitem.h"
+
 #include <QColor>
 #include <QGraphicsItem>
 #include <QPainter>
+#include <QPainterPath>
 #include <QDebug>
 #include <circuit/connection/pin.hh>
 
@@ -30,9 +33,15 @@ namespace PR_tool::widget::schematic {
     
         static constexpr qreal PIN_RADIUS = 5.;
         static constexpr qreal PIN_DIAMETER = 2 * PIN_RADIUS;
+        // Extra invisible margin so pins stay clickable after default view scale(1/2.5).
+        static constexpr qreal HIT_PADDING = 5.;
         static constexpr qreal NAME_INTERVAL = 10.;
         static constexpr qreal CHAR_WIDTH_ = 10.;
         static constexpr qreal CHAR_HEIGHT = 20.;
+        // Pin LOD (Ch.五): s = QGraphicsView::transform().m11(). Default open ≈ 0.40 → Far.
+        static constexpr qreal LOD_FAR_MAX = 0.45;   // s < Far: hide idle pin marks
+        static constexpr qreal LOD_NEAR_MIN = 0.90;  // s >= Near: pin names on die hover/select
+        static constexpr qreal LOD_NET_EXPAND_MIN = 0.50; // s >= this: unbundle into individual nets
         static const    QColor COLOR;
         static const    QColor HOVERED_COLOR;
 
@@ -49,6 +58,7 @@ namespace PR_tool::widget::schematic {
 
     public:        
         auto boundingRect() const -> QRectF override;
+        auto shape() const -> QPainterPath override;
         void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
         auto itemChange(GraphicsItemChange change, const QVariant& value) -> QVariant override;
 
@@ -70,6 +80,9 @@ namespace PR_tool::widget::schematic {
         auto name() const -> const QString& { return this->_name; }
         void setName(const QString& name) { this->_name = name; }
 
+        auto side() const -> PinSide { return this->_side; }
+        void setSide(PinSide side) { this->_side = side; this->update(); }
+
         auto connectedPoints() const -> const QVector<NetPointItem*>& 
         { return this->_connectedNetPoints; }
 
@@ -82,10 +95,24 @@ namespace PR_tool::widget::schematic {
         void setRaduis(qreal radius) { this->_raduis = radius; }
         void resetRaduis() { this->_raduis = PIN_RADIUS; }
 
+        /// Display-only hover style (also used when a connected net is hovered).
+        void setHovered(bool hovered);
+        /// Ch.七: force-show when pin is on a focused / related net.
+        void setFocusRelated(bool related);
+        /// Ch.21 scene chrome (Related / Dimmed / Normal). Hover/Selected override in paint.
+        void setChromeState(ItemChromeState state, qreal opacity = 1.0);
+
     public:
         auto parentExternalPort() const -> ExternalPortItem*;
         auto parentTopDieInstance() const -> TopDieInstanceItem*;
         auto parentSourcePort() const -> SourcePortItem*;
+
+    private:
+        /// View scale s = transform().m11(); 1.0 if no view yet.
+        auto viewScale() const -> qreal;
+        auto shouldDrawPinMark() const -> bool;
+        auto shouldDrawPinName() const -> bool;
+        auto parentDieEmphasizesPins() const -> bool;
 
     private:
         QString _name;
@@ -93,6 +120,9 @@ namespace PR_tool::widget::schematic {
 
         qreal _raduis {PIN_RADIUS};
         bool _hovered {false};
+        bool _focusRelated {false};
+        ItemChromeState _chromeState {ItemChromeState::Normal};
+        qreal _chromeOpacity {1.0};
 
         QVector<NetPointItem*> _connectedNetPoints {};
     };

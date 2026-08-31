@@ -5,6 +5,7 @@
 #include <std/utility.hh>
 #include <std/integer.hh>
 #include <debug/debug.hh>
+#include <functional>
 
 namespace PR_tool::algo {
 
@@ -55,6 +56,10 @@ namespace PR_tool::algo {
 
         auto decide_to_swap_topdie_inst(double temperature) const -> bool;
 
+        void set_progress_callback(std::function<void(std::size_t iteration, std::i64 cost)> cb) {
+            this->_on_progress = std::move(cb);
+        }
+
     private:
         auto compute_search_budget(std::size_t n_chips) const -> SearchBudget;
         auto net_cost(circuit::Net* net) const -> std::i64;
@@ -72,5 +77,6 @@ namespace PR_tool::algo {
         const std::size_t _base_solve_num {80};
         const double _cooling_rate {0.99};
         const std::size_t _base_max_no_improvement {50};
+        mutable std::function<void(std::size_t, std::i64)> _on_progress {};
     };
 }

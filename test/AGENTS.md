@@ -15,6 +15,10 @@ test/
 ├── config_3dblox/       # 3DBlox / DEF / LEF style fixtures (optional format track)
 ├── module_test/
 │   ├── test_unit/       # ALL sources linked into `module_test` (xmake: test_unit/**.cc)
+│   ├── test_gui/        # Headless Qt GUI tests (xmake target: gui_test)
+│   │   ├── component/   # Custom-widget contracts and application-owned state
+│   │   ├── interaction/ # Local user actions and state transitions
+│   │   └── workflow/    # Cross-widget user tasks (without P&R algorithms)
 │   ├── test_writer/     # Writer golden cases + bash/python harness (no .cc here)
 │   └── test_function/   # Extra datasets (testlength, bbox, …); not linked into module_test
 ├── regression_test/     # Catch2 end-to-end + [flow] orchestrator
@@ -62,9 +66,16 @@ A typical test case directory (e.g., `test/config/case4/`) contains:
 ```bash
 xmake build PR_tool_cli
 xmake build module_test
+xmake build gui_test
+xmake run gui_test                 # runs with QT_QPA_PLATFORM=offscreen
 xmake build regression_test
 xmake build json2txt
 ```
+
+`gui_test` has one `gui_test_main.cc` that runs the three layers in order. It
+uses isolated QSettings and non-native dialogs; keep GUI tests deterministic,
+use `test/config/case5` for loaded-design fixtures, and do not invoke Place,
+Route, or OpenGL rendering from this headless target.
 
 *   Unit / iterative / writer (from `output/`):
 

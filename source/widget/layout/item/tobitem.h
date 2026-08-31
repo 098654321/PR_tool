@@ -50,6 +50,7 @@ namespace PR_tool::widget::layout {
         hardware::TOB* const _tob;
 
         TopDieInstanceItem* _topdieInstItem {nullptr};
+        bool _highlighted {false};
 
     };
 

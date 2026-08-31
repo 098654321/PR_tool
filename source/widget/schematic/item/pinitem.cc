@@ -11,7 +11,9 @@
 #include "./sourceportitem.h"
 #include "../schematicscene.h"
 #include "./exportitem.h"
+#include "../schematictypography.h"
 #include <QGraphicsSceneMouseEvent>
+#include <QGraphicsView>
 #include <cassert>
 
 namespace PR_tool::widget::schematic {
@@ -38,14 +40,96 @@ namespace PR_tool::widget::schematic {
     }
 
     auto PinItem::boundingRect() const -> QRectF {
-        return QRectF(-this->_raduis,  -this->_raduis, 2 * this->_raduis, 2 * this->_raduis);
+        const auto r = this->_raduis + HIT_PADDING;
+        return QRectF(-r, -r, 2 * r, 2 * r);
+    }
+
+    auto PinItem::shape() const -> QPainterPath {
+        QPainterPath path;
+        const auto r = this->_raduis + HIT_PADDING;
+        path.addEllipse(QPointF{0., 0.}, r, r);
+        return path;
+    }
+
+    auto PinItem::viewScale() const -> qreal {
+        if (auto* sc = this->scene()) {
+            const auto views = sc->views();
+            if (!views.isEmpty()) {
+                return views.first()->transform().m11();
+            }
+        }
+        return 1.0;
+    }
+
+    auto PinItem::shouldDrawPinMark() const -> bool {
+        if (this->isSelected() || this->_hovered || this->_focusRelated) {
+            return true;
+        }
+        if (this->parentDieEmphasizesPins()) {
+            return true;
+        }
+        const qreal s = this->viewScale();
+        if (this->isTopDieInstancePin()) {
+            return s >= LOD_FAR_MAX;
+        }
+        return s >= LOD_NEAR_MIN;
+    }
+
+    auto PinItem::shouldDrawPinName() const -> bool {
+        if (this->viewScale() < LOD_NEAR_MIN) {
+            return false;
+        }
+        if (!this->isTopDieInstancePin()) {
+            return true;
+        }
+        return this->isSelected() || this->_hovered || this->parentDieEmphasizesPins();
+    }
+
+    auto PinItem::parentDieEmphasizesPins() const -> bool {
+        if (!this->isTopDieInstancePin()) {
+            return false;
+        }
+        auto* top = this->parentTopDieInstance();
+        return top != nullptr && top->emphasizePins();
     }
 
     void PinItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
-        painter->setBrush(this->_hovered ? HOVERED_COLOR : COLOR);
+        if (!this->shouldDrawPinMark()) {
+            return;
+        }
+
+        ItemChromeState chrome = this->_chromeState;
+        if (this->isSelected()) {
+            chrome = ItemChromeState::Selected;
+        } else if (this->_hovered) {
+            chrome = ItemChromeState::Hover;
+        } else if (this->_focusRelated) {
+            chrome = ItemChromeState::Related;
+        }
+
+        QColor fill = COLOR;
+        QColor ring = itemChromeBorder(chrome);
+        const qreal width = itemChromeWidth(chrome);
+        const qreal alpha = (chrome == ItemChromeState::Dimmed)
+            ? qBound(0., this->_chromeOpacity, 1.)
+            : 1.0;
+        fill.setAlphaF(alpha);
+        ring.setAlphaF(alpha);
+
+        if (chrome == ItemChromeState::Normal || chrome == ItemChromeState::Dimmed) {
+            painter->setPen(Qt::NoPen);
+        } else {
+            painter->setPen(QPen(ring, width));
+        }
+        painter->setBrush(chrome == ItemChromeState::Selected ? ring : fill);
         painter->drawEllipse(QPointF{0., 0.}, this->_raduis, this->_raduis);
 
+        if (!this->shouldDrawPinName()) {
+            return;
+        }
+
         auto length = this->_name.size() * CHAR_WIDTH_;
+        painter->setFont(SchematicTypography::pinNameFont());
         painter->setPen(Qt::blue);
         switch (this->_side) {
             case PinSide::Top: {
@@ -154,6 +238,9 @@ namespace PR_tool::widget::schematic {
                 point->updatePos();
             }
         }
+        if (change == QGraphicsItem::ItemSelectedHasChanged) {
+            this->update();
+        }
         return QGraphicsItem::itemChange(change, value);
     }
 
@@ -162,15 +249,56 @@ namespace PR_tool::widget::schematic {
         QGraphicsItem::mousePressEvent(event);
     }
 
-    void PinItem::hoverEnterEvent(QGraphicsSceneHoverEvent * event) {
-        this->_hovered = true;
+    void PinItem::setHovered(bool hovered) {
+        if (this->_hovered == hovered) {
+            return;
+        }
+        this->_hovered = hovered;
         this->update();
+    }
+
+    void PinItem::setFocusRelated(bool related) {
+        if (this->_focusRelated == related) {
+            return;
+        }
+        this->_focusRelated = related;
+        this->update();
+    }
+
+    void PinItem::setChromeState(ItemChromeState state, qreal opacity) {
+        opacity = qBound(0., opacity, 1.);
+        if (this->_chromeState == state && qAbs(this->_chromeOpacity - opacity) < 0.0001) {
+            return;
+        }
+        this->_chromeState = state;
+        this->_chromeOpacity = opacity;
+        this->update();
+    }
+
+    void PinItem::hoverEnterEvent(QGraphicsSceneHoverEvent * event) {
+        this->setHovered(true);
+        if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+            if (this->isTopDieInstancePin()) {
+                sc->setHoverTopDie(this->parentTopDieInstance());
+            } else {
+                sc->setHoverPin(this);
+            }
+        }
         QGraphicsItem::hoverEnterEvent(event);
     }
 
     void PinItem::hoverLeaveEvent(QGraphicsSceneHoverEvent *event) {
-        this->_hovered = false;
-        this->update();
+        this->setHovered(false);
+        if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+            if (this->isTopDieInstancePin()) {
+                auto* top = this->parentTopDieInstance();
+                if (top && !sc->hoverMovesWithin(top, event->scenePos())) {
+                    sc->setHoverTopDie(nullptr);
+                }
+            } else {
+                sc->setHoverPin(nullptr);
+            }
+        }
         QGraphicsItem::hoverLeaveEvent(event);
     }
 

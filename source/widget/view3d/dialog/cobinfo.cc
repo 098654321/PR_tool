@@ -21,8 +21,7 @@
 #include <QGroupBox>
 #include <QDebug>
 #include <QMessageBox>
-
-// MARK: A Litter MESS(String)
+#include <QHash>
 
 namespace PR_tool::widget {
 
@@ -30,7 +29,7 @@ namespace PR_tool::widget {
         "Left", "Right", "Up", "Down"
     };
 
-    COBInfoDialog::COBInfoDialog(hardware::COB* cob) :
+    COBInfoDialog::COBInfoDialog(hardware::COB* cob, bool allowEdit) :
         QDialog{},
         _cob{cob}
     {
@@ -154,7 +153,7 @@ namespace PR_tool::widget {
         sublayout6->setContentsMargins(0, 0, 0, 0);
 
         auto swregLabel = new QLabel {registerGroup};
-        swregLabel->setText("Swith Register");
+        swregLabel->setText("Switch Register");
         sublayout6->addWidget(swregLabel);
 
         this->_swRegister = new QComboBox {registerGroup};
@@ -197,6 +196,16 @@ namespace PR_tool::widget {
         this->_setButton->setEnabled(false);
         buttonLayout->addWidget(this->_setButton);
 
+        if (!allowEdit) {
+            this->_editorButton->setEnabled(false);
+            this->_editorButton->setToolTip(
+                QStringLiteral("Register edit locked after Place & Route"));
+            this->setWindowTitle(QStringLiteral("COB Info [view-only]"));
+        } else {
+            this->_editorButton->setToolTip(
+                QStringLiteral("Edits may not sync to View2D until Place & Route is re-run"));
+        }
+
         this->setMinimumSize(400, 400);
 
         /////////////////////////////////////////////////////////////////////////
@@ -228,10 +237,12 @@ namespace PR_tool::widget {
                 this->_setButton->setEnabled(false);
                 this->_selRegister->setEnabled(false);
                 this->_swRegister->setEnabled(false);
+                this->setWindowTitle("COB Info");
             } else {
                 this->_setButton->setEnabled(true);
                 this->_selRegister->setEnabled(true);
                 this->_swRegister->setEnabled(true);
+                this->setWindowTitle("COB Info [editing]");
             }
         });
 
@@ -251,16 +262,14 @@ namespace PR_tool::widget {
         this->updateRegister();
     }
 
-    // MARK: with method a dir
     static auto directionFromString(const QString& dir) -> hardware::COBDirection {
-        if (dir == "Left") {
-            return hardware::COBDirection::Left;
-        } else if (dir == "Right") {
-            return hardware::COBDirection::Right;
-        } else if (dir == "Up") {
-            return hardware::COBDirection::Up;    
-        } 
-        return hardware::COBDirection::Down;
+        static const QHash<QString, hardware::COBDirection> kDirectionMap {
+            {QStringLiteral("Left"),  hardware::COBDirection::Left},
+            {QStringLiteral("Right"), hardware::COBDirection::Right},
+            {QStringLiteral("Up"),    hardware::COBDirection::Up},
+            {QStringLiteral("Down"),  hardware::COBDirection::Down},
+        };
+        return kDirectionMap.value(dir, hardware::COBDirection::Down);
     }
 
     auto COBInfoDialog::updateRegister() -> void {
@@ -318,7 +327,7 @@ namespace PR_tool::widget {
         auto swregStr = this->_swRegister->currentText();
 
         using enum hardware::COBSignalDirection;
-        auto dir = (selregStr == "Track To COB") ? TrackToCOB : COBToTrack;
+        auto dir = (selregStr == "Track to COB") ? TrackToCOB : COBToTrack;
 
         using enum hardware::COBSwState;
         auto state = (swregStr == "Connected") ? Connected : DisConnected;

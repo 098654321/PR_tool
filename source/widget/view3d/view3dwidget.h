@@ -12,6 +12,8 @@
 #include <QWheelEvent>
 #include <QDragEnterEvent>
 
+class QLabel;
+
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QtOpenGLWidgets/QOpenGLWidget>
 #include <QtOpenGL/QOpenGLFunctions_3_3_Core>
@@ -106,7 +108,10 @@ namespace PR_tool::widget {
         ~View3DWidget() noexcept;
 
     public:
+        void reload();
         auto displayRoutingResult() -> void;
+        /// When false, COB Info dialog keeps inquiry but disables Enable Edit / Set Value.
+        void setCobRegisterEditEnabled(bool enabled);
 
     protected:
         void initAxis(const QMatrix4x4& view, const QMatrix4x4& projection, const QMatrix4x4& bias);
@@ -188,6 +193,7 @@ namespace PR_tool::widget {
         virtual void mouseMoveEvent(QMouseEvent *event) override;
         virtual void dragEnterEvent(QDragEnterEvent *event) override;
         virtual void resizeEvent(QResizeEvent *event) override;
+        virtual void showEvent(QShowEvent *event) override;
 
     protected:
         virtual void initializeGL() override;
@@ -216,7 +222,7 @@ namespace PR_tool::widget {
         QOpenGLVertexArrayObject _frameVAO {};
         QOpenGLBuffer _frameVBO {QOpenGLBuffer::VertexBuffer};
         QOpenGLShaderProgram _frameShader {};
-        QVector<QVector3D> _frameVertices {24};
+        QVector<QVector3D> _frameVertices;
 
         //! \brief track
         QOpenGLVertexArrayObject _trackVAO;
@@ -244,6 +250,12 @@ namespace PR_tool::widget {
         std::Vector<hardware::TOB*> _tobs {};
         std::Vector<hardware::COB*> _cobs {};
         std::Vector<circuit::TopDieInstance*> _topdieinsts {};
+
+        bool _cobRegisterEditEnabled {true};
+        bool _pendingRoutingDisplay {false};
+        bool _glReady {false};
+
+        QLabel* _legendLabel {nullptr};
     };
 
 }

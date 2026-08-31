@@ -26,9 +26,6 @@ namespace PR_tool::widget::layout {
         static constexpr qreal BUMP_AREA_BEGIN_X = 250.;
         static constexpr qreal BUMP_AREA_BEGIN_Y = 250.;
 
-        static constexpr qreal NAME_AREA_BEGIN_X = 100.;
-        static constexpr qreal NAME_AREA_BEGIN_Y = 100.;
-        
         static constexpr int BUMP_ARRAY_COL = 16;
         static constexpr int BUMP_ARRAY_ROW = 8;
 
@@ -36,7 +33,8 @@ namespace PR_tool::widget::layout {
         static constexpr qreal BUMP_VERT_INTERVAL = BUMP_AREA_HEIGHT / (BUMP_ARRAY_ROW - 1);
 
         static const    QColor COLOR;
-        static constexpr int FONT_SIZE = 30;
+        static const    QColor HIGHLIGHT_COLOR;
+        static constexpr int FONT_SIZE = 48;
     
         static_assert(WIDTH > BUMP_AREA_WIDTH);
         static_assert(HEIGHT > BUMP_AREA_HEIGHT);
@@ -71,6 +69,8 @@ namespace PR_tool::widget::layout {
         auto pins() const -> const QVector<PinItem*> 
         { return this->_pins; }
 
+        void highlight(bool active);
+
     private:
         circuit::TopDieInstance* const _topdieInst;
         QString _name;
@@ -79,6 +79,7 @@ namespace PR_tool::widget::layout {
 
         QVector<PinItem*> _pins {};
         QPointF _originPos {};
+        bool _highlighted {false};
     };
 
 }

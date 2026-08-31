@@ -37,6 +37,7 @@ namespace PR_tool::widget::schematic {
         QLabel* _beginPinLabel;
         QLabel* _endPinLabel;
         QSpinBox* _syncSpinBox;
+        QSpinBox* _widthSpinBox;
         ColorPickerButton* _colorButton;
         
     };

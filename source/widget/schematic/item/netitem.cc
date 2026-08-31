@@ -8,10 +8,14 @@
 #include "qpoint.h"
 #include "widget/schematic/info/netinfowidget.h"
 #include "widget/schematic/schematicscene.h"
+#include "widget/schematic/schematictypography.h"
 #include <circuit/connection/connection.hh>
 
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsScene>
+#include <QFont>
+#include <QFontMetricsF>
+#include <QPainter>
 
 #include <QDebug>
 
@@ -29,7 +33,12 @@ namespace PR_tool::widget::schematic {
         this->_beginPoint->setNetItem(this);
         this->_endPoint->setNetItem(this);
         this->setAcceptHoverEvents(true);
-        this->setZValue(0);
+        // Above topdie bodies so hover works on segments that cross instances.
+        this->setZValue(0.5);
+
+        // Ch.十二: junction ● follows default net opacity until focus refresh.
+        this->_beginPoint->applyNetVisual(ConnectionFocusStyle::DEFAULT_OPACITY, false);
+        this->_endPoint->applyNetVisual(ConnectionFocusStyle::DEFAULT_OPACITY, false);
 
         auto begin = beginPoint->scenePos();
         auto end = endPoint->scenePos();
@@ -59,13 +68,16 @@ namespace PR_tool::widget::schematic {
     {
         this->_paintColor = HOVER_COLOR;
         this->_paintWidth = DEFAULT_WIDTH + 1;
+        this->_paintOpacity = 1.0;
+        this->_paintStyle = Qt::DashLine;
 
         this->_color = DEFAULT_COLOR;
         this->_width = DEFAULT_WIDTH;
         
         this->_beginPoint->setNetItem(this);
         this->setAcceptHoverEvents(true);
-        this->setZValue(0);
+        this->setZValue(0.5);
+        this->_beginPoint->applyNetVisual(1.0, true);
         this->setLine(this->_beginPoint->scenePos(), this->_beginPoint->scenePos());
     }
 
@@ -356,6 +368,24 @@ namespace PR_tool::widget::schematic {
 
         this->update();
     }
+
+    void NetItem::setRoutePoints(const QVector<QPointF>& points) {
+        if (points.size() < 2) {
+            return;
+        }
+
+        this->prepareGeometryChange();
+        this->_points = points;
+        this->_end = points.back();
+        this->_tempPoint.reset();
+
+        this->_path = QPainterPath{};
+        this->_path.moveTo(points.front());
+        for (int i = 1; i < points.size(); ++i) {
+            this->_path.lineTo(points[i]);
+        }
+        this->update();
+    }
     
     void NetItem::updatePath() {
         this->prepareGeometryChange();
@@ -375,8 +405,30 @@ namespace PR_tool::widget::schematic {
         this->update();
     }
 
+    void NetItem::setBundleLabel(const QString& label) {
+        if (this->_bundleLabel == label) {
+            return;
+        }
+        this->prepareGeometryChange();
+        this->_bundleLabel = label;
+        this->update();
+    }
+
     auto NetItem::boundingRect() const -> QRectF {
-        return this->_path.boundingRect().adjusted(-2, -2, 2, 2);
+        QRectF rect = this->_path.boundingRect().adjusted(-4, -4, 4, 4);
+        if (!this->_bundleLabel.isEmpty() && !this->_path.isEmpty()) {
+            const QFont font = SchematicTypography::pinNameFont();
+            const QFontMetricsF fm(font);
+            const QRectF textRect = fm.boundingRect(this->_bundleLabel);
+            const QPointF mid = this->_path.pointAtPercent(0.5);
+            rect = rect.united(QRectF(
+                mid.x() - textRect.width() / 2. - 4.,
+                mid.y() - textRect.height() - 6.,
+                textRect.width() + 8.,
+                textRect.height() + 4.
+            ));
+        }
+        return rect;
     }
 
     auto NetItem::shape() const -> QPainterPath {
@@ -386,23 +438,108 @@ namespace PR_tool::widget::schematic {
     }
     
     void NetItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) {
-        QPen pen(this->_paintColor, this->_paintWidth);
+        Q_UNUSED(option);
+        Q_UNUSED(widget);
+        QColor color = this->_paintColor;
+        color.setAlphaF(this->_paintOpacity);
+        QPen pen(color, this->_paintWidth, this->_paintStyle);
+        // FlatCap: mid-wire crossings stay a plain cross (Ch.十二), not a RoundCap blob.
+        pen.setCapStyle(Qt::FlatCap);
+        pen.setJoinStyle(Qt::RoundJoin);
         painter->setPen(pen);
         painter->drawPath(this->_path);
+
+        if (!this->_bundleLabel.isEmpty() && !this->_path.isEmpty()) {
+            const QFont font = SchematicTypography::pinNameFont();
+            painter->setFont(font);
+            QColor labelColor = this->_paintColor;
+            labelColor.setAlphaF(qMin(1.0, this->_paintOpacity + 0.35));
+            painter->setPen(labelColor);
+            const QPointF mid = this->_path.pointAtPercent(0.5);
+            const QFontMetricsF fm(font);
+            const QRectF textRect = fm.boundingRect(this->_bundleLabel);
+            const QRectF drawRect {
+                mid.x() - textRect.width() / 2.,
+                mid.y() - textRect.height() - 4.,
+                textRect.width(),
+                textRect.height()
+            };
+            painter->drawText(drawRect, Qt::AlignCenter, this->_bundleLabel);
+        }
+    }
+
+    void NetItem::applyFocusRole(NetFocusRole role) {
+        if (this->isFloating()) {
+            return;
+        }
+
+        this->_paintColor = this->_color;
+        this->_paintStyle = Qt::SolidLine;
+
+        switch (role) {
+            case NetFocusRole::Default:
+                this->_paintWidth = this->_bundleMember
+                    ? ConnectionFocusStyle::BUNDLE_WIDTH
+                    : ConnectionFocusStyle::DEFAULT_WIDTH;
+                this->_paintOpacity = ConnectionFocusStyle::DEFAULT_OPACITY;
+                this->setZValue(0.5);
+                break;
+            case NetFocusRole::HoverRelated:
+                this->_paintWidth = ConnectionFocusStyle::HOVER_RELATED_WIDTH;
+                this->_paintOpacity = ConnectionFocusStyle::HOVER_RELATED_OPACITY;
+                this->setZValue(0.7);
+                break;
+            case NetFocusRole::DieRelated:
+                this->_paintWidth = ConnectionFocusStyle::DIE_RELATED_WIDTH;
+                this->_paintOpacity = ConnectionFocusStyle::DIE_RELATED_OPACITY;
+                this->setZValue(0.8);
+                break;
+            case NetFocusRole::DieUnrelated:
+                this->_paintWidth = ConnectionFocusStyle::DEFAULT_WIDTH;
+                this->_paintOpacity = ConnectionFocusStyle::DIE_UNRELATED_OPACITY;
+                this->setZValue(0.4);
+                break;
+            case NetFocusRole::NetFocused:
+                this->_paintWidth = ConnectionFocusStyle::NET_FOCUS_WIDTH;
+                this->_paintOpacity = ConnectionFocusStyle::NET_FOCUS_OPACITY;
+                this->setZValue(1.0);
+                break;
+            case NetFocusRole::NetUnrelated:
+                this->_paintWidth = ConnectionFocusStyle::DEFAULT_WIDTH;
+                this->_paintOpacity = ConnectionFocusStyle::NET_UNRELATED_OPACITY;
+                this->setZValue(0.3);
+                break;
+        }
+        this->_width = this->_paintWidth;
+
+        const bool focused = role == NetFocusRole::NetFocused
+            || role == NetFocusRole::DieRelated;
+        if (this->_beginPoint) {
+            this->_beginPoint->applyNetVisual(this->_paintOpacity, focused);
+        }
+        if (this->_endPoint) {
+            this->_endPoint->applyNetVisual(this->_paintOpacity, focused);
+        }
+
+        this->update();
     }
 
     void NetItem::hoverEnterEvent(QGraphicsSceneHoverEvent* event) {
         if (!this->isFloating()) {
-            this->_paintColor = HOVER_COLOR;
-            this->_paintWidth = this->_width + 1;
+            if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+                sc->setHoverNet(this);
+            }
         }
         QGraphicsItem::hoverEnterEvent(event);
     }
 
     void NetItem::hoverLeaveEvent(QGraphicsSceneHoverEvent* event) {
         if (!this->isFloating()) {
-            this->_paintColor = this->_color;
-            this->_paintWidth = this->_width;
+            if (auto* sc = dynamic_cast<SchematicScene*>(this->scene())) {
+                if (!sc->hoverMovesWithin(this, event->scenePos())) {
+                    sc->setHoverNet(nullptr);
+                }
+            }
         }
         QGraphicsItem::hoverLeaveEvent(event);
     }
@@ -411,6 +548,14 @@ namespace PR_tool::widget::schematic {
         this->prepareGeometryChange();
         this->_paintColor = this->_color;
         this->_paintWidth = this->_width;
+        this->_paintOpacity = ConnectionFocusStyle::DEFAULT_OPACITY;
+        this->_paintStyle = Qt::SolidLine;
+        if (this->_beginPoint) {
+            this->_beginPoint->applyNetVisual(this->_paintOpacity, false);
+        }
+        if (this->_endPoint) {
+            this->_endPoint->applyNetVisual(this->_paintOpacity, false);
+        }
         this->update();
     }
 

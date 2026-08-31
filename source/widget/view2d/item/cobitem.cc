@@ -40,7 +40,6 @@ namespace PR_tool::widget::view2d {
     COBItem::COBItem(hardware::COB* cob): 
         _cob{cob} 
     {
-        this->setFlags(this->flags() | QGraphicsItem::ItemIsMovable);
     }
 
     auto COBItem::boundingRect() const -> QRectF {

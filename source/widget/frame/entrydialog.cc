@@ -6,23 +6,9 @@ namespace PR_tool::widget {
     EntryDialog::EntryDialog(QWidget *parent)
         : QDialog(parent)
     {
-        this->setStyleSheet(
-            "QPushButton {"
-            "    background-color: white;"
-            "    color: black;"
-            "    border: 1px solid lightgray;"
-            "    border-radius: 7px;"
-            "    padding: 5px;"
-            "}"
-            "QPushButton:hover {"
-            "    background-color: lightgray;"
-            "}"
-            "QPushButton:pressed {"
-            "    background-color: gray;"
-            "    color: white;"
-            "}");
-
         auto layout = new QVBoxLayout(this);
+        layout->setContentsMargins(28, 28, 28, 28);
+        layout->setSpacing(12);
 
         auto label = new QLabel{this};
         label->setText("Welcome to PR_tool");
@@ -33,26 +19,30 @@ namespace PR_tool::widget {
         label->setAlignment(Qt::AlignCenter);
         layout->addWidget(label);
 
-        auto createButton = new QPushButton("Empty Project", this);
-        createButton->setFixedHeight(40);
+        auto flowHint = new QLabel{
+            QStringLiteral(
+                "Configure the design visually, complete place and route, and view the results."),
+            this};
+        flowHint->setWordWrap(true);
+        flowHint->setAlignment(Qt::AlignCenter);
+        flowHint->setStyleSheet(QStringLiteral("color: #86868b;"));
+        layout->addWidget(flowHint);
+
         auto openButton = new QPushButton("Load Config", this);
+        openButton->setObjectName(QStringLiteral("PrimaryCta"));
         openButton->setFixedHeight(40);
-        layout->addWidget(createButton);
+        openButton->setAccessibleName("Load Config");
+        openButton->setAccessibleDescription("Load an existing config directory");
         layout->addWidget(openButton);
 
-        connect(createButton, &QPushButton::clicked, this, &EntryDialog::onCreateEmptyProject);
         connect(openButton, &QPushButton::clicked, this, &EntryDialog::onOpenExistingProject);
 
-        this->setFixedSize(400, 300);
+        this->setFixedSize(400, 240);
         this->setLayout(layout);
     }
 
     auto EntryDialog::getResult() const -> std::optional<QString> {
         return result;
-    }
-
-    void EntryDialog::onCreateEmptyProject() {
-        this->accept();
     }
 
     void EntryDialog::onOpenExistingProject() {

@@ -6,6 +6,7 @@
 #include "widget/layout/layoutscene.h"
 #include <cassert>
 
+#include <QFont>
 #include <QGraphicsScene>
 #include <QGraphicsSceneMouseEvent>
 #include <QDebug>
@@ -44,6 +45,7 @@ namespace PR_tool::widget::layout {
     */
 
     const QColor TopDieInstanceItem::COLOR = QColor::fromRgb(84, 139, 84);
+    const QColor TopDieInstanceItem::HIGHLIGHT_COLOR = Qt::red;
 
     TopDieInstanceItem::TopDieInstanceItem(circuit::TopDieInstance* topdieInst, TOBItem* tob): 
         _topdieInst{topdieInst},
@@ -78,16 +80,28 @@ namespace PR_tool::widget::layout {
     }
     
     void TopDieInstanceItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
-        painter->setBrush(COLOR);
+        painter->setRenderHint(QPainter::TextAntialiasing);
+        if (this->_highlighted) {
+            painter->setPen(QPen(HIGHLIGHT_COLOR, 4, Qt::DashLine));
+            painter->setBrush(HIGHLIGHT_COLOR);
+        } else {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(COLOR);
+        }
+        painter->drawRect(-WIDTH / 2., -HEIGHT / 2., WIDTH, HEIGHT);
+
         QFont font = painter->font();
         font.setPointSize(FONT_SIZE);
+        font.setWeight(QFont::DemiBold);
         painter->setFont(font);
-        painter->drawRect(-WIDTH / 2., -HEIGHT / 2., WIDTH, HEIGHT);
-        painter->drawText(QPointF{
-            NAME_AREA_BEGIN_X - WIDTH/2, 
-            NAME_AREA_BEGIN_Y - HEIGHT/2,
-            }, 
-            this->_name);
+        painter->setPen(Qt::white);
+        const QRectF nameRect(-WIDTH / 2., -HEIGHT / 2., WIDTH, HEIGHT * 0.48);
+        painter->drawText(nameRect, Qt::AlignCenter | Qt::TextWordWrap, this->_name);
+    }
+
+    void TopDieInstanceItem::highlight(bool active) {
+        this->_highlighted = active;
+        this->update();
     }
 
     void TopDieInstanceItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {

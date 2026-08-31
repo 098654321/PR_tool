@@ -8,7 +8,7 @@ namespace PR_tool::hardware {
     class COB;
 }
 
-class QButton;
+class QPushButton;
 class QComboBox;
 class QSpinBox;
 
@@ -16,7 +16,8 @@ namespace PR_tool::widget {
 
     class COBInfoDialog : public QDialog {
     public:
-        COBInfoDialog(hardware::COB* cob);
+        /// When `allowEdit` is false (e.g. after P&R), Enable Edit / Set Value stay disabled.
+        COBInfoDialog(hardware::COB* cob, bool allowEdit = true);
         ~COBInfoDialog();
 
     private:

@@ -9,6 +9,7 @@
 #include "qpainterpath.h"
 #include "qpoint.h"
 #include <QTextItem>
+#include <array>
 #include <cassert>
 #include <ranges>
 #include <QDebug>
@@ -131,6 +132,36 @@ namespace PR_tool::widget::view2d {
             // }
         }
 
+        using enum hardware::COBDirection;
+        using hardware::COBSwState;
+
+        std::array<bool, hardware::COB::INDEX_SIZE> usedLeft {};
+        std::array<bool, hardware::COB::INDEX_SIZE> usedRight {};
+        std::array<bool, hardware::COB::INDEX_SIZE> usedUp {};
+        std::array<bool, hardware::COB::INDEX_SIZE> usedDown {};
+
+        auto markUsed = [&](
+            hardware::COBDirection from,
+            hardware::COBDirection to,
+            std::array<bool, hardware::COB::INDEX_SIZE>& usedFrom,
+            std::array<bool, hardware::COB::INDEX_SIZE>& usedTo
+        ) {
+            for (auto track_index = 0; track_index < hardware::COB::INDEX_SIZE; ++track_index) {
+                const auto from_cob_index = hardware::COB::track_index_to_cob_index(track_index);
+                const auto to_cob_index = hardware::COB::cob_index_map(from, from_cob_index, to);
+                if (this->_cob->get_sw_resgiter_value(from, from_cob_index, to) == COBSwState::Connected) {
+                    usedFrom[from_cob_index] = true;
+                    usedTo[to_cob_index] = true;
+                }
+            }
+        };
+        markUsed(Left, Up, usedLeft, usedUp);
+        markUsed(Left, Down, usedLeft, usedDown);
+        markUsed(Right, Up, usedRight, usedUp);
+        markUsed(Right, Down, usedRight, usedDown);
+        markUsed(Left, Right, usedLeft, usedRight);
+        markUsed(Up, Down, usedUp, usedDown);
+
         // Trans
         // Left
         for (auto trackIndex : std::ranges::views::iota(0, hardware::COB::INDEX_SIZE)) {
@@ -152,6 +183,7 @@ namespace PR_tool::widget::view2d {
 
             auto item = new HighLightPathItem{};
             item->setPath(path);
+            item->setRouted(usedLeft[cobIndex]);
             this->addItem(item);
         }
 
@@ -175,6 +207,7 @@ namespace PR_tool::widget::view2d {
 
             auto item = new HighLightPathItem{};
             item->setPath(path);
+            item->setRouted(usedRight[cobIndex]);
             this->addItem(item);
         }
 
@@ -199,6 +232,7 @@ namespace PR_tool::widget::view2d {
 
             auto item = new HighLightPathItem{};
             item->setPath(path);
+            item->setRouted(usedUp[cobIndex]);
             this->addItem(item);
         }
 
@@ -223,83 +257,32 @@ namespace PR_tool::widget::view2d {
 
             auto item = new HighLightPathItem{};
             item->setPath(path);
+            item->setRouted(usedDown[cobIndex]);
             this->addItem(item);
         }
-        
-        using enum hardware::COBDirection;
-        using enum hardware::TrackDirection;
-        using hardware::COBSwState;
 
-        for (auto track_index = 0; track_index < hardware::COB::INDEX_SIZE; track_index++) {
-            auto from_cob_index = hardware::COB::track_index_to_cob_index(track_index);
-            auto to_cob_index = hardware::COB::cob_index_map(Left, from_cob_index, Up);
-            auto value = this->_cob->get_sw_resgiter_value(Left, from_cob_index, Up);
-            if (value == COBSwState::Connected) {
-                auto p1 = COBScene::pinPosition(from_cob_index, Left);
-                auto p2 = COBScene::pinPosition(to_cob_index, Up);
-                this->addLine(QLineF{p1, p2});
+        const QPen routedPen {Qt::red, 3};
+        auto addRouted = [&](hardware::COBDirection from, hardware::COBDirection to) {
+            for (auto track_index = 0; track_index < hardware::COB::INDEX_SIZE; ++track_index) {
+                const auto from_cob_index = hardware::COB::track_index_to_cob_index(track_index);
+                const auto to_cob_index = hardware::COB::cob_index_map(from, from_cob_index, to);
+                if (this->_cob->get_sw_resgiter_value(from, from_cob_index, to) == COBSwState::Connected) {
+                    this->addLine(
+                        QLineF{
+                            COBScene::pinPosition(from_cob_index, from),
+                            COBScene::pinPosition(to_cob_index, to)
+                        },
+                        routedPen
+                    );
+                }
             }
-        }
-
-        // Left to Down
-        for (auto track_index = 0; track_index < hardware::COB::INDEX_SIZE; track_index++) {
-            auto from_cob_index = hardware::COB::track_index_to_cob_index(track_index);
-            auto to_cob_index = hardware::COB::cob_index_map(Left, from_cob_index, Down);
-            auto value = this->_cob->get_sw_resgiter_value(Left, from_cob_index, Down);
-            if (value == COBSwState::Connected) {
-                auto p1 = COBScene::pinPosition(from_cob_index, Left);
-                auto p2 = COBScene::pinPosition(to_cob_index, Down);
-                this->addLine(QLineF{p1, p2});
-            }
-        }
-
-        // Right to Up
-        for (auto track_index = 0; track_index < hardware::COB::INDEX_SIZE; track_index++) {
-            auto from_cob_index = hardware::COB::track_index_to_cob_index(track_index);
-            auto to_cob_index = hardware::COB::cob_index_map(Right, from_cob_index, Up);
-            auto value = this->_cob->get_sw_resgiter_value(Right, from_cob_index, Up);
-            if (value == COBSwState::Connected) {
-                auto p1 = COBScene::pinPosition(from_cob_index, Right);
-                auto p2 = COBScene::pinPosition(to_cob_index, Up);
-                this->addLine(QLineF{p1, p2});
-            }
-        }
-
-        // Right to Down
-        for (auto track_index = 0; track_index < hardware::COB::INDEX_SIZE; track_index++) {
-            auto from_cob_index = hardware::COB::track_index_to_cob_index(track_index);
-            auto to_cob_index = hardware::COB::cob_index_map(Right, from_cob_index, Down);
-            auto value = this->_cob->get_sw_resgiter_value(Right, from_cob_index, Down);
-            if (value == COBSwState::Connected) {
-                auto p1 = COBScene::pinPosition(from_cob_index, Right);
-                auto p2 = COBScene::pinPosition(to_cob_index, Down);
-                this->addLine(QLineF{p1, p2});
-            }
-        }
-
-        // Left to Right
-        for (auto track_index = 0; track_index < hardware::COB::INDEX_SIZE; track_index++) {
-            auto from_cob_index = hardware::COB::track_index_to_cob_index(track_index);
-            auto to_cob_index = hardware::COB::cob_index_map(Left, from_cob_index, Right);
-            auto value = this->_cob->get_sw_resgiter_value(Left, from_cob_index, Right);
-            if (value == COBSwState::Connected) {
-                auto p1 = COBScene::pinPosition(from_cob_index, Left);
-                auto p2 = COBScene::pinPosition(to_cob_index, Right);
-                this->addLine(QLineF{p1, p2});
-            }
-        }
-
-        // Up to Down
-        for (auto track_index = 0; track_index < hardware::COB::INDEX_SIZE; track_index++) {
-            auto from_cob_index = hardware::COB::track_index_to_cob_index(track_index);
-            auto to_cob_index = hardware::COB::cob_index_map(Up, from_cob_index, Down);
-            auto value = this->_cob->get_sw_resgiter_value(Up, from_cob_index, Down);
-            if (value == COBSwState::Connected) {
-                auto p1 = COBScene::pinPosition(from_cob_index, Up);
-                auto p2 = COBScene::pinPosition(to_cob_index, Down);
-                this->addLine(QLineF{p1, p2});
-            }
-        }
+        };
+        addRouted(Left, Up);
+        addRouted(Left, Down);
+        addRouted(Right, Up);
+        addRouted(Right, Down);
+        addRouted(Left, Right);
+        addRouted(Up, Down);
     }
 
     auto COBScene::cobuintLeftUpPosition(int uintIndex) -> QPointF {

@@ -39,6 +39,7 @@ namespace PR_tool::circuit {
         
         auto nets() const -> const std::Vector<Net*> 
         { return this->_nets; }
+        void clear_nets() { this->_nets.clear(); }
 
         void set_name(std::String name) 
         { this->_name = std::move(name); } 
