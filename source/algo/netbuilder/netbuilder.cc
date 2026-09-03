@@ -27,19 +27,28 @@ namespace PR_tool::algo {
     try {
         build_01_ports();
         for (auto& [mode, inner_connection]: this->_basedie->connections()) {
+            auto bumps_with_pose = std::Vector<hardware::Bump*> {};
+            auto bumps_with_nege = std::Vector<hardware::Bump*> {};
             for (auto& [sync, connections] : inner_connection) {
                 if (sync == -1) {
-                    this->build_no_sync_nets(connections, -1, mode);
+                    this->build_no_sync_nets(
+                        connections, -1, mode, bumps_with_pose, bumps_with_nege);
                 } else {
                     this->build_sync_net(connections, sync, mode);
                 }
             }
-            this->build_fixed_nets(mode);
+            this->build_fixed_nets(mode, bumps_with_pose, bumps_with_nege);
         }
     }
     THROW_UP_WITH("Build nets")
 
-    auto NetBuilder::build_no_sync_nets(std::Span<const std::Box<circuit::Connection>> connections, int group, int m) -> void {
+    auto NetBuilder::build_no_sync_nets(
+        std::Span<const std::Box<circuit::Connection>> connections,
+        int group,
+        int m,
+        std::Vector<hardware::Bump*>& bumps_with_pose,
+        std::Vector<hardware::Bump*>& bumps_with_nege
+    ) -> void {
         // How to deal one to mul net?
         // Build a map: start to ends
         auto track_to_bumps = std::HashMap<hardware::Track*, std::Vector<hardware::Bump*>>{};
@@ -64,7 +73,7 @@ namespace PR_tool::algo {
                         debug::exception_fmt("Invalid net with track to track: {} => {}", input, output);
                     },
                     [&](hardware::Bump* bump) {
-                        this->_bumps_with_pose.emplace_back(bump);
+                        bumps_with_pose.emplace_back(bump);
                     }
                 );
             } 
@@ -75,7 +84,7 @@ namespace PR_tool::algo {
                         debug::exception_fmt("Invalid net with track to track: {} => {}", input, output);
                     },
                     [&](hardware::Bump* bump) {
-                        this->_bumps_with_nege.emplace_back(bump);
+                        bumps_with_nege.emplace_back(bump);
                     }
                 );
             } 
@@ -118,6 +127,7 @@ namespace PR_tool::algo {
         // Track => Bump
         for (auto& [begin_track, end_bumps] : track_to_bumps) {
             auto coord = begin_track->coord();
+            const auto owner_bumps = end_bumps;
 
             // Create net 
             auto net = std::Rc<circuit::Net>{};
@@ -156,16 +166,7 @@ namespace PR_tool::algo {
                 net = std::make_shared<circuit::TrackToBumpsNet>(begin_track, std::move(end_bumps), std::HashSet<int>{m}, net_name, uid);
             }
 
-            // Insert to basedie & topdieinsts
-            auto topdie_insts = std::HashSet<circuit::TopDieInstance*>{};
-            for (auto bump : end_bumps) {
-                topdie_insts.emplace(this->_bump_to_topdie_inst.at(bump));
-            }
-
-            for (auto inst : topdie_insts) {
-                inst->add_net(net.get());
-            }
-
+            this->register_net_at_bump_owners(net.get(), owner_bumps);
             this->_basedie->add_net(net, m);
         }
 
@@ -174,6 +175,8 @@ namespace PR_tool::algo {
             auto coord = begin_bump->coord();
 
             // Create net 
+            auto owner_bumps = end_bumps;
+            owner_bumps.emplace_back(begin_bump);
             auto net = std::Rc<circuit::Net>{};
             if (end_bumps.size() == 1) {
                 auto net_name = std::String{
@@ -210,17 +213,7 @@ namespace PR_tool::algo {
                 net = std::make_shared<circuit::BumpToBumpsNet>(begin_bump, std::move(end_bumps), std::HashSet<int>{m}, net_name, uid);
             }
 
-            // Insert to basedie & topdieinsts
-            auto topdie_insts = std::HashSet<circuit::TopDieInstance*>{ };
-            topdie_insts.emplace(this->_bump_to_topdie_inst.at(begin_bump));
-            for (auto bump : end_bumps) {
-                topdie_insts.emplace(this->_bump_to_topdie_inst.at(bump));
-            }
-
-            for (auto inst : topdie_insts) {
-                inst->add_net(net.get());
-            }
-
+            this->register_net_at_bump_owners(net.get(), owner_bumps);
             this->_basedie->add_net(net, m);
         }
 
@@ -363,9 +356,13 @@ namespace PR_tool::algo {
         ), m);
     }
 
-    auto NetBuilder::build_fixed_nets(int m) -> void {
+    auto NetBuilder::build_fixed_nets(
+        int m,
+        const std::Vector<hardware::Bump*>& bumps_with_pose,
+        const std::Vector<hardware::Bump*>& bumps_with_nege
+    ) -> void {
         // Add nege
-        if (!this->_bumps_with_nege.empty()) {
+        if (!bumps_with_nege.empty()) {
             auto nege_tracks = std::Vector<hardware::Track*>{};
             for (auto& track_coord : NetBuilder::_nege_tracks) {
                 auto track = this->_interposer->get_track(track_coord);
@@ -384,8 +381,8 @@ namespace PR_tool::algo {
             }
             sort_uid_tokens(begin_tokens);
             auto end_tokens = std::Vector<std::String> {};
-            end_tokens.reserve(this->_bumps_with_nege.size());
-            for (const auto* bump : this->_bumps_with_nege) {
+            end_tokens.reserve(bumps_with_nege.size());
+            for (const auto* bump : bumps_with_nege) {
                 end_tokens.emplace_back(bump_uid_token(bump));
             }
             sort_uid_tokens(end_tokens);
@@ -408,13 +405,14 @@ namespace PR_tool::algo {
                 make_uid_prefix(m, -1, "tstbs"),
                 begin_part,
                 end_part);
-            this->_basedie->add_net(std::make_shared<circuit::TracksToBumpsNet>(
-                std::move(nege_tracks), std::move(this->_bumps_with_nege), std::HashSet<int>{m}, net_name, uid
-            ), m);
+            auto net = std::make_shared<circuit::TracksToBumpsNet>(
+                std::move(nege_tracks), bumps_with_nege, std::HashSet<int>{m}, net_name, uid);
+            this->register_net_at_bump_owners(net.get(), net->end_bumps());
+            this->_basedie->add_net(net, m);
         }
 
         // Add pose
-        if (!this->_bumps_with_pose.empty()) {
+        if (!bumps_with_pose.empty()) {
             auto pose_tracks = std::Vector<hardware::Track*>{};
             for (auto& track_coord : NetBuilder::_pose_tracks) {
                 auto track = this->_interposer->get_track(track_coord);
@@ -433,8 +431,8 @@ namespace PR_tool::algo {
             }
             sort_uid_tokens(begin_tokens);
             auto end_tokens = std::Vector<std::String> {};
-            end_tokens.reserve(this->_bumps_with_pose.size());
-            for (const auto* bump : this->_bumps_with_pose) {
+            end_tokens.reserve(bumps_with_pose.size());
+            for (const auto* bump : bumps_with_pose) {
                 end_tokens.emplace_back(bump_uid_token(bump));
             }
             sort_uid_tokens(end_tokens);
@@ -457,9 +455,29 @@ namespace PR_tool::algo {
                 make_uid_prefix(m, -1, "tstbs"),
                 begin_part,
                 end_part);
-            this->_basedie->add_net(std::make_shared<circuit::TracksToBumpsNet>(
-                std::move(pose_tracks), std::move(this->_bumps_with_pose), std::HashSet<int>{m}, net_name, uid
-            ), m);
+            auto net = std::make_shared<circuit::TracksToBumpsNet>(
+                std::move(pose_tracks), bumps_with_pose, std::HashSet<int>{m}, net_name, uid);
+            this->register_net_at_bump_owners(net.get(), net->end_bumps());
+            this->_basedie->add_net(net, m);
+        }
+    }
+
+    auto NetBuilder::register_net_at_bump_owners(
+        circuit::Net* net,
+        const std::Vector<hardware::Bump*>& bumps
+    ) -> void {
+        auto topdie_insts = std::HashSet<circuit::TopDieInstance*> {};
+        for (auto* bump : bumps) {
+            const auto it = this->_bump_to_topdie_inst.find(bump);
+            if (it == this->_bump_to_topdie_inst.end()) {
+                debug::exception_fmt("Missing topdie instance for bump {}", bump->coord());
+            }
+            else {
+                topdie_insts.emplace(it->second);
+            }
+        }
+        for (auto* topdie_inst : topdie_insts) {
+            topdie_inst->add_net(net);
         }
     }
 

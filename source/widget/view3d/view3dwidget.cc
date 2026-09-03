@@ -22,7 +22,8 @@
 #include <QMimeData>
 #include <QFileInfo>
 #include <QtDebug>
-#include <QTimer>
+#include <QLabel>
+#include <QShowEvent>
 
 namespace PR_tool::widget {
 
@@ -108,6 +109,23 @@ namespace PR_tool::widget {
         this->setMouseTracking(true);
         this->setFocusPolicy(Qt::StrongFocus);
         this->setFocus();
+
+        // U22: sparse corner legend over the GL view (Fusion-plain QLabel)
+        this->_legendLabel = new QLabel{this};
+        this->_legendLabel->setTextFormat(Qt::RichText);
+        this->_legendLabel->setText(QStringLiteral(
+            "<span style='color:#CDAD00'>■</span> COB&nbsp;&nbsp;"
+            "<span style='color:#548B54'>■</span> TOB&nbsp;&nbsp;"
+            "<span style='color:#AAAAAA'>■</span> Channel&nbsp;&nbsp;"
+            "<span style='color:#FF00FF'>■</span> Track"));
+        this->_legendLabel->setStyleSheet(QStringLiteral(
+            "QLabel { color: #DDDDDD; background: transparent; padding: 6px; }"));
+        this->_legendLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+        this->_legendLabel->setAccessibleName(QStringLiteral("View 3D color legend"));
+        this->_legendLabel->adjustSize();
+        this->_legendLabel->move(8, 8);
+        this->_legendLabel->raise();
+        this->_frameVertices.resize(24);
     }
 
     //! \brief destruct function
@@ -182,7 +200,7 @@ namespace PR_tool::widget {
         this->initCOBCube();
         this->initChannelCube();
         this->initTOBCube();
-        // this->initTopdieInstance();
+        this->initTopdieInstance();
 
         this->_cubeVAO.release();
     }
@@ -289,10 +307,10 @@ namespace PR_tool::widget {
         for (int row = 0; row < hardware::Interposer::COB_ARRAY_HEIGHT - 1; ++row) {
             for (int col = 0; col < hardware::Interposer::COB_ARRAY_WIDTH; ++col) {
                 auto position = this->channelPosition(row, col, hardware::TrackDirection::Vertical);
-                channelPos.push_back(position);
+                vchannelPos.push_back(position);
             }
         }
-        auto vchannelCube = this->makeCube(CubeType::Channel, CHANNEL_WIDTH, CHANNEL_LENGTH, CHANNEL_HEIGHT, qMove(channelPos), ":/texture/texture/channel.jpg", 2);
+        auto vchannelCube = this->makeCube(CubeType::Channel, CHANNEL_WIDTH, CHANNEL_LENGTH, CHANNEL_HEIGHT, qMove(vchannelPos), ":/texture/texture/channel.jpg", 2);
         this->_cubes.push_back(vchannelCube);
     }
 
@@ -481,13 +499,71 @@ namespace PR_tool::widget {
         this->addTrack(begin, end, update);
     }
 
-    auto View3DWidget::displayRoutingResult() -> void {
-        if (!this->isVisible()) {
-            QTimer::singleShot(0, this, &View3DWidget::displayRoutingResult);
+    void View3DWidget::setCobRegisterEditEnabled(bool enabled) {
+        this->_cobRegisterEditEnabled = enabled;
+    }
+
+    void View3DWidget::reload() {
+        // GL context is created on first show; initializeGL will build TopDies from current basedie.
+        if (!this->isValid()) {
             return;
         }
 
         this->makeCurrent();
+
+        this->_trackInstMatrices.clear();
+        this->updateTrackInstMatrices();
+
+        // Interposer::clear() rebuilds COB/TOB objects; refresh click-target pointers.
+        this->_cobs.clear();
+        for (int row = 0; row < hardware::Interposer::COB_ARRAY_HEIGHT; ++row) {
+            for (int col = 0; col < hardware::Interposer::COB_ARRAY_WIDTH; ++col) {
+                auto coord = hardware::COBCoord{row, col};
+                this->_cobs.emplace_back(this->_interposer->get_cob(coord).value());
+            }
+        }
+        this->_tobs.clear();
+        for (auto& [tobcoord, basecoord] : hardware::Interposer::TOB_COORD_MAP) {
+            (void)basecoord;
+            this->_tobs.push_back(this->_interposer->get_tob(tobcoord).value());
+        }
+
+        this->_topdieinsts.clear();
+        this->_pointedCube.reset();
+
+        QVector<Cube*> remaining;
+        remaining.reserve(this->_cubes.size());
+        for (auto* cube : this->_cubes) {
+            if (cube->type == CubeType::Topdie) {
+                cube->positionsVBO.destroy();
+                cube->verticesVBO.destroy();
+                if (cube->texture) {
+                    cube->texture->destroy();
+                }
+                delete cube;
+            } else {
+                remaining.push_back(cube);
+            }
+        }
+        this->_cubes = remaining;
+
+        this->initTopdieInstance();
+
+        this->doneCurrent();
+        this->update();
+    }
+
+    auto View3DWidget::displayRoutingResult() -> void {
+        if (!this->_glReady || !this->isVisible()) {
+            this->_pendingRoutingDisplay = true;
+            return;
+        }
+        this->_pendingRoutingDisplay = false;
+
+        this->makeCurrent();
+
+        // Replace prior track visuals so repeated calls do not stack geometry.
+        this->_trackInstMatrices.clear();
 
         using enum hardware::COBDirection;
         using enum hardware::TrackDirection;
@@ -792,7 +868,7 @@ namespace PR_tool::widget {
             case CubeType::COB: {
                 this->makeCurrent();
                 auto cob = this->getCOBByCubeIndeces(i);
-                auto dialog = COBInfoDialog{cob};
+                auto dialog = COBInfoDialog{cob, this->_cobRegisterEditEnabled};
                 dialog.exec();
                 this->doneCurrent();
                 break;
@@ -838,6 +914,17 @@ namespace PR_tool::widget {
         QOpenGLWidget::resizeEvent(event);
         this->updateProjectionMatrix();
         this->reRender();
+        if (this->_legendLabel != nullptr) {
+            this->_legendLabel->move(8, 8);
+            this->_legendLabel->raise();
+        }
+    }
+
+    void View3DWidget::showEvent(QShowEvent *event) {
+        QOpenGLWidget::showEvent(event);
+        if (this->_pendingRoutingDisplay && this->_glReady) {
+            this->displayRoutingResult();
+        }
     }
 
     void View3DWidget::initializeGL() {
@@ -857,6 +944,11 @@ namespace PR_tool::widget {
         this->initCube(view, projection, bias);
         this->initFrame(view, projection, bias);
         this->initTracks(view, projection, bias);
+        this->_glReady = true;
+
+        if (this->_pendingRoutingDisplay) {
+            this->displayRoutingResult();
+        }
     }
 
     void View3DWidget::resizeGL(int w, int h) {

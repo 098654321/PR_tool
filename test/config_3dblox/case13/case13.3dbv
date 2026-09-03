@@ -16,13 +16,12 @@ ChipletDef:
         side: front
         coords: [[0.0, 0.0], [400.0, 0.0], [400.0, 200.0], [0.0, 200.0]]
         bmap: bmaps/AI.bmap
-        layer: metal1
     external:
       APR_tech_file: [case13_tech.lef]
       LEF_file: [case13_bump.lef]
   PRTOOL_INTERPOSER:
     type: rdl
-    design_area: [7300.0, 5500.0]
+    design_area: [7900.0, 5500.0]
     shrink: 1.0
     tsv: false
     thickness: 50.0
@@ -30,9 +29,8 @@ ChipletDef:
     regions:
       front:
         side: front
-        coords: [[0.0, 0.0], [7300.0, 0.0], [7300.0, 5500.0], [0.0, 5500.0]]
-        layer: metal1
+        coords: [[0.0, 0.0], [7900.0, 0.0], [7900.0, 5500.0], [0.0, 5500.0]]
+        bmap: bmaps/PRTOOL_INTERPOSER.bmap
     external:
       APR_tech_file: [case13_tech.lef]
-      LEF_file: [case13_interposer_macros.lef]
-      DEF_file: case13_interposer.def
+      LEF_file: [case13_bump.lef]

@@ -8,6 +8,8 @@
 #include <QStackedWidget>
 #include <QSplitter>
 
+class QLabel;
+
 namespace PR_tool::hardware {
     class Interposer;
 };
@@ -20,6 +22,7 @@ namespace PR_tool::widget {
 
     class SchematicView;
     class SchematicScene;
+    class GraphicsView;
 
     class SchematicWidget : public QWidget {
         Q_OBJECT
@@ -32,6 +35,18 @@ namespace PR_tool::widget {
 
     public:
         void reload();
+        void arrangeFromPlacement();
+        auto graphicsView() const -> GraphicsView*;
+        auto schematicView() const -> SchematicView* { return this->_view; }
+
+        /// Schematic main splitter (lib | view | info) for geometry persistence.
+        auto splitter() const -> QSplitter* { return this->_splitter; }
+
+        void setNavigatorVisible(bool visible);
+        void setInspectorVisible(bool visible);
+        auto isNavigatorVisible() const -> bool;
+        auto isInspectorVisible() const -> bool;
+        void setLookbackLocked(bool locked);
 
     signals:
         // MARK: More detail infomation
@@ -49,6 +64,8 @@ namespace PR_tool::widget {
         SchematicLibWidget* _libWidget {nullptr};
         SchematicView*  _view {nullptr};  
         SchematicInfoWidget* _infoWidget {nullptr};
+
+        QLabel* _lockBanner {nullptr};
 
         hardware::Interposer* _interposer {nullptr};
         circuit::BaseDie*     _basedie {nullptr};

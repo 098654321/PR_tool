@@ -17,6 +17,7 @@ enum class FeedbackRoundStatus {
     UnsatExpand,
     UnsatExhausted,
     SolverError,
+    ValidationFailed,
     MemoryLimit,
     MaxRoundsExceeded,
 };

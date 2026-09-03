@@ -15,11 +15,10 @@ ChipletDef:
       front:
         side: front
         coords: [[0.0, 0.0], [7300.0, 0.0], [7300.0, 5500.0], [0.0, 5500.0]]
-        layer: metal1
+        bmap: bmaps/PRTOOL_INTERPOSER.bmap
     external:
       APR_tech_file: [case4_tech.lef]
-      LEF_file: [case4_interposer_macros.lef]
-      DEF_file: case4_interposer.def
+      LEF_file: [case4_bump.lef]
   muyan:
     type: die
     design_area: [400.0, 200.0]
@@ -32,7 +31,6 @@ ChipletDef:
         side: front
         coords: [[0.0, 0.0], [400.0, 0.0], [400.0, 200.0], [0.0, 200.0]]
         bmap: bmaps/muyan.bmap
-        layer: metal1
     external:
       APR_tech_file: [case4_tech.lef]
       LEF_file: [case4_bump.lef]

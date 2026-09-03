@@ -12,7 +12,11 @@ namespace PR_tool::widget {
         this->setInteractive(true);
         this->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
 
-        this->scale(1.0 / 2.5, 1.0 / 2.5);
+        this->scale(kDefaultScale, kDefaultScale);
+    }
+
+    void GraphicsView::setLookbackLocked(bool locked) {
+        this->_lookbackLocked = locked;
     }
 
     void GraphicsView::adjustSceneRect() {
@@ -38,6 +42,46 @@ namespace PR_tool::widget {
         this->setSceneRect(minX - margin, minY - margin, (maxX - minX) + 2 * margin, (maxY - minY) + 2 * margin);
     }
 
+    void GraphicsView::fitContent() {
+        this->adjustSceneRect();
+        if (this->scene() == nullptr || this->items().isEmpty()) {
+            return;
+        }
+
+        QRectF bounds = this->scene()->itemsBoundingRect();
+        if (!bounds.isValid() || bounds.isEmpty()) {
+            return;
+        }
+
+        const qreal pad = qMax(bounds.width(), bounds.height()) * 0.05 + 20.0;
+        bounds.adjust(-pad, -pad, pad, pad);
+
+        const auto oldAnchor = this->transformationAnchor();
+        this->setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+        this->fitInView(bounds, Qt::KeepAspectRatio);
+        this->setTransformationAnchor(oldAnchor);
+    }
+
+    void GraphicsView::resetZoom() {
+        this->resetTransform();
+        this->scale(kDefaultScale, kDefaultScale);
+    }
+
+    void GraphicsView::ensureVisibleAtMinScale(QGraphicsItem* item, qreal minScale) {
+        if (item == nullptr) {
+            return;
+        }
+        const qreal s = this->transform().m11();
+        if (s < minScale && s > 0.0) {
+            const qreal factor = minScale / s;
+            const auto oldAnchor = this->transformationAnchor();
+            this->setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+            this->scale(factor, factor);
+            this->setTransformationAnchor(oldAnchor);
+        }
+        this->centerOn(item);
+    }
+
     void GraphicsView::wheelEvent(QWheelEvent* event) {
         if (event->modifiers() & Qt::ControlModifier) {
             const double scaleFactor = 1.15;
@@ -57,11 +101,15 @@ namespace PR_tool::widget {
     }
 
     void GraphicsView::mousePressEvent(QMouseEvent* event) {
-        if (event->button() == Qt::MiddleButton || event->button() == Qt::RightButton) {
+        // Middle-drag only: right-click is reserved for schematic cancel (U8/S5).
+        if (event->button() == Qt::MiddleButton) {
             this->_isPanning = true;
             this->_lastMousePos = event->pos();
             this->setDragMode(QGraphicsView::NoDrag);
             this->setCursor(Qt::ClosedHandCursor);
+        } else if (this->_lookbackLocked) {
+            event->accept();
+            return;
         }
 
         QGraphicsView::mousePressEvent(event);
@@ -85,6 +133,14 @@ namespace PR_tool::widget {
         }
 
         QGraphicsView::mouseReleaseEvent(event);
+    }
+
+    void GraphicsView::mouseDoubleClickEvent(QMouseEvent* event) {
+        if (this->_lookbackLocked) {
+            event->accept();
+            return;
+        }
+        QGraphicsView::mouseDoubleClickEvent(event);
     }
 
 }

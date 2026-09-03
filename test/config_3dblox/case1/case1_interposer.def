@@ -328,11 +328,11 @@ COMPONENTS 319 ;
 END COMPONENTS
 
 PINS 107 ;
-- xinzhai_jtag_tck + NET prunconnected__p0 + DIRECTION INOUT + USE SIGNAL + FIXED ( 3337250 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
-- xinzhai_jtag_tdi + NET prunconnected__p1 + DIRECTION INOUT + USE SIGNAL + FIXED ( 3335150 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
-- xinzhai_jtag_tdo + NET prunconnected__p2 + DIRECTION INOUT + USE SIGNAL + FIXED ( 3343550 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
-- xinzhai_jtag_tms + NET prunconnected__p3 + DIRECTION INOUT + USE SIGNAL + FIXED ( 3339350 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
-- xinzhai_jtag_trstn + NET prunconnected__p4 + DIRECTION INOUT + USE SIGNAL + FIXED ( 3333050 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
+- xinzhai_jtag_tck + NET prsync__m0__g1[0] + DIRECTION INOUT + USE SIGNAL + FIXED ( 3337250 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
+- xinzhai_jtag_tdi + NET prsync__m0__g1[1] + DIRECTION INOUT + USE SIGNAL + FIXED ( 3335150 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
+- xinzhai_jtag_tdo + NET prsync__m0__g1[2] + DIRECTION INOUT + USE SIGNAL + FIXED ( 3343550 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
+- xinzhai_jtag_tms + NET prsync__m0__g1[3] + DIRECTION INOUT + USE SIGNAL + FIXED ( 3339350 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
+- xinzhai_jtag_trstn + NET prsync__m0__g1[4] + DIRECTION INOUT + USE SIGNAL + FIXED ( 3333050 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
 - xinzhai_muyan_0_POR + NET prunconnected__p5 + DIRECTION INOUT + USE SIGNAL + FIXED ( 4569050 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
 - xinzhai_muyan_0_Test_mode + NET prunconnected__p6 + DIRECTION INOUT + USE SIGNAL + FIXED ( 4569050 300000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
 - xinzhai_muyan_0_interrupt_0 + NET prunconnected__p7 + DIRECTION INOUT + USE SIGNAL + FIXED ( 969050 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
@@ -409,8 +409,8 @@ PINS 107 ;
 - xinzhai_spi_s_sck_1 + NET prsync__m0__g5[3] + DIRECTION INOUT + USE SIGNAL + FIXED ( 3369050 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
 - xinzhai_spi_s_sck_2 + NET prunconnected__p79 + DIRECTION INOUT + USE SIGNAL + FIXED ( 5147750 300000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
 - xinzhai_spi_sck + NET prunconnected__p80 + DIRECTION INOUT + USE SIGNAL + FIXED ( 3352850 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
-- xinzhai_uart_rxd + NET prunconnected__p81 + DIRECTION INOUT + USE SIGNAL + FIXED ( 3345650 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
-- xinzhai_uart_txd + NET prunconnected__p82 + DIRECTION INOUT + USE SIGNAL + FIXED ( 3341450 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
+- xinzhai_uart_rxd + NET prsync__m0__g3[1] + DIRECTION INOUT + USE SIGNAL + FIXED ( 3345650 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
+- xinzhai_uart_txd + NET prsync__m0__g3[0] + DIRECTION INOUT + USE SIGNAL + FIXED ( 3341450 5200000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
 - pose_1 + NET pose_1 + DIRECTION INOUT + USE SIGNAL + FIXED ( 3366050 300000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
 - pose_2 + NET pose_2 + DIRECTION INOUT + USE SIGNAL + FIXED ( 3363350 300000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;
 - pose_3 + NET pose_3 + DIRECTION INOUT + USE SIGNAL + FIXED ( 3360650 300000 ) N + LAYER metal1 ( 0 0 ) ( 0 0 ) ;

@@ -1,8 +1,12 @@
 #pragma once
 
 #include <widget/frame/graphicsview.h>
-#include <QWidget>
 #include <QGraphicsView>
+#include <QLabel>
+#include <QObject>
+#include <QPointF>
+#include <QString>
+#include <QWidget>
 
 namespace PR_tool::hardware {
     class Interposer;
@@ -17,8 +21,11 @@ namespace PR_tool::circuit {
 };
 
 namespace PR_tool::widget {
-   
+
+    class SchematicMiniMap;
+
     class SchematicView : public GraphicsView {
+        Q_OBJECT
     public:
         explicit SchematicView(
             hardware::Interposer* interposer, 
@@ -27,8 +34,34 @@ namespace PR_tool::widget {
 
         ~SchematicView() noexcept;
 
+        void bindMiniMap();
+        /// After load: 25% zoom, centered on schematic content (matches the default overview).
+        void applyInitialView();
+
+        /// Ch.二十: Selected/hints | X Y | Grid | Zoom (Stage / view / ready live on Window).
+        auto statusLine() const -> QString;
+
+    signals:
+        void statusContextChanged();
+
+    private slots:
+        void emitStatusContext();
+        void updateEmptyHint();
+
     protected:
         void drawBackground(QPainter* painter, const QRectF& rect) override;
+        void wheelEvent(QWheelEvent* event) override;
+        void resizeEvent(QResizeEvent* event) override;
+        void mouseMoveEvent(QMouseEvent* event) override;
+        auto viewportEvent(QEvent* event) -> bool override;
+        void scrollContentsBy(int dx, int dy) override;
+        void fitContent() override;
+        void resetZoom() override;
+        void ensureVisibleAtMinScale(QGraphicsItem* item, qreal minScale) override;
+
+        void repositionMiniMap();
+        void repositionEmptyHint();
+        auto schematicCanvasIsEmpty() const -> bool;
 
     public:
         void updateBack();
@@ -40,17 +73,30 @@ namespace PR_tool::widget {
         auto gridSize() const -> qreal { return this->_gridSize; }
 
         void setBackColor(const QColor& color) { this->setBackgroundBrush(color); }
-        void setGridVisible(bool visible) { this->_gridVisible = visible; }
+        void setGridVisible(bool visible);
         void setGridColor(const QColor& color) { this->_gridColor = color; }
-        void setGridSize(qreal size) { this->_gridSize = size; }
+        void setGridSize(qreal size);
+
+    private:
+        auto selectionField() const -> QString;
+        auto gridField() const -> QString;
+        auto zoomField() const -> QString;
+        auto statusScenePos() const -> QPointF;
 
     protected:
         hardware::Interposer* _interposer {nullptr};
         circuit::BaseDie* _basedie {nullptr};
 
+        static constexpr qreal kInitialScale = 0.25;
+
         bool _gridVisible {true};
         QColor _gridColor {Qt::lightGray};
         qreal _gridSize {20};
+
+        SchematicMiniMap* _minimap {nullptr};
+        QLabel* _emptyHint {nullptr};
+        QPointF _statusScenePos {};
+        bool _hasStatusPos {false};
     };
 
 }

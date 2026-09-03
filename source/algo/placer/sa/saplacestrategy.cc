@@ -62,6 +62,9 @@ namespace PR_tool::algo {
 
         std::size_t no_improvement_count = 0;
         std::size_t iteration = 0;
+        if (this->_on_progress) {
+            this->_on_progress(iteration, total_cost);
+        }
 
         while (temperature > this->_freeze_temperature && no_improvement_count < budget.max_no_improvement) {
             bool improved = false;
@@ -227,6 +230,9 @@ namespace PR_tool::algo {
             temperature = this->calculate_next_temperature(temperature, iteration);
             iteration++;
             debug::info_fmt("Iteration {}: Temperature={:.2f}, Current cost={}, optimal cost={}", iteration, temperature, total_cost, best_cost);
+            if (this->_on_progress) {
+                this->_on_progress(iteration, total_cost);
+            }
         }
         this->restore_placement(topdies, best_solution);
         debug::info_fmt(

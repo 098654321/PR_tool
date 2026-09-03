@@ -69,11 +69,12 @@ namespace PR_tool::widget {
 
         connect(this->_netInfoWidget, &NetInfoWidget::netSyncChanged, this,&SchematicInfoWidget::netSyncChanged);
         connect(this->_netInfoWidget, &NetInfoWidget::netColorChanged, this,&SchematicInfoWidget::netColorChanged);
+        connect(this->_netInfoWidget, &NetInfoWidget::netWidthChanged, this,&SchematicInfoWidget::netWidthChanged);
         connect(this->_netInfoWidget, &NetInfoWidget::removeNet, this,&SchematicInfoWidget::removeNet);
     }
 
     void SchematicInfoWidget::createTopDieInstanceInfoWidget() {
-        this->_topdieInstInfoWidget = new TopDieInstanceInfoWidget {this};
+        this->_topdieInstInfoWidget = new TopDieInstanceInfoWidget {this->_scene, this};
         this->addWidget(this->_topdieInstInfoWidget);
 
         connect(this->_topdieInstInfoWidget, &TopDieInstanceInfoWidget::topdieInstanceRename, this,&SchematicInfoWidget::topdieInstanceRename);
@@ -91,12 +92,64 @@ namespace PR_tool::widget {
     }
 
     void SchematicInfoWidget::showTopDieInstanceInfoWidget(TopDieInstanceItem* inst) {
+        const bool alreadyShown =
+            this->currentWidget() == this->_topdieInstInfoWidget
+            && this->_topdieInstInfoWidget->currentTopDieInstance() == inst;
         this->setCurrentWidget(this->_topdieInstInfoWidget);
+        if (alreadyShown) {
+            return;
+        }
         this->_topdieInstInfoWidget->loadTopDieInstance(inst);
     }
 
     void SchematicInfoWidget::showViewInfo() {
         this->setCurrentWidget(this->_viewInfoWidget);
+    }
+
+    void SchematicInfoWidget::deleteCurrentItem() {
+        auto* current = this->currentWidget();
+        if (current == this->_netInfoWidget) {
+            auto* net = this->_netInfoWidget->currentNet();
+            if (net == nullptr) {
+                return;
+            }
+            auto response = QMessageBox::question(
+                this,
+                "Confirm",
+                "Do you want to delete this net?",
+                QMessageBox::Yes | QMessageBox::No);
+            if (response == QMessageBox::Yes) {
+                this->removeNet(net);
+            }
+        }
+        else if (current == this->_eportInfoWidget) {
+            auto* eport = this->_eportInfoWidget->currentExternalPort();
+            if (eport == nullptr) {
+                return;
+            }
+            auto response = QMessageBox::question(
+                this,
+                "Confirm",
+                "Do you want to delete this external port?",
+                QMessageBox::Yes | QMessageBox::No);
+            if (response == QMessageBox::Yes) {
+                this->removeExternalPort(eport);
+            }
+        }
+        else if (current == this->_topdieInstInfoWidget) {
+            auto* inst = this->_topdieInstInfoWidget->currentTopDieInstance();
+            if (inst == nullptr) {
+                return;
+            }
+            auto response = QMessageBox::question(
+                this,
+                "Confirm",
+                "Do you want to delete this topdie instance?",
+                QMessageBox::Yes | QMessageBox::No);
+            if (response == QMessageBox::Yes) {
+                this->removeTopDieInstance(inst);
+            }
+        }
     }
 
     void SchematicInfoWidget::externalPortRename(ExternalPortItem* eport, const QString& name) try {
@@ -131,6 +184,8 @@ namespace PR_tool::widget {
     }
 
     void SchematicInfoWidget::netWidthChanged(NetItem* net, qreal width) {
+        net->setWidth(width);
+        net->update();
     }
 
     void SchematicInfoWidget::removeNet(NetItem* net) {

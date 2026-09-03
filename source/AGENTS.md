@@ -12,6 +12,7 @@ PR_tool 面向 chiplet interposer 的布局布线：输入系统配置（topdie 
 - 完成修改之后，评估是否需要维护相应的 AGENTS.md 文件
 - 如果改动超过 100 行，需要在项目根目录的 `.plan` 目录下生成改动记录文件，同时必须启动一个独立的子 agent 审核代码，判断改动结果是否完整、正确、符合需求
 - 本文件不应超过 200 行；只更新概况 / 目录 / 核心索引 / 构建测试，算法细节不进本文件
+- 在实际工作的时候，尽量采用“主AGENT制定计划、开一个独立的Grok 4.6 High子AGENT执行、再开一个独立的Grok 4.6 High子AGNET评估验收”的方式，用多AGENT
 
 ---
 
@@ -22,12 +23,14 @@ PR_tool 面向 chiplet interposer 的布局布线：输入系统配置（topdie 
 1. `parse::read_config` → `Interposer` + `BaseDie` + `RegisterMapConfig`（`config.json` 字段 **`reigster_adder`** → 文件 **`register_adder.json`**）
 2. `algo::build_nets` → `Connection` 转为 `circuit::Net` / `SyncNet`
 3. 可选 `algo::place`（默认 `SAPlaceStrategy`，5 参：init/freeze/solve_num/cooling/max_no_improvement）
-4. `algo::route_nets`（非增量 Maze；单 net 失败可继续，失败时跳过 REG 写出）
+4. `algo::route_nets`（非增量；`--router maze` 或 `--router sat`；单 net 失败可继续，失败时跳过 REG 写出）
 5. `parse::output_from_routing_results` → `{output}/regnamecontrolbit_4part/` 四文件
 
-GUI：`source/app/gui/gui.cc` → `widget::Window`；P&R 在 `PRThread` 中异步执行；可导出 controlbits 到输出根目录。
+GUI：`source/app/gui/gui.cc` → `widget::Window`；Place 在 `PlaceThread`、Route 在 `PRThread`（均 `widget/prthread.*`）中异步执行；可导出 controlbits 到输出根目录。阶段机、四视图与约束见 `source/widget/AGENTS.md`。
 
-实验性 SAT/ILP 布线在 `algorithm/test_ILP/`（不替代本目录 router）；见该目录 `AGENTS.md`。
+SAT/ILP 布线实现位于 `algo/router/sat_ilp/` + `algo/router/backend/`（`SatRouterBackend`）；`algorithm/test_ILP/` 为过渡壳与 fixture（见该目录 `AGENTS.md`）。
+
+**`test/config` 与 `COB_ARRAY_WIDTH`**：跑 `test/config/caseN` 前须使 `Interposer::COB_ARRAY_WIDTH`（`hardware/interposer.hh`）与 case 的 `description.txt` 一致；规则见 `test/AGENTS.md`。
 
 ---
 
@@ -40,12 +43,12 @@ source/
   hardware/     # 物理模型：Interposer / Track / COB / TOB / Bump
   algo/         # netbuilder / placer / router
   parse/        # reader（配置、controlbits）/ writer / comparator
-  widget/       # Qt：schematic / layout / view2d / view3d / controlbit export
+  widget/       # Qt GUI（入口 `widget/AGENTS.md`）：schematic / layout / view2d / view3d
   global/       # debug、std 封装、utility
   serde/        # 序列化 / 反序列化宏
 ```
 
-更细的树与配置格式见仓库根目录 `README.md`。当前默认 `Interposer::COB_ARRAY_WIDTH = 13`（`[flow]` 回归会临时改成 12）。
+更细的树与配置格式见仓库根目录 `README.md`。默认 `Interposer::COB_ARRAY_WIDTH = 12`；`test/config` 用例可能要求 12 或 13（见 `test/AGENTS.md`）。
 
 ---
 
@@ -58,8 +61,9 @@ source/
 | `app/PR_tool.cc` | 参数解析与模式选择（CLI / GUI / placement） |
 | `app/cli/cli.cc` | 端到端主流程；写出在 route 之后由 CLI 触发 |
 | `app/gui/gui.cc` | GUI 入口 |
-| `widget/window.*` | 主窗口与页面调度 |
-| `widget/prthread.*` | 后台 P&R（`build_nets` + `route_nets`） |
+| `widget/AGENTS.md` | GUI 约束、阶段机、规格索引 |
+| `widget/window.*` | 主窗口、四视图、`_placed` / `_finishPR` |
+| `widget/prthread.*` | `PlaceThread` / `PRThread`（后台 Place 与 Route） |
 | `widget/frame/controlbitexportdialog.*` | GUI controlbits 导出 |
 
 ### circuit
@@ -88,8 +92,10 @@ source/
 |------|------|
 | `netbuilder/netbuilder.cc` → `build_nets` | Connection → Net；sync 组 → `SyncNet`；pose/nege → 固定电源地网 |
 | `placer/place.hh` → `place` | 默认 `SAPlaceStrategy`（HPWL + 模拟退火） |
-| `router/route_nets.cc` → `route_nets` | Invoker 命令链 + `RouteEngine`；忽略 legacy controlbits warm-start |
-| `router/common/maze/*` | 非增量 BFS maze；`MazeRerouter` 拉齐 SyncNet 长度 |
+| `router/route_nets.cc` → `route_nets` | Invoker 命令链 + `RouteEngine`；`--router maze\|sat` 选后端 |
+| `router/backend/maze_backend.cc` | 默认 Maze BFS；`MazeRerouter` 拉齐 SyncNet 长度 |
+| `router/backend/sat_backend.cc` | `--router sat`；调用 `sat_ilp/` 统一图 SAT（可选 v15 ILP） |
+| `router/sat_ilp/` | v14 SAT 编码、反馈扩边、commit 到 `PathPackage`（`xmake f --cadical=y`） |
 | `router/incremental/*` | 增量代码仍在树中；v1.0.0 CLI 已拒绝 `-i/-c` |
 
 ### parse
@@ -105,14 +111,15 @@ source/
 
 ## 4. 构建与测试
 
-构建系统：仓库根目录 `xmake.lua`（C++23）。
+构建系统：仓库根目录 `xmake.lua`（C++23）。SAT 后端默认开启：`xmake f --sat_router=y|n`（默认 `y`）；关闭时 `PR_TOOL_HAS_SAT_ROUTER=0`，`--router sat` 不可用。
 
 ```bash
+xmake f --sat_router=y --cadical=y   # 默认；SAT 需 CaDiCal，可选 Gurobi（v15 ILP）
 xmake build PR_tool
 xmake run PR_tool <config_folder> [OPTIONS]
 
 xmake build PR_tool_cli
-xmake run PR_tool_cli <config_folder> [OPTIONS]
+xmake run PR_tool_cli <config_folder> --router sat --scope-pad 1   # SAT 首轮 scope 扩展
 
 # module_test 只编译 test/module_test/test_unit/**.cc
 xmake build module_test
@@ -120,6 +127,9 @@ cd output && ./module_test all
 
 xmake build regression_test
 ./output/regression_test "[flow]"
+
+xmake build gui_test
+xmake run gui_test                 # offscreen；见 widget/AGENTS.md 与 test/AGENTS.md
 ```
 
-常用 CLI 选项与配置目录约定见根 `README.md`；测试布局见 `test/AGENTS.md`；SAT/ILP 实验见 `algorithm/test_ILP/AGENTS.md`。
+常用 CLI：`--router maze|sat`（默认 maze）、`--scope-pad N` / `--delay-pad N`（仅 SAT；勿与写出稀疏 `-s` 混淆）。配置目录约定见根 `README.md`；测试与 `COB_ARRAY_WIDTH` 见 `test/AGENTS.md`；`algorithm/test_ILP/` 见该目录 `AGENTS.md`。

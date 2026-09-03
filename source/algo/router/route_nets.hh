@@ -6,6 +6,7 @@
 #include <std/memory.hh>
 #include "./routeengine.hh"
 #include <std/collection.hh>
+#include <functional>
 #include <algo/route_data.hh>
 
 
@@ -22,6 +23,8 @@ namespace PR_tool::algo {
     class RouteStrategy;
     class AllocateStrategy;
 
+    using RouteProgressFn = std::function<void(std::usize done, std::usize total)>;
+
     struct RouteNetsResult {
         DataPerCycle data;
         std::Vector<std::String> failed_net_names;
@@ -35,7 +38,8 @@ namespace PR_tool::algo {
         int m,
         bool incremental,
         bool try_all_modes, 
-        bool path_exists = false
+        bool path_exists = false,
+        RouteProgressFn on_progress = {}
     ) -> RouteNetsResult;
 
     auto analyze_results(

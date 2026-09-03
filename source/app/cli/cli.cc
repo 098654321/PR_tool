@@ -4,33 +4,37 @@
 #include <hardware/interposer.hh>
 #include <circuit/basedie.hh>
 
-#include <algo/router/route_nets.hh>
-#include <algo/router/common/maze/mazeroutestrategy.hh>
-#include <algo/router/common/allocate/hopcroft_karp.hh>
+#include <algo/router/backend/router_backend.hh>
 #include <algo/placer/place.hh>
 #include <algo/placer/placestrategy.hh>
 #include <algo/placer/sa/saplacestrategy.hh>
 
 #include <parse/reader/module.hh>
 #include <parse/writer/module.hh>
-#include <parse/comparator/controlbits_parser.hh>
-
 #include <std/utility.hh>
 #include <std/range.hh>
 #include <std/string.hh>
 #include <debug/debug.hh>
+#include <debug/exception.hh>
 #include <std/algorithm.hh>
+#include <filesystem>
 
 namespace PR_tool {
 
     auto cli_main(
         std::StringView config_path, std::Option<std::StringView> output_path, 
         int mode, std::optional<int> compare, bool try_all_modes, bool placement,
-        bool simplify_controlbits
+        bool simplify_controlbits,
+        algo::RouterKind router_kind,
+        const algo::SatRouterCliOptions& sat_opts
     ) -> int {
     try {
-        debug::initial_log("./debug.log");
         std::FilePath output_file = std::FilePath(output_path.has_value() ? *output_path : ".");
+        std::filesystem::create_directories(output_file.string());
+        debug::initial_log(output_file / "debug.log");
+
+        algo::SatRouterCliOptions effective_sat_opts = sat_opts;
+        effective_sat_opts.gurobi_log_dir = (output_file / "gurobi").string();
 
         auto [interposer, basedie, register_map] = PR_tool::parse::read_config(config_path, mode, try_all_modes); 
         algo::build_nets(basedie.get(), interposer.get());
@@ -47,7 +51,10 @@ namespace PR_tool {
             place(interposer.get(), basedie.get(), topdies);
         }
         
-        auto route_status = route(interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes);
+        auto route_status = route(
+            interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes,
+            router_kind, effective_sat_opts
+        );
         if (route_status == RouteStatus::Failed) {
             return 1;
         }
@@ -89,50 +96,18 @@ debug::info_fmt("Layout time: {} milliseconds", duration.count());
     auto route(
         PR_tool::hardware::Interposer* interposer, PR_tool::circuit::BaseDie* basedie,
         std::StringView config_path,
-        int mode, std::optional<int> compare, bool try_all_modes
+        int mode, std::optional<int> compare, bool try_all_modes,
+        algo::RouterKind router_kind,
+        const algo::SatRouterCliOptions& sat_opts
     ) -> RouteStatus {
-        debug::debug("Start routing ...");
-        if (!try_all_modes && mode == 0) {
-            // v1.0.0: ignore legacy controlbits_<mode>.txt warm-start / skip-route.
-            auto result = algo::route_nets(
-                interposer, basedie, algo::MazeRouteStrategy{false}, algo::HK{},
-                mode, false, try_all_modes);
-            if (!result.failed_net_names.empty()) {
-                debug::error("Routing failed for:");
-                for (const auto& name : result.failed_net_names) {
-                    debug::error(name);
-                }
-                return RouteStatus::Failed;
-            }
-            return RouteStatus::Ok;
-        }
-
-        // incremental routing: route all modes (try_all_modes) or single mode (mode > 0)
-        basedie->merge_same_mode_nets();
-        auto [has_bits, has_other_bits] = parse::read_controlbits(config_path, interposer, basedie, mode, try_all_modes);
-        if (!has_bits) {
-            auto result = algo::route_nets(interposer, basedie, algo::MazeRouteStrategy{true}, algo::HK{}, mode, true, try_all_modes, has_other_bits);
-            if (!result.failed_net_names.empty()) {
-                debug::error("Routing failed for:");
-                for (const auto& name : result.failed_net_names) {
-                    debug::error(name);
-                }
-                return RouteStatus::Failed;
-            }
-        }
-        else {
-            debug::info("Already has control bits, skip the routing process");
-        }
-
-        if (!try_all_modes && compare.has_value()) {
-            // TODO(split-output): still assumes controlbits_<mode>.txt; formal output is now
-            // regnamecontrolbit_4part/; readback / compare not updated yet.
-            std::string current_file {"controlbits_" + std::to_string(mode) + ".txt"};
-            std::string target_file {"controlbits_" + std::to_string(compare.value()) + ".txt"};
-            parse::compare(current_file, target_file);
-        }
-
-        return has_bits ? RouteStatus::Skipped : RouteStatus::Ok;
+        algo::RouterOptions options;
+        options.kind = router_kind;
+        options.sat = sat_opts;
+        options.mode = mode;
+        options.try_all_modes = try_all_modes;
+        options.compare = compare;
+        options.config_path = config_path;
+        return algo::make_router(options.kind)->run(interposer, basedie, options);
     }
     
 

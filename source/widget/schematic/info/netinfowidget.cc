@@ -2,102 +2,112 @@
 #include "../item/netitem.h"
 #include "../item/netpointitem.h"
 #include "../item/pinitem.h"
-#include "qboxlayout.h"
-#include "qcolor.h"
-#include "qgroupbox.h"
-#include "qpushbutton.h"
-#include "qspinbox.h"
-#include "qwidget.h"
 #include <widget/frame/colorpickbutton.h>
 #include <circuit/connection/connection.hh>
 #include <debug/debug.hh>
 
+#include <cassert>
+
 #include <QLabel>
-#include <QComboBox>
 #include <QSpinBox>
-#include <QHBoxLayout>
+#include <QPushButton>
 #include <QVBoxLayout>
 #include <QGridLayout>
+#include <QFrame>
 #include <QMessageBox>
+
+#include "../schematictypography.h"
 
 namespace PR_tool::widget::schematic {
 
-    NetInfoWidget::NetInfoWidget(QWidget* parent) : 
+    NetInfoWidget::NetInfoWidget(QWidget* parent) :
         QWidget{parent}
     {
-        auto thisLayout = new QVBoxLayout {this};
-        auto widget = new QGroupBox {"Net Infomation", this};
-        widget->setStyleSheet("background-color: white;");
-        thisLayout->addWidget(widget);
+        auto* thisLayout = new QVBoxLayout{this};
+        thisLayout->setContentsMargins(8, 8, 8, 8);
+        thisLayout->setSpacing(8);
+
+        auto* title = new QLabel{QStringLiteral("NET"), this};
+        SchematicTypography::applyInspectorTitle(title);
+        thisLayout->addWidget(title);
+
+        auto* line = new QFrame{this};
+        line->setObjectName(QStringLiteral("SideHairline"));
+        line->setFrameShape(QFrame::HLine);
+        line->setFrameShadow(QFrame::Plain);
+        thisLayout->addWidget(line);
+
+        auto* layout = new QGridLayout{};
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setHorizontalSpacing(8);
+        layout->setVerticalSpacing(8);
+        layout->setColumnStretch(1, 1);
+        thisLayout->addLayout(layout);
         thisLayout->addStretch();
 
-        auto layout = new QGridLayout{widget};
-        layout->setSpacing(10);
-        
-        // Begin
-        layout->addWidget(new QLabel {"Begin ", widget}, 0, 0);
-        this->_beginPinLabel = new QLabel {"", widget};
-        this->_beginPinLabel->setStyleSheet(
-            "border-radius: 5px;"        // 圆角半径
-            "padding: 5px;"             // 内边距
-            "border: 1px solid #A9A9A9;" // 边框
-        );
-        layout->addWidget(this->_beginPinLabel, 0, 1);
+        auto addPropRow = [&](int row, const QString& text, QWidget* value) {
+            auto* label = new QLabel{text, this};
+            SchematicTypography::applyPropertyLabel(label);
+            SchematicTypography::applyPropertyValue(value);
+            layout->addWidget(label, row, 0);
+            layout->addWidget(value, row, 1);
+        };
 
-        // End
-        layout->addWidget(new QLabel {"End   ", widget}, 1, 0);
-        this->_endPinLabel = new QLabel {"", widget};
-        this->_endPinLabel->setStyleSheet(
-            "border-radius: 5px;"        // 圆角半径
-            "padding: 5px;"             // 内边距
-            "border: 1px solid #A9A9A9;" // 边框
-        );
-        layout->addWidget(this->_endPinLabel, 1, 1);
+        this->_beginPinLabel = new QLabel{this};
+        this->_beginPinLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        addPropRow(0, QStringLiteral("Begin"), this->_beginPinLabel);
 
-        // Sync
-        layout->addWidget(new QLabel {"Sync  ", widget}, 2, 0);
-        this->_syncSpinBox = new QSpinBox{widget};
+        this->_endPinLabel = new QLabel{this};
+        this->_endPinLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        addPropRow(1, QStringLiteral("End"), this->_endPinLabel);
+
+        this->_syncSpinBox = new QSpinBox{this};
         this->_syncSpinBox->setMinimum(-1);
         this->_syncSpinBox->setMaximum(32);
         this->_syncSpinBox->setMinimumHeight(30);
-        layout->addWidget(this->_syncSpinBox, 2, 1);
+        addPropRow(2, QStringLiteral("Sync"), this->_syncSpinBox);
 
-        // Color
-        layout->addWidget(new QLabel {"Color ", widget}, 3, 0);
-        this->_colorButton = new ColorPickerButton {widget};
+        this->_colorButton = new ColorPickerButton{this};
         this->_colorButton->setMinimumHeight(30);
-        layout->addWidget(this->_colorButton, 3, 1);
+        addPropRow(3, QStringLiteral("Color"), this->_colorButton);
 
-        connect(this->_colorButton, &ColorPickerButton::colorChanged, [this] (const QColor& color) {
+        this->_widthSpinBox = new QSpinBox{this};
+        this->_widthSpinBox->setMinimum(1);
+        this->_widthSpinBox->setMaximum(20);
+        this->_widthSpinBox->setMinimumHeight(30);
+        addPropRow(4, QStringLiteral("Width"), this->_widthSpinBox);
+
+        connect(this->_colorButton, &ColorPickerButton::colorChanged, this, [this](const QColor& color) {
             assert(this->_net != nullptr);
             emit this->netColorChanged(this->_net, color);
         });
 
-        connect(this->_syncSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), [this] (int sync) {
+        connect(this->_syncSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int sync) {
             assert(this->_net != nullptr);
             emit this->netSyncChanged(this->_net, sync);
         });
 
-        // Remove        
-        auto removeButton = new QPushButton {"Remove", widget};
-        removeButton->setMinimumHeight(30);
-        layout->addWidget(removeButton, 4, 0, 1, 2);
+        connect(this->_widthSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int width) {
+            assert(this->_net != nullptr);
+            emit this->netWidthChanged(this->_net, width);
+        });
 
-        connect(removeButton, &QPushButton::clicked, [this] () {
+        auto* removeButton = new QPushButton{QStringLiteral("Remove"), this};
+        removeButton->setMinimumHeight(30);
+        layout->addWidget(removeButton, 5, 0, 1, 2);
+
+        connect(removeButton, &QPushButton::clicked, this, [this]() {
             auto response = QMessageBox::question(
-                nullptr, 
-                "Confirm", 
-                "Do yout want to delete this net?",
+                this,
+                QStringLiteral("Confirm"),
+                QStringLiteral("Do you want to delete this net?"),
                 QMessageBox::Yes | QMessageBox::No);
-            
+
             if (response == QMessageBox::Yes) {
                 assert(this->_net != nullptr);
                 emit this->removeNet(this->_net);
             }
         });
-
-        layout->setColumnMinimumWidth(0, 50);
-        layout->setColumnStretch(0, 0);
     }
 
     void NetInfoWidget::loadNet(NetItem* net) {
@@ -117,6 +127,7 @@ namespace PR_tool::widget::schematic {
         this->_syncSpinBox->setValue(this->_net->unwrap()->sync());
 
         this->_colorButton->setColor(this->_net->color());
+        this->_widthSpinBox->setValue(static_cast<int>(this->_net->width()));
     }
 
     auto NetInfoWidget::currentNet() -> NetItem* {

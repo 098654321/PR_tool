@@ -1,61 +1,65 @@
 # GUI Flow
 
-`-g` 选项进入 GUI 模式。系统会创建两个空的 `Interposer` 和 `BaseDie`，此时原理图为空，布局只有空的 TOB，2D、3D 视图只有硬件没有布线。
+现行界面以 `dev.gui` / `source/widget/` 为准。Agent 约束与阶段机见 `source/widget/AGENTS.md`；方法学见 `docs/superpowers/specs/2026-08-11-chiplet_schematic_GUI_优化与设计方法学/`。下文截图来自早期左侧 Toolbar 版本，**只用来辨认四个视图**，不要按图上的图标墙去实现。
+
+启动：`xmake run PR_tool -g`。先弹出入口对话框：空白工程，或选一个 config 文件夹 Load。空白时创建空的 `Interposer` 与 `BaseDie`——原理图为空，布局只有空 TOB，2D/3D 在布线成功前锁定。
+
+## 顶栏与阶段
+
+菜单只保留 **File** / **View**（+ 弱 Settings）。**没有**独立左侧 Toolbar，也没有把 Schematic/Layout/2D/3D 做成顶级菜单。
+
+顶栏同一层：
+
+- 分段切换：`Schematic | Layout | 2D | 3D`（`QPushButton`）。2D/3D 在 Route 成功前 disabled，并说明原因。
+- **Place**：自动布局。成功后阶段变为 Placed，该按钮文案变成 **Edit Design**。
+- **Route**：按当前 Layout 布线。成功后进入 Results，解锁 2D/3D，启用 Export。
+- Export（File → Export Controlbits）：仅 Results 可用。
+
+| 阶段 | Schematic | Layout | 2D / 3D | 主操作 |
+|------|-----------|--------|---------|--------|
+| Design | 可编辑 | 可编辑 | 锁定 | Place、Route |
+| Placed | 仍可编辑（拖动不改真实放置） | 只读 | 锁定 | Edit Design 撤销 Place；可 Route |
+| Results | 只读回看 | 只读 | 解锁 | Edit Design 撤销 Place+Route |
+
+Route 失败停留在原阶段，不会当成成功去锁设计或打开 Export。Edit Design 会清掉布线结果（以及相应的放置快照），不是只改状态栏。Place/Results 下不能 Load 新 config，需先 Edit Design。
+
+状态栏常显 `Stage: Design | Placed | Results`，以及坐标 / 缩放等。View 菜单：显示/隐藏 Navi 与 Inspector、Fit in View（Ctrl+0）、Reset Zoom。
+
+可以从空白绘制再 Place/Route，也可以 Load 后修改。
 
 ![image-20250114210540138](./pics/flow/entry.png)
-
-- 上方菜单栏：目前只支持 File 下的 Load，可以选择文件夹导入 config
-- 左侧工具栏：
-    - 前四个分别是：原理图、布局、2D 展示、3D 展示界面切换按钮
-    - 运行 P&R：点击运行 P&R，过程中会弹出一个对话框等待，运行结束后 2D、3D 加载布线结果，前两个界面无法编辑
-    - 设置按钮：还没写，留着之后修改硬件参数什么的
-- 右侧窗口：上述四个界面的容器
-
-可以从空白的配置自己绘制电路，然后布线。也可以直接导入（再修改）。
-
-
 
 ## 原理图
 
 ![image-20250114221504617](./pics/flow/schematic.png)
 
-默认原理图为空，左侧 TopDie 库为空。
+左侧是 **Navigator**（可折叠），不是旧的按钮墙：
 
-- 左侧 TopDie 栏：
-    - 搜索框（没有实现）
-    - Load TopDie：选择一个文件 josn 文件描述的 TopDie（文件名称为 TopDie 名词。）
-    - Load TopDies：选择一个 json 文件（像 config 里面的 topdies.json 一样），包含多个 TopDie 信息
-    - Add Export：点击按键鼠标进入绘图区域可以放置一个外部端口（默认使用 TrackCoord 的默认值，应该从空闲的选择一个，要修复！）
-- 中间是原理图绘制区域：移动、删除、添加、连接各个元素
-- 右侧信息区域：默认展示 View 信息，双击元素可以显示对应信息，有些支持修改
+- **Palette**：`+` 类型芯片（CPU/MEM/AI、Export、VDD/GND），用于往画布添加元件
+- **网可见性**：两列复选框（Signal / Bus / Power / Ground / External Net），默认全开；取消勾选则该类连线不画
+- **Search**：过滤树节点名，不搜 Palette
+- **树**：单击 = 选中并在画布高亮（不自动 zoom）；需要靠近时用 Locate / 双击 Pin Map
 
+中间 canvas 是主工作面：Header/Body 节点、语义缩放（远看模块与束，近看 pin）、Focus+Context（相关变强，其余变弱但仍在）、直角走线。即使左右栏收起，也应能读懂拓扑。
 
+右侧 **Inspector**：选中对象的属性 / 连通性 / Pin Map。空选时提示选一个对象。
 
 ## 布局
 
 ![image-20250114221514190](./pics/flow/layout.png)
 
-- 布局区域：可以对已经存在的 TopDie Instance 进行交换位置（或在移动到空的 TOB 上，理论上 TopDieInstance 不可能没有 TOB!）
-- 右侧信息：展示当前 Instance 数量、每个 Instance 的位置、估计的线长
+已有 TopDie Instance 与 TOB 之间放置或互换（实例不应没有 TOB）。右侧信息：实例数量、位置、估计线长。不在此编辑网。
 
-因为布局窗口不会影响原理图。但原理图的很多修改都会影响布局，目前的处理是直接将布局直接重新加载，实现起来比较简单。而且你修改的时候展示的也不是布局界面，实际上也不会出现卡顿的情况。
-
-
+原理图改动会刷新布局显示；布局改 TOB 后也会 reload 原理图放置。Place 成功后本页只读。
 
 ## 2D 视图
 
 ![image-20250114221837679](./pics/flow/view2d.png)
 
-展示布线结果。
-
-TODO：TOB、COB 的详细视图展示
-
-
+仅 Route 成功后可进。展示平面布线；Load 新设计后必须与 Schematic/Layout 一起 reload。部分 COB/TOB 可进详细视图。
 
 ## 3D 视图
 
 ![image-20250114221918998](./pics/flow/view3d.png)
 
-展示布线结果。
-
-点击物体可以展示详细信息
+仅 Route 成功后可进。展示立体布线；点击物体看详情。同样，Load 后必须 reload。

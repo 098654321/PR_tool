@@ -37,7 +37,8 @@ namespace PR_tool::widget::layout {
     }
 
     void TOBItem::highlight(bool active) {
-        this->setBrush(active ? HIGHLIGHT_COLOR : COLOR);
+        this->_highlighted = active;
+        this->update();
     }
 
     void TOBItem::updateAppearance() {
@@ -48,8 +49,9 @@ namespace PR_tool::widget::layout {
         QGraphicsRectItem::paint(painter, option, w);
 
         auto rect = this->rect();
+        const auto fill = this->_highlighted ? HIGHLIGHT_COLOR : COLOR;
 
-        painter->setBrush(COLOR);
+        painter->setBrush(fill);
         QFont font = painter->font();
         font.setPointSize(FONT_SIZE);
         painter->setFont(font);

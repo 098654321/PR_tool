@@ -2,6 +2,7 @@
 #include <circuit/basedie.hh>
 #include <circuit/topdieinst/topdieinst.hh>
 #include <circuit/net/net.hh>
+#include <circuit/net/types/tsbsnet.hh>
 #include <circuit/topdie/topdie.hh>
 
 #include <algo/placer/sa/saplacestrategy.hh>
@@ -12,6 +13,7 @@
 #include <debug/debug.hh>
 #include "./utilty.hh"
 #include <iostream>
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -146,6 +148,52 @@ static void test_sa_place_strategy_components() {
     }
 }
 
+static void test_fixed_net_endpoints_follow_placement() {
+    auto [interposer, basedie, register_map] = read_config("../test/config/case4", 0, false);
+    (void)register_map;
+    build_nets(basedie.get(), interposer.get());
+
+    for (const auto& [_, inst] : basedie->topdie_insts()) {
+        auto* topdie_inst = inst.get();
+        const auto* previous_tob = topdie_inst->tob();
+        auto moved_endpoints = std::Vector<std::Pair<TracksToBumpsNet*, std::usize>> {};
+        for (auto* net : topdie_inst->nets()) {
+            auto* fixed_net = dynamic_cast<TracksToBumpsNet*>(net);
+            if (fixed_net == nullptr) {
+                continue;
+            }
+            for (auto* bump : fixed_net->end_bumps()) {
+                if (bump->tob() == previous_tob) {
+                    moved_endpoints.emplace_back(fixed_net, bump->index());
+                }
+            }
+        }
+        if (moved_endpoints.empty()) {
+            continue;
+        }
+
+        const auto next_inst = std::find_if(
+            basedie->topdie_insts().begin(),
+            basedie->topdie_insts().end(),
+            [topdie_inst](const auto& entry) { return entry.second.get() != topdie_inst; });
+        ASSERT(next_inst != basedie->topdie_insts().end());
+        const auto* next_tob = next_inst->second->tob();
+        topdie_inst->swap_tob_with(next_inst->second.get());
+
+        for (const auto& [fixed_net, bump_index] : moved_endpoints) {
+            const auto expected_bump = interposer->get_bump(next_tob->coord(), bump_index);
+            ASSERT(expected_bump.has_value());
+            ASSERT(std::find(
+                fixed_net->end_bumps().begin(),
+                fixed_net->end_bumps().end(),
+                *expected_bump) != fixed_net->end_bumps().end());
+        }
+        return;
+    }
+
+    ASSERT(false && "case4 must contain a fixed net endpoint");
+}
+
 // res
 // static void test_placement_from_res_file(const std::String& res_file_path) {
 //     debug::debug_fmt("Res file test layout: {}", res_file_path);  
@@ -255,6 +303,7 @@ static void test_sa_place_strategy_components() {
 // main test
 static void test_sa_place_strategy() {
     debug::info("Start testing");   
+    test_fixed_net_endpoints_follow_placement();
     // test_basic_placement();
     // test_sa_place_strategy_components();
 

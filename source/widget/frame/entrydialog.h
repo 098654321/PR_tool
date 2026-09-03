@@ -17,7 +17,6 @@ namespace PR_tool::widget {
         auto getResult() const -> std::optional<QString>;
 
     private slots:
-        void onCreateEmptyProject();
         void onOpenExistingProject();
 
     private:

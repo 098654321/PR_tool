@@ -1,23 +1,19 @@
 #include "./layoutinfowidget.h"
 #include "./layoutscene.h"
-#include "qlineedit.h"
 #include <cassert>
 #include <hardware/interposer.hh>
 #include <circuit/basedie.hh>
 
 #include <QLabel>
-#include <QComboBox>
-#include <QSpinBox>
-#include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QTableView>
 #include <QGridLayout>
 #include <QStandardItemModel>
 #include <QHeaderView>
 #include <QGroupBox>
-#include <QDebug>
-#include <QMessageBox>
-#include <QLineEdit>
+#include <QLocale>
+#include <QPushButton>
+#include <QSizePolicy>
 
 namespace PR_tool::widget {
 
@@ -30,36 +26,59 @@ namespace PR_tool::widget {
         _scene{scene}
     {
         auto thisLayout = new QVBoxLayout {this};
-        auto widget = new QGroupBox {"Layout Infomation", this};
-        widget->setStyleSheet("background-color: white;");
+        auto widget = new QGroupBox {"Layout", this};
         thisLayout->addWidget(widget);
         thisLayout->addStretch();
+
+        auto* resetButton = new QPushButton {QStringLiteral("Restore Default Layout"), this};
+        resetButton->setObjectName(QStringLiteral("SecondaryCta"));
+        resetButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        resetButton->setCursor(Qt::PointingHandCursor);
+        thisLayout->addWidget(resetButton);
+        connect(resetButton, &QPushButton::clicked, this, [this]() {
+            if (this->_scene != nullptr) {
+                this->_scene->restoreDefaultPlacement();
+            }
+        });
 
         auto layout = new QGridLayout{widget};
         layout->setSpacing(10);
 
-        // Size
-        layout->addWidget(new QLabel {"TopDie Instance Size ", widget}, 0, 0);
-        this->_topdieInstSizeSpinBox = new QSpinBox {this};
-        this->_topdieInstSizeSpinBox->setMinimum(0);
-        this->_topdieInstSizeSpinBox->setReadOnly(true);
-        this->_topdieInstSizeSpinBox->setMaximum(hardware::Interposer::TOB_ARRAY_HEIGHT * hardware::Interposer::TOB_ARRAY_WIDTH);
-        layout->addWidget(this->_topdieInstSizeSpinBox, 0, 1);
+        // Estimated HPWL (same bbox Manhattan formula as SA placer)
+        auto* metric = new QWidget {widget};
+        metric->setObjectName(QStringLiteral("LayoutHpwlMetric"));
+        auto* metricLayout = new QVBoxLayout {metric};
+        metricLayout->setContentsMargins(12, 10, 12, 12);
+        metricLayout->setSpacing(2);
+        this->_estimatedLengthLabel = new QLabel {"Estimated Wire Length (HPWL)", metric};
+        this->_estimatedLengthLabel->setObjectName(QStringLiteral("LayoutHpwlLabel"));
+        this->_estimatedLengthValue = new QLabel {metric};
+        this->_estimatedLengthValue->setObjectName(QStringLiteral("LayoutHpwlValue"));
+        this->_estimatedLengthValue->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        metricLayout->addWidget(this->_estimatedLengthLabel);
+        metricLayout->addWidget(this->_estimatedLengthValue);
+        layout->addWidget(metric, 0, 0, 1, 2);
 
-        // Layout Map
-        auto label = new QLabel {"Layout Place Map ", widget};
+        // Layout Map (read-only display; row click jumps to TOB)
+        auto label = new QLabel {"Layout Place Map", widget};
         label->setMinimumHeight(MIN_HEIGHT);
         layout->addWidget(label, 1, 0, 1, 2);
         this->_instPlaceView = new QTableView {widget};
         this->_instPlaceView->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+        this->_instPlaceView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        this->_instPlaceView->setSelectionBehavior(QAbstractItemView::SelectRows);
+        this->_instPlaceView->setSelectionMode(QAbstractItemView::SingleSelection);
+        this->_instPlaceView->setFocusPolicy(Qt::StrongFocus);
         layout->addWidget(this->_instPlaceView, 2, 0, 1, 2);
 
-        // Path length
-        layout->addWidget(new QLabel {"Path Length", widget}, 3, 0);
-        this->_pathLengthEdit = new QLineEdit {this};
-        this->_pathLengthEdit->setMinimumHeight(MIN_HEIGHT);
-        this->_pathLengthEdit->setReadOnly(true);
-        layout->addWidget(this->_pathLengthEdit, 4, 0, 1, 2);
+        connect(this->_instPlaceView, &QTableView::clicked, this, [this](const QModelIndex& index) {
+            if (!index.isValid() || this->_scene == nullptr) {
+                return;
+            }
+            const auto nameIndex = index.sibling(index.row(), 0);
+            const auto name = nameIndex.data(Qt::DisplayRole).toString();
+            this->_scene->focusTopDieInstance(name);
+        });
 
         layout->setColumnMinimumWidth(0, 50);
         layout->setColumnStretch(0, 0);
@@ -68,24 +87,21 @@ namespace PR_tool::widget {
     }
 
     void LayoutInfoWidget::updateInfo() {
-        // Instance size
-        auto instSize = this->_basedie->topdie_insts().size();
-        this->_topdieInstSizeSpinBox->setValue(instSize);
-        this->_topdieInstSizeSpinBox->setEnabled(true);
+        const auto instSize = this->_basedie->topdie_insts().size();
 
-        // Coords
         auto model = new QStandardItemModel {static_cast<int>(instSize), 2};
-        model->setHorizontalHeaderLabels(QStringList{"TopDie Instance", "TOB Coord"}); 
-        // Add items
-        auto itemRoot = model->invisibleRootItem();
+        model->setHorizontalHeaderLabels(QStringList{"TopDie Instance", "TOB Coord"});
         int row = 0;
         for (auto& [name, inst] : this->_basedie->topdie_insts()) {
-            model->setItem(row, 0, new QStandardItem {QString::fromStdString(name.data())});
-            auto tob = inst->tob();
+            auto nameItem = new QStandardItem {QString::fromStdString(name.data())};
+            nameItem->setEditable(false);
+            model->setItem(row, 0, nameItem);
             assert(inst->tob() != nullptr);
-            model->setItem(row, 1, new QStandardItem {
+            auto coordItem = new QStandardItem {
                 QString::fromStdString(std::format("{}", inst->tob()->coord()))
-            });
+            };
+            coordItem->setEditable(false);
+            model->setItem(row, 1, coordItem);
             row += 1;
         }
 
@@ -93,11 +109,11 @@ namespace PR_tool::widget {
         if (originModel != nullptr) {
             delete originModel;
         }
-
         this->_instPlaceView->setModel(model);
 
-        // Length
-        this->_pathLengthEdit->setText(QString{"%1"}.arg(this->_scene->totalNetLenght()));
+        this->_estimatedLengthValue->setText(
+            QLocale::system().toString(this->_scene->estimatedTotalWireLength())
+        );
     }
 
 }

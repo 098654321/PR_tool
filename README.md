@@ -52,7 +52,7 @@ config JSON (+ optional reigster_adder → register_adder.json → register_map)
   → parse::read_config          # Interposer + BaseDie + RegisterMapConfig
   → algo::build_nets            # Connection → Net / SyncNet
   → algo::place (可选)          # 模拟退火布局
-  → algo::route_nets            # Maze 布线（v1.0.0 CLI 无增量）
+  → algo::route_nets            # Maze（默认）或 SAT 布线（`--router sat`）
   → parse::output_from_routing_results
   → {output}/regnamecontrolbit_4part/
        botleft_REG0.txt … topright_REG3.txt   # hex address reg_name
@@ -80,7 +80,10 @@ CLI 主流程在 [`source/app/cli/cli.cc`](./source/app/cli/cli.cc)；入口参�
 
 `algo::route_nets`（[`source/algo/router/route_nets.cc`](./source/algo/router/route_nets.cc)）通过命令链（`command_mode/`）组织流程：
 
-**非增量（默认，v1.0.0 CLI）**：`Sort` → `Resources` → `Route`（`MazeRouteStrategy`，BFS 在 track 图上搜索）
+**非增量（默认，v1.0.0 CLI）**：`Sort` → `Resources` → `Route`。后端由 `--router` 选择：
+
+- `maze`（默认）：`MazeRouteStrategy`，BFS 在 track 图上搜索
+- `sat`：统一图 SAT（`source/algo/router/sat_ilp/`），可选 v15 Gurobi 线长优化；构建需 `xmake f --sat_router=y`（默认）与 `--cadical=y`
 
 **增量**：源码仍在 `source/algo/router/incremental/`，但 v1.0.0 CLI 已拒绝 `-i/--incremental` 与 `-c/--compare`。
 
@@ -165,6 +168,8 @@ Linux 上需确保 `CONDA_PREFIX` 指向已安装 Catch2 的环境。
 
 目前共 **22** 个 case 目录（`case1` … `case22`，**含 case6**）。每个 case 通常含输入 JSON、`register_adder.json`、`golden.txt`（期望总线长上界）及 `description.txt`。
 
+跑 maze 或 SAT 前须按 case 设置 `Interposer::COB_ARRAY_WIDTH`（见 [`test/AGENTS.md`](./test/AGENTS.md) **COB_ARRAY_WIDTH vs test/config cases**）。
+
 #### case 1–6：基础功能（Muyan 小规模）
 
 | case | 说明 |
@@ -224,14 +229,22 @@ PR_tool <input folder path> [OPTIONS]
 | `-g, --gui` | GUI 模式 |
 | `-p, --placement` | 启用布局（模拟退火） |
 | `-s, --simplify-controlbits-file` | 写出四文件时省略等于默认 hex 的行（稀疏输出） |
+| `--router maze\|sat` | 布线后端（默认 `maze`）；`sat` 需 `xmake f --sat_router=y`（默认开启） |
+| `--scope-pad N` | SAT 首轮 pair bbox 外扩格数（仅 `--router sat`；默认 0） |
+| `--delay-pad N`, `-d N` | SAT 首轮 delay 扩展（仅 `--router sat`） |
+| `--sat-log`, `--max-rss-mb N` | CaDiCal 日志与内存上限（SAT） |
+| `--ilp-optimize -L <percent>` | 可选 v15 Gurobi 线长优化（SAT） |
 | `-v, --verbose` | 输出 Debug 日志 |
 | `-h, --help` | 帮助 |
 | `-V, --version` | 版本信息 |
+
+构建选项：`xmake f --sat_router=y|n`（默认 `y`，关闭后 `--router sat` 不可用）；SAT 求解器 `xmake f --cadical=y`。
 
 示例：
 
 ```bash
 xmake run PR_tool test/config/case1 -v
+xmake run PR_tool_cli test/config/case7 --router sat --scope-pad 1 -v
 xmake run PR_tool -g
 ```
 

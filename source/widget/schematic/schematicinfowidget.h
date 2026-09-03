@@ -54,6 +54,7 @@ namespace PR_tool::widget {
         void showExPortInfoWidget(schematic::ExternalPortItem*);
         void showNetInfoWidget(schematic::NetItem*);
         void showTopDieInstanceInfoWidget(schematic::TopDieInstanceItem*);
+        void deleteCurrentItem();
 
     private:
         void externalPortRename(schematic::ExternalPortItem* eport, const QString& name);
