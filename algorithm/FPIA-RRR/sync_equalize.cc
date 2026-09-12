@@ -166,14 +166,7 @@ auto arc_hard_blocked(
         return false;
     }
     for (const auto& key : arc_resource_keys(graph, arc)) {
-        bool held = false;
-        for (const auto& item : resources.owners_of(key)) {
-            if (item == owner) {
-                held = true;
-                break;
-            }
-        }
-        if (held) {
+        if (resources.holds(owner, key)) {
             continue;
         }
         if (hard_block.contains(key)) {

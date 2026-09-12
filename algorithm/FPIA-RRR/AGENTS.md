@@ -3,10 +3,18 @@
 本目录实现独立的 FPIA `rip-up-and-reroute`（RRR）全局布线器，作为
 `algorithm/test_ILP/` 中 SAT + ILP 方法的对比实验。方法规范见同目录 `spec.md`。
 
-**当前状态：RRR 主循环、SyncNet 等长修复与独立合法性校验已接通。** 不写
-controlbits，不改 `Interposer` 寄存器。
+**当前状态：RRR 主循环、SyncNet 等长修复、TOB mux 端口独占与独立合法性校验已接通。**
+不写 controlbits，不改 `Interposer` 寄存器。
 
-只可以在本git分支工作，绝对不可以切换到其它分支，或者将本分支的内容合并到其它分支。也不能使用git push推送到远程仓库
+## 工作流程要求
+
+- 改代码前读清方法文档与 `source/hardware`、`source/circuit` 映射；**不允许修改方法文档**。
+- 优先改动 `algorithm/test_ILP/`；非必要不改 `source/` 主流程。
+- 修改后评估是否同步更新本文件（≤200 行）。
+- 单次修改 >100 行时，启动子 agent 审查。
+- 单文件职责紧凑，不超过 1000 行；关键步骤用 `debug::info_fmt` 打日志。
+- 只可以在本git分支工作，绝对不可以切换到其它分支，或者将本分支的内容合并到其它分支。也不能使用git push推送到远程仓库
+- 在与用户交流的过程中，如果涉及到关键的数据结构或者方法，就算用户没有问，也需要主动简要的解释设计思路，设计时需要注意程序的运行速度
 
 ## 目的与边界
 
@@ -24,7 +32,7 @@ algorithm/FPIA-RRR/
 ├── net_adapter.* / hw_map.hh / hardware_graph.* / resource_model.*
 ├── maze_search.* / rrr_router.* / route_log.* / sync_equalize.*
 ├── route_validate.hh/.cc
-└── test/unit_main.cc
+└── test/unit_main.cc / tob_mux_fanout.* / tob_mux_cases.cc
 ```
 
 ## CLI、入口与计时
@@ -32,8 +40,8 @@ algorithm/FPIA-RRR/
 ```bash
 ./output/FPIA_RRR <config_path> [-v|-vv] [-o DIR] [--max-iterations N] [--seed N]
 xmake build FPIA_RRR
-xmake build FPIA_RRR_unit
-./output/FPIA_RRR_unit
+xmake build FPIA_RRR_unit && ./output/FPIA_RRR_unit
+xmake build FPIA_RRR_mux_test && ./output/FPIA_RRR_mux_test
 ```
 
 `-o` 写 `DIR/debug.log`。无 `-v` 也输出 spec §9 汇总行，并在整次布线结束时打印
@@ -58,9 +66,10 @@ Owner：普通 Bnet/Tnet/PNnet/fanout 为 `{net_id,0}`；SyncNet 成员为
 `demand_id` 升序）再普通网（端口数、HPWL、id）。Dirty：congestion exposure、retry、
 HPWL、id（除 id 外均降序）。HPWL 为 Track/Bump 终端包围盒；Bump 用 `tob_anchor_cob`。
 PNnet 计入全部候选源。fanout/PNnet rip 整棵树后按 `demand_id` 升序重生。
+`add_tree_node` 只插入 Track；后续 demand 不得从已占用 HLine/VLine 起步。
 
 调度：一组的第一个 SyncNet owner 走 `route_sync_group`（maze 全 lane，sibling
-物理资源 `hard_block`（Node/Switch/Matching；Mode/BnetUnit 不互斥），再
+物理资源 `hard_block`（Node/Switch/Matching/TobMux；Mode/BnetUnit 不互斥），再
 `equalize_sync_group`）；已填 sibling 经 `routed_sync` 跳过。Dirty
 任一 SyncNet 成员扩到整组后再 rip。overflow 0 且各组 `N_i` 相等才 success。
 
@@ -79,10 +88,12 @@ Bnet 另 claim `bnet_unit_key`。`route_demand` 传入 `interposer` 做 NESW。
 **新的** `ResourceModel`。失败时 `debug::error` 并返回 false。
 
 检查（spec §10.4）：每条 demand 非空路径，末节点为 sink，首节点为候选源或同 owner
-树节点；相邻节点在 `directed_arc_set`；Track/Bump/HLine/VLine、物理开关、matching
-与 mode-conflict overflow 均为 0；Bnet 每 owner 至多一个 `selected_unit`；SyncNet
-组成员 `sync_lane_length` 相等（需 `interposer`）且 Node/Switch/Matching
-claimed key 互斥（Mode/BnetUnit 为兼容与 per-owner 锁，不按跨 lane 独占）。
+**树 Track**（不得以 HLine/VLine 为起点）；相邻节点在 `directed_arc_set`；
+`collect_illegal_tob_fanout` 为空；Track/Bump/HLine/VLine、物理开关、matching、
+TOB mux port 与 mode-conflict overflow 均为 0；Bnet 每 owner 至多一个
+`selected_unit`；SyncNet 组成员 `sync_lane_length` 相等（需 `interposer`）且
+Node/Switch/Matching/TobMux claimed key 互斥（Mode/BnetUnit 为兼容与 per-owner 锁，
+不按跨 lane 独占）。
 
 ## SyncNet 长度与等长 API
 
@@ -97,13 +108,20 @@ Bnet +2，Tnet +1。组成员不同时混 Bnet/Tnet。
 ## Maze / 资源 / 图
 
 `route_demand(..., tree={}, is_bnet=false, interposer=nullptr, hard_block={})`
-Dijkstra，不 claim。资源 cap-1 overflow；mode straight+swap 冲突；Bnet
-`selected_unit`。wirelength：每 net 去重 Track+Bump。
+Dijkstra，不 claim。`tree` 起点只收 Track。资源 cap-1 overflow；mode
+straight+swap 冲突；Bnet `selected_unit`。wirelength：每 net 去重 Track+Bump。
+
+TOB mux：同一 owner 对一个 mux port 只能使用一个 peer；Bump–HLine、HLine–VLine、VLine–Track 各投影
+`TobMuxInput(node,peer)` / `TobMuxOutput(node,peer)`。同一 exact connection
+（相同 extra）可被同 owner 复用；同一 mux port 指向不同 peer 则
+`overflow = mux_distinct_peers-1`，即使 owner 相同。`key_is_free` 对 mux 只认
+exact key。history 按 `(kind,id)` 共享。Track Steiner 主干仍可同 owner 共享；
+禁止同一 VLine 接多个 HLine、同一 Track mux output 接多个 VLine。
 
 ## 缺省超参数（spec §6.1）
 
 CLI 只暴露 `--max-iterations` 与 `--seed`；其余为编译期常数，全部写入 params 日志。
-`type_weight`：node=1，switch/matching=2，mode-conflict=8。
+`type_weight`：node=1，switch/matching/mux=2，mode-conflict=8。
 
 | 参数 | 缺省 | 含义 |
 |---|---|---|
@@ -118,7 +136,7 @@ CLI 只暴露 `--max-iterations` 与 `--seed`；其余为编译期常数，全�
 | `sync_tail_extra_tracks` | 64 | tail maze 超出当前最长 lane 的 Track 预算 |
 | `r` | 0.5, 0.75, 1.0 | SyncNet 切尾比例 |
 
-`H/k/s` 进入 maze 的 present cost（`cap=1`，`u` 为加入候选后的 owner 数）：
+`H/k/s` 进入 maze 的 present cost（`cap=1`；普通资源 `u` 为加入后的 owner 数，mux 用 distinct peers）：
 
 ```text
 P(u) = 1 + H/(exp(k×(cap-u))+1) + [u>cap]×H/s×(u-cap)
@@ -129,7 +147,8 @@ present_cost = type_weight × P(u)
 - 增大 `k`：从“还能再挤一个”到“已经 overflow”的代价跳变更陡，更早避开将满资源。
 - 减小 `s`：已经 overflow 时线性罚分 `H/s × (u-cap)` 更陡，更强力驱离热点；增大 `s` 则允许更长地挤占。
 
-`initial overflow` 是全部网 maze 完、RRR 循环开始前的 `Σ max(0, owner_count-1)`（外加 mode 冲突与 Bnet 双 unit）。为 0 则初解已合法，循环只打 `iter=0` 后成功退出。
+`initial overflow` 是全部网 maze 完、RRR 循环开始前的 `Σ max(0, owner_count-1)`
+（外加 mode 冲突、Bnet 双 unit、同 owner 的 mux 多 peer）。为 0 则初解已合法，循环只打 `iter=0` 后成功退出。
 
 ## 日志分层
 
@@ -146,16 +165,10 @@ present_cost = type_weight × P(u)
 不打印 `sync net_id=... N_i=... equal=`。`sync tail cutoff` 用 `info`，无 `-v`
 也会出现。结束时仍打最终路径；`-v` 再追加一次结束时的 overflow 明细。
 
-## 日志：`dirty_owners` 与 `rerouted`
-
-`iter=` 行每轮都会打（含初解已合法的 `iter=0`）。
-
-- `dirty_owners`：本轮**计划拆掉**的 owner 数。碰到 overflow 资源的网；SyncNet 任一成员脏则扩到整组。
-- `rerouted`：本轮**实际重新 maze** 的 owner 数。
-
-当前实现先按同一 `dirty_ids` 全部 rip，再对同一集合 reroute，因此成功的 iter
-行上两者通常相等。早退成功时两者都为 0。maze 中途 `unroutable` 不打部分计数的
-iter 行。
+`iter=` 行每轮都会打（含初解已合法的 `iter=0`）。`dirty_owners` 是本轮计划拆掉的
+owner 数（碰到 overflow 资源的网；SyncNet 任一成员脏则扩到整组）。`rerouted` 是
+本轮实际重新 maze 的 owner 数。当前先按同一 `dirty_ids` 全部 rip 再 reroute，
+成功 iter 行上两者通常相等；早退成功时都为 0。maze 中途 `unroutable` 不打部分计数的 iter 行。
 
 ## 测试矩阵（spec §10.3）
 
@@ -168,6 +181,8 @@ iter 行。
 | `algorithm/test_ILP/test/case_bus2btt` | SyncNet Tnet |
 | `test/config/case5` | PNnet/bus 混合，约 50s |
 | `FPIA_RRR_unit` 第二层 | 5-lane SyncNet（初始 Track 数 9/7/6/5/3）与一条局部冲突普通网；验证整组 rip-up、history 绕行、等长与独立校验 |
+| `tob_mux_fanout` | 同 owner 两 peer overflow；四 bump 非法 `VLine→HLine` tail 校验失败；合法 Track Steiner 通过；`run_rrr` 为四 bump 分配互斥 TOB access |
+| `FPIA_RRR_mux_test` | 扫 `algorithm/test_ILP/test` 与 `test/config` 全部 `config.json`；多端口 net 无 illegal fanout |
 
 单测另覆盖 claim/maze/RRR 排序、empty path 与跨 owner overflow 校验失败、合法短路径
 通过。两层 SyncNet 测试均向标准输出打印初始候选和最终路径、每路径 Track 数与 `N_i`；

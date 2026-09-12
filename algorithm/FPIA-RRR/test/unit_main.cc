@@ -7,6 +7,7 @@
 #include "rrr_cli.hh"
 #include "rrr_router.hh"
 #include "sync_equalize.hh"
+#include "test/tob_mux_fanout.hh"
 
 #include <algo/netbuilder/netbuilder.hh>
 #include <circuit/net/types/bbnet.hh>
@@ -1195,6 +1196,7 @@ auto main() -> int {
         test_validate_illegal_overflow_fails();
         test_validate_legal_tiny_path_passes();
         test_run_rrr_requires_interposer();
+        run_tob_mux_fanout_unit_tests();
         std::cout << "FPIA_RRR_unit: all tests passed\n";
         return 0;
     }

@@ -3,6 +3,8 @@
 #include "rrr_types.hh"
 
 #include <hardware/interposer.hh>
+#include <array>
+#include <cstdint>
 #include <std/collection.hh>
 #include <std/string.hh>
 #include <map>
@@ -39,6 +41,19 @@ struct UnifiedNode {
     std::size_t line_index{0};
 };
 
+// An arc can touch two endpoint nodes, one physical switch, two matching
+// endpoints, two mux ports, and one mode resource.
+constexpr std::size_t kMaxArcResourceKeys = 8;
+
+struct ArcResourceKeys {
+    std::array<ResourceKey, kMaxArcResourceKeys> values {};
+    std::uint8_t count{0};
+
+    auto begin() const -> const ResourceKey* { return values.data(); }
+    auto end() const -> const ResourceKey* { return values.data() + count; }
+    auto empty() const -> bool { return count == 0; }
+};
+
 struct UnifiedArc {
     int u{0};
     int v{0};
@@ -47,6 +62,8 @@ struct UnifiedArc {
     int mode_group_id{-1};
     int physical_switch_id{-1};
     PhysicalSwitchKind physical_switch_kind{PhysicalSwitchKind::None};
+    mutable ArcResourceKeys resource_keys {};
+    mutable bool resource_keys_ready{false};
 };
 
 struct UnifiedGraph {
@@ -56,6 +73,7 @@ struct UnifiedGraph {
     std::Vector<UnifiedArc> arcs;
     std::Vector<std::Vector<int>> in_arc_ids;
     std::Vector<std::Vector<int>> out_arc_ids;
+    mutable std::Vector<std::Vector<int>> ordered_track_out_arc_ids;
     std::map<std::tuple<std::size_t, int, int, int, std::size_t>, int> track_node_by_key;
     std::map<Bump_coord, int> bump_node_by_key;
     std::map<std::tuple<std::size_t, std::size_t, std::size_t, std::size_t>, int> hline_node_by_key;
@@ -64,6 +82,14 @@ struct UnifiedGraph {
     std::size_t track_node_count{0};
     std::size_t tob_node_count{0};
 };
+
+auto cached_arc_resource_keys(const UnifiedGraph& graph, const UnifiedArc& arc) -> const ArcResourceKeys&;
+
+auto cached_track_out_arc_ids(
+    const UnifiedGraph& graph,
+    int node_id,
+    hardware::Interposer* interposer
+) -> const std::Vector<int>&;
 
 auto build_hardware_graph(
     hardware::Interposer* interposer,

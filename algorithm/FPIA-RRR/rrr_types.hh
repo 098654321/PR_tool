@@ -47,7 +47,9 @@ enum class ResourceKind {
     ModeStraight,
     ModeSwap,
     ModeConflict,
-    BnetUnit
+    BnetUnit,
+    TobMuxInput,
+    TobMuxOutput
 };
 
 struct ResourceKey {
@@ -92,10 +94,23 @@ inline auto bnet_unit_key(int unit) -> ResourceKey {
     return ResourceKey {ResourceKind::BnetUnit, unit, -1};
 }
 
+inline auto tob_mux_input_key(int node_id, int peer_node_id) -> ResourceKey {
+    return ResourceKey {ResourceKind::TobMuxInput, node_id, peer_node_id};
+}
+
+inline auto tob_mux_output_key(int node_id, int peer_node_id) -> ResourceKey {
+    return ResourceKey {ResourceKind::TobMuxOutput, node_id, peer_node_id};
+}
+
+inline auto is_mux_port_key(const ResourceKey& key) -> bool {
+    return key.kind == ResourceKind::TobMuxInput || key.kind == ResourceKind::TobMuxOutput;
+}
+
 inline auto is_physical_occupancy_key(const ResourceKey& key) -> bool {
     return key.kind == ResourceKind::Node
         || key.kind == ResourceKind::PhysicalSwitch
-        || key.kind == ResourceKind::MatchingEndpoint;
+        || key.kind == ResourceKind::MatchingEndpoint
+        || is_mux_port_key(key);
 }
 
 struct RrrParams {

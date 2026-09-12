@@ -243,15 +243,6 @@ auto demand_source_nodes(
     return nodes;
 }
 
-auto tree_as_vector(const std::Set<int>& tree) -> std::Vector<int> {
-    auto nodes = std::Vector<int> {};
-    nodes.reserve(tree.size());
-    for (const int node : tree) {
-        nodes.push_back(node);
-    }
-    return nodes;
-}
-
 auto build_owners(const std::Vector<RoutingNet>& nets) -> std::Vector<OwnerRecord> {
     auto owners = std::Vector<OwnerRecord> {};
     for (std::size_t net_index = 0; net_index < nets.size(); ++net_index) {
@@ -327,6 +318,15 @@ auto find_owner_index(const std::Vector<OwnerRecord>& owners, OwnerId id) -> std
     return owners.size();
 }
 
+auto add_tree_node(OwnerRecord& owner, const UnifiedGraph& graph, int node) -> void {
+    if (node < 0 || node >= static_cast<int>(graph.nodes.size())) {
+        return;
+    }
+    if (graph.nodes[static_cast<std::size_t>(node)].kind == UnifiedNodeKind::Track) {
+        owner.tree.insert(node);
+    }
+}
+
 auto rip_owner(OwnerRecord& owner, ResourceModel& resources) -> void {
     resources.release(owner.id);
     owner.claimed.clear();
@@ -361,14 +361,14 @@ auto route_owner(
         const auto& demand = net.demands[demand_id];
         const auto sources = demand_source_nodes(graph, net, demand);
         const int sink = resolve_graph_node(graph, demand.sink);
-        auto path = route_demand(
+        auto path = route_demand_from_tree(
             graph,
             resources,
             owner.id,
             sources,
             sink,
             params,
-            tree_as_vector(owner.tree),
+            owner.tree,
             owner.is_bnet,
             interposer);
         if (path.empty() || path.back() != sink) {
@@ -381,7 +381,7 @@ auto route_owner(
             owner.claimed.insert(key);
         }
         for (const int node : path) {
-            owner.tree.insert(node);
+            add_tree_node(owner, graph, node);
         }
         owner.demand_paths[i] = std::move(path);
     }
@@ -431,7 +431,7 @@ auto refresh_owner_from_path(OwnerRecord& owner, const UnifiedGraph& graph) -> v
         owner.claimed.insert(key);
     }
     for (const int node : path) {
-        owner.tree.insert(node);
+        add_tree_node(owner, graph, node);
     }
 }
 
@@ -490,7 +490,7 @@ auto route_sync_group(
             owner.claimed.insert(key);
         }
         for (const int node : path) {
-            owner.tree.insert(node);
+            add_tree_node(owner, graph, node);
         }
         owner.demand_paths[0] = std::move(path);
     }

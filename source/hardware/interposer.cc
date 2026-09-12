@@ -36,7 +36,8 @@ namespace PR_tool::hardware {
     auto Interposer::is_external_port_coord(const TrackCoord& coord) -> bool {
         switch (coord.dir) {
             case hardware::TrackDirection::Horizontal: {
-                return coord.col == 0 || coord.col == hardware::Interposer::COB_ARRAY_WIDTH;
+                return coord.col == 0
+                    || coord.col == hardware::Interposer::COB_ARRAY_WIDTH;
             }
             case hardware::TrackDirection::Vertical: {
                 return coord.row == 0 || coord.row == hardware::Interposer::COB_ARRAY_HEIGHT;

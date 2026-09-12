@@ -2,16 +2,96 @@
 
 #include "hw_map.hh"
 
+#include <hardware/cob/cob.hh>
+#include <hardware/cob/cobdirection.hh>
 #include <hardware/cob/cobunit.hh>
+#include <hardware/track/track.hh>
+#include <hardware/track/trackcoord.hh>
 
+#include <algorithm>
 #include <array>
 #include <format>
+#include <set>
 
 namespace PR_tool {
 
 namespace {
 
 using TrackNodeKey = std::tuple<std::size_t, int, int, int, std::size_t>;
+
+auto valid_node(const UnifiedGraph& graph, int node_id) -> bool {
+    return node_id >= 0 && node_id < static_cast<int>(graph.nodes.size());
+}
+
+auto is_vline_track(const UnifiedGraph& graph, const UnifiedArc& arc) -> bool {
+    if (arc.physical_switch_kind == PhysicalSwitchKind::VLineTrack) {
+        return true;
+    }
+    if (!valid_node(graph, arc.u) || !valid_node(graph, arc.v)) {
+        return false;
+    }
+    const auto ku = graph.nodes[static_cast<std::size_t>(arc.u)].kind;
+    const auto kv = graph.nodes[static_cast<std::size_t>(arc.v)].kind;
+    return (ku == UnifiedNodeKind::VLine && kv == UnifiedNodeKind::Track)
+        || (ku == UnifiedNodeKind::Track && kv == UnifiedNodeKind::VLine);
+}
+
+auto append_resource_key(ArcResourceKeys& keys, const ResourceKey& key) -> void {
+    for (std::size_t i = 0; i < keys.count; ++i) {
+        if (keys.values[i] == key) {
+            return;
+        }
+    }
+    if (keys.count < keys.values.size()) {
+        keys.values[keys.count++] = key;
+    }
+}
+
+auto populate_arc_resource_keys(const UnifiedGraph& graph, const UnifiedArc& arc) -> void {
+    if (arc.resource_keys_ready || !valid_node(graph, arc.u) || !valid_node(graph, arc.v)) {
+        return;
+    }
+    auto& keys = arc.resource_keys;
+    keys.count = 0;
+    const auto ku = graph.nodes[static_cast<std::size_t>(arc.u)].kind;
+    const auto kv = graph.nodes[static_cast<std::size_t>(arc.v)].kind;
+    append_resource_key(keys, node_resource(arc.v));
+    if (ku == UnifiedNodeKind::HLine || ku == UnifiedNodeKind::VLine) {
+        append_resource_key(keys, node_resource(arc.u));
+    }
+    if (arc.physical_switch_id >= 0) {
+        append_resource_key(keys, switch_resource(arc.physical_switch_id));
+    }
+
+    const int bump = ku == UnifiedNodeKind::Bump ? arc.u : (kv == UnifiedNodeKind::Bump ? arc.v : -1);
+    const int hline = ku == UnifiedNodeKind::HLine ? arc.u : (kv == UnifiedNodeKind::HLine ? arc.v : -1);
+    const int vline = ku == UnifiedNodeKind::VLine ? arc.u : (kv == UnifiedNodeKind::VLine ? arc.v : -1);
+    const int track = ku == UnifiedNodeKind::Track ? arc.u : (kv == UnifiedNodeKind::Track ? arc.v : -1);
+    if (bump >= 0 && hline >= 0) {
+        append_resource_key(keys, matching_endpoint_key(bump, 0));
+        append_resource_key(keys, matching_endpoint_key(hline, 1));
+        append_resource_key(keys, tob_mux_input_key(bump, hline));
+        append_resource_key(keys, tob_mux_output_key(hline, bump));
+    }
+    if (hline >= 0 && vline >= 0) {
+        append_resource_key(keys, matching_endpoint_key(hline, 2));
+        append_resource_key(keys, matching_endpoint_key(vline, 3));
+        append_resource_key(keys, tob_mux_input_key(hline, vline));
+        append_resource_key(keys, tob_mux_output_key(vline, hline));
+    }
+    if (is_vline_track(graph, arc) && vline >= 0 && track >= 0) {
+        append_resource_key(keys, tob_mux_input_key(vline, track));
+        append_resource_key(keys, tob_mux_output_key(track, vline));
+        if (arc.mode_group_id >= 0) {
+            if (arc.is_vline_track_straight) {
+                append_resource_key(keys, mode_straight_key(arc.mode_group_id));
+            } else if (arc.is_vline_track_swap) {
+                append_resource_key(keys, mode_swap_key(arc.mode_group_id));
+            }
+        }
+    }
+    arc.resource_keys_ready = true;
+}
 
 auto add_node(UnifiedGraph& g, const UnifiedNode& node) -> int {
     const int id = static_cast<int>(g.nodes.size());
@@ -44,6 +124,99 @@ auto get_track_node_id(
     return it->second;
 }
 
+auto find_out_arc(const UnifiedGraph& graph, int u, int v) -> int {
+    for (const int arc_id : graph.out_arc_ids[static_cast<std::size_t>(u)]) {
+        if (graph.arcs[static_cast<std::size_t>(arc_id)].v == v) {
+            return arc_id;
+        }
+    }
+    return -1;
+}
+
+auto cob_cardinal_rank(const UnifiedNode& track, const hardware::COBCoord& cob) -> int {
+    if (cob.row < track.track_row) {
+        return 0;
+    }
+    if (cob.col > track.track_col) {
+        return 1;
+    }
+    if (cob.row > track.track_row) {
+        return 2;
+    }
+    if (cob.col < track.track_col) {
+        return 3;
+    }
+    return track.track_dir == 1 ? 2 : 1;
+}
+
+auto ordered_track_arcs(
+    const UnifiedGraph& graph,
+    int node_id,
+    hardware::Interposer* interposer
+) -> std::Vector<int> {
+    const auto& raw = graph.out_arc_ids[static_cast<std::size_t>(node_id)];
+    const auto& node = graph.nodes[static_cast<std::size_t>(node_id)];
+    const auto coord = hardware::TrackCoord {
+        node.track_row,
+        node.track_col,
+        node.track_dir == 0 ? hardware::TrackDirection::Horizontal : hardware::TrackDirection::Vertical,
+        node.track_index};
+    const auto track_opt = interposer->get_track(coord);
+    if (!track_opt.has_value()) {
+        return raw;
+    }
+    auto cobs = (*track_opt)->adjacent_cob_coords();
+    std::sort(cobs.begin(), cobs.end(), [&](const auto& lhs, const auto& rhs) {
+        const auto& cob_l = std::get<1>(lhs);
+        const auto& cob_r = std::get<1>(rhs);
+        const auto rank_l = cob_cardinal_rank(node, cob_l);
+        const auto rank_r = cob_cardinal_rank(node, cob_r);
+        if (rank_l != rank_r) {
+            return rank_l < rank_r;
+        }
+        if (cob_l.row != cob_r.row) {
+            return cob_l.row < cob_r.row;
+        }
+        return cob_l.col < cob_r.col;
+    });
+
+    auto ordered = std::Vector<int> {};
+    ordered.reserve(raw.size());
+    auto seen = std::Set<int> {};
+    for (const auto& [from_dir, cob_coord] : cobs) {
+        const auto cob_opt = interposer->get_cob(cob_coord);
+        if (!cob_opt.has_value()) {
+            continue;
+        }
+        for (auto& connector : (*cob_opt)->adjacent_connectors(from_dir, coord.index, cob_coord)) {
+            const auto dest_coord = (*cob_opt)->to_dir_track_coord(
+                connector.to_dir(), connector.to_track_index());
+            const int dest = get_track_node_id(
+                graph,
+                map_track(dest_coord.index),
+                dest_coord.dir == hardware::TrackDirection::Horizontal ? 0 : 1,
+                static_cast<int>(dest_coord.row),
+                static_cast<int>(dest_coord.col),
+                dest_coord.index);
+            const int arc_id = dest < 0 ? -1 : find_out_arc(graph, node_id, dest);
+            if (arc_id >= 0 && seen.insert(arc_id).second) {
+                ordered.push_back(arc_id);
+            }
+        }
+    }
+    for (const int arc_id : raw) {
+        if (seen.insert(arc_id).second) {
+            ordered.push_back(arc_id);
+        }
+    }
+    return ordered;
+}
+
+auto cache_track_adjacency(UnifiedGraph& graph, hardware::Interposer* interposer) -> void {
+    graph.ordered_track_out_arc_ids.resize(graph.nodes.size());
+    (void)interposer;
+}
+
 auto add_arc(
     UnifiedGraph& g,
     int u,
@@ -70,6 +243,7 @@ auto add_arc(
         mode_group_id,
         physical_switch_id,
         physical_switch_kind});
+    populate_arc_resource_keys(g, g.arcs.back());
     g.out_arc_ids[static_cast<std::size_t>(u)].push_back(arc_id);
     g.in_arc_ids[static_cast<std::size_t>(v)].push_back(arc_id);
 }
@@ -323,12 +497,34 @@ auto build_tob_subgraph(UnifiedGraph& g) -> void {
 } // namespace
 
 auto build_hardware_graph(hardware::Interposer* interposer, const std::Vector<RoutingNet>& nets) -> UnifiedGraph {
-    (void)interposer;
     (void)nets;
     auto graph = UnifiedGraph {};
     build_track_subgraph(graph);
     build_tob_subgraph(graph);
+    cache_track_adjacency(graph, interposer);
     return graph;
+}
+
+auto cached_arc_resource_keys(const UnifiedGraph& graph, const UnifiedArc& arc) -> const ArcResourceKeys& {
+    populate_arc_resource_keys(graph, arc);
+    return arc.resource_keys;
+}
+
+auto cached_track_out_arc_ids(
+    const UnifiedGraph& graph,
+    int node_id,
+    hardware::Interposer* interposer
+) -> const std::Vector<int>& {
+    const auto& raw = graph.out_arc_ids[static_cast<std::size_t>(node_id)];
+    if (interposer == nullptr || graph.nodes[static_cast<std::size_t>(node_id)].kind != UnifiedNodeKind::Track
+        || static_cast<std::size_t>(node_id) >= graph.ordered_track_out_arc_ids.size()) {
+        return raw;
+    }
+    auto& cached = graph.ordered_track_out_arc_ids[static_cast<std::size_t>(node_id)];
+    if (cached.empty()) {
+        cached = ordered_track_arcs(graph, node_id, interposer);
+    }
+    return cached;
 }
 
 auto resolve_graph_node(const UnifiedGraph& graph, const GraphNodeRef& ref) -> int {

@@ -334,6 +334,34 @@ target("FPIA_RRR_unit")
     add_includedirs("source", "source/global", "algorithm/FPIA-RRR")
     add_files(
         "algorithm/FPIA-RRR/test/unit_main.cc",
+        "algorithm/FPIA-RRR/test/tob_mux_fanout.cc",
+        "algorithm/FPIA-RRR/rrr_cli.cc",
+        "algorithm/FPIA-RRR/net_adapter.cc",
+        "algorithm/FPIA-RRR/hardware_graph.cc",
+        "algorithm/FPIA-RRR/route_log.cc",
+        "algorithm/FPIA-RRR/resource_model.cc",
+        "algorithm/FPIA-RRR/maze_search.cc",
+        "algorithm/FPIA-RRR/rrr_router.cc",
+        "algorithm/FPIA-RRR/sync_equalize.cc",
+        "algorithm/FPIA-RRR/route_validate.cc"
+    )
+    add_files(
+        "source/algo/**.cc",
+        "source/circuit/**.cc",
+        "source/global/**.cc",
+        "source/hardware/**.cc",
+        "source/parse/**.cc",
+        "source/serde/**.cc"
+    )
+
+target("FPIA_RRR_mux_test")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_includedirs("source", "source/global", "algorithm/FPIA-RRR")
+    add_files(
+        "algorithm/FPIA-RRR/test/tob_mux_cases.cc",
+        "algorithm/FPIA-RRR/test/tob_mux_fanout.cc",
         "algorithm/FPIA-RRR/rrr_cli.cc",
         "algorithm/FPIA-RRR/net_adapter.cc",
         "algorithm/FPIA-RRR/hardware_graph.cc",
