@@ -518,14 +518,6 @@ auto route_sync_group(
     for (std::size_t i = 0; i < group.size(); ++i) {
         owners[group[i]].demand_paths[0] = lanes[i].path;
         refresh_owner_from_path(owners[group[i]], graph);
-        debug::debug_fmt(
-            "FPIA RRR: sync net_id={} demand_id={} N_i={} equal={}",
-            net.net_id,
-            owners[group[i]].id.demand_id,
-            lanes[i].path.empty()
-                ? 0
-                : sync_lane_length(graph, lanes[i].path, interposer, lanes[i].is_bnet),
-            equal);
     }
     return equal;
 }
@@ -656,31 +648,133 @@ auto save_legal_best(
     return save_best_if_improved(best, overflow, wirelength, resources, owners);
 }
 
+auto routing_kind_name(const RoutingNet& net) -> std::String {
+    if (net.is_sync_bus) {
+        return net.kind == RoutingNetKind::Bnet ? "SyncNet-Bnet" : "SyncNet-Tnet";
+    }
+    switch (net.kind) {
+    case RoutingNetKind::Bnet:
+        return "Bnet";
+    case RoutingNetKind::Tnet:
+        return "Tnet";
+    case RoutingNetKind::PNnet:
+        return "PNnet";
+    }
+    return "Unknown";
+}
+
+auto format_node_ref(const UnifiedGraph& graph, const GraphNodeRef& ref) -> std::String {
+    const int node = resolve_graph_node(graph, ref);
+    return node >= 0 ? format_path_node(graph, node) : "<unresolved>";
+}
+
+auto format_sources(const UnifiedGraph& graph, const RoutingNet& net) -> std::String {
+    auto out = std::String {};
+    for (std::size_t i = 0; i < net.sources.size(); ++i) {
+        if (i != 0) {
+            out += ", ";
+        }
+        out += format_node_ref(graph, net.sources[i]);
+    }
+    return out;
+}
+
+auto format_node_path(const UnifiedGraph& graph, const std::Vector<int>& path) -> std::String {
+    auto out = std::String {};
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        if (i != 0) {
+            out += " -> ";
+        }
+        out += format_path_node(graph, path[i]);
+    }
+    return out;
+}
+
 auto dump_paths(
     const UnifiedGraph& graph,
     const std::Vector<RoutingNet>& nets,
-    const std::Vector<OwnerRecord>& owners
+    const std::Vector<OwnerRecord>& owners,
+    hardware::Interposer* interposer
 ) -> void {
-    for (const auto& owner : owners) {
-        const auto& net = nets[owner.net_index];
-        for (std::size_t i = 0; i < owner.demand_paths.size(); ++i) {
-            const auto& path = owner.demand_paths[i];
-            const std::size_t demand_id =
-                i < owner.demand_indices.size() ? owner.demand_indices[i] : i;
-            debug::debug_fmt(
-                "FPIA RRR: path net_id={} demand_id={} name={} nodes={}",
-                net.net_id,
-                demand_id,
-                net.name,
-                path.size());
-            for (const int node : path) {
-                debug::debug_fmt("  {}", format_path_node(graph, node));
+    for (std::size_t net_index = 0; net_index < nets.size(); ++net_index) {
+        const auto& net = nets[net_index];
+        auto paths_by_demand = std::Vector<const std::Vector<int>*> {};
+        paths_by_demand.resize(net.demands.size(), nullptr);
+        auto net_paths = std::Vector<std::Vector<int>> {};
+
+        for (const auto& owner : owners) {
+            if (owner.net_index != net_index) {
+                continue;
             }
+            for (std::size_t i = 0; i < owner.demand_paths.size(); ++i) {
+                const std::size_t demand_id =
+                    i < owner.demand_indices.size() ? owner.demand_indices[i] : i;
+                const auto& path = owner.demand_paths[i];
+                if (demand_id >= paths_by_demand.size() || path.empty()) {
+                    continue;
+                }
+                paths_by_demand[demand_id] = &path;
+                net_paths.push_back(path);
+            }
+        }
+
+        debug::info_fmt(
+            "FPIA RRR: route net_id={} name={} kind={} demands={} wirelength={} sources=[{}]",
+            net.net_id,
+            net.name,
+            routing_kind_name(net),
+            net.demands.size(),
+            net_wirelength(graph, net_paths),
+            format_sources(graph, net));
+        for (std::size_t demand_id = 0; demand_id < paths_by_demand.size(); ++demand_id) {
+            const auto* path = paths_by_demand[demand_id];
+            const int sink = resolve_graph_node(graph, net.demands[demand_id].sink);
+            const auto sink_text = sink >= 0 ? format_path_node(graph, sink) : "<unresolved>";
+            if (path == nullptr) {
+                debug::info_fmt("  demand={} sink={} path=<missing>", demand_id, sink_text);
+                continue;
+            }
+            if (net.is_sync_bus) {
+                const auto n_i = interposer == nullptr
+                    ? 0
+                    : sync_lane_length(graph, *path, interposer, net.kind == RoutingNetKind::Bnet);
+                debug::info_fmt(
+                    "  lane={} source={} sink={} N_i={} path=[{}]",
+                    demand_id,
+                    format_path_node(graph, path->front()),
+                    sink_text,
+                    n_i,
+                    format_node_path(graph, *path));
+                continue;
+            }
+            debug::info_fmt(
+                "  demand={} start={} sink={} path=[{}]",
+                demand_id,
+                format_path_node(graph, path->front()),
+                sink_text,
+                format_node_path(graph, *path));
         }
     }
 }
 
-auto dump_overflows(const std::Vector<OwnerRecord>& owners, const ResourceModel& resources) -> void {
+auto format_overflow_owner(const OwnerId& id, const std::Vector<RoutingNet>& nets) -> std::String {
+    for (const auto& net : nets) {
+        if (net.net_id != id.net_id) {
+            continue;
+        }
+        if (net.is_sync_bus) {
+            return std::format("{}#{}", net.name, id.demand_id);
+        }
+        return net.name;
+    }
+    return std::format("net{}#{}", id.net_id, id.demand_id);
+}
+
+auto dump_overflows(
+    const std::Vector<OwnerRecord>& owners,
+    const std::Vector<RoutingNet>& nets,
+    const ResourceModel& resources
+) -> void {
     auto seen = std::Set<ResourceKey> {};
     for (const auto& owner : owners) {
         for (const auto& key : owner.claimed) {
@@ -693,14 +787,9 @@ auto dump_overflows(const std::Vector<OwnerRecord>& owners, const ResourceModel&
                     if (!names.empty()) {
                         names += ",";
                     }
-                    names += std::format("({},{})", item.net_id, item.demand_id);
+                    names += format_overflow_owner(item, nets);
                 }
-                debug::debug_fmt(
-                    "FPIA RRR: overflow key kind={} id={} extra={} owners=[{}]",
-                    static_cast<int>(overflow_key.kind),
-                    overflow_key.id,
-                    overflow_key.extra,
-                    names);
+                debug::debug_fmt("FPIA RRR: overflow owners=[{}]", names);
             };
             report(key);
             if (key.kind == ResourceKind::ModeStraight || key.kind == ResourceKind::ModeSwap) {
@@ -806,9 +895,9 @@ auto run_rrr(
             result.total_wirelength,
             result.routing_ms,
             elapsed_ms);
+        dump_paths(graph, nets, owners, interposer);
         if (verbose_level >= 1) {
-            dump_paths(graph, nets, owners);
-            dump_overflows(owners, resources);
+            dump_overflows(owners, nets, resources);
         }
         return result;
     };
@@ -838,10 +927,6 @@ auto run_rrr(
             "FPIA RRR: initial overflow={} total_wirelength={}",
             initial_overflow,
             initial_wl);
-    }
-
-    if (verbose_level >= 1) {
-        dump_paths(graph, nets, owners);
     }
 
     for (int iter = 0; iter < params.max_iterations; ++iter) {
@@ -986,7 +1071,7 @@ auto run_rrr(
             rerouted,
             new_wirelength);
         if (verbose_level >= 1) {
-            dump_overflows(owners, resources);
+            dump_overflows(owners, nets, resources);
         }
 
         iterations = iter + 1;

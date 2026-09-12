@@ -36,8 +36,9 @@ xmake build FPIA_RRR_unit
 ./output/FPIA_RRR_unit
 ```
 
-`-o` 写 `DIR/debug.log`。`-v`/`-vv` 调用 `debug::set_debug_level(Debug)`。`main`：
-`Elapsed::start()` → parse/`build_nets` → `build_routing_nets` →
+`-o` 写 `DIR/debug.log`。无 `-v` 也输出 spec §9 汇总行，并在整次布线结束时打印
+全部 demand 路径。`-v`/`-vv` 另将级别设为 `Debug`（过程细节见下方「日志分层」）。
+`main`：`Elapsed::start()` → parse/`build_nets` → `build_routing_nets` →
 `build_hardware_graph` → `run_rrr` → 成功则 `validate_rrr_solution`。CLI
 `max_iterations`/`seed` 写入 `RrrParams`。退出码 0 仅当 `status==success` 且
 `best_overflow==0` 且独立校验通过；校验失败保留 `run_rrr` 已写统计并返回非零。
@@ -101,10 +102,60 @@ Dijkstra，不 claim。资源 cap-1 overflow；mode straight+swap 冲突；Bnet
 
 ## 缺省超参数（spec §6.1）
 
-`H=4, k=1.0, s=20, decay=0.9, increment=1, history_weight=1, detour_bias=0,
-max_iterations=64, stagnation_limit=8, sync_tail_extra_tracks=64, seed=1, r={0.5,0.75,1.0}`。
-`type_weight`：node=1，switch/matching=2，mode-conflict=8。连续 4 轮无改进时
-`H=min(H+4,16)`。
+CLI 只暴露 `--max-iterations` 与 `--seed`；其余为编译期常数，全部写入 params 日志。
+`type_weight`：node=1，switch/matching=2，mode-conflict=8。
+
+| 参数 | 缺省 | 含义 |
+|---|---|---|
+| `seed` | 1 | 只记日志；搜索与排序确定，不使用随机数 |
+| `max_iterations` | 64 | overflow 迭代上限 |
+| `stagnation_limit` | 8 | 字典序连续无改进则停止 |
+| `H` | 4 | 拥塞高度（FastRoute `COSHEIGHT`） |
+| `k` | 1.0 | logistic 陡峭度 |
+| `s` | 20 | 超容量后的线性斜率 |
+| `decay` / `increment` / `history_weight` | 0.9 / 1 / 1 | `history_next = decay×history + increment×overflow` |
+| `detour_bias` | 0 | 首版关闭 |
+| `sync_tail_extra_tracks` | 64 | tail maze 超出当前最长 lane 的 Track 预算 |
+| `r` | 0.5, 0.75, 1.0 | SyncNet 切尾比例 |
+
+`H/k/s` 进入 maze 的 present cost（`cap=1`，`u` 为加入候选后的 owner 数）：
+
+```text
+P(u) = 1 + H/(exp(k×(cap-u))+1) + [u>cap]×H/s×(u-cap)
+present_cost = type_weight × P(u)
+```
+
+- 增大 `H`：空闲占用和冲突占用都更贵，冲突项按 `H` 放大，maze 更倾向绕开热点，线长往往变大。连续 4 轮字典序无改进时 `H ← min(H+4, 16)`。
+- 增大 `k`：从“还能再挤一个”到“已经 overflow”的代价跳变更陡，更早避开将满资源。
+- 减小 `s`：已经 overflow 时线性罚分 `H/s × (u-cap)` 更陡，更强力驱离热点；增大 `s` 则允许更长地挤占。
+
+`initial overflow` 是全部网 maze 完、RRR 循环开始前的 `Σ max(0, owner_count-1)`（外加 mode 冲突与 Bnet 双 unit）。为 0 则初解已合法，循环只打 `iter=0` 后成功退出。
+
+## 日志分层
+
+无 `-v`（`Info`）：spec §9 汇总行；`finish` 时按 RoutingNet 聚合打印最终路径。
+块头为 `route net_id= name= kind= demands= wirelength= sources=[...]`，其中
+`wirelength` 是该 net 内去重的 Track+Bump 节点数；不打印 `nodes`。普通多汇网在
+同一块内按 `demand=/start=/sink=/path=[...]` 列出所有分支；SyncNet 在同一块内按
+`lane=/source=/sink=/N_i=/path=[...]` 列出所有成员。过程中不提前 dump 路径。
+
+`-v`/`-vv`（`Debug`，二者目前同级）：在过程中额外打印
+- 每轮 RRR 的 overflow owner 集合（`overflow owners=[name,...]`；SyncNet lane 为
+  `name#demand_id`，`demand_id` 是组内 lane 编号）
+- SyncNet `equalize r= N_MAX= short_lanes=`、`sync tail maze ...`、`N_MAX raised`
+不打印 `sync net_id=... N_i=... equal=`。`sync tail cutoff` 用 `info`，无 `-v`
+也会出现。结束时仍打最终路径；`-v` 再追加一次结束时的 overflow 明细。
+
+## 日志：`dirty_owners` 与 `rerouted`
+
+`iter=` 行每轮都会打（含初解已合法的 `iter=0`）。
+
+- `dirty_owners`：本轮**计划拆掉**的 owner 数。碰到 overflow 资源的网；SyncNet 任一成员脏则扩到整组。
+- `rerouted`：本轮**实际重新 maze** 的 owner 数。
+
+当前实现先按同一 `dirty_ids` 全部 rip，再对同一集合 reroute，因此成功的 iter
+行上两者通常相等。早退成功时两者都为 0。maze 中途 `unroutable` 不打部分计数的
+iter 行。
 
 ## 测试矩阵（spec §10.3）
 
@@ -134,6 +185,9 @@ FPIA RRR: status=<success|iteration_limit|stagnated|unroutable>
           iterations=<I> best_overflow=<O> routing_ms=<T> elapsed_ms=<E>
 routing result: total_wirelength=<W> RRR_routing_time=<T> elapsed_ms=<E>
 ```
+
+`iter` 行中 `overflow` / `max_resource_overflow` 是本轮 rip **前** 的值；若发生了
+reroute，`total_wirelength` 是 rip **后** 的新线长。
 
 命名空间 `PR_tool`；`std::Vector` / `std::String`。单测 Catch-free `require()`。
 本文件 ≤200 行。

@@ -386,8 +386,11 @@ routing result: total_wirelength=<W>
 `total_wirelength` 沿用 SAT 路径统计：每个逻辑 net 内去重计数 `Track + Bump` 节点，
 再跨 net 求和；TOB 内部 HLine/VLine 和 virtual root 不计入。
 
-建议在 `-v` 下记录每条 demand path 与每个 overflow 资源的 owner 集合；`-vv` 下再
-记录 maze 搜索的 explored nodes、route cost 和 history contribution。
+布线结束后始终用 `info` 按 RoutingNet 聚合打印最终路径：块头记录 net 类型、全部
+逻辑 source、demand 数和该 net 的去重 `wirelength`；普通多汇网在块内列出每个 sink
+的分支路径，SyncNet 在块内列出全部 lane 与其 `N_i`。建议在 `-v` 下记录每个 overflow
+资源的 owner 集合，以及 SyncNet equalize / tail maze 过程行。`-vv` 下再记录 maze
+搜索的 explored nodes、route cost 和 history contribution。
 
 ## 10. 验证与完成标准
 
