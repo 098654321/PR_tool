@@ -98,6 +98,7 @@ auto solve_v15_ilp_model(
                 GRB_DoubleParam_TimeLimit,
                 options.time_limit_hours.value() * 3600.0);
         }
+        env.set(GRB_DoubleParam_MIPGap, 0.015);
         env.set(GRB_StringParam_LogFile, log_path.string());
         env.start();
         auto model = GRBModel {env};

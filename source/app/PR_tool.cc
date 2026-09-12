@@ -10,6 +10,7 @@
 #include <std/string.hh>
 #include <debug/debug.hh>
 #include <std/algorithm.hh>
+#include <utility/elapsed.hh>
 
 #ifdef _WIN32
 #include "Windows.h"
@@ -66,6 +67,7 @@ namespace PR_tool {
     }
 
     int main(int argc, char** argv) {
+        Elapsed::start();
     #ifdef _WIN32
         SetConsoleOutputCP(CP_UTF8);
         if (AttachConsole(ATTACH_PARENT_PROCESS)) {

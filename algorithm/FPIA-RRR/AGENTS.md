@@ -1,0 +1,139 @@
+# PR_tool / algorithm/FPIA-RRR 工程指南
+
+本目录实现独立的 FPIA `rip-up-and-reroute`（RRR）全局布线器，作为
+`algorithm/test_ILP/` 中 SAT + ILP 方法的对比实验。方法规范见同目录 `spec.md`。
+
+**当前状态：RRR 主循环、SyncNet 等长修复与独立合法性校验已接通。** 不写
+controlbits，不改 `Interposer` 寄存器。
+
+只可以在本git分支工作，绝对不可以切换到其它分支，或者将本分支的内容合并到其它分支。也不能使用git push推送到远程仓库
+
+## 目的与边界
+
+- 与 `test_ILP` 使用相同配置输入、`source/` 解析器、`hardware::Interposer` 拓扑与
+  wirelength 语义；仅路由策略不同。
+- 每次运行只路由 `mode = 0`。不切换 mode，不加载旧路径，不做 incremental routing。
+- 不调用 `suspend()` / `give_out()` / `connect()` / `PathPackage::connect_all()`。
+- occupancy 只存在于 `ResourceModel`。不修改 `algorithm/test_ILP/`。不链接 CaDiCal/Gurobi。
+
+## 目录结构
+
+```text
+algorithm/FPIA-RRR/
+├── spec.md / AGENTS.md / main.cc / rrr_cli.hh/.cc / rrr_types.hh
+├── net_adapter.* / hw_map.hh / hardware_graph.* / resource_model.*
+├── maze_search.* / rrr_router.* / route_log.* / sync_equalize.*
+├── route_validate.hh/.cc
+└── test/unit_main.cc
+```
+
+## CLI、入口与计时
+
+```bash
+./output/FPIA_RRR <config_path> [-v|-vv] [-o DIR] [--max-iterations N] [--seed N]
+xmake build FPIA_RRR
+xmake build FPIA_RRR_unit
+./output/FPIA_RRR_unit
+```
+
+`-o` 写 `DIR/debug.log`。`-v`/`-vv` 调用 `debug::set_debug_level(Debug)`。`main`：
+`Elapsed::start()` → parse/`build_nets` → `build_routing_nets` →
+`build_hardware_graph` → `run_rrr` → 成功则 `validate_rrr_solution`。CLI
+`max_iterations`/`seed` 写入 `RrrParams`。退出码 0 仅当 `status==success` 且
+`best_overflow==0` 且独立校验通过；校验失败保留 `run_rrr` 已写统计并返回非零。
+
+计时：`RRR_routing_time`/`routing_ms` 覆盖 initial maze + RRR 循环（不含 parse/图构建）；
+`elapsed_ms` 为 `main` 入口到即将退出的墙钟（`Elapsed::milliseconds()`）。
+
+## `run_rrr`
+
+`run_rrr(graph, nets, params, interposer, verbose_level=0) -> RrrResult`。`interposer` 必须非空；
+这保证 SyncNet 的等长检查不会被静默跳过。
+`RrrResult`：`status`、`iterations`、`best_overflow`、`total_wirelength`、`paths`、
+`routing_ms`。`paths[net][demand]` 为节点 id 序列。
+
+Owner：普通 Bnet/Tnet/PNnet/fanout 为 `{net_id,0}`；SyncNet 成员为
+`{net_id,demand_id}`。初始顺序：全部 bus owner（lane 数、组 HPWL、`net_id`，组内
+`demand_id` 升序）再普通网（端口数、HPWL、id）。Dirty：congestion exposure、retry、
+HPWL、id（除 id 外均降序）。HPWL 为 Track/Bump 终端包围盒；Bump 用 `tob_anchor_cob`。
+PNnet 计入全部候选源。fanout/PNnet rip 整棵树后按 `demand_id` 升序重生。
+
+调度：一组的第一个 SyncNet owner 走 `route_sync_group`（maze 全 lane，sibling
+物理资源 `hard_block`（Node/Switch/Matching；Mode/BnetUnit 不互斥），再
+`equalize_sync_group`）；已填 sibling 经 `routed_sync` 跳过。Dirty
+任一 SyncNet 成员扩到整组后再 rip。overflow 0 且各组 `N_i` 相等才 success。
+
+循环（spec §7）：analyze → legal best 字典序 `(overflow, total_wirelength)`（bus 须
+等长）→ overflow 0 且等长则 success → `history_next` → 连续 4 轮无改进则
+`H=min(H+4,16)` → dirty → 先全部 rip 再 reroute。`stagnation_limit` 后 `stagnated`；
+用尽 `max_iterations` 则 `iteration_limit`。结束 restore best。maze 不可达 →
+`unroutable`。Claim 使用 `path_resource_keys`（与 maze `arc_resource_keys` 同一投影），
+Bnet 另 claim `bnet_unit_key`。`route_demand` 传入 `interposer` 做 NESW。
+
+## 独立校验 `validate_rrr_solution`
+
+`validate_rrr_solution(graph, nets, result, interposer=nullptr) -> bool`。
+
+不读取路由器 live occupancy。用 `path_resource_keys` 把 `result.paths` claim 进
+**新的** `ResourceModel`。失败时 `debug::error` 并返回 false。
+
+检查（spec §10.4）：每条 demand 非空路径，末节点为 sink，首节点为候选源或同 owner
+树节点；相邻节点在 `directed_arc_set`；Track/Bump/HLine/VLine、物理开关、matching
+与 mode-conflict overflow 均为 0；Bnet 每 owner 至多一个 `selected_unit`；SyncNet
+组成员 `sync_lane_length` 相等（需 `interposer`）且 Node/Switch/Matching
+claimed key 互斥（Mode/BnetUnit 为兼容与 per-owner 锁，不按跨 lane 独占）。
+
+## SyncNet 长度与等长 API
+
+`N_i`：按访问序计数 Track 节点，得到 `N_track`，再加 PathPackage TOB 端点常数：
+Bnet +2，Tnet +1。组成员不同时混 Bnet/Tnet。
+
+`sync_equalize.hh/.cc`：`sync_track_cut_index(Ni, r) = floor(Ni*(1-r))`；
+`sync_lane_length(...)`；`equalize_sync_group(...)` 短 lane 按 `r={0.5,0.75,1.0}`
+切尾。其他 SyncNet lane 硬阻塞；前缀与 parent chain 禁止回环。仅当全部 lane `N_i`
+相等返回 true。
+
+## Maze / 资源 / 图
+
+`route_demand(..., tree={}, is_bnet=false, interposer=nullptr, hard_block={})`
+Dijkstra，不 claim。资源 cap-1 overflow；mode straight+swap 冲突；Bnet
+`selected_unit`。wirelength：每 net 去重 Track+Bump。
+
+## 缺省超参数（spec §6.1）
+
+`H=4, k=1.0, s=20, decay=0.9, increment=1, history_weight=1, detour_bias=0,
+max_iterations=64, stagnation_limit=8, sync_tail_extra_tracks=64, seed=1, r={0.5,0.75,1.0}`。
+`type_weight`：node=1，switch/matching=2，mode-conflict=8。连续 4 轮无改进时
+`H=min(H+4,16)`。
+
+## 测试矩阵（spec §10.3）
+
+| 用例 | 内容 |
+|---|---|
+| `algorithm/test_ILP/test/case_2btb` | 两 Bnet |
+| `algorithm/test_ILP/test/case_2btt` | 两 Tnet |
+| `algorithm/test_ILP/test/case_2fanout` | 一 Tnet 两汇 |
+| `algorithm/test_ILP/test/case_bus2btb` | SyncNet Bnet |
+| `algorithm/test_ILP/test/case_bus2btt` | SyncNet Tnet |
+| `test/config/case5` | PNnet/bus 混合，约 50s |
+| `FPIA_RRR_unit` 第二层 | 5-lane SyncNet（初始 Track 数 9/7/6/5/3）与一条局部冲突普通网；验证整组 rip-up、history 绕行、等长与独立校验 |
+
+单测另覆盖 claim/maze/RRR 排序、empty path 与跨 owner overflow 校验失败、合法短路径
+通过。两层 SyncNet 测试均向标准输出打印初始候选和最终路径、每路径 Track 数与 `N_i`；
+第二层还打印 RRR status/iteration/overflow。命令：`./output/FPIA_RRR_unit`。
+
+## 日志字段（spec §9，必须出现）
+
+```text
+FPIA RRR: graph nodes=<N> arcs=<M> route_owners=<K>
+FPIA RRR: params max_iterations=<N> seed=<S> H=<H> k=<k> s=<s> sync_tail_extra_tracks=<T>
+FPIA RRR: initial overflow=<O> total_wirelength=<W>
+FPIA RRR: iter=<I> overflow=<O> max_resource_overflow=<M>
+          dirty_owners=<D> rerouted=<R> total_wirelength=<W>
+FPIA RRR: status=<success|iteration_limit|stagnated|unroutable>
+          iterations=<I> best_overflow=<O> routing_ms=<T> elapsed_ms=<E>
+routing result: total_wirelength=<W> RRR_routing_time=<T> elapsed_ms=<E>
+```
+
+命名空间 `PR_tool`；`std::Vector` / `std::String`。单测 Catch-free `require()`。
+本文件 ≤200 行。

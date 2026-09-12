@@ -6,6 +6,7 @@
 #include "debug/debug.hh"
 #include <circuit/basedie.hh>
 #include <hardware/interposer.hh>
+#include <utility/elapsed.hh>
 #include <algorithm>
 #include <ranges>
 
@@ -67,6 +68,8 @@ namespace PR_tool::algo {
         bool incremental,
         bool try_all_modes
     ) -> DataPerCycle {
+        auto elapsed_ms = Elapsed::milliseconds();
+
         // record length info
         debug::info(
             "\n\
@@ -87,7 +90,7 @@ namespace PR_tool::algo {
         );
 
         const auto& nets = engine.all_nets_in_modes(engine.mode());
-        auto data = engine.show_final_data(nets, incremental);
+        auto data = engine.show_final_data(nets, incremental, elapsed_ms);
         return data;
     }
 

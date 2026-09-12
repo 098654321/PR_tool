@@ -2,6 +2,8 @@
 
 针对 [PR_toolmore](https://www.PR_toolmoore.com/) 设计的一款 chiplet interposer，所制作的布局布线工具。
 
+这个是PR_tool的副本，用于论文实验，所以不允许使用git push提交到远程仓库的dev.algo_SAT_MCF_latest分支上，最多只能重新开一个仓库
+
 
 ## 项目分支
 

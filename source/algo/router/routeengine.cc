@@ -51,7 +51,7 @@ auto RouteEngine::show_data_in_cycle(std::usize cycle, const std::Vector<circuit
 }
 
 
-auto RouteEngine::show_final_data(const std::Vector<circuit::Net*>& nets, bool incre) -> DataPerCycle {
+auto RouteEngine::show_final_data(const std::Vector<circuit::Net*>& nets, bool incre, std::i64 elapsed_ms) -> DataPerCycle {
     auto data = this->_route_data.collect_data(nets, incre);
 
     if (incre) {
@@ -65,7 +65,8 @@ auto RouteEngine::show_final_data(const std::Vector<circuit::Net*>& nets, bool i
         Monopolized by Reuse: {}({}%)\n\
         Has Nonreuse: {}({}%)\n\
         Failed routing nubmer: {}\n\
-        ", data._total_length, data._sync_net_number, data._ave_sync_length, data._max_length, monopolized_by_reuse, 100*monopolized_by_reuse/sum, has_nonreuse, 100*has_nonreuse/sum, data._failed_net
+        Parse and Routing Time: {} milliseconds\n\
+        ", data._total_length, data._sync_net_number, data._ave_sync_length, data._max_length, monopolized_by_reuse, 100*monopolized_by_reuse/sum, has_nonreuse, 100*has_nonreuse/sum, data._failed_net, elapsed_ms
         );
     }
     else {
@@ -75,7 +76,8 @@ auto RouteEngine::show_final_data(const std::Vector<circuit::Net*>& nets, bool i
         Average Sync Length: {}\n\
         Max Length: {}\n\
         Failed routing nubmer: {}\n\
-        ", data._total_length, data._sync_net_number, data._ave_sync_length, data._max_length, data._failed_net
+        Parse and Routing Time: {} milliseconds\n\
+        ", data._total_length, data._sync_net_number, data._ave_sync_length, data._max_length, data._failed_net, elapsed_ms
         );
     }
 
