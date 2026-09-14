@@ -19,7 +19,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--ilp-optimize -L percent [-R pad] [--time-limit hours]]";
+    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--z3-optimize | --ilp-optimize -L percent [-R pad] [--time-limit hours]]";
 
 auto get_peak_rss_mb() -> double {
     rusage usage {};
@@ -67,6 +67,7 @@ auto run_main(int argc, char** argv) -> int {
     options.cadical.max_rss_mb = cli.max_rss_mb;
     options.initial_scope_pad = cli.initial_scope_pad;
     options.initial_delay_pad = cli.initial_delay_pad;
+    options.enable_z3_optimize = cli.enable_z3_optimize;
     options.ilp_optimize.enabled = cli.enable_ilp_optimize;
     options.ilp_optimize.stretch_threshold_percent =
         cli.ilp_stretch_threshold_percent.value_or(0.0);
@@ -79,7 +80,14 @@ auto run_main(int argc, char** argv) -> int {
         debug::info_fmt("CaDiCal solver logs enabled: directory={}", options.cadical.log_dir);
     }
     if (cli.max_rss_mb != 0) {
-        debug::info_fmt("Process peak RSS limit enabled: {} MB", cli.max_rss_mb);
+        if (cli.enable_z3_optimize) {
+            debug::info_fmt(
+                "RSS limit enabled for Z3 CNF encoding only: {} MB",
+                cli.max_rss_mb);
+        }
+        else {
+            debug::info_fmt("Process peak RSS limit enabled: {} MB", cli.max_rss_mb);
+        }
     }
     if (cli.verbose_level >= 1
         && (cli.initial_scope_pad != 0 || cli.initial_delay_pad != 0)) {
@@ -103,6 +111,9 @@ auto run_main(int argc, char** argv) -> int {
                 options.ilp_optimize.segment_bbox_pad,
                 options.ilp_optimize.gurobi_log_dir);
         }
+    }
+    if (cli.enable_z3_optimize) {
+        debug::info("v16 Z3 Optimize enabled: hard constraints + alpha assumptions, node-occupancy soft objective");
     }
 
     const auto result = solve_unified_sat(interposer.get(), *basedie.get(), options);

@@ -1,6 +1,6 @@
 # PR_tool / algorithm/test_ILP 工程指南
 
-本文件是 `algorithm/test_ILP/` 子工程的入口说明。当前 `test_ILP` 默认实现**第十四版 D/A 距离语义 SAT 可行性布线**（见 `problem_formulation/第十四版方法.md`）；可选的 `--ilp-optimize -L <percent>` 会在 SAT 成功后执行第十五版 Gurobi MCF 线长优化。不直接替代 `source/algo/router/` 的正式路由流程。
+本文件是 `algorithm/test_ILP/` 子工程的入口说明。当前 `test_ILP` 默认实现**第十四版 D/A 距离语义 SAT 可行性布线**（见 `problem_formulation/第十四版方法.md`）；可选 `--z3-optimize` 启用第十六版 Z3 Optimize 节点占用线长优化，`--ilp-optimize -L <percent>` 则在 SAT 成功后执行第十五版 Gurobi MCF 后优化。三条流程互不替代 `source/algo/router/` 的正式路由流程。
 
 ## 项目总体介绍
 
@@ -20,6 +20,8 @@
    - 反馈 round 0 的 `compute_pair_delays(state)` **保留**已填充的 `delays`；仅 scope 扩展、未设 `-d` 时 round 0 才首次写入 `{d_min}`。
 6. **Delay 与稀疏域预计算**：先用普通最短路 BFS 求各 pair 的 `d_min`；得到当前 `delays` 与 `d_max` 后，再在当前 scope、当前 `d_max` 内计算分层前向可达与各 sink 的反向可达，只保留位于某个当前允许长度 source-to-sink walk 上的 D 状态。同一 source 的 fanout/PNnet 多 sink 对有效状态取并集；feedback 后按新 scope/delay 全量重算，不预建未来轮次状态。
 7. **COBUnit 裁剪与 SAT 编码**：Tnet/IO track source 使用其唯一 unit mask，PNnet \(r_n\) 使用候选 source track 的 unit 并集，Bnet 静态保留全部 16 unit。Track、VLine 与相关弧先按 mask 过滤，再创建有效 `D`；TOB `A_{s,u→v,d}` 仅在两端 D 都有效时创建。每个 Bnet bump source 另建 16 个 `Q(s,u)` 并以 sequential ExactlyOne 选择一个 unit，所有有效 VLine-Track `A` 按 Track 端 unit 编码 `A⇒Q`。另含 `α⇒⋁D`、`Y`、`M_g`、bus `∀d` 等长；PNnet 不建 Q，物理 track 仍只允许 \(d=1\)，多个候选 source 可并存、汇合。
+
+**v16 可选优化**（`solve_with_z3_optimize_feedback`）：沿用上述 CNF 全部 hard constraints；把每个 `α` 作为 Z3 `Optimize::check(assumptions)` 的外部 assumption。`node_occupancy` 对每个物理 Track/Bump 节点建唯一 `U_v`，为全部有效 `D(s,v,d)` 加 `D⇒U_v`，并加入 unit soft `¬U_v`。若 hard constraints 加 alpha 不可满足，只用返回的 alpha core 扩展 scope/delay；若可满足，Optimize 在当前域内最小化 `Σ U_v`，不因目标质量自动扩域。提取后必须验证 `Σ U_v == total_wirelength`。
 
 默认流程不包含结果写回 interposer。
 
@@ -42,8 +44,8 @@ algorithm/test_ILP/
 ├── scope/            # build_routing_nets、scope_bbox、pair_routing_state
 ├── graph/            # unified_routing_graph（含 VirtualSource / augment_graph_for_pnnet）
 ├── delay/            # pair_delay_precompute（BFS、bus_d_min、PNnet r_n 偏移）
-├── sat/              # encoder、routing_feedback、encode_tob_special、encode_bus_sync、extract
-├── sat_allocation/   # cadical_solver（assume/solve/failed）
+├── sat/              # encoder、CaDiCaL/Z3 feedback、node_occupancy、extract
+├── sat_allocation/   # cadical_solver；z3_optimize_solver（Optimize/CNF wrapper）
 ├── problem_formulation/
 ├── mcf/ precompute/ ilp_allocation/ visualization/   # 第十二版遗留，未链接 test_ILP
 ```
@@ -57,6 +59,9 @@ algorithm/test_ILP/
 | `scope/pair_routing_state` | per-pair `delays`/`pair_bbox`；`apply_initial_search_padding`（CLI 首轮 scope/delay 预扩展）；fanout/bus/PNnet 同步；全片扩 |
 | `delay/pair_delay_precompute` | 普通 BFS 求 `d_min`；当前 `d_max` 内前向+反向精确可达 mask；source unit mask；PNnet 从 \(r_n\) |
 | `sat/routing_feedback` | UNSAT core 驱动 scope/delay 扩展；显式 `Expanded/Exhausted` 状态；每轮新建 `CadicalSession` |
+| `sat/z3_routing_feedback` | v16：既有 CNF 为 hard constraints，alpha 作外部 assumptions；仅 hard-UNSAT core 触发反馈扩展 |
+| `sat/node_occupancy` | v16 物理 Track/Bump 节点 `U_v` 与全部有效 `D(s,v,d)⇒U_v` |
+| `sat_allocation/z3_optimize_solver` | captured CNF、soft `¬U_v` 与 alpha assumptions 到 Z3 Optimize 的映射 |
 | `sat/routing_round_diagnostics` | 反馈轮次星号框、UNSAT 失败 net 汇总、SAT 成功后非最短 net 线长对比（诊断日志，不改求解结果） |
 | `sat/ideal_shortest_wirelength` | 按 net 类型计算理想最短 `net_wirelength` 下界（2-pin/bus 用 UnifiedGraph BFS，fanout/PNnet 用 Interposer maze 树） |
 | `sat/unified_sat_scope` | per-net 紧凑 scope；PNnet 强制含 \(r_n\)、全部候选 track、虚拟弧 |
@@ -77,6 +82,13 @@ algorithm/test_ILP/
 - **Y / M_g**：Bump-HLine、HLine-VLine、VLine-Track 三类物理开关与 vline-track 模式（1024 组全局 `M_g`）。
 - **Bus**：各 member 独立最短 → `bus_d_min=max`；SAT 侧 `∀d` 等等长。
 - **PNnet**：整网一个 \(r_n\)；`D_{r_n,r_n,0}=true`；物理 track 仅在 \(d=1\) 可达；路径 hop 统计扣 1 虚拟跳。
+
+### v16 可选节点占用优化
+
+- 以 `--z3-optimize` 启用，与 `--ilp-optimize` 互斥。原 v14 CNF 是 hard constraints，所有 alpha 都通过 Optimize assumptions 强制为真，因此只有 **hard constraints + alpha** 的 UNSAT 才会取 core 并进入原有反馈扩边。
+- `U_v` 只覆盖物理 Track/Bump 节点，不覆盖 TOB 内部开关；同一物理节点跨 source、distance、net 共用一个变量。每个已创建的 `D(s,v,d)` 都蕴含 `U_v`；没有 `U⇒⋁D` 的反向约束。
+- 每个 `¬U_v` 权重为 1，Z3 Optimize 在当前 scope/delay 域求 `ΣU_v` 最小解。`-s`/`-d` 仍是用户显式控制的搜索域，v16 不做基于目标质量的自动扩域。
+- 成功后以 Z3 模型进行同一套路径提取和校验，且硬性检查 `objective_cost == total_wirelength`；不等时结果标记失败。
 
 ### v15 可选后优化
 
@@ -106,7 +118,10 @@ xmake build test_ILP_unit
 ./output/test_ILP test/config/case7 -v -o output/case7_run
 ./output/test_ILP test/config/case7 -v --ilp-optimize -L 10
 ./output/test_ILP test/config/case7 -v --ilp-optimize -L 10 --time-limit 2
+./output/test_ILP test/module_test/test_function/testlength/testiosimple --z3-optimize -o output/z3_testiosimple
 ```
+
+**Z3 依赖**：`xmake.lua` 按 `Z3_HOME`、`Z3_ROOT`、仓库 `third_party/z3/install`、macOS Homebrew `/opt/homebrew/opt/z3`（Intel 为 `/usr/local/opt/z3`）的优先级寻找 include/lib；Linux 服务器通常只需将 Z3 安装到 `third_party/z3/install`。找不到 Z3 时，`test_ILP` 仍可构建并运行 v14/v15，但 `--z3-optimize` 会明确报后端不可用；可用 `xmake f --z3=n` 强制验证此降级路径。
 
 **输出目录**（可选）：`-o DIR` / `--output DIR` 将 `debug.log` 写到 `DIR/debug.log`，并将 `--ilp-optimize` 的 Gurobi 日志写到 `DIR/gurobi/v15_ilp.log`（目录不存在时创建）；省略时分别为 `./debug.log` 与 `./gurobi/v15_ilp.log`。`--sat-log` 的 `./cadical-log` 路径不受 `-o` 影响。
 
@@ -116,7 +131,7 @@ xmake build test_ILP_unit
 
 集成 case：`case_2btb`、`case_2btt`、`case_2fanout`、`case_bus2btb`、`case_bus2btt`（各验证基线、`-s 0 -d 1`、`-s 1 -d 1` 三组）；`test/config/case5`（PNnet）；`test/module_test/test_function/testlength` 下 `testiosimple`/`testchipletsimple`/`testchipletbus`/`testiobus` 的 `total_wirelength` 须与各自 `golden.txt` 一致（`testpn` 仅要求 SAT 成功，线长允许与 golden 不同）；建议 `--max-rss-mb 8192`。
 
-`-v` 日志含 scope、delay、`feedback round=`、`feedback critical`、`unified SAT encoding stats`（D/A 的 dense、unit-eligible、active 数量与比例，Q/aux 变量，8 类 CNF）、路径（PNnet 含选中 track；每个 net 末行 `net_wirelength=` 为 net 内 bump+track 去重计数）；成功时末尾分三行汇总：`unified SAT:`（`paths/vars/clauses`，`total_ms` 为整个 SAT 阶段墙钟，`solve_ms` 为各轮 CaDiCaL `solve()` 累计，`pre_ms=total_ms-solve_ms`）、`unified ILP:`（`requested/status/fallback_to_SAT/vars/constraints`，`total_ms` 为整个 ILP 阶段，`pre_ms` 为进入 `optimize()` 前的准备+建模，`solve_ms` 为 Gurobi 求解）、`routing result:`（`total_wirelength`）；轮次内仍有 `delay_precompute_ms`、`model_build_ms`、`round_solve_ms`；`run_main total elapsed` 是完整端到端时间。
+`-v` 日志含 scope、delay、`feedback round=`、`feedback critical`、`unified SAT encoding stats`（D/A 的 dense、unit-eligible、active 数量与比例，Q/aux/U 变量，9 类 CNF；第 9 类为 v16 `D=>U`）、路径（PNnet 含选中 track；每个 net 末行 `net_wirelength=` 为 net 内 bump+track 去重计数）；成功时末尾分三行汇总：`unified SAT:`（`paths/vars/clauses`，`total_ms` 为整个 SAT 阶段墙钟，`solve_ms` 为各轮 CaDiCaL `solve()` 累计，`pre_ms=total_ms-solve_ms`）、`unified ILP:`（`requested/status/fallback_to_SAT/vars/constraints`，`total_ms` 为整个 ILP 阶段，`pre_ms` 为进入 `optimize()` 前的准备+建模，`solve_ms` 为 Gurobi 求解）、`routing result:`（`total_wirelength`）；v16 成功行另记录 `objective`、`occupancy_vars`、`D=>U` clause 数、`round_solve_ms`、累计 `total_solve_ms` 和从 `build_routing_nets` 到最终结果的 `routing_total_ms`。轮次内仍有 `delay_precompute_ms`、`model_build_ms`；`run_main total elapsed` 是含配置读取的完整端到端时间。
 
 反馈扩边示例：`feedback round=2 critical net=3 demand=1 delays=10->10,11 bbox=(2,5,0,6)->(2,5,0,6)`（奇数次）；`feedback round=3 ... delays=10,11->10,11,12 bbox=(2,5,0,6)->(1,6,0,7)`（偶数次）。
 
@@ -126,6 +141,7 @@ xmake build test_ILP_unit
 - **CaDiCal core**：`failed()` 不保证最小；空 core 时回退到 max-delay pair。
 - **规模**：全图固定 1024 个 `M_g`；D/A 已按当前精确可达与 unit 资格稀疏创建，但大 scope、较大 `d_max` 或 feedback 轮次仍会增加 mask 预计算与 CNF 规模；`MEMORY_LIMIT` 仍用于硬性保护。
 - **首轮扩展**：`-s`/`-d` 无配置上界；过大值会膨胀首轮 CNF/RSS。实现会拒绝 `d_min+d` 的整数溢出；fanout、bus、PNnet 的 padding 语义均有单测覆盖。
+- **v16 Z3**：当前未向 Z3 设置独立求解时限；Optimize 返回 `UNKNOWN` 或 wrapper error 时不扩边并直接返回，避免把内部优化不确定性误作 hard-UNSAT。空 alpha core 表示基础 hard formula 不可满足，也直接停止而不扩域。`--max-rss-mb` 在此流程仅约束 CNF 编码阶段，未约束 Z3 Optimize 的后续内存；大 scope/delay 域会同时放大 captured CNF 与 `U_v` 数量。
 
 ## 工程风格
 

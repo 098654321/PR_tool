@@ -26,4 +26,10 @@ auto solve_with_feedback(
     const UnifiedSatSolveOptions& options
 ) -> SatRoutingResult;
 
+auto solve_with_z3_optimize_feedback(
+    hardware::Interposer* interposer,
+    circuit::BaseDie& basedie,
+    const UnifiedSatSolveOptions& options
+) -> SatRoutingResult;
+
 } // namespace PR_tool

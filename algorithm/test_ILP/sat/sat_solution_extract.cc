@@ -24,7 +24,7 @@ auto find_source_vars(
 }
 
 auto d_value(
-    const CadicalSession& session,
+    const ModelValue& value,
     const UnifiedSatModel& model,
     const SourceDelayVars& source,
     int node,
@@ -40,18 +40,18 @@ auto d_value(
     }
     const int lit = source.d_var[static_cast<std::size_t>(node_offset)]
                         [static_cast<std::size_t>(delay)];
-    return lit > 0 && session.value(lit);
+    return lit > 0 && value(lit);
 }
 
 auto a_value(
-    const CadicalSession& session,
+    const ModelValue& value,
     const UnifiedSatModel& model,
     std::size_t model_source_index,
     int arc_id,
     int delay
 ) -> bool {
     const int lit = tob_a_literal(model, model_source_index, arc_id, delay);
-    return lit > 0 && session.value(lit);
+    return lit > 0 && value(lit);
 }
 
 } // namespace
@@ -60,16 +60,13 @@ auto extract_sat_solution(
     const UnifiedGraph& graph,
     const std::Vector<RoutingNet>& nets,
     const UnifiedSatModel& model,
-    const CadicalSession& session,
-    const CadicalSolveResult& solve_result
+    const ModelValue& value,
+    const std::size_t num_vars,
+    const std::size_t num_clauses
 ) -> SatRoutingResult {
     auto out = SatRoutingResult {};
-    out.num_vars = session.num_vars();
-    out.num_clauses = session.num_clauses();
-    if (!solve_result.ok) {
-        out.message = solve_result.message;
-        return out;
-    }
+    out.num_vars = num_vars;
+    out.num_clauses = num_clauses;
 
     std::size_t expected_paths = 0;
     for (const auto& net : nets) {
@@ -97,7 +94,7 @@ auto extract_sat_solution(
                     demand.demand_id);
                 return out;
             }
-            if (!d_value(session, model, *source, pair->source_node, 0)) {
+            if (!d_value(value, model, *source, pair->source_node, 0)) {
                 out.message = std::format(
                     "net {} demand {} source is not active at delay 0",
                     net.net_id,
@@ -106,7 +103,7 @@ auto extract_sat_solution(
             }
             int sink_delay = -1;
             for (int delay : pair->delays) {
-                if (d_value(session, model, *source, pair->sink_node, delay)) {
+                if (d_value(value, model, *source, pair->sink_node, delay)) {
                     sink_delay = delay;
                     break;
                 }
@@ -134,7 +131,7 @@ auto extract_sat_solution(
                     bool matches = false;
                     if (is_tob_arc(arc)) {
                         matches = a_value(
-                            session,
+                            value,
                             model,
                             source->model_source_index,
                             arc_id,
@@ -142,7 +139,7 @@ auto extract_sat_solution(
                     }
                     else if (is_virtual_source_arc(arc)) {
                         matches = d_value(
-                            session,
+                            value,
                             model,
                             *source,
                             arc.u,
@@ -150,7 +147,7 @@ auto extract_sat_solution(
                     }
                     else {
                         matches = d_value(
-                            session,
+                            value,
                             model,
                             *source,
                             arc.u,
@@ -211,10 +208,10 @@ auto extract_sat_solution(
     for (const auto& [group_id, variable] : model.mode_var_by_group) {
         out.vline_mode_straight_by_group.emplace(
             static_cast<std::size_t>(group_id),
-            session.value(variable));
+            value(variable));
     }
     for (const auto& [switch_id, variable] : model.switch_var_by_id) {
-        if (session.value(variable)) {
+        if (value(variable)) {
             out.used_tob_switch_ids.push_back(switch_id);
         }
     }
@@ -222,6 +219,29 @@ auto extract_sat_solution(
     out.ok = true;
     out.message = "SAT";
     return out;
+}
+
+auto extract_sat_solution(
+    const UnifiedGraph& graph,
+    const std::Vector<RoutingNet>& nets,
+    const UnifiedSatModel& model,
+    const CadicalSession& session,
+    const CadicalSolveResult& solve_result
+) -> SatRoutingResult {
+    if (!solve_result.ok) {
+        auto out = SatRoutingResult {};
+        out.num_vars = session.num_vars();
+        out.num_clauses = session.num_clauses();
+        out.message = solve_result.message;
+        return out;
+    }
+    return extract_sat_solution(
+        graph,
+        nets,
+        model,
+        [&](const int variable) { return session.value(variable); },
+        session.num_vars(),
+        session.num_clauses());
 }
 
 } // namespace PR_tool

@@ -100,6 +100,10 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
             options.enable_ilp_optimize = true;
             continue;
         }
+        if (arg == "--z3-optimize") {
+            options.enable_z3_optimize = true;
+            continue;
+        }
         if (arg == "-L") {
             if (++i >= args.size()) {
                 throw std::invalid_argument("-L requires a non-negative finite number");
@@ -149,6 +153,9 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
     }
     if (!options.enable_ilp_optimize && options.ilp_time_limit_hours.has_value()) {
         throw std::invalid_argument("--time-limit requires --ilp-optimize");
+    }
+    if (options.enable_z3_optimize && options.enable_ilp_optimize) {
+        throw std::invalid_argument("--z3-optimize cannot be combined with --ilp-optimize");
     }
     return options;
 }

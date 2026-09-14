@@ -17,6 +17,7 @@ struct TestIlpCliOptions {
     std::size_t max_rss_mb{0};
     int initial_scope_pad{0};
     int initial_delay_pad{0};
+    bool enable_z3_optimize{false};
     bool enable_ilp_optimize{false};
     std::optional<double> ilp_stretch_threshold_percent;
     std::optional<int> ilp_segment_bbox_pad;

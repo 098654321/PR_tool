@@ -30,6 +30,8 @@ auto category_label(const SatClauseCategory cat) -> const char* {
             return "TOB switch uniqueness (Y)";
         case SatClauseCategory::SourceUnitSelection:
             return "source unit selection (Q)";
+        case SatClauseCategory::NodeOccupancy:
+            return "node occupancy (D => U)";
     }
     return "unknown";
 }
@@ -42,7 +44,7 @@ auto SatEncodingStats::add_clauses(const SatClauseCategory cat, const std::size_
 
 auto SatEncodingStats::known_primary_vars() const -> std::size_t {
     return d_vars + a_vars + mode_vars + switch_vars + alpha_vars
-        + unit_selector_vars;
+        + unit_selector_vars + occupancy_vars;
 }
 
 auto SatEncodingStats::finalize_variables(const std::size_t total_session_vars) -> void {
@@ -96,6 +98,8 @@ auto log_sat_encoding_stats(
     debug::info_fmt("  Y   (physical switch aggregate): {}", stats.switch_vars);
     debug::info_fmt("  Q   (Bnet source unit)          : {}", stats.unit_selector_vars);
     debug::info_fmt("  alpha (pair assumptions)       : {}", stats.alpha_vars);
+    debug::info_fmt("  U   (Track/Bump occupancy)     : {}", stats.occupancy_vars);
+    debug::info_fmt("  D => U occupancy clauses       : {}", stats.occupancy_implication_clauses);
     debug::info_fmt("  encoding auxiliary             : {}", stats.encoding_aux_vars);
     debug::info_fmt("  total SAT variables            : {}", total_session_vars);
 

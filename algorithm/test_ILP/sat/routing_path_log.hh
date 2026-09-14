@@ -17,6 +17,8 @@ enum class NetDisplayKind {
     TracksToBumps
 };
 
+auto is_wirelength_resource_node(const UnifiedGraph& graph, int node_id) -> bool;
+
 auto infer_net_display_kind(const RoutingNet& net) -> NetDisplayKind;
 
 auto net_display_kind_name(NetDisplayKind kind) -> std::String;

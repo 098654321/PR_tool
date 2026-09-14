@@ -9,6 +9,8 @@
 #include "ilp_v15/v15_ilp_validate.hh"
 #include "ilp_v15/v15_ilp_optimizer.hh"
 #include "sat/ideal_shortest_wirelength.hh"
+#include "sat/node_occupancy.hh"
+#include "sat_allocation/z3_optimize_solver.hh"
 #include "sat/routing_path_log.hh"
 #include "sat/routing_feedback.hh"
 #include "sat/routing_round_diagnostics.hh"
@@ -1513,6 +1515,93 @@ auto test_cadical_assume_failed() -> void {
     require(session.failed(x), "failed() must report the assumed literal in the unsat core");
 }
 
+auto test_z3_optimize_cli_option() -> void {
+    const auto enabled = parse_test_ilp_cli({"case", "--z3-optimize"});
+    require(enabled.enable_z3_optimize, "--z3-optimize must enable the Z3 backend");
+
+    bool rejected = false;
+    try {
+        (void)parse_test_ilp_cli({"case", "--z3-optimize", "--ilp-optimize", "-L", "10"});
+    }
+    catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    require(rejected, "--z3-optimize and --ilp-optimize must be mutually exclusive");
+}
+
+#ifdef USE_Z3
+auto test_z3_optimize_minimizes_unit_soft_clauses() -> void {
+    auto request = Z3OptimizeRequest {};
+    request.num_vars = 3;
+    request.hard_clauses = {{-1, 2, 3}};
+    request.soft_negated_vars = {2, 3};
+    request.external_assumptions = {1};
+
+    const auto result = solve_z3_optimize(request);
+    require(result.status == Z3OptimizeStatus::Optimal, "Z3 must prove the unit-soft optimum");
+    require(result.objective_cost == 1, "exactly one occupancy variable must be required");
+    require(
+        result.value(2) != result.value(3),
+        "the optimum must activate exactly one occupancy variable");
+}
+
+auto test_z3_optimize_returns_external_assumption_core() -> void {
+    auto request = Z3OptimizeRequest {};
+    request.num_vars = 1;
+    request.hard_clauses = {{-1}};
+    request.external_assumptions = {1};
+
+    const auto result = solve_z3_optimize(request);
+    require(
+        result.status == Z3OptimizeStatus::HardUnsat,
+        "a hard conflict under alpha must be reported as hard UNSAT");
+    require(
+        result.failed_assumption_literals == std::Vector<int> {1},
+        "Z3 must return the conflicting external assumption, not a soft core");
+}
+
+auto test_z3_optimize_hard_unsat_has_no_alpha_core() -> void {
+    auto request = Z3OptimizeRequest {};
+    request.num_vars = 1;
+    request.hard_clauses = {{1}, {-1}};
+    request.external_assumptions = {1};
+
+    const auto result = solve_z3_optimize(request);
+    require(
+        result.status == Z3OptimizeStatus::HardUnsat,
+        "a contradictory hard formula must be reported as hard UNSAT");
+    require(
+        result.failed_assumption_literals.empty(),
+        "a hard-only contradiction must not manufacture an alpha core");
+}
+
+auto test_z3_node_occupancy_matches_required_route_union() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
+    const auto scopes = build_all_scopes(graph, nets);
+    const auto delays = compute_pair_delays(graph, nets, scopes);
+    auto session_options = CadicalDiagnosticsOptions {};
+    session_options.capture_clauses = true;
+    auto session = CadicalSession {session_options};
+    const auto model = build_unified_sat_model(session, graph, nets, scopes, delays);
+    const auto occupancy = add_node_occupancy_variables(session, graph, model);
+
+    auto request = Z3OptimizeRequest {};
+    request.num_vars = session.num_vars();
+    request.hard_clauses = session.clauses();
+    for (const auto& [_, variable] : occupancy.u_var_by_node) {
+        request.soft_negated_vars.push_back(variable);
+    }
+    for (const auto& alpha : model.alpha_vars) {
+        request.external_assumptions.push_back(alpha.alpha_lit);
+    }
+
+    const auto result = solve_z3_optimize(request);
+    require(result.status == Z3OptimizeStatus::Optimal, "a required path must have a Z3 optimum");
+    require(result.objective_cost == 3, "node occupancy must count the three-node route union");
+}
+#endif
+
 auto test_alpha_implies_sink_d() -> void {
     const auto graph = synthetic_graph(5, {{0, 1}, {1, 2}, {2, 3}, {0, 4}, {4, 3}});
     auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
@@ -2643,6 +2732,19 @@ auto test_sat_encoding_stats_reconcile() -> void {
         "non-sync fixture must have zero sync bus equal-length clauses");
 }
 
+auto test_v16_occupancy_stats_are_not_auxiliary() -> void {
+    auto stats = SatEncodingStats {};
+    stats.d_vars = 4;
+    stats.occupancy_vars = 3;
+    stats.occupancy_implication_clauses = 9;
+    stats.add_clauses(SatClauseCategory::NodeOccupancy, stats.occupancy_implication_clauses);
+    stats.finalize_variables(7);
+
+    require(stats.encoding_aux_vars == 0, "U variables must not be reported as encoding auxiliary");
+    require(stats.known_primary_vars() == 7, "occupancy variables must be primary variables");
+    require(stats.total_clauses() == 9, "D=>U clauses must have their own CNF category");
+}
+
 auto test_source_distance_constants() -> void {
     const auto nets = std::Vector<RoutingNet> {
         synthetic_net(0, {0}, {{2, {0}}})};
@@ -3388,6 +3490,13 @@ auto main() -> int {
         test_pair_state_initial_delays_bbox();
         test_delay_set_drives_d_max();
         test_cadical_assume_failed();
+        test_z3_optimize_cli_option();
+#ifdef USE_Z3
+        test_z3_optimize_minimizes_unit_soft_clauses();
+        test_z3_optimize_returns_external_assumption_core();
+        test_z3_optimize_hard_unsat_has_no_alpha_core();
+        test_z3_node_occupancy_matches_required_route_union();
+#endif
         test_alpha_implies_sink_d();
         test_alpha_gates_sink_connectivity();
         test_alpha_skips_unreachable_delay_for_sat();
@@ -3451,6 +3560,7 @@ auto main() -> int {
         test_logical_source_exclusivity();
         test_logical_source_owns_its_source_node();
         test_sat_encoding_stats_reconcile();
+        test_v16_occupancy_stats_are_not_auxiliary();
         test_source_distance_constants();
         test_mode_group_zero_conflict();
         test_all_mode_groups_and_group_zero_extraction();

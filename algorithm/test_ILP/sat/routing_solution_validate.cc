@@ -143,7 +143,7 @@ auto validate_routing_solution(
     const UnifiedGraph& graph,
     const std::Vector<RoutingNet>& nets,
     const UnifiedSatModel& model,
-    const CadicalSession& session,
+    const ModelValue& value,
     const SatRoutingResult& out
 ) -> ValidationReport {
     auto report = ValidationReport {};
@@ -379,7 +379,7 @@ auto validate_routing_solution(
         const int delay_offset = net.kind == RoutingNetKind::PNnet ? 1 : 0;
         if (source != nullptr && net.kind == RoutingNetKind::PNnet) {
             const int lit = d_literal_for(model, *source, source->source_node, 0);
-            if (lit > 0 && !session.value(lit)) {
+            if (lit > 0 && !value(lit)) {
                 add_violation(
                     report,
                     ViolationKind::DelayReplayMismatch,
@@ -456,7 +456,7 @@ auto validate_routing_solution(
             if (source != nullptr) {
                 const int replay_delay = static_cast<int>(i) + delay_offset;
                 const int d_lit = d_literal_for(model, *source, node, replay_delay);
-                if (d_lit > 0 && !session.value(d_lit)) {
+                if (d_lit > 0 && !value(d_lit)) {
                     add_violation(
                         report,
                         ViolationKind::DelayReplayMismatch,
@@ -521,7 +521,7 @@ auto validate_routing_solution(
                     source->model_source_index,
                     arc_id,
                     replay_delay);
-                if (a_lit > 0 && !session.value(a_lit)) {
+                if (a_lit > 0 && !value(a_lit)) {
                     add_violation(
                         report,
                         ViolationKind::DelayReplayMismatch,
@@ -622,7 +622,7 @@ auto validate_routing_solution(
                     switch_id));
             continue;
         }
-        if (!session.value(switch_it->second)) {
+        if (!value(switch_it->second)) {
             add_violation(
                 report,
                 ViolationKind::TobSwitchConflict,
@@ -637,7 +637,7 @@ auto validate_routing_solution(
         }
     }
     for (const auto& [switch_id, y_var] : model.switch_var_by_id) {
-        if (session.value(y_var) && !reported_switches.contains(switch_id)) {
+        if (value(y_var) && !reported_switches.contains(switch_id)) {
             add_violation(
                 report,
                 ViolationKind::TobSwitchConflict,
@@ -788,7 +788,7 @@ auto validate_routing_solution(
                     continue;
                 }
                 const int lit = d_literal_for(model, source, track_node, delay);
-                if (lit > 0 && session.value(lit)) {
+                if (lit > 0 && value(lit)) {
                     add_violation(
                         report,
                         ViolationKind::PnnetTrackRule,
@@ -811,6 +811,21 @@ auto validate_routing_solution(
     report.violations_count = report.violations.size();
     report.pass = report.violations_count == 0;
     return report;
+}
+
+auto validate_routing_solution(
+    const UnifiedGraph& graph,
+    const std::Vector<RoutingNet>& nets,
+    const UnifiedSatModel& model,
+    const CadicalSession& session,
+    const SatRoutingResult& out
+) -> ValidationReport {
+    return validate_routing_solution(
+        graph,
+        nets,
+        model,
+        [&](const int variable) { return session.value(variable); },
+        out);
 }
 
 auto log_validation_report(const ValidationReport& report, int verbose_level) -> void {

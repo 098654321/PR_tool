@@ -11,6 +11,34 @@ if is_plat("windows") then
 end
 -- add_requires("xlnt", {configs = {shared = false}})
 
+local function add_z3_dependency()
+    if not has_config("z3") then
+        return false
+    end
+    local z3_home = os.getenv("Z3_HOME")
+    if not z3_home or z3_home == "" then
+        z3_home = os.getenv("Z3_ROOT")
+    end
+    if not z3_home or z3_home == "" then
+        if os.isdir("third_party/z3/install") then
+            z3_home = "third_party/z3/install"
+        elseif is_host("macosx") and os.isdir("/opt/homebrew/opt/z3") then
+            z3_home = "/opt/homebrew/opt/z3"
+        elseif is_host("macosx") and os.isdir("/usr/local/opt/z3") then
+            z3_home = "/usr/local/opt/z3"
+        end
+    end
+    if not z3_home or z3_home == "" then
+        return false
+    end
+    add_includedirs(z3_home .. "/include")
+    add_linkdirs(z3_home .. "/lib")
+    add_rpathdirs(z3_home .. "/lib")
+    add_links("z3")
+    add_defines("USE_Z3")
+    return true
+end
+
 rule("qt.opengl")
     on_config(function (target) 
         import("detect.sdks.find_qt")
@@ -188,10 +216,12 @@ target("test_ILP")
         "algorithm/test_ILP/sat/sat_constraint_kits.cc",
         "algorithm/test_ILP/sat/sat_encoding_stats.cc",
         "algorithm/test_ILP/sat/unified_sat_encoder.cc",
+        "algorithm/test_ILP/sat/node_occupancy.cc",
         "algorithm/test_ILP/sat/encode_tob_special.cc",
         "algorithm/test_ILP/sat/encode_bus_sync.cc",
         "algorithm/test_ILP/sat/solve_unified_sat.cc",
         "algorithm/test_ILP/sat/routing_feedback.cc",
+        "algorithm/test_ILP/sat/z3_routing_feedback.cc",
         "algorithm/test_ILP/sat/routing_round_diagnostics.cc",
         "algorithm/test_ILP/sat/ideal_shortest_wirelength.cc",
         "algorithm/test_ILP/sat/routing_solution_validate.cc",
@@ -210,11 +240,18 @@ target("test_ILP")
     if has_config("cadical") then
         add_defines("USE_CADICAL")
         add_includedirs("third_party/cadical/src")
-        add_linkdirs("third_party/cadical/build")
+        local cadical_build_dir = "third_party/cadical/build"
+        if is_plat("macosx") and os.isdir("third_party/cadical/build-macos") then
+            cadical_build_dir = "third_party/cadical/build-macos"
+        end
+        add_linkdirs(cadical_build_dir)
         add_links("cadical")
         if is_plat("linux") then
             add_syslinks("pthread")
         end
+    end
+    if add_z3_dependency() then
+        add_files("algorithm/test_ILP/sat_allocation/z3_optimize_solver.cc")
     end
     local gurobi_home = os.getenv("GUROBI_HOME")
     if not gurobi_home or gurobi_home == "" then
@@ -257,10 +294,12 @@ target("test_ILP_unit")
         "algorithm/test_ILP/sat/sat_constraint_kits.cc",
         "algorithm/test_ILP/sat/sat_encoding_stats.cc",
         "algorithm/test_ILP/sat/unified_sat_encoder.cc",
+        "algorithm/test_ILP/sat/node_occupancy.cc",
         "algorithm/test_ILP/sat/encode_tob_special.cc",
         "algorithm/test_ILP/sat/encode_bus_sync.cc",
         "algorithm/test_ILP/sat/solve_unified_sat.cc",
         "algorithm/test_ILP/sat/routing_feedback.cc",
+        "algorithm/test_ILP/sat/z3_routing_feedback.cc",
         "algorithm/test_ILP/sat/routing_round_diagnostics.cc",
         "algorithm/test_ILP/sat/ideal_shortest_wirelength.cc",
         "algorithm/test_ILP/sat/routing_solution_validate.cc",
@@ -279,11 +318,18 @@ target("test_ILP_unit")
     if has_config("cadical") then
         add_defines("USE_CADICAL")
         add_includedirs("third_party/cadical/src")
-        add_linkdirs("third_party/cadical/build")
+        local cadical_build_dir = "third_party/cadical/build"
+        if is_plat("macosx") and os.isdir("third_party/cadical/build-macos") then
+            cadical_build_dir = "third_party/cadical/build-macos"
+        end
+        add_linkdirs(cadical_build_dir)
         add_links("cadical")
         if is_plat("linux") then
             add_syslinks("pthread")
         end
+    end
+    if add_z3_dependency() then
+        add_files("algorithm/test_ILP/sat_allocation/z3_optimize_solver.cc")
     end
     local gurobi_home = os.getenv("GUROBI_HOME")
     if not gurobi_home or gurobi_home == "" then
@@ -483,6 +529,14 @@ option("cadical")
     set_showmenu(true)
 
     set_description("Enable CaDiCaL SAT solver")
+
+option("z3")
+
+    set_default(true)
+
+    set_showmenu(true)
+
+    set_description("Enable Z3 Optimize backend when a Z3 installation is found")
 
 
 -- xmake project -k compile_commands

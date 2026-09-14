@@ -2,6 +2,7 @@
 
 #include "common/routing_types.hh"
 #include "graph/unified_routing_graph.hh"
+#include "sat/model_value.hh"
 #include "sat/unified_sat_encoder.hh"
 #include "sat_allocation/cadical_solver.hh"
 
@@ -44,6 +45,14 @@ struct ValidationReport {
     std::Vector<Violation> violations;
     std::map<ViolationKind, std::size_t> category_counts;
 };
+
+auto validate_routing_solution(
+    const UnifiedGraph& graph,
+    const std::Vector<RoutingNet>& nets,
+    const UnifiedSatModel& model,
+    const ModelValue& value,
+    const SatRoutingResult& out
+) -> ValidationReport;
 
 auto validate_routing_solution(
     const UnifiedGraph& graph,

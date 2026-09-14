@@ -153,6 +153,9 @@ auto solve_with_feedback(
     circuit::BaseDie& basedie,
     const UnifiedSatSolveOptions& options
 ) -> SatRoutingResult {
+    if (options.enable_z3_optimize) {
+        return solve_with_z3_optimize_feedback(interposer, basedie, options);
+    }
     const auto sat_begin = std::chrono::steady_clock::now();
     auto out = SatRoutingResult {};
     auto nets = build_routing_nets(basedie.nets_to_vector());
