@@ -175,7 +175,6 @@ rip-up 集合。
 C(a | owner) = base_cost(a)
              + Σ present_cost(r, predicted_owner_count(r))
              + Σ history_weight(r) × history(r)
-             + detour_bias(a)
 ```
 
 其中求和范围是候选 arc 新增 claim 的物理资源；当前 owner 已拥有的树资源不重复
@@ -203,9 +202,6 @@ C(a | owner) = base_cost(a)
 
    其中 `0 < decay < 1`。因此即使当前 momentarily 不 overflow，反复成为瓶颈的
    Track、switch 或 matching endpoint 仍会被后续 maze 主动避开。
-4. `detour_bias(a)`：可选的紧凑性偏置。首版取 0；若启用，仅对离开当前端点
-   bounding box 的 Track 加很小代价，用来在拥塞代价相同的候选间避免无必要绕远。
-   它不参与 SyncNet 的等长判定。
 
 VLine--Track mode group 不是普通容量 1 资源：同一 mode 的多条使用可共存，只有
 straight 与 swap 同时出现时产生 mode conflict。实现中为这种反向组合建立虚拟冲突
@@ -279,16 +275,16 @@ owner 被 rip-up 的次数。
 best_solution = initial_solution
 for iter in [0, max_iterations):
     overflow = analyze_overflow()
-    save_best_if_improved(overflow, wirelength)
-    if overflow == 0:
+    save_best_if_improved(overflow, wirelength)   // overflow更小，或者overflow相同但是线长更短
+    if overflow == 0 and synchronized_timing_constraints_satisfied:
         return success
 
-    update_history_cost(overflow)
-    maybe_increase_H()
+    update_history_cost(overflow) // 在拆之前先更新一下
+    maybe_increase_H()  // 连续多轮没有改进，就提高H
     dirty_owners = owners_touching_overflow_resources()
-    expand SyncNet members to whole BusRouteGroup
+    expand SyncNet members to whole BusRouteGroup // bus必须一组一起处理
     ripup(dirty_owners)
-    sort dirty_owners by congestion exposure, retry count, HPWL, stable id
+    sort dirty_owners by congestion exposure, retry count, HPWL, stable id  // 先考虑overflow最大的，然后依次考虑：被拆的次数多的、bbox大的，最后id是 break tie
 
     reroute each dirty owner with congestion/history-aware Dijkstra
     repair_sync_length_if_needed()

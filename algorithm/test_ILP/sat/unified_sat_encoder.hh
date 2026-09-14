@@ -54,7 +54,8 @@ auto build_unified_sat_model(
     const std::Vector<RoutingNet>& nets,
     const std::Vector<UnifiedSatNetScope>& scopes,
     const DelayPrecomputeResult& delays,
-    SatEncodingStats* stats = nullptr
+    SatEncodingStats* stats = nullptr,
+    bool create_alpha_vars = true
 ) -> UnifiedSatModel;
 
 auto is_tob_arc(const UnifiedArc& arc) -> bool;

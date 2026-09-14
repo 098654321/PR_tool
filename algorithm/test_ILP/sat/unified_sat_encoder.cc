@@ -243,7 +243,8 @@ auto build_unified_sat_model(
     const std::Vector<RoutingNet>& nets,
     const std::Vector<UnifiedSatNetScope>& scopes,
     const DelayPrecomputeResult& delays,
-    SatEncodingStats* stats
+    SatEncodingStats* stats,
+    const bool create_alpha_vars
 ) -> UnifiedSatModel {
     auto model = UnifiedSatModel {};
     model.scopes = scopes;
@@ -486,6 +487,7 @@ auto build_unified_sat_model(
     encode_tob_special_constraints(session, graph, model, stats);
     encode_bus_sync_constraints(session, nets, model, stats);
 
+    if (create_alpha_vars) {
     for (const auto& pair : model.pair_delays) {
         const auto source_it = std::find_if(
             model.sources.begin(),
@@ -526,6 +528,7 @@ auto build_unified_sat_model(
         if (stats != nullptr) {
             stats->add_clauses(SatClauseCategory::VariableRelation, 1);
         }
+    }
     }
 
     debug::info_fmt(

@@ -301,6 +301,67 @@ target("test_ILP_unit")
     end
     add_links("gurobi_c++", "gurobi130")
 
+local function add_weighted_maxsat_sources()
+    add_includedirs("source", "source/global", "algorithm/test_ILP", "algorithm/weighted_maxsat")
+    add_files(
+        "algorithm/weighted_maxsat/wmaxsat_cli.cc",
+        "algorithm/weighted_maxsat/wmaxsat_router.cc",
+        "algorithm/test_ILP/scope/build_routing_nets.cc",
+        "algorithm/test_ILP/scope/scope_bbox.cc",
+        "algorithm/test_ILP/scope/pair_routing_state.cc",
+        "algorithm/test_ILP/graph/unified_routing_graph.cc",
+        "algorithm/test_ILP/common/cob_unit_mask.cc",
+        "algorithm/test_ILP/delay/pair_delay_precompute.cc",
+        "algorithm/test_ILP/sat/unified_sat_scope.cc",
+        "algorithm/test_ILP/sat/sat_constraint_kits.cc",
+        "algorithm/test_ILP/sat/sat_encoding_stats.cc",
+        "algorithm/test_ILP/sat/unified_sat_encoder.cc",
+        "algorithm/test_ILP/sat/encode_tob_special.cc",
+        "algorithm/test_ILP/sat/encode_bus_sync.cc",
+        "algorithm/test_ILP/sat_allocation/cadical_solver.cc",
+        "source/algo/**.cc",
+        "source/circuit/**.cc",
+        "source/global/**.cc",
+        "source/hardware/**.cc",
+        "source/parse/**.cc",
+        "source/serde/**.cc"
+    )
+    if has_config("cadical") then
+        add_defines("USE_CADICAL")
+        add_includedirs("third_party/cadical/src")
+        local cadical_build_dir = "third_party/cadical/build"
+        if is_plat("macosx") and os.isdir("third_party/cadical/build-macos") then
+            cadical_build_dir = "third_party/cadical/build-macos"
+        end
+        add_linkdirs(cadical_build_dir)
+        add_links("cadical")
+        if is_plat("linux") then
+            add_syslinks("pthread")
+        end
+    end
+end
+
+target("weighted_maxsat")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_files("algorithm/weighted_maxsat/main.cc")
+    add_weighted_maxsat_sources()
+
+target("weighted_maxsat_unit")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_files("algorithm/weighted_maxsat/test/unit_main.cc")
+    add_weighted_maxsat_sources()
+
+target("weighted_maxsat_integration")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_files("algorithm/weighted_maxsat/test/integration_main.cc")
+    add_weighted_maxsat_sources()
+
 target("FPIA_RRR")
     set_kind("binary")
     set_targetdir("./output")

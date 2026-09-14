@@ -116,6 +116,7 @@ public:
     CaDiCaL::Solver solver;
     std::size_t variable_count{0};
     std::size_t clause_count{0};
+    std::Vector<std::Vector<int>> clauses;
     std::size_t encoding_operation_count{0};
     std::size_t encoding_memory_samples{0};
     std::size_t peak_rss_bytes{0};
@@ -172,6 +173,9 @@ auto CadicalSession::add_clause(std::span<const int> clause) -> void {
         }
     }
     impl_->solver.add(0);
+    if (impl_->options.capture_clauses) {
+        impl_->clauses.emplace_back(clause.begin(), clause.end());
+    }
     ++impl_->clause_count;
 }
 
@@ -181,6 +185,10 @@ auto CadicalSession::num_vars() const -> std::size_t {
 
 auto CadicalSession::num_clauses() const -> std::size_t {
     return impl_->clause_count;
+}
+
+auto CadicalSession::clauses() const -> const std::Vector<std::Vector<int>>& {
+    return impl_->clauses;
 }
 
 auto CadicalSession::assume(int lit) -> void {

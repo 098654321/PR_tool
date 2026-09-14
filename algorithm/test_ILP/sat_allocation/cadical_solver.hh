@@ -16,6 +16,7 @@ struct CadicalDiagnosticsOptions {
     int verbose_level{0};
     std::String log_dir {"./cadical-log"};
     std::size_t max_rss_mb{0};
+    bool capture_clauses{false};
 };
 
 struct CadicalSolveResult {
@@ -46,6 +47,7 @@ public:
 
     [[nodiscard]] auto num_vars() const -> std::size_t;
     [[nodiscard]] auto num_clauses() const -> std::size_t;
+    [[nodiscard]] auto clauses() const -> const std::Vector<std::Vector<int>>&;
 
     auto assume(int lit) -> void;
     auto solve() -> CadicalSolveResult;

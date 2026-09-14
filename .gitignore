@@ -27,7 +27,7 @@ schedule*
 
 .VSCodeCounter/*
 .venv/
-third_party/cadical/
+third_party/
 local/*
 
 test/module_test/test_writer/*

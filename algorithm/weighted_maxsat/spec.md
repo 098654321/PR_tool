@@ -8,7 +8,7 @@
 
 WMaxSAT 的目标是在**不违反物理资源、TOB 开关和同步总线规则**的前提下，优先最大化完成的 source--sink pair 数，再最小化已选布线的总线长。它不执行布局、不生成 controlbits、不调用 `PathPackage::connect_all()`；运行结果仅写入 `debug.log`。
 
-本规格指定 EvalMaxSAT 为 MaxSAT 后端；本阶段只记录其安装与调用协议，不实现后端调用代码或构建配置。
+本实现以 EvalMaxSAT 作为命令行 MaxSAT 后端：程序生成 WCNF、调用该可执行文件、解析标准 `s/o/v` 输出，并回溯完成 pair 的路径。
 
 ## 2. 与 `test_ILP` 的共同前端
 
@@ -19,6 +19,8 @@ WMaxSAT 必须保持与 `test_ILP` 相同的输入语义和硬件语义：
 3. 将 `BaseDie` 中的 net 适配为 routing net；支持范围应与 `test_ILP/scope/build_routing_nets.cc` 保持一致。遇到该实现已拒绝的 net 类型必须明确报错，不能静默跳过。
 4. 构建与 `test_ILP/graph/unified_routing_graph.cc` 等价的统一有向图：COB track、TOB bump、h-line、v-line、TOB 开关、straight/swap mode，以及 PNnet 的虚拟源。
 5. 延用 `test_ILP` 的 scope、精确距离域和可达状态裁剪语义：每个 pair 的 `D` 状态只在当前 scope 和允许终端距离上创建。
+
+WMaxSAT 不使用 UNSAT-core-guided feedback expansion。它只建立并求解一个固定搜索域的 WCNF 实例：以 `init_routing_problem_state` 得到的初始 pair bbox 为基础，调用一次与 `test_ILP -s 1 -d 10` 相同的初始化 padding 语义，然后不再扩域。即每个 pair bbox 向 COB 阵列四侧各扩一格并裁剪到阵列边界；普通 pair 的距离域为 \([d_{\min},d_{\min}+10]\)。同步 bus 保持现有共同距离域语义，即以该 bus 各成员 \(d_{\min}\) 的最大值作为共同下界，再取连续 11 个距离，保证原始逐距离等长约束可表示。
 
 不得把 `Interposer::available_tracks()` 压缩成 bump-to-track 候选边。该接口无法保留 TOB 内 bump--hline、hline--vline 的独占关系，也无法表达 vline--track 的 straight/swap 互斥；这样得到的 WMaxSAT 实例不再是公平比较。
 
@@ -38,14 +40,19 @@ WMaxSAT 必须保持与 `test_ILP` 相同的输入语义和硬件语义：
 \text{先最大化 routed pair 数，后最小化 wirelength}.
 \]
 
-若采用单一加权目标，令 \(B\) 为当前实例中所有可计线长 track/bump 权重的安全上界，则：
+本项目当前实验 case 的总 wirelength 不超过 7000，故固定采用：
 
 \[
-\max\quad W_R\sum_{p\in P}q_p-\sum_{n\in N}\sum_{v\in V_{\mathrm{wl}}}w_vU_{n,v},
-\qquad W_R=B+1.
+W_R=10000.
 \]
 
-其中 \(P\) 是全部 source--sink pair，\(q_p\) 表示 pair \(p\) 完成，\(V_{\mathrm{wl}}\) 是 track 与 bump 节点。实现时也可采用分层/两阶段优化以避免大权重；无论采用哪一种，必须保持相同的字典序语义。
+该值大于全部已知 case 的总线长上界，因而在这些实验中，少完成一个 pair 所损失的 10000 分必然大于任何可能节省的 wirelength。目标为：
+
+\[
+\max\quad 10000\sum_{p\in P}q_p-\sum_{n\in N}\sum_{v\in V_{\mathrm{wl}}}w_vU_{n,v}.
+\]
+
+其中 \(P\) 是全部 source--sink pair，\(q_p\) 表示 pair \(p\) 完成，\(V_{\mathrm{wl}}\) 是 track 与 bump 节点。`debug.log` 必须输出最终 wirelength；若它达到或超过 10000，程序必须警告该固定权重不再保证严格的“覆盖率优先”字典序。
 
 ## 4. 变量
 
@@ -61,10 +68,10 @@ WMaxSAT 必须保持与 `test_ILP` 相同的输入语义和硬件语义：
 
 ### 4.2 pair 完成变量 \(q_p\)
 
-对 `PairDelayInfo` 的每个 pair \(p=(n,\mathrm{demand},\mathrm{source})\)，创建 Boolean 变量 \(q_p\)。令 \(L_p\) 为该 pair 在 `pair.delays` 中有效的 sink `D` literal 集合。仅加入硬子句：
+对 `PairDelayInfo` 的每个 pair \(p=(n,\mathrm{demand},\mathrm{source})\)，创建 Boolean 变量 \(q_p\)。令 \(L_p\) 为该 pair 在 `pair.delays` 中有效的 sink `D` literal 集合。\(q_p\) 不是“必须完成”的硬需求，而是 pair 是否完成的逻辑关系，加入硬等价：
 
 \[
-q_p\Rightarrow\bigvee_{\ell\in L_p}\ell.
+q_p\Leftrightarrow\bigvee_{\ell\in L_p}\ell.
 \]
 
 其 CNF 形式为：
@@ -73,9 +80,13 @@ q_p\Rightarrow\bigvee_{\ell\in L_p}\ell.
 \neg q_p\lor\bigvee_{\ell\in L_p}\ell.
 \]
 
-这是对当前 `alpha_lit` 子句的**唯一语义替换**：`test_ILP` 当前创建 \(\alpha_p\Rightarrow\bigvee L_p\)，并在求解前把所有 \(\alpha_p\) 作为 assumption；WMaxSAT 改为创建 \(q_p\)，不再施加 assumption，而加入权重为 \(W_R\) 的软单位子句 \((q_p,W_R)\)。
+\[
+\neg\ell\lor q_p,\qquad\forall\ell\in L_p.
+\]
 
-不要额外加入 \(\bigvee L_p\Rightarrow q_p\)。现有 ExactSAT 的 \(\alpha\) 也不是双向等价；保持单向形式能保证除目标替换外其余可行域不变。
+这是对当前 `alpha_lit` 的替换：`test_ILP` 当前创建 \(\alpha_p\Rightarrow\bigvee L_p\)，并在求解前把所有 \(\alpha_p\) 作为 assumption；WMaxSAT 不创建或 assume \(\alpha\)，改为创建 \(q_p\)，并加入权重为 \(W_R\) 的软单位子句 \((q_p,W_R)\)。
+
+等价关系本身是硬约束，以防求解器在没有真实路径时把 \(q_p\) 设为真而骗取软子句奖励；但它不要求 \(q_p=1\)。是否完成仍完全由 MaxSAT 目标决定。
 
 ### 4.3 资源使用变量 \(U_{n,v}\)
 
@@ -109,7 +120,7 @@ D_{s,v,d}\Rightarrow U_{n,v}.
 
 ## 5. 硬约束
 
-除第 4.2 节把 \(\alpha\) 换成 \(q\) 外，以下约束必须按 `test_ILP` 原语义保留为硬约束：
+除第 4.2 节用 \(q\) 完成关系替换 \(\alpha\) assumption 外，以下约束必须按 `test_ILP` 原语义保留为硬约束：
 
 1. 根状态、其他逻辑源禁入、`D` 的距离零和正距离常量约束。
 2. 非根 `D` 状态的递归连通性；TOB arc 用 \(A\) 连接，普通 arc 用前一距离层的 \(D\) 连接。
@@ -152,25 +163,18 @@ algorithm/weighted_maxsat/
   spec.md
   main.cc
   wmaxsat_cli.hh / .cc
-  net_adapter.hh / .cc
-  unified_graph.hh / .cc
-  domain.hh / .cc
-  wmaxsat_encoder.hh / .cc
-  wcnf_writer.hh / .cc
-  result_extract.hh / .cc
-  route_log.hh / .cc
+  wmaxsat_cli.hh / .cc
+  wmaxsat_router.hh / .cc
   test/
 ```
 
-实施顺序：
+当前实现：
 
-1. 新增 `weighted_maxsat` xmake target，并写 CLI 骨架：`<config_path> [-v|-vv] [-o DIR] [-s S] [-d D]`。启动后建立 `-o/debug.log`。
-2. 接入 parser 和 `algo::build_nets`；打印 mode、net 类型、pair 数和不支持类型。
-3. 从 `test_ILP` 提取或等价复用 net adapter、统一图、scope 和 delay precompute。第一版必须逐项对照 graph 节点数、arc 数、pair 数与 `test_ILP` 日志，证明前端一致。
-4. 建立变量编号器和 CNF clause collector。先实现全部硬约束；对小 case，将每个 \(q_p\) 当作硬单位子句，所得可行性结果应与相同 scope/delay 下的 `test_ILP` 一致。
-5. 新增 \(q\)、\(U\) 和 WCNF writer；验证“所有 \(q\) 硬化”与第 4 步结果一致。
-6. 接入 MaxSAT 后端后，解析模型，按现有 `sat_solution_extract` 的反向回溯规则恢复路径。不得写回 interposer、不得输出 controlbits。
-7. 仅在 `debug.log` 输出路径、每个 pair 的 \(q\)、总 routed pair 数、总线长、硬/软 clause 数、变量数、编码/求解/总时间和最优性状态。
+1. `wmaxsat_router.cc` 复用 `test_ILP` 的 routing-net、统一图、scope、delay precompute 和硬 CNF encoder；只执行 `apply_initial_search_padding(..., 1, 10)` 一次。
+2. 调用共享 encoder 时传入 `create_alpha_vars=false`，因此 WMaxSAT 不创建 \(\alpha\)、不调用 `assume()`、`failed()` 或 feedback expansion。
+3. `CadicalSession::clauses()` 导出硬 CNF；router 追加 \(q\) 等价、\(U\) 蕴含和软子句，再由 `write_wcnf` 写出实例。
+4. `run_evalmaxsat` 以子进程执行后端，`log_wmaxsat_solution` 仅输出模型中完成 pair 的回溯路径和总线长；不会写回 `Interposer`。
+5. `test/unit_main.cc` 覆盖 CLI/WCNF 构造；`test/integration_main.cc` 覆盖 parser 到 WCNF 的小 case 流程。外部 EvalMaxSAT 求解测试需在其安装后运行。
 
 ## 8. 结果与实验口径
 
@@ -181,7 +185,7 @@ algorithm/weighted_maxsat/
 - `time-limit`：只有 incumbent，不能声称最优；
 - `hard-unsat`：空布线都无法满足硬约束，通常表示编码或输入结构错误，而非普通“不可全布通”。
 
-在 partial 结果中，`routed_wirelength` 只能解释为已完成部分的资源长度，不能与完整解总线长直接比较。对比 SAT+ILP 时必须固定输入、mode、placement 状态、scope/delay 策略、时限和内存上限。
+在 partial 结果中，`routed_wirelength` 只能解释为已完成部分的资源长度，不能与完整解总线长直接比较。对比 SAT+ILP 时必须固定输入、mode、placement 状态、scope/delay 策略、时限和内存上限。WMaxSAT 的固定策略必须报告为 `scope_pad=1, delay_pad=10, feedback_expansion=off`。
 
 ## 9. EvalMaxSAT 后端
 
@@ -217,7 +221,7 @@ cmake --build third_party/EvalMaxSAT/build --config Release
 third_party/EvalMaxSAT/build/EvalMaxSAT_bin
 ```
 
-应记录实际使用的 EvalMaxSAT commit hash、编译器和构建类型至实验日志，以保证结果可复现。若可执行文件位置因平台或 CMake generator 不同而变化，后续 CLI 应提供 `--solver <path>` 覆盖默认路径；路径不存在时必须报错，不得回退为普通 SAT。
+实验记录应另外保存实际 EvalMaxSAT commit hash、编译器和构建类型。若可执行文件位置因平台或 CMake generator 不同而变化，可用 `--solver <path>` 覆盖默认路径；路径不存在时程序报错，不回退为普通 SAT。
 
 ### 9.3 WCNF 调用与结果解析
 
@@ -235,4 +239,4 @@ third_party/EvalMaxSAT/build/EvalMaxSAT_bin <temporary.wcnf>
 - `o <cost>`：被违反软子句的最小加权代价；
 - `v ...`：DIMACS 变量赋值，用于提取 \(q\)、\(U\)、\(D\)、\(A\)、\(Y\) 和 \(M\)。
 
-若没有完整 `v` 模型，或状态与模型不一致，运行必须判为失败，不能据此输出路由结果。求解结束后默认删除临时 WCNF；`debug.log` 必须记录其路径、SHA-256、变量/子句统计、EvalMaxSAT 路径、commit hash、状态、目标代价和 stdout/stderr 摘要。后续如需保留实例以复现实验，应显式提供 `--keep-wcnf`，而不是默认产生额外输出文件。
+若没有可用 `v` 模型，或状态与模型不一致，运行判为失败，不能据此输出路由结果。求解结束后默认删除临时 WCNF；`debug.log` 记录 WCNF 路径、变量/硬软子句统计、EvalMaxSAT 路径、状态、代价、完成 pair 路径和总线长。需要复现实例时显式使用 `--keep-wcnf`。
