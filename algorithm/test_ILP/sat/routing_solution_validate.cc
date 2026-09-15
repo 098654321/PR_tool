@@ -154,6 +154,10 @@ auto validate_routing_solution(
     for (const auto& net : nets) {
         net_by_id.emplace(net.net_id, &net);
     }
+    auto scope_by_net_id = std::map<std::size_t, const UnifiedSatNetScope*> {};
+    for (const auto& scope : model.scopes) {
+        scope_by_net_id.emplace(scope.net_id, &scope);
+    }
 
     auto source_by_key = std::map<std::pair<std::size_t, std::size_t>, const SourceDelayVars*> {};
     for (const auto& source : model.sources) {
@@ -192,6 +196,9 @@ auto validate_routing_solution(
             continue;
         }
         const auto& net = *net_it->second;
+        const auto scope_it = scope_by_net_id.find(net.net_id);
+        const UnifiedSatNetScope* encoded_scope =
+            scope_it == scope_by_net_id.end() ? nullptr : scope_it->second;
         const auto demand_it = std::find_if(
             net.demands.begin(),
             net.demands.end(),
@@ -418,7 +425,10 @@ auto validate_routing_solution(
                     -1,
                     "extracted path must not contain virtual source node");
             }
-            if (net.has_scope_bbox && !node_in_scope(graph, node, net.scope_bbox)) {
+            const bool node_in_encoded_scope = encoded_scope != nullptr
+                && static_cast<std::size_t>(node) < encoded_scope->node_offset.size()
+                && encoded_scope->node_offset[static_cast<std::size_t>(node)] >= 0;
+            if (!node_in_encoded_scope) {
                 add_violation(
                     report,
                     ViolationKind::NodeOutOfScope,
@@ -427,7 +437,7 @@ auto validate_routing_solution(
                     path.source_index,
                     node,
                     -1,
-                    "path node lies outside net scope bbox");
+                    "path node lies outside encoded SAT scope");
             }
             if (graph_node.kind == UnifiedNodeKind::Track
                 || graph_node.kind == UnifiedNodeKind::Bump) {

@@ -19,7 +19,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--z3-optimize | --global-route-v17]";
+    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--z3-optimize | --global-route-v17 | --global-route-v18]";
 
 auto get_peak_rss_mb() -> double {
     rusage usage {};
@@ -69,6 +69,7 @@ auto run_main(int argc, char** argv) -> int {
     options.initial_delay_pad = cli.initial_delay_pad;
     options.enable_z3_optimize = cli.enable_z3_optimize;
     options.enable_global_route_v17 = cli.enable_global_route_v17;
+    options.enable_global_route_v18 = cli.enable_global_route_v18;
     if (cli.enable_sat_log) {
         debug::info_fmt("CaDiCal solver logs enabled: directory={}", options.cadical.log_dir);
     }
@@ -89,7 +90,11 @@ auto run_main(int argc, char** argv) -> int {
             cli.initial_scope_pad,
             cli.initial_delay_pad);
     }
-    if (cli.enable_global_route_v17) {
+    if (cli.enable_global_route_v18) {
+        debug::info(
+            "v18 flow enabled: HiGHS Channel/COBUnit capacity cuts (no W) -> guided CaDiCaL pure SAT");
+    }
+    else if (cli.enable_global_route_v17) {
         debug::info(
             "v17 flow enabled: HiGHS Channel/COBUnit global routing -> guided Z3 weighted partial MaxSAT");
     }
@@ -118,7 +123,9 @@ auto run_main(int argc, char** argv) -> int {
         result.sat_pre_ms,
         result.solve_ms);
     debug::info_fmt(
-        "v17 global route: requested={} status={} nodes={} cob_nodes={} tob_terminal_nodes={} port_terminal_nodes={} boundary_terminal_nodes={} physical_channels={} traversal_arcs={} owners={} commodities={} vars={} constraints={} objective={} released_unit_sources={} total_ms={} build_ms={} solve_ms={}",
+        "global route: method={} detailed_solver={} requested={} status={} nodes={} cob_nodes={} tob_terminal_nodes={} port_terminal_nodes={} boundary_terminal_nodes={} physical_channels={} traversal_arcs={} owners={} commodities={} vars={} constraints={} objective={} capacity_cuts_enabled={} capacity_cut_rounds={} capacity_cuts={} released_unit_sources={} total_ms={} build_ms={} solve_ms={}",
+        cli.enable_global_route_v18 ? "v18" : (cli.enable_global_route_v17 ? "v17" : "n/a"),
+        cli.enable_global_route_v18 ? "CaDiCaL" : (cli.enable_global_route_v17 ? "Z3-Optimize" : "n/a"),
         result.global_route_requested,
         result.global_route_requested ? result.global_route_status : "n/a",
         result.global_route_nodes,
@@ -133,6 +140,9 @@ auto run_main(int argc, char** argv) -> int {
         result.global_route_vars,
         result.global_route_constraints,
         result.global_route_objective,
+        result.global_route_capacity_cuts_enabled,
+        result.global_route_capacity_cut_rounds,
+        result.global_route_capacity_cuts,
         result.global_route_released_sources,
         result.global_route_total_ms,
         result.global_route_build_ms,

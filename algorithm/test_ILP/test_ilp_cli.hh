@@ -18,6 +18,7 @@ struct TestIlpCliOptions {
     int initial_delay_pad{0};
     bool enable_z3_optimize{false};
     bool enable_global_route_v17{false};
+    bool enable_global_route_v18{false};
 };
 
 auto parse_test_ilp_cli(std::span<const std::string_view> args) -> TestIlpCliOptions;

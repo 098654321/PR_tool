@@ -95,6 +95,10 @@ struct SatRoutingResult {
     std::String message;
     std::size_t num_vars{0};
     std::size_t num_clauses{0};
+    // Detailed-routing objective support. V18 pure SAT keeps all three at zero.
+    std::size_t occupancy_vars{0};
+    std::size_t occupancy_implication_clauses{0};
+    std::size_t occupancy_soft_clauses{0};
     // Sum of CaDiCal solve() wall time across all feedback rounds.
     long long solve_ms{0};
     // Wall time of the whole SAT phase (graph/padding/feedback/extract), excluding ILP.
@@ -107,7 +111,7 @@ struct SatRoutingResult {
     std::Vector<SourceSinkPairPath> paths;
     std::map<std::size_t, bool> vline_mode_straight_by_group;
     std::Vector<int> used_tob_switch_ids;
-    // V17 Global Routing diagnostics. Detailed routing remains Z3 Optimize.
+    // V17/V18 Global Routing diagnostics; detailed routing may use Z3 or CaDiCaL.
     bool global_route_requested{false};
     std::String global_route_status;
     std::size_t global_route_nodes{0};
@@ -123,6 +127,9 @@ struct SatRoutingResult {
     std::size_t global_route_constraints{0};
     std::size_t global_route_objective{0};
     std::size_t global_route_released_sources{0};
+    bool global_route_capacity_cuts_enabled{false};
+    std::size_t global_route_capacity_cut_rounds{0};
+    std::size_t global_route_capacity_cuts{0};
     long long global_route_build_ms{0};
     long long global_route_solve_ms{0};
     long long global_route_total_ms{0};

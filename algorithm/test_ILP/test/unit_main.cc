@@ -912,6 +912,23 @@ auto test_v17_global_route_two_pin_and_fixed_unit() -> void {
             && bump_route.stats.model.total_constraints() == bump_route.stats.constraints,
         "V17 model breakdown must reconcile every variable and constraint");
 
+    const auto cut_route = solve_global_route_v17(
+        UnifiedGraph {},
+        bump_graph,
+        {bump_net},
+        0,
+        GlobalRouteCapacityMode::IterativeCuts);
+    require(
+        cut_route.ok
+            && cut_route.stats.capacity_cuts_enabled
+            && cut_route.stats.model.w_vars == 0
+            && cut_route.stats.model.w_linearization == 0
+            && cut_route.stats.capacity_cuts == 0
+            && cut_route.stats.objective == bump_route.stats.objective
+            && cut_route.stats.variables < bump_route.stats.variables
+            && cut_route.stats.constraints < bump_route.stats.constraints,
+        "capacity-cut mode must remove dense W without changing an uncongested optimum");
+
     auto state = init_routing_problem_state({bump_net});
     auto bump_nets = std::Vector<RoutingNet> {bump_net};
     apply_global_route_v17(bump_route, state, bump_nets);
@@ -1017,7 +1034,9 @@ auto test_v17_tob_halves_share_channel_capacity() -> void {
     }
     channels.push_back(GlobalChannelCoord {1, 1, 0});
     for (int sink = 0; sink < 9; ++sink) {
-        channels.push_back(GlobalChannelCoord {1, 2, sink});
+        const auto anchor = tob_anchor_cob(static_cast<std::size_t>(sink + 1));
+        channels.push_back(GlobalChannelCoord {
+            1, static_cast<int>(anchor.row), static_cast<int>(anchor.col)});
     }
 
     auto nodes = std::Vector<GlobalRouteNode> {};
@@ -1057,8 +1076,99 @@ auto test_v17_tob_halves_share_channel_capacity() -> void {
     }
     const auto route = solve_global_route_v17(UnifiedGraph {}, graph, nets, 0);
     require(
-        !route.ok,
+        !route.ok && route.message == "Infeasible",
         "nine same-unit routes on opposite TOB halves must overflow one shared Channel");
+
+    const auto cut_route = solve_global_route_v17(
+        UnifiedGraph {},
+        graph,
+        nets,
+        0,
+        GlobalRouteCapacityMode::IterativeCuts);
+    require(
+        !cut_route.ok
+            && cut_route.message == "Infeasible"
+            && cut_route.stats.capacity_cuts_enabled
+            && cut_route.stats.model.w_vars == 0
+            && cut_route.stats.capacity_cut_rounds == 1
+            && cut_route.stats.capacity_cuts >= 1,
+        "capacity cuts must separate an overloaded incumbent before reporting infeasible");
+}
+
+auto test_v18_capacity_cuts_repair_overloaded_incumbent() -> void {
+    auto channels = std::Vector<GlobalChannelCoord> {};
+    for (int index = 0; index < 8; ++index) {
+        channels.push_back(GlobalChannelCoord {0, 0, index});
+    }
+    for (int index = 0; index < 8; ++index) {
+        channels.push_back(GlobalChannelCoord {0, 1, index});
+    }
+    channels.push_back(GlobalChannelCoord {1, 10, 0});
+    channels.push_back(GlobalChannelCoord {0, 2, 0});
+    channels.push_back(GlobalChannelCoord {0, 2, 1});
+    channels.push_back(GlobalChannelCoord {1, 10, 1});
+    const auto sink_anchor = tob_anchor_cob(0);
+    channels.push_back(GlobalChannelCoord {
+        1, static_cast<int>(sink_anchor.row), static_cast<int>(sink_anchor.col)});
+
+    auto nodes = std::Vector<GlobalRouteNode> {};
+    for (int index = 0; index < 8; ++index) {
+        nodes.push_back(global_port_node(
+            track_ref(0, index, hardware::TrackDirection::Horizontal, 0), index));
+    }
+    for (int index = 0; index < 8; ++index) {
+        nodes.push_back(global_port_node(
+            track_ref(1, index, hardware::TrackDirection::Horizontal, 0), 8 + index));
+    }
+    nodes.push_back(global_cob_node(0, 0));
+    nodes.push_back(global_cob_node(0, 1));
+    nodes.push_back(global_cob_node(1, 0));
+    const auto pn_source0 = track_ref(2, 0, hardware::TrackDirection::Horizontal, 0);
+    const auto pn_source1 = track_ref(2, 1, hardware::TrackDirection::Horizontal, 1);
+    nodes.push_back(global_port_node(pn_source0, 17));
+    nodes.push_back(global_port_node(pn_source1, 18));
+    nodes.push_back(global_tob_node(0, 20));
+
+    auto segments = std::Vector<std::tuple<int, int, int>> {};
+    for (int index = 0; index < 8; ++index) {
+        segments.emplace_back(index, 16, index);
+        segments.emplace_back(17, 8 + index, 8 + index);
+    }
+    segments.emplace_back(16, 17, 16);
+    segments.emplace_back(19, 16, 17);
+    segments.emplace_back(20, 18, 18);
+    segments.emplace_back(18, 16, 19);
+    segments.emplace_back(17, 21, 20);
+    const auto graph = synthetic_channel_graph(channels, nodes, segments);
+
+    auto nets = std::Vector<RoutingNet> {};
+    for (std::size_t index = 0; index < 8; ++index) {
+        nets.push_back(two_pin_net(
+            index,
+            RoutingNetKind::Tnet,
+            track_ref(0, static_cast<int>(index), hardware::TrackDirection::Horizontal, 0),
+            track_ref(1, static_cast<int>(index), hardware::TrackDirection::Horizontal, 0)));
+    }
+    auto pn = RoutingNet {};
+    pn.net_id = 8;
+    pn.kind = RoutingNetKind::PNnet;
+    pn.sources = {pn_source0, pn_source1};
+    pn.demands = {RoutingDemand {0, bump_ref(0, 0, 0), {0, 1}, false}};
+    nets.push_back(std::move(pn));
+
+    const auto route = solve_global_route_v17(
+        UnifiedGraph {},
+        graph,
+        nets,
+        0,
+        GlobalRouteCapacityMode::IterativeCuts);
+    require(
+        route.ok
+            && route.stats.capacity_cut_rounds >= 1
+            && route.stats.capacity_cuts >= 1
+            && route.selected_source_index_by_pair.at(PairKey {8, 0, 0}) == 1
+            && route.unit_by_owner.at(GlobalUnitOwnerKey {8, 0}) == map_track(1),
+        "capacity cuts must move a flexible PN owner off an overloaded unit and converge");
 }
 
 auto test_v17_global_route_bus_and_pn_source() -> void {
@@ -1299,6 +1409,28 @@ auto test_v17_pn_scope_retains_selected_union_only() -> void {
         "V17 multi-sink PN scope must retain the selected-source union and mask an unselected same-Channel/unit virtual arc");
 }
 
+auto test_v18_guided_cadical_smoke() -> void {
+    auto [interposer, basedie] = parse::read_config(
+        "algorithm/test_ILP/test/case_2btb", 0, false);
+    algo::build_nets(basedie.get(), interposer.get());
+    auto options = UnifiedSatSolveOptions {};
+    options.enable_global_route_v18 = true;
+    options.enable_z3_optimize = false;
+    options.max_feedback_rounds = 4;
+    const auto result = solve_unified_sat(interposer.get(), *basedie, options);
+    require(
+        result.ok
+            && result.global_route_requested
+            && result.global_route_status == "OPTIMAL"
+            && result.global_route_capacity_cuts_enabled
+            && result.paths.size() == 2
+            && result.occupancy_vars == 0
+            && result.occupancy_implication_clauses == 0
+            && result.occupancy_soft_clauses == 0
+            && result.total_wirelength > 0,
+        "V18 must route through HiGHS and guided CaDiCaL without occupancy objective support");
+}
+
 auto build_v14_model(
     CadicalSession& session,
     const UnifiedGraph& graph_in,
@@ -1512,6 +1644,11 @@ auto test_z3_optimize_cli_option() -> void {
         v17.enable_global_route_v17 && v17.enable_z3_optimize,
         "--global-route-v17 must enable global routing and the existing Z3 backend");
 
+    const auto v18 = parse_test_ilp_cli({"case", "--global-route-v18"});
+    require(
+        v18.enable_global_route_v18 && !v18.enable_z3_optimize,
+        "--global-route-v18 must select guided CaDiCaL without Z3 Optimize");
+
     bool rejected_padding = false;
     try {
         (void)parse_test_ilp_cli({"case", "--global-route-v17", "-s", "1"});
@@ -1520,6 +1657,15 @@ auto test_z3_optimize_cli_option() -> void {
         rejected_padding = true;
     }
     require(rejected_padding, "V17 must reject legacy scope/delay padding");
+
+    bool rejected_v18_z3 = false;
+    try {
+        (void)parse_test_ilp_cli({"case", "--global-route-v18", "--z3-optimize"});
+    }
+    catch (const std::invalid_argument&) {
+        rejected_v18_z3 = true;
+    }
+    require(rejected_v18_z3, "V18 pure SAT must reject Z3 Optimize");
 }
 
 #ifdef USE_Z3
@@ -3265,6 +3411,54 @@ auto test_validate_accepts_valid_two_pin() -> void {
     require(validation.violations_count == 0, "valid route must not report violations");
 }
 
+auto test_validate_uses_encoded_guide_scope_instead_of_legacy_bbox() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    auto net = synthetic_net(0, {0}, {{2, {0}}});
+    net.has_global_route_guide = true;
+    net.scope_bbox = IlpBoundingBox {8, 8, 11, 11};
+    require(
+        !node_in_scope(graph, 1, net.scope_bbox),
+        "guide-scope fixture must place its route outside the legacy bbox");
+    const auto nets = std::Vector<RoutingNet> {net};
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, nets);
+    const auto solved = session.solve_once();
+    require(solved.ok, "guide-scope validator fixture must solve");
+    const auto result = extract_sat_solution(graph, nets, model, session, solved);
+    require(result.ok, "guide-scope validator fixture extraction must succeed");
+
+    const auto validation = validate_routing_solution(graph, nets, model, session, result);
+    require(
+        validation.pass,
+        "a path inside the encoded guide scope must not be rejected by the legacy bbox");
+}
+
+auto test_validate_detects_node_outside_encoded_scope() -> void {
+    auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {0, 3}, {3, 2}});
+    graph.nodes[3].kind = UnifiedNodeKind::Track;
+    graph.nodes[3].track_dir = 0;
+    graph.nodes[3].track_row = 8;
+    graph.nodes[3].track_col = 11;
+    auto net = synthetic_net(0, {0}, {{2, {0}}});
+    net.has_global_route_guide = true;
+    const auto nets = std::Vector<RoutingNet> {net};
+    auto session = CadicalSession {};
+    const auto model = build_v14_model(session, graph, nets);
+    require(model.scopes[0].node_offset[3] < 0, "fixture track must be outside encoded scope");
+    const auto solved = session.solve_once();
+    require(solved.ok, "encoded-scope rejection fixture must solve before tampering");
+    auto result = extract_sat_solution(graph, nets, model, session, solved);
+    require(result.ok && result.paths.size() == 1, "fixture must extract one path");
+    result.paths[0].node_path = {0, 3, 2};
+
+    const auto validation = validate_routing_solution(graph, nets, model, session, result);
+    require(!validation.pass, "a path outside encoded scope must fail validation");
+    require(
+        validation.category_counts.contains(ViolationKind::NodeOutOfScope)
+            && validation.category_counts.at(ViolationKind::NodeOutOfScope) > 0,
+        "an encoded-scope escape must be reported under NodeOutOfScope");
+}
+
 auto test_validate_detects_missing_arc() -> void {
     const auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
     const auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{2, {0}}})};
@@ -3464,6 +3658,7 @@ auto main() -> int {
         test_v17_global_route_two_pin_and_fixed_unit();
         test_v17_channel_graph_collapses_real_hardware_topology();
         test_v17_tob_halves_share_channel_capacity();
+        test_v18_capacity_cuts_repair_overloaded_incumbent();
         test_v17_global_route_bus_and_pn_source();
         test_v17_rejects_tob_necessary_condition_overflow();
         test_v17_guide_scope_unit_release();
@@ -3471,6 +3666,7 @@ auto main() -> int {
         test_v17_distance_domain_uses_global_cap();
         test_v17_bus_distance_domain_uses_shared_bounds();
         test_v17_pn_scope_retains_selected_union_only();
+        test_v18_guided_cadical_smoke();
         test_initial_search_padding_scope();
         test_initial_search_padding_delay();
         test_initial_search_padding_rejects_delay_overflow();
@@ -3505,6 +3701,8 @@ auto main() -> int {
         test_format_path_hops_and_graph_node_ref();
         test_log_routing_paths_two_pin();
         test_validate_accepts_valid_two_pin();
+        test_validate_uses_encoded_guide_scope_instead_of_legacy_bbox();
+        test_validate_detects_node_outside_encoded_scope();
         test_validate_detects_missing_arc();
         test_validate_detects_endpoint_mismatch();
         test_unique_failed_net_ids_deduplicates();

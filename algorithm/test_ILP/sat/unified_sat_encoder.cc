@@ -565,7 +565,7 @@ auto build_unified_sat_model(
     }
 
     debug::info_fmt(
-        "unified numeric SAT model v17-compatible: scopes={} sources={} pairs={} tob_arcs={} alpha_vars={} unit_assumptions={} vars={} clauses={}",
+        "unified numeric SAT model v17/v18-compatible: scopes={} sources={} pairs={} tob_arcs={} alpha_vars={} unit_assumptions={} vars={} clauses={}",
         model.scopes.size(),
         model.sources.size(),
         model.pair_delays.size(),

@@ -111,9 +111,17 @@ struct GlobalRouteStats {
     std::size_t variables{0};
     std::size_t constraints{0};
     std::size_t objective{0};
+    bool capacity_cuts_enabled{false};
+    std::size_t capacity_cut_rounds{0};
+    std::size_t capacity_cuts{0};
     long long build_ms{0};
     long long solve_ms{0};
     long long total_ms{0};
+};
+
+enum class GlobalRouteCapacityMode {
+    DenseW,
+    IterativeCuts
 };
 
 struct GlobalRouteResult {
@@ -139,7 +147,8 @@ auto solve_global_route_v17(
     const UnifiedGraph& graph,
     const GlobalChannelGraph& channel_graph,
     const std::Vector<RoutingNet>& nets,
-    int verbose_level
+    int verbose_level,
+    GlobalRouteCapacityMode capacity_mode = GlobalRouteCapacityMode::DenseW
 ) -> GlobalRouteResult;
 
 auto apply_global_route_v17(

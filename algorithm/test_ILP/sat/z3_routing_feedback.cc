@@ -215,6 +215,11 @@ auto solve_with_z3_optimize_feedback(
             result.global_route_vars = global_route->stats.variables;
             result.global_route_constraints = global_route->stats.constraints;
             result.global_route_objective = global_route->stats.objective;
+            result.global_route_capacity_cuts_enabled =
+                global_route->stats.capacity_cuts_enabled;
+            result.global_route_capacity_cut_rounds =
+                global_route->stats.capacity_cut_rounds;
+            result.global_route_capacity_cuts = global_route->stats.capacity_cuts;
             result.global_route_build_ms = global_route->stats.build_ms;
             result.global_route_solve_ms = global_route->stats.solve_ms;
             result.global_route_total_ms = global_route->stats.total_ms;
@@ -348,6 +353,9 @@ auto solve_with_z3_optimize_feedback(
                     num_clauses);
                 out.solve_ms = total_solve_ms;
                 out.feedback_rounds = round;
+                out.occupancy_vars = occupancy.u_var_by_node.size();
+                out.occupancy_implication_clauses = occupancy.implication_clause_count;
+                out.occupancy_soft_clauses = request.soft_negated_vars.size();
                 out.total_wirelength = total_wirelength(graph, out);
                 if (out.total_wirelength != result.objective_cost) {
                     out.ok = false;
@@ -367,6 +375,17 @@ auto solve_with_z3_optimize_feedback(
                     [&](const int variable) { return result.value(variable); },
                     out);
                 log_validation_report(validation, options.verbose_level);
+                if (!validation.pass) {
+                    out.ok = false;
+                    out.message = "PHYSICAL_VALIDATION_FAILED";
+                    debug::error_fmt(
+                        "unified Z3 Optimize physical validation failed: violations={} round={}",
+                        validation.violations_count,
+                        round);
+                    stamp_timing(out);
+                    log_feedback_round_end(round, FeedbackRoundStatus::SolverError);
+                    return out;
+                }
                 log_non_shortest_nets(interposer, graph, nets, delays, out);
                 stamp_timing(out);
                 debug::info_fmt(

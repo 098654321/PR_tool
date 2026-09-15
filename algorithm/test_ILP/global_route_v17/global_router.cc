@@ -405,6 +405,7 @@ auto build_and_solve(
     const std::Vector<RoutingNet>& nets,
     const PreparedProblem& problem,
     const int verbose_level,
+    const GlobalRouteCapacityMode capacity_mode,
     GlobalRouteResult& out
 ) -> void {
     const auto build_begin = std::chrono::steady_clock::now();
@@ -413,7 +414,9 @@ auto build_and_solve(
     const auto owner_count = problem.owners.size();
     const auto channel_count = graph.channels.size();
     const auto arc_count = graph.arcs.size();
+    const bool use_capacity_cuts = capacity_mode == GlobalRouteCapacityMode::IterativeCuts;
     auto& model_stats = out.stats.model;
+    out.stats.capacity_cuts_enabled = use_capacity_cuts;
     model_stats.w_dense_slots = owner_count * channel_count * 16;
 
     vars.q.resize(owner_count);
@@ -442,7 +445,7 @@ auto build_and_solve(
             vars.x[owner_index].push_back(mip.add_binary(1.0));
             ++model_stats.x_vars;
             vars.w[owner_index][channel].fill(-1);
-            if (owner.fixed_unit.has_value()) {
+            if (owner.fixed_unit.has_value() || use_capacity_cuts) {
                 continue;
             }
             for (std::size_t unit = 0; unit < 16; ++unit) {
@@ -622,25 +625,27 @@ auto build_and_solve(
         }
     }
 
-    for (std::size_t channel = 0; channel < channel_count; ++channel) {
-        for (std::size_t unit = 0; unit < 16; ++unit) {
-            auto terms = std::Vector<std::pair<int, double>> {};
-            for (std::size_t owner_index = 0; owner_index < owner_count; ++owner_index) {
-                const auto& owner = problem.owners[owner_index];
-                if (owner.fixed_unit.has_value()) {
-                    if (owner.fixed_unit.value() == unit) {
-                        terms.emplace_back(vars.x[owner_index][channel], 1.0);
+    if (!use_capacity_cuts) {
+        for (std::size_t channel = 0; channel < channel_count; ++channel) {
+            for (std::size_t unit = 0; unit < 16; ++unit) {
+                auto terms = std::Vector<std::pair<int, double>> {};
+                for (std::size_t owner_index = 0; owner_index < owner_count; ++owner_index) {
+                    const auto& owner = problem.owners[owner_index];
+                    if (owner.fixed_unit.has_value()) {
+                        if (owner.fixed_unit.value() == unit) {
+                            terms.emplace_back(vars.x[owner_index][channel], 1.0);
+                        }
+                        continue;
                     }
-                    continue;
+                    const int w = vars.w[owner_index][channel][unit];
+                    if (w >= 0) {
+                        terms.emplace_back(w, 1.0);
+                    }
                 }
-                const int w = vars.w[owner_index][channel][unit];
-                if (w >= 0) {
-                    terms.emplace_back(w, 1.0);
+                if (!terms.empty()) {
+                    mip.add_row(-kHighsInf, 8.0, terms);
+                    ++model_stats.channel_unit_capacity;
                 }
-            }
-            if (!terms.empty()) {
-                mip.add_row(-kHighsInf, 8.0, terms);
-                ++model_stats.channel_unit_capacity;
             }
         }
     }
@@ -717,12 +722,13 @@ auto build_and_solve(
     out.stats.build_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         build_end - build_begin).count();
     debug::info_fmt(
-        "V17 Global Routing model built: vars={} constraints={} build_ms={} owners={} commodities={} TOB_filters=necessary-only(unit<=8,bank-residue<=8)",
+        "V17 Global Routing model built: vars={} constraints={} build_ms={} owners={} commodities={} capacity_mode={} TOB_filters=necessary-only(unit<=8,bank-residue<=8)",
         out.stats.variables,
         out.stats.constraints,
         out.stats.build_ms,
         owner_count,
-        problem.commodities.size());
+        problem.commodities.size(),
+        use_capacity_cuts ? "iterative-cuts(no-W)" : "dense-W");
     if (verbose_level >= 1) {
         log_global_route_model_stats(
             model_stats,
@@ -733,18 +739,97 @@ auto build_and_solve(
             out.stats.constraints);
     }
 
-    const auto solve_begin = std::chrono::steady_clock::now();
-    const auto status = mip.solve();
-    const auto solve_end = std::chrono::steady_clock::now();
-    out.stats.solve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        solve_end - solve_begin).count();
-    out.message = mip.status_string();
-    if (status != HighsModelStatus::kOptimal) {
-        debug::error_fmt(
-            "V17 Global Routing failed: status={} solve_ms={}",
-            out.message,
+    auto added_cut_keys = std::set<
+        std::tuple<std::size_t, std::size_t, std::array<std::size_t, 9>>> {};
+    while (true) {
+        const auto solve_begin = std::chrono::steady_clock::now();
+        const auto status = mip.solve();
+        const auto solve_end = std::chrono::steady_clock::now();
+        out.stats.solve_ms += std::chrono::duration_cast<std::chrono::milliseconds>(
+            solve_end - solve_begin).count();
+        out.message = mip.status_string();
+        if (status != HighsModelStatus::kOptimal) {
+            out.stats.constraints = mip.constraints();
+            debug::error_fmt(
+                "V17 Global Routing failed: status={} solve_ms={} capacity_cut_rounds={} capacity_cuts={}",
+                out.message,
+                out.stats.solve_ms,
+                out.stats.capacity_cut_rounds,
+                out.stats.capacity_cuts);
+            return;
+        }
+        if (!use_capacity_cuts) {
+            break;
+        }
+
+        const auto& incumbent = mip.solution().col_value;
+        const auto incumbent_selected = [&](const int variable) {
+            return variable >= 0
+                && static_cast<std::size_t>(variable) < incumbent.size()
+                && incumbent[static_cast<std::size_t>(variable)] > 0.5;
+        };
+        std::size_t cuts_added = 0;
+        std::size_t overloaded_resources = 0;
+        for (std::size_t channel = 0; channel < channel_count; ++channel) {
+            for (std::size_t unit = 0; unit < 16; ++unit) {
+                auto loaded_owners = std::Vector<std::size_t> {};
+                for (std::size_t owner_index = 0; owner_index < owner_count; ++owner_index) {
+                    if (incumbent_selected(vars.x[owner_index][channel])
+                        && incumbent_selected(vars.q[owner_index][unit])) {
+                        loaded_owners.push_back(owner_index);
+                    }
+                }
+                if (loaded_owners.size() <= 8) {
+                    continue;
+                }
+                ++overloaded_resources;
+                auto subset = std::array<std::size_t, 9> {};
+                std::copy_n(loaded_owners.begin(), subset.size(), subset.begin());
+                if (!added_cut_keys.emplace(channel, unit, subset).second) {
+                    throw std::logic_error(
+                        "V18 capacity separator rediscovered an active violated cut");
+                }
+                auto terms = std::Vector<std::pair<int, double>> {};
+                terms.reserve(2 * subset.size());
+                for (const auto owner_index : subset) {
+                    terms.emplace_back(vars.x[owner_index][channel], 1.0);
+                    terms.emplace_back(vars.q[owner_index][unit], 1.0);
+                }
+                mip.add_row(-kHighsInf, 17.0, terms);
+                ++model_stats.channel_unit_capacity;
+                ++cuts_added;
+            }
+        }
+        if (cuts_added == 0) {
+            debug::info_fmt(
+                "V18 capacity cuts converged: rounds={} cuts={} final_constraints={} solve_ms={}",
+                out.stats.capacity_cut_rounds,
+                out.stats.capacity_cuts,
+                mip.constraints(),
+                out.stats.solve_ms);
+            break;
+        }
+        ++out.stats.capacity_cut_rounds;
+        out.stats.capacity_cuts += cuts_added;
+        out.stats.constraints = mip.constraints();
+        debug::info_fmt(
+            "V18 capacity cut round: round={} overloaded_channel_units={} cuts_added={} cumulative_cuts={} constraints={} cumulative_solve_ms={}",
+            out.stats.capacity_cut_rounds,
+            overloaded_resources,
+            cuts_added,
+            out.stats.capacity_cuts,
+            out.stats.constraints,
             out.stats.solve_ms);
-        return;
+    }
+    out.stats.constraints = mip.constraints();
+    if (model_stats.total_variables() != mip.variables()
+        || model_stats.total_constraints() != mip.constraints()) {
+        throw std::logic_error(std::format(
+            "V17 final model-stat mismatch: variables={}/{} constraints={}/{}",
+            model_stats.total_variables(),
+            mip.variables(),
+            model_stats.total_constraints(),
+            mip.constraints()));
     }
 
     const auto& values = mip.solution().col_value;
@@ -783,7 +868,7 @@ auto build_and_solve(
         if (owner.fixed_unit.has_value() && owner.fixed_unit.value() != chosen_unit) {
             throw std::runtime_error("V17 fixed-unit extraction validation failed");
         }
-        if (!owner.fixed_unit.has_value()) {
+        if (!owner.fixed_unit.has_value() && !use_capacity_cuts) {
             for (std::size_t channel = 0; channel < channel_count; ++channel) {
                 for (std::size_t unit = 0; unit < 16; ++unit) {
                     const int w = vars.w[owner_index][channel][unit];
@@ -1120,7 +1205,8 @@ auto solve_global_route_v17(
     const UnifiedGraph& graph,
     const GlobalChannelGraph& channel_graph,
     const std::Vector<RoutingNet>& nets,
-    const int verbose_level
+    const int verbose_level,
+    const GlobalRouteCapacityMode capacity_mode
 ) -> GlobalRouteResult {
     (void)graph;
     const auto total_begin = std::chrono::steady_clock::now();
@@ -1143,7 +1229,8 @@ auto solve_global_route_v17(
             problem.commodities.size(),
             problem.bus_owner_indices_by_net.size());
 #ifdef USE_HIGHS
-        build_and_solve(channel_graph, nets, problem, verbose_level, out);
+        build_and_solve(
+            channel_graph, nets, problem, verbose_level, capacity_mode, out);
 #else
         out.message = "HiGHS backend is unavailable";
         debug::error(out.message);
@@ -1158,7 +1245,7 @@ auto solve_global_route_v17(
     out.stats.total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         total_end - total_begin).count();
     debug::info_fmt(
-        "V17 Global Routing summary: status={} nodes={} cob_nodes={} tob_terminal_nodes={} port_terminal_nodes={} boundary_terminal_nodes={} physical_channels={} traversal_arcs={} owners={} commodities={} vars={} constraints={} objective={} total_ms={} build_ms={} solve_ms={}",
+        "V17 Global Routing summary: status={} nodes={} cob_nodes={} tob_terminal_nodes={} port_terminal_nodes={} boundary_terminal_nodes={} physical_channels={} traversal_arcs={} owners={} commodities={} vars={} constraints={} objective={} capacity_mode={} capacity_cut_rounds={} capacity_cuts={} total_ms={} build_ms={} solve_ms={}",
         out.ok ? "OPTIMAL" : out.message,
         out.stats.nodes,
         out.stats.cob_nodes,
@@ -1172,6 +1259,9 @@ auto solve_global_route_v17(
         out.stats.variables,
         out.stats.constraints,
         out.stats.objective,
+        out.stats.capacity_cuts_enabled ? "iterative-cuts(no-W)" : "dense-W",
+        out.stats.capacity_cut_rounds,
+        out.stats.capacity_cuts,
         out.stats.total_ms,
         out.stats.build_ms,
         out.stats.solve_ms);

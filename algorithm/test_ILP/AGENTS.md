@@ -1,16 +1,17 @@
 # PR_tool / algorithm/test_ILP 工程指南
 
-本目录实现统一细粒度 SAT 路由及其优化前端。默认流程是第十四版 CaDiCaL 可行性路由；`--z3-optimize` 是第十六版 Z3 Weighted Partial MaxSAT；`--global-route-v17` 是第十七版 HiGHS Channel/COBUnit Global Routing 后接同一套 Z3 Detailed Routing。第十七版定义以 `../../问题定义与方法/第十七版方法.md` 为准。
+本目录实现统一细粒度 SAT 路由及其优化前端。默认流程是第十四版 CaDiCaL 可行性路由；`--z3-optimize` 是第十六版 Z3 Weighted Partial MaxSAT；`--global-route-v17` 是稠密 `W` 的 HiGHS Global Routing 后接 Z3 Detailed Routing；`--global-route-v18` 将第一层改为无 `W` 容量剪切，第三层改为 CaDiCaL 纯 SAT。方法定义以 `../../问题定义与方法/第十七版方法.md` 和 `../../问题定义与方法/第十八版方法.md` 为准。
 
-## 当前三条入口
+## 当前四条入口
 
 - 默认：统一图 + D/A 精确距离状态 + CaDiCaL assumptions，UNSAT core 驱动 bbox/distance 扩展。
 - `--z3-optimize`：原 CNF 全部作为 hard constraints，所有 pair alpha 作为 external assumptions，以物理 Track/Bump 占用 `U_v` 的单位软约束最小化并集线长。
 - `--global-route-v17`：自动启用 Z3 Optimize；先用 HiGHS 在 Channel 图上联合选择 COBUnit、MCF route guide 和 bus Channel 数等长，再以 guide 和 unit assumption 初始化详细求解。
+- `--global-route-v18`：HiGHS 前端使用无 `W` 的 Channel--unit 迭代容量剪切；详细阶段不生成 occupancy `U`、`D⇒U` 和 soft objective，直接流式送入 CaDiCaL，首个可行解即返回。
 
 旧 `--ilp-optimize/-L/-R/--time-limit` 与 `ilp_v15/` Gurobi refinement 已删除。
 
-## 第十七版流水线
+## 第十七/十八版共享流水线
 
 1. `build_routing_nets` 归一化 Bnet、Tnet、PNnet、fanout 和 SyncNet。
 2. `build_unified_graph` 构造真实 Track/TOB/COB 细粒度图；`augment_graph_for_pnnet` 加 PN virtual source。
@@ -18,7 +19,7 @@
 4. HiGHS MIP 使用：
    - owner/unit 变量 `Q`，普通 bump net 可选 16 unit，external track 固定 `map_track(track)`；
    - owner/Channel 占用 `X`；
-   - 非固定 unit 的 `W=X∧Q`；
+   - V17 为非固定 unit 创建稠密 `W=X∧Q`；V18 不创建 `W`，对整数 incumbent 的超载 `(Channel,unit)` 迭代加入 9-owner cut `sum(X+Q)<=17`；
    - per-pair/commodity 带 `channel_id` 的拓扑弧流 `F`，port 弧只对对应 commodity 建变量；
    - PN candidate source-choice；
    - 节点 flow conservation、terminal Channel、`F_a⇒X_{channel(a)}` 与 `X⇒incident F/source`；
@@ -30,13 +31,13 @@
    - multi-sink PNnet 在现有共享 virtual-root 语义下保留各 demand 所选等价同极性 source 的并集，并屏蔽其余 virtual arcs；第三层不再保留 per-demand source-choice 标签。
 7. `compute_pair_delays` 在 guide 的细粒度投影中求 `d_min`，首轮 domain 初始化为连续区间 `{d_min,...,max(d_min,L_pair)}`。
 8. Bnet 的 Global Routing unit 通过可追踪 assumption `gamma⇒Q_sat(unit)` 固定；不写不可撤销 unit clause。
-9. Z3 hard-UNSAT 时分别处理：
+9. Z3 或 V18 CaDiCaL hard-UNSAT 时分别处理：
    - alpha core：critical pair 每次扩一个 distance；同 net 每第二次失败把非矩形 Channel guide 扩一跳；
    - gamma core：只取消 core 中对应 Bnet/source 的 unit 固定，并在原 guide 内开放全部 16 unit；
    - 非 core net 的 unit 保持不变。
-10. Z3 Optimal 后仍使用现有提取、物理合法性校验以及 `objective == reconstructed union wirelength` 不变量。
+10. V17 Z3 Optimal 后校验 `objective == reconstructed union wirelength`；V18 CaDiCaL SAT 后使用同一提取与物理合法性校验，仅把 `total_wirelength` 作为后验统计。
 
-第一层只编码必要条件，不能保证 TOB mux、Wilton lane、跨 COB lane 一致性或详细资源互斥可解；最终 Z3 hard model 才是物理可行性证明。第十七版第一次 Optimal 只保证当前 guide/domain 内最优，不声称完整硬件图上的全局线长最优。
+第一层只编码必要条件，不能保证 TOB mux、Wilton lane、跨 COB lane 一致性或详细资源互斥可解；最终 Z3/CaDiCaL hard model 才是物理可行性证明。V17 的第一次 Optimal 只保证当前 guide/domain 内最优；V18 只返回当前 guide/domain 内的第一个可行解，两者都不声称完整硬件图上的全局线长最优。
 
 SyncBus 的 Channel-count 等长是用户选定的宏观代理约束，不是细粒度 exact-distance 等长的数学必要条件。因此 `GLOBAL_ROUTE_Infeasible` 只表示 V17 前端未生成 guide，不能报告整个设计物理无解。当 guide 和 distance 未达到完整域时，反馈轮数耗尽统一返回 `SEARCH_LIMIT`，也不报告全局 `UNSAT`。
 
@@ -73,7 +74,13 @@ xmake build test_ILP_unit
 ./output/test_ILP <config_path> --global-route-v17 -v -o <output_dir>
 ```
 
-`--global-route-v17` 不与 `-s/-d` 联用，因为 guide 和 distance cap 已由第一层初始化。普通 `--z3-optimize` 和默认 CaDiCaL 流程仍支持原 `-s/-d`。
+第十八版纯 SAT 运行：
+
+```bash
+./output/test_ILP <config_path> --global-route-v18 -v -o <output_dir>
+```
+
+`--global-route-v17/--global-route-v18` 不与 `-s/-d` 联用，因为 guide 和 distance cap 已由第一层初始化。V18 不与 `--z3-optimize` 联用。普通 `--z3-optimize` 和默认 CaDiCaL 流程仍支持原 `-s/-d`。
 
 合成单测必须至少覆盖：
 
@@ -83,6 +90,8 @@ xmake build test_ILP_unit
 - SyncBus member Channel 数等长；
 - fixed/released unit 的 guide lane 开放范围；
 - `gamma` assumption 冲突能出现在 failed core；
+- 容量剪切在无拥塞 case 中保持相同 objective 且 `W=0`；在 9 个 fixed-unit owner 共用 Channel 时必须分离超载 incumbent；还应覆盖加 cut 后将可选源/COBUnit 改到可行解并收敛；
+- V18 合成 case 必须完成 HiGHS guide 并由 CaDiCaL 在无 `U`/无 soft clauses 的 hard CNF 上找到可行解；
 - 既有 TOB/COB/SAT、路径提取、bus detailed 等长和 Z3 objective 不变量。
 
 无需用 `test/config` 真实 case 作为第十七版的基本回归。
@@ -93,12 +102,13 @@ xmake build test_ILP_unit
 
 - `V17 Global Routing graph`：COB/TOB/port/boundary 节点数、physical_channels、directed_traversal_arcs、collapsed_track_nodes；
 - `prepare`：nets/owners/commodities/buses；
-- `model built`：vars/constraints/build_ms；
+- `model built`：vars/constraints/build_ms 与 `capacity_mode`；
 - `V17 Global Routing ILP model stats (-v)`：图节点/Channel/owner/commodity 维度，`Q/X/W/F/S` 变量分解，13 类线性约束及与 HiGHS 总数的一致性；
 - per-owner/per-pair（`-v`）：net、owner、unit、Channel 数、selected arcs；
 - `validation`：objective、最大 Channel-unit load、pair 数；
+- V18 capacity cuts：每轮 overloaded Channel--unit 数、新增/累计 cuts、累计 solve ms，以及收敛时的 rounds/cuts/final constraints；
 - `summary`：status、规模、objective、total/build/solve ms；
-- Z3 每轮：alpha/unit assumptions、soft 数、core 分类、release/guide expansion；
+- Z3 每轮：alpha/unit assumptions、soft 数、core 分类、release/guide expansion；V18 CaDiCaL 每轮记录 hard clauses、alpha/unit assumptions、`occupancy_soft_clauses=0`、core 分类与 expansion；
 - main 汇总：Global Routing 规模/耗时/released sources，SAT 规模/耗时，最终 wirelength。
 
 不要把 Global Routing Channel objective 记为 detailed wirelength，也不要把 Channel 数直接用作 SAT distance。
