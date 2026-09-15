@@ -1,6 +1,7 @@
 #include "sat/routing_feedback.hh"
 
 #include "delay/pair_delay_precompute.hh"
+#include "global_route_v17/global_router.hh"
 #include "graph/unified_routing_graph.hh"
 #include "sat/node_occupancy.hh"
 #include "sat/routing_path_log.hh"
@@ -18,7 +19,10 @@
 #include <algorithm>
 #include <chrono>
 #include <debug/debug.hh>
+#include <optional>
+#include <set>
 #include <string>
+#include <string_view>
 
 namespace PR_tool {
 
@@ -38,6 +42,81 @@ auto collect_critical_pairs(
     return critical;
 }
 
+auto collect_failed_unit_sources(
+    const UnifiedSatModel& model,
+    const std::Vector<int>& failed_literals
+) -> std::set<std::pair<std::size_t, std::size_t>> {
+    auto failed = std::set<std::pair<std::size_t, std::size_t>> {};
+    for (const auto& gamma : model.unit_assumption_vars) {
+        if (std::find(
+                failed_literals.begin(),
+                failed_literals.end(),
+                gamma.assumption_lit)
+            != failed_literals.end()) {
+            failed.emplace(gamma.net_id, gamma.source_index);
+        }
+    }
+    return failed;
+}
+
+auto release_failed_global_units(
+    std::Vector<RoutingNet>& nets,
+    const std::set<std::pair<std::size_t, std::size_t>>& failed
+) -> std::size_t {
+    std::size_t released = 0;
+    for (const auto& [net_id, source_index] : failed) {
+        const auto net_it = std::find_if(
+            nets.begin(),
+            nets.end(),
+            [&](const RoutingNet& net) { return net.net_id == net_id; });
+        if (net_it == nets.end()) {
+            continue;
+        }
+        released += net_it->released_global_unit_sources.insert(source_index).second ? 1 : 0;
+        debug::info_fmt(
+            "V17 unit assumption released: net={} source={} assigned_unit={}",
+            net_id,
+            source_index,
+            net_it->global_unit_by_source.contains(source_index)
+                ? std::to_string(net_it->global_unit_by_source.at(source_index))
+                : "n/a");
+    }
+    return released;
+}
+
+auto apply_v17_pair_feedback(
+    RoutingProblemState& state,
+    const std::Vector<RoutingNet>& nets,
+    const GlobalChannelGraph& channel_graph,
+    const std::Vector<PairKey>& critical
+) -> std::size_t {
+    auto nets_to_expand = std::set<std::size_t> {};
+    for (const auto& key : critical) {
+        if (auto* pair = find_pair_state(state, key); pair != nullptr) {
+            expand_pair_delay_one(*pair);
+            nets_to_expand.insert(key.net_id);
+        }
+    }
+    auto guide_pairs = std::Vector<PairKey> {};
+    for (const auto net_id : nets_to_expand) {
+        const int failure_count = ++state.feedback_failure_count_by_net[net_id];
+        if (failure_count % 2 == 0) {
+            const auto indices = state.pair_indices_by_net.find(net_id);
+            if (indices != state.pair_indices_by_net.end()) {
+                for (const auto index : indices->second) {
+                    guide_pairs.push_back(state.pairs[index].key);
+                }
+            }
+        }
+        const auto net_it = std::find_if(
+            nets.begin(), nets.end(), [&](const RoutingNet& net) { return net.net_id == net_id; });
+        if (net_it != nets.end() && net_it->is_sync_bus) {
+            sync_bus_after_expand(state, nets, net_id);
+        }
+    }
+    return expand_global_route_guides_one_hop(channel_graph, state, guide_pairs);
+}
+
 } // namespace
 
 auto solve_with_z3_optimize_feedback(
@@ -54,12 +133,10 @@ auto solve_with_z3_optimize_feedback(
     debug::error(out.message);
     return out;
 #else
-    const auto solve_begin = std::chrono::steady_clock::now();
     auto out = SatRoutingResult {};
     auto nets = build_routing_nets(basedie.nets_to_vector());
     auto state = init_routing_problem_state(nets);
     apply_state_to_nets(state, nets);
-    log_scope_bboxes(nets, options.verbose_level);
     auto graph = build_unified_graph(interposer, nets);
     augment_graph_for_pnnet(graph, nets);
     debug::info_fmt(
@@ -68,6 +145,44 @@ auto solve_with_z3_optimize_feedback(
         graph.arcs.size(),
         graph.track_node_count,
         graph.tob_node_count);
+
+    auto global_channel_graph = GlobalChannelGraph {};
+    auto global_route = std::optional<GlobalRouteResult> {};
+    if (options.enable_global_route_v17) {
+        global_channel_graph = build_global_channel_graph(graph, nets);
+        global_route = solve_global_route_v17(
+            graph, global_channel_graph, nets, options.verbose_level);
+        if (!global_route->ok) {
+            debug::error(
+                "V17 front-end produced no guide; this is not a proof that the full detailed-routing design is UNSAT");
+            out.message = std::format("GLOBAL_ROUTE_{}", global_route->message);
+            out.global_route_requested = true;
+            out.global_route_status = global_route->message;
+            out.global_route_nodes = global_route->stats.nodes;
+            out.global_route_cob_nodes = global_route->stats.cob_nodes;
+            out.global_route_tob_terminal_nodes = global_route->stats.tob_terminal_nodes;
+            out.global_route_port_terminal_nodes = global_route->stats.port_terminal_nodes;
+            out.global_route_boundary_terminal_nodes = global_route->stats.boundary_terminal_nodes;
+            out.global_route_channels = global_route->stats.channels;
+            out.global_route_arcs = global_route->stats.arcs;
+            out.global_route_owners = global_route->stats.owners;
+            out.global_route_commodities = global_route->stats.commodities;
+            out.global_route_vars = global_route->stats.variables;
+            out.global_route_constraints = global_route->stats.constraints;
+            out.global_route_total_ms = global_route->stats.total_ms;
+            out.global_route_build_ms = global_route->stats.build_ms;
+            out.global_route_solve_ms = global_route->stats.solve_ms;
+            return out;
+        }
+        apply_global_route_v17(*global_route, state, nets);
+        debug::info_fmt(
+            "V17 guide initialization: guided_pairs={} assigned_units={} objective_channels={}",
+            global_route->pair_channels.size(),
+            global_route->unit_by_owner.size(),
+            global_route->stats.objective);
+    }
+    log_scope_bboxes(nets, options.verbose_level);
+    const auto solve_begin = std::chrono::steady_clock::now();
 
     if (options.initial_scope_pad > 0 || options.initial_delay_pad > 0) {
         apply_initial_search_padding(
@@ -85,6 +200,29 @@ auto solve_with_z3_optimize_feedback(
         if (result.sat_pre_ms < 0) {
             result.sat_pre_ms = 0;
         }
+        if (global_route.has_value()) {
+            result.global_route_requested = true;
+            result.global_route_status = global_route->ok ? "OPTIMAL" : global_route->message;
+            result.global_route_nodes = global_route->stats.nodes;
+            result.global_route_cob_nodes = global_route->stats.cob_nodes;
+            result.global_route_tob_terminal_nodes = global_route->stats.tob_terminal_nodes;
+            result.global_route_port_terminal_nodes = global_route->stats.port_terminal_nodes;
+            result.global_route_boundary_terminal_nodes = global_route->stats.boundary_terminal_nodes;
+            result.global_route_channels = global_route->stats.channels;
+            result.global_route_arcs = global_route->stats.arcs;
+            result.global_route_owners = global_route->stats.owners;
+            result.global_route_commodities = global_route->stats.commodities;
+            result.global_route_vars = global_route->stats.variables;
+            result.global_route_constraints = global_route->stats.constraints;
+            result.global_route_objective = global_route->stats.objective;
+            result.global_route_build_ms = global_route->stats.build_ms;
+            result.global_route_solve_ms = global_route->stats.solve_ms;
+            result.global_route_total_ms = global_route->stats.total_ms;
+            result.global_route_released_sources = 0;
+            for (const auto& net : nets) {
+                result.global_route_released_sources += net.released_global_unit_sources.size();
+            }
+        }
     };
 
     for (std::size_t round = 0; round < options.max_feedback_rounds; ++round) {
@@ -92,7 +230,39 @@ auto solve_with_z3_optimize_feedback(
         const auto precompute_begin = std::chrono::steady_clock::now();
         apply_state_to_nets(state, nets);
         const auto scopes = build_all_scopes(graph, nets);
-        const auto delays = compute_pair_delays(graph, nets, scopes, &state);
+        auto delays_holder = std::optional<DelayPrecomputeResult> {};
+        try {
+            delays_holder = compute_pair_delays(graph, nets, scopes, &state);
+        }
+        catch (const std::runtime_error& error) {
+            if (!options.enable_global_route_v17
+                || std::string_view {error.what()}.find("has no scoped path")
+                    == std::string_view::npos) {
+                throw;
+            }
+            auto all_pairs = std::Vector<PairKey> {};
+            all_pairs.reserve(state.pairs.size());
+            for (const auto& pair : state.pairs) {
+                all_pairs.push_back(pair.key);
+            }
+            const auto added = expand_global_route_guides_one_hop(
+                global_channel_graph, state, all_pairs);
+            apply_state_to_nets(state, nets);
+            debug::info_fmt(
+                "V17 scoped delay precompute had no detailed path: round={} guide_channels_added={} reason={}",
+                round,
+                added,
+                error.what());
+            if (added == 0) {
+                out.message = std::format("DETAILED_SCOPE_UNREACHABLE: {}", error.what());
+                log_feedback_round_end(round, FeedbackRoundStatus::UnsatExhausted);
+                stamp_timing(out);
+                return out;
+            }
+            log_feedback_round_end(round, FeedbackRoundStatus::UnsatExpand);
+            continue;
+        }
+        const auto& delays = *delays_holder;
         const auto precompute_end = std::chrono::steady_clock::now();
         const auto precompute_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             precompute_end - precompute_begin).count();
@@ -121,9 +291,13 @@ auto solve_with_z3_optimize_feedback(
             auto request = Z3OptimizeRequest {};
             request.num_vars = session.num_vars();
             request.hard_clauses = session.clauses();
-            request.external_assumptions.reserve(model.alpha_vars.size());
+            request.external_assumptions.reserve(
+                model.alpha_vars.size() + model.unit_assumption_vars.size());
             for (const auto& alpha : model.alpha_vars) {
                 request.external_assumptions.push_back(alpha.alpha_lit);
+            }
+            for (const auto& gamma : model.unit_assumption_vars) {
+                request.external_assumptions.push_back(gamma.assumption_lit);
             }
             request.soft_negated_vars.reserve(occupancy.u_var_by_node.size());
             for (const auto& [_, u] : occupancy.u_var_by_node) {
@@ -148,11 +322,12 @@ auto solve_with_z3_optimize_feedback(
                 occupancy.implication_clause_count);
 
             debug::info_fmt(
-                "solving Z3 Optimize: round={} vars={} hard_clauses={} alpha_assumptions={} occupancy_soft_clauses={}",
+                "solving Z3 Optimize: round={} vars={} hard_clauses={} alpha_assumptions={} unit_assumptions={} occupancy_soft_clauses={}",
                 round,
                 out.num_vars,
                 out.num_clauses,
-                request.external_assumptions.size(),
+                model.alpha_vars.size(),
+                model.unit_assumption_vars.size(),
                 request.soft_negated_vars.size());
             const auto round_begin = std::chrono::steady_clock::now();
             const auto result = solve_z3_optimize(request);
@@ -225,22 +400,29 @@ auto solve_with_z3_optimize_feedback(
             }
 
             const auto critical = collect_critical_pairs(model, result.failed_assumption_literals);
+            const auto failed_units = collect_failed_unit_sources(
+                model, result.failed_assumption_literals);
             debug::info_fmt(
-                "unified Z3 Optimize hard-UNSAT: vars={} clauses={} alpha_core_size={} round_solve_ms={} total_solve_ms={} round={}",
+                "unified Z3 Optimize hard-UNSAT: vars={} clauses={} core_size={} alpha_core_pairs={} unit_core_sources={} round_solve_ms={} total_solve_ms={} round={}",
                 out.num_vars,
                 out.num_clauses,
                 result.failed_assumption_literals.size(),
+                critical.size(),
+                failed_units.size(),
                 round_ms,
                 out.solve_ms,
                 round);
-            if (critical.empty()) {
+            if (critical.empty() && failed_units.empty()) {
                 out.message = "BASE_HARD_UNSAT";
-                debug::error("unified Z3 Optimize hard constraints are UNSAT without alpha core");
+                debug::error(
+                    "unified Z3 Optimize hard constraints are UNSAT without alpha/unit core");
                 log_feedback_round_end(round, FeedbackRoundStatus::SolverError);
                 stamp_timing(out);
                 return out;
             }
-            log_failed_nets(nets, critical);
+            if (!critical.empty()) {
+                log_failed_nets(nets, critical);
+            }
             if (options.verbose_level >= 1) {
                 for (const auto& key : critical) {
                     const auto* pair = find_pair_state(state, key);
@@ -262,7 +444,20 @@ auto solve_with_z3_optimize_feedback(
                         format_bbox(pair->pair_bbox));
                 }
             }
-            if (apply_feedback_expansion(state, nets, critical) == FeedbackExpansionStatus::Exhausted) {
+            const auto released = release_failed_global_units(nets, failed_units);
+            if (options.enable_global_route_v17) {
+                const auto added_channels = apply_v17_pair_feedback(
+                    state, nets, global_channel_graph, critical);
+                apply_state_to_nets(state, nets);
+                debug::info_fmt(
+                    "V17 feedback applied: critical_pairs={} released_unit_sources={} guide_channels_added={} guides_full={}",
+                    critical.size(),
+                    released,
+                    added_channels,
+                    all_global_route_guides_full(state, global_channel_graph.channels.size()));
+            }
+            else if (apply_feedback_expansion(state, nets, critical)
+                     == FeedbackExpansionStatus::Exhausted) {
                 out.message = "UNSAT";
                 log_feedback_round_end(round, FeedbackRoundStatus::UnsatExhausted);
                 stamp_timing(out);
@@ -280,7 +475,7 @@ auto solve_with_z3_optimize_feedback(
             return out;
         }
     }
-    out.message = "UNSAT";
+    out.message = options.enable_global_route_v17 ? "SEARCH_LIMIT" : "UNSAT";
     out.feedback_rounds = options.max_feedback_rounds;
     log_feedback_round_end(options.max_feedback_rounds, FeedbackRoundStatus::MaxRoundsExceeded);
     stamp_timing(out);

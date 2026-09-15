@@ -1,13 +1,8 @@
 #include "common/cob_unit_mask.hh"
 #include "common/hw_map.hh"
 #include "delay/pair_delay_precompute.hh"
+#include "global_route_v17/global_router.hh"
 #include "graph/unified_routing_graph.hh"
-#include "ilp_v15/v15_ilp_prepare.hh"
-#include "ilp_v15/v15_ilp_segment.hh"
-#include "ilp_v15/v15_ilp_model.hh"
-#include "ilp_v15/v15_ilp_extract.hh"
-#include "ilp_v15/v15_ilp_validate.hh"
-#include "ilp_v15/v15_ilp_optimizer.hh"
 #include "sat/ideal_shortest_wirelength.hh"
 #include "sat/node_occupancy.hh"
 #include "sat_allocation/z3_optimize_solver.hh"
@@ -750,565 +745,558 @@ auto synthetic_scope(const UnifiedGraph& graph, std::size_t net_id) -> UnifiedSa
     return scope;
 }
 
-auto scope_to_segment_scope(const UnifiedSatNetScope& scope) -> V15SegmentScope {
-    return V15SegmentScope {scope.node_ids, scope.arc_ids};
-}
-
-auto make_fanout_prepared(const UnifiedGraph& graph) -> V15PrepareResult {
-    auto prepared = V15PrepareResult {};
-    auto parent = V15Parent {};
-    parent.parent_id = 0;
-    parent.routing_net_id = 0;
-    parent.root_node = 0;
-    parent.origin_sinks = {2, 3};
-    parent.demand_ids = {0, 1};
-    parent.source_indices = {0, 0};
-    parent.decomposed = true;
-    parent.source_unit_mask = 0xffff;
-    const auto scope = scope_to_segment_scope(synthetic_scope(graph, 0));
-    auto add_segment = [&](int a, int b, int arc_id) {
-        auto segment = V15Segment {};
-        segment.segment_id = prepared.segments.size();
-        segment.parent_id = parent.parent_id;
-        segment.endpoint_a = a;
-        segment.endpoint_b = b;
-        segment.guide_node_path = {a, b};
-        segment.guide_arc_ids = {arc_id};
-        segment.scope = scope;
-        parent.segment_ids.push_back(segment.segment_id);
-        prepared.segments.push_back(std::move(segment));
-    };
-    add_segment(0, 1, 0);
-    add_segment(1, 2, 1);
-    add_segment(1, 3, 2);
-    prepared.parents.push_back(std::move(parent));
-    return prepared;
-}
-
-auto test_v15_parent_construction() -> void {
-    auto graph = synthetic_graph(
-        8,
-        {{0, 1}, {1, 2}, {1, 3}, {4, 5}, {6, 7}});
-    auto fanout = synthetic_net(0, {0}, {{2, {0}}, {3, {0}}});
-    auto bus = synthetic_net(1, {4, 6}, {{5, {0}}, {7, {1}}});
-    bus.is_sync_bus = true;
-    auto sat = SatRoutingResult {};
-    sat.ok = true;
-    sat.paths = {
-        SourceSinkPairPath {0, 0, 0, -1, {0, 1, 2}},
-        SourceSinkPairPath {0, 0, 1, -1, {0, 1, 3}},
-        SourceSinkPairPath {1, 0, 0, -1, {4, 5}},
-        SourceSinkPairPath {1, 1, 1, -1, {6, 7}},
-    };
-    auto locked = V15LockedResources {};
-    locked.node_used.assign(graph.nodes.size(), false);
-    const auto prepared = build_v15_parents_and_segments(
-        graph,
-        {fanout, bus},
-        {synthetic_scope(graph, 0), synthetic_scope(graph, 1)},
-        sat,
-        std::set<std::size_t> {0, 1},
-        1,
-        locked);
-
-    require(prepared.parents.size() == 3, "v15 must keep fanout whole and split two bus members");
-    require(
-        prepared.parents[0].routing_net_id == 0
-            && prepared.parents[0].root_node == 0
-            && prepared.parents[0].origin_sinks == std::Vector<int>({2, 3})
-            && prepared.parents[0].decomposed
-            && !prepared.parents[0].is_bus_member,
-        "fanout must become one decomposed parent");
-    require(
-        prepared.parents[1].routing_net_id == 1
-            && prepared.parents[1].demand_ids == std::Vector<std::size_t>({0})
-            && prepared.parents[1].root_node == 4
-            && prepared.parents[1].origin_sinks == std::Vector<int>({5})
-            && prepared.parents[1].is_bus_member,
-        "first bus member must become its own parent");
-    require(
-        prepared.parents[2].routing_net_id == 1
-            && prepared.parents[2].demand_ids == std::Vector<std::size_t>({1})
-            && prepared.parents[2].root_node == 6
-            && prepared.parents[2].origin_sinks == std::Vector<int>({7})
-            && prepared.parents[2].is_bus_member,
-        "second bus member must retain its source/demand identity");
-}
-
-auto test_v15_pnnet_keeps_all_sat_selected_tracks_as_virtual_hops() -> void {
-    auto graph = synthetic_graph(5, {{0, 1}, {1, 3}, {0, 2}, {2, 4}});
-    graph.nodes[0].kind = UnifiedNodeKind::VirtualSource;
-    graph.nodes[1].kind = UnifiedNodeKind::Track;
-    graph.nodes[1].unit = 0;
-    graph.nodes[2].kind = UnifiedNodeKind::Track;
-    graph.nodes[2].unit = 1;
-    auto net = synthetic_net(0, {1, 2}, {{3, {0, 1}}, {4, {0, 1}}});
-    net.kind = RoutingNetKind::PNnet;
-    net.virtual_source_node = 0;
-    auto sat = SatRoutingResult {};
-    sat.ok = true;
-    sat.paths = {
-        SourceSinkPairPath {0, 0, 0, 1, {1, 3}},
-        SourceSinkPairPath {0, 0, 1, 2, {2, 4}},
-    };
-    auto locked = V15LockedResources {};
-    locked.node_used.assign(graph.nodes.size(), false);
-    const auto prepared = build_v15_parents_and_segments(
-        graph,
-        {net},
-        {synthetic_scope(graph, 0)},
-        sat,
-        {0},
-        1,
-        locked);
-
-    const auto virtual_hops = std::count_if(
-        prepared.segments.begin(),
-        prepared.segments.end(),
-        [](const V15Segment& segment) { return segment.is_virtual_hop; });
-    require(virtual_hops == 2, "every SAT-selected PN track must keep one virtual-hop segment");
-    for (const auto& segment : prepared.segments) {
-        const bool contains_virtual = std::ranges::find(segment.scope.node_ids, 0)
-            != segment.scope.node_ids.end();
-        if (segment.is_virtual_hop) {
-            require(
-                segment.guide_node_path.size() == 2
-                    && segment.guide_node_path.front() == 0
-                    && segment.scope.arc_ids.size() == 1,
-                "PN virtual-hop scope must contain exactly its selected root-track arc");
+auto synthetic_channel_graph(
+    const std::Vector<GlobalChannelCoord>& channels,
+    const std::Vector<GlobalRouteNode>& nodes,
+    const std::Vector<std::tuple<int, int, int>>& segments
+) -> GlobalChannelGraph {
+    auto graph = GlobalChannelGraph {};
+    graph.channels = channels;
+    graph.nodes = nodes;
+    graph.in_arc_ids.resize(nodes.size());
+    graph.out_arc_ids.resize(nodes.size());
+    graph.arc_ids_by_channel.resize(channels.size());
+    graph.adjacent_channel_ids.resize(channels.size());
+    for (std::size_t index = 0; index < channels.size(); ++index) {
+        graph.channel_id_by_coord.emplace(channels[index], static_cast<int>(index));
+    }
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+        const auto& node = nodes[index];
+        if (node.kind == GlobalRouteNodeKind::Cob) {
+            graph.cob_node_by_coord.emplace(std::pair {node.row, node.col}, index);
+            ++graph.cob_node_count;
+        }
+        else if (node.kind == GlobalRouteNodeKind::TobTerminal) {
+            graph.tob_node_by_tob.emplace(node.tob, index);
+            ++graph.tob_terminal_node_count;
+        }
+        else if (node.kind == GlobalRouteNodeKind::PortTerminal) {
+            graph.port_node_by_key.emplace(node.port, index);
+            ++graph.port_terminal_node_count;
         }
         else {
-            require(!contains_virtual, "ordinary PN segments must exclude virtual sources");
+            graph.boundary_node_by_channel.emplace(node.channel, index);
+            ++graph.boundary_terminal_node_count;
         }
     }
+    const auto add_arc = [&](const int u, const int v, const int channel, const int port) {
+        const int arc = static_cast<int>(graph.arcs.size());
+        graph.arcs.push_back(GlobalChannelArc {u, v, channel, port});
+        graph.out_arc_ids[static_cast<std::size_t>(u)].push_back(arc);
+        graph.in_arc_ids[static_cast<std::size_t>(v)].push_back(arc);
+        graph.arc_ids_by_channel[static_cast<std::size_t>(channel)].push_back(arc);
+    };
+    auto incident_channels = std::Vector<std::set<int>>(nodes.size());
+    for (const auto [u, v, channel] : segments) {
+        int port = -1;
+        if (nodes[static_cast<std::size_t>(u)].kind == GlobalRouteNodeKind::PortTerminal) {
+            port = u;
+        }
+        if (nodes[static_cast<std::size_t>(v)].kind == GlobalRouteNodeKind::PortTerminal) {
+            port = v;
+        }
+        add_arc(u, v, channel, port);
+        add_arc(v, u, channel, port);
+        if (nodes[static_cast<std::size_t>(u)].kind == GlobalRouteNodeKind::Cob) {
+            incident_channels[static_cast<std::size_t>(u)].insert(channel);
+        }
+        if (nodes[static_cast<std::size_t>(v)].kind == GlobalRouteNodeKind::Cob) {
+            incident_channels[static_cast<std::size_t>(v)].insert(channel);
+        }
+    }
+    for (const auto& incident : incident_channels) {
+        for (const int lhs : incident) {
+            for (const int rhs : incident) {
+                if (lhs != rhs) {
+                    graph.adjacent_channel_ids[static_cast<std::size_t>(lhs)].push_back(rhs);
+                }
+            }
+        }
+    }
+    for (auto& adjacent : graph.adjacent_channel_ids) {
+        std::sort(adjacent.begin(), adjacent.end());
+        adjacent.erase(std::unique(adjacent.begin(), adjacent.end()), adjacent.end());
+    }
+    return graph;
 }
 
-auto test_v15_tree_prunes_remerging_dead_branch_before_segmenting() -> void {
-    auto graph = synthetic_graph(
-        6,
-        {{0, 1}, {0, 2}, {1, 3}, {2, 3}, {3, 4}, {3, 5}});
-    auto net = synthetic_net(0, {0}, {{4, {0}}, {5, {0}}});
-    auto sat = SatRoutingResult {};
-    sat.ok = true;
-    sat.paths = {
-        SourceSinkPairPath {0, 0, 0, -1, {0, 1, 3, 4}},
-        SourceSinkPairPath {0, 0, 1, -1, {0, 2, 3, 5}},
-    };
-    auto locked = V15LockedResources {};
-    locked.node_used.assign(graph.nodes.size(), false);
-    const auto prepared = build_v15_parents_and_segments(
-        graph,
-        {net},
-        {synthetic_scope(graph, 0)},
-        sat,
-        {0},
-        1,
-        locked);
+auto bump_ref(std::size_t tob, std::size_t bank, std::size_t index) -> GraphNodeRef {
+    auto ref = GraphNodeRef {};
+    ref.kind = GraphNodeRef::Kind::Bump;
+    ref.bump = Bump_coord {tob, bank, 0, index};
+    return ref;
+}
 
-    require(prepared.segments.size() == 3, "pruned rooted tree must contain three critical-node segments");
-    for (const auto& segment : prepared.segments) {
+auto track_ref(
+    int row,
+    int col,
+    hardware::TrackDirection direction,
+    std::size_t track
+) -> GraphNodeRef {
+    auto ref = GraphNodeRef {};
+    ref.kind = GraphNodeRef::Kind::Track;
+    ref.track_coord = hardware::TrackCoord {row, col, direction, track};
+    ref.track_index = track;
+    return ref;
+}
+
+auto global_cob_node(int row = 0, int col = 0) -> GlobalRouteNode {
+    auto node = GlobalRouteNode {};
+    node.kind = GlobalRouteNodeKind::Cob;
+    node.row = row;
+    node.col = col;
+    return node;
+}
+
+auto global_tob_node(std::size_t tob, int channel) -> GlobalRouteNode {
+    auto node = GlobalRouteNode {};
+    node.kind = GlobalRouteNodeKind::TobTerminal;
+    node.tob = tob;
+    node.channel = channel;
+    return node;
+}
+
+auto global_port_node(const GraphNodeRef& ref, int channel) -> GlobalRouteNode {
+    auto node = GlobalRouteNode {};
+    node.kind = GlobalRouteNodeKind::PortTerminal;
+    node.channel = channel;
+    node.port = GlobalPortKey {
+        ref.track_coord.dir == hardware::TrackDirection::Horizontal ? 0 : 1,
+        static_cast<int>(ref.track_coord.row),
+        static_cast<int>(ref.track_coord.col),
+        ref.track_index};
+    return node;
+}
+
+auto two_pin_net(
+    std::size_t net_id,
+    RoutingNetKind kind,
+    const GraphNodeRef& source,
+    const GraphNodeRef& sink
+) -> RoutingNet {
+    auto net = RoutingNet {};
+    net.net_id = net_id;
+    net.kind = kind;
+    net.sources = {source};
+    net.demands = {RoutingDemand {0, sink, {0}, true}};
+    return net;
+}
+
+auto test_v17_global_route_two_pin_and_fixed_unit() -> void {
+    const auto a0 = tob_anchor_cob(0);
+    const auto a1 = tob_anchor_cob(1);
+    const auto bump_graph = synthetic_channel_graph(
+        {{1, static_cast<int>(a0.row), static_cast<int>(a0.col)},
+         {1, static_cast<int>(a1.row), static_cast<int>(a1.col)}},
+        {global_tob_node(0, 0), global_cob_node(), global_tob_node(1, 1)},
+        {{0, 1, 0}, {1, 2, 1}});
+    auto bump_net = two_pin_net(
+        0, RoutingNetKind::Bnet, bump_ref(0, 0, 0), bump_ref(1, 0, 1));
+    const auto bump_route = solve_global_route_v17(
+        UnifiedGraph {}, bump_graph, {bump_net}, 1);
+    require(bump_route.ok, "V17 synthetic bump-to-bump route must be feasible");
+    require(
+        bump_route.unit_by_owner.size() == 1
+            && bump_route.pair_channels.at(PairKey {0, 0, 0}).size() == 2
+            && bump_route.selected_arc_ids_by_pair.at(PairKey {0, 0, 0}).size() == 2
+            && bump_route.pair_cobs.at(PairKey {0, 0, 0}).size() == 1
+            && bump_route.stats.objective == 2,
+        "V17 must choose one unit and expose the guide arc and derived COB");
+    require(
+        bump_route.stats.model.q_vars == 16
+            && bump_route.stats.model.x_vars == 2
+            && bump_route.stats.model.w_vars == 32
+            && bump_route.stats.model.f_vars == 4
+            && bump_route.stats.model.source_choice_vars == 0
+            && bump_route.stats.model.total_variables() == bump_route.stats.variables
+            && bump_route.stats.model.total_constraints() == bump_route.stats.constraints,
+        "V17 model breakdown must reconcile every variable and constraint");
+
+    auto state = init_routing_problem_state({bump_net});
+    auto bump_nets = std::Vector<RoutingNet> {bump_net};
+    apply_global_route_v17(bump_route, state, bump_nets);
+    require(
+        state.pairs[0].global_route_distance_cap == 8
+            && bump_nets[0].global_unit_by_source.contains(0),
+        "V17 interface must preserve the detailed distance cap and source unit");
+
+    const auto fixed_source = track_ref(
+        0, 0, hardware::TrackDirection::Horizontal, 69);
+    const auto unrelated_port = track_ref(
+        0, 0, hardware::TrackDirection::Horizontal, 70);
+    const auto fixed_graph = synthetic_channel_graph(
+        {{0, 0, 0},
+         {1, static_cast<int>(a0.row), static_cast<int>(a0.col)}},
+        {global_port_node(fixed_source, 0), global_cob_node(), global_tob_node(0, 1),
+         global_port_node(unrelated_port, 0)},
+        {{0, 1, 0}, {1, 2, 1}, {3, 1, 0}});
+    auto fixed_net = two_pin_net(
+        5,
+        RoutingNetKind::Tnet,
+        fixed_source,
+        bump_ref(0, 0, 2));
+    const auto fixed_route = solve_global_route_v17(
+        UnifiedGraph {}, fixed_graph, {fixed_net}, 0);
+    require(
+        fixed_route.ok
+            && fixed_route.unit_by_owner.at(GlobalUnitOwnerKey {5, 0}) == map_track(69)
+            && fixed_route.stats.model.f_vars == 4,
+        "V17 must preserve a fixed COBUnit and omit another port's private F arcs");
+}
+
+auto test_v17_channel_graph_collapses_real_hardware_topology() -> void {
+    const auto detailed = build_unified_graph(nullptr, {});
+    const auto global = build_global_channel_graph(detailed, {});
+    require(
+        !global.channels.empty() && !global.arcs.empty(),
+        "V17 must derive a non-empty Channel adjacency graph from the hardware graph");
+    require(
+        detailed.track_node_count == global.channels.size() * 128
+            && global.channels.size() == 237
+            && global.cob_node_count == 108
+            && global.tob_terminal_node_count == 16
+            && global.boundary_terminal_node_count == 42
+            && global.port_terminal_node_count == 0
+            && global.nodes.size() == 166
+            && global.arcs.size() == 506,
+        "V17 hardware graph must use COB/terminal nodes and physical Channels as edges");
+    for (const auto& arc : global.arcs) {
         require(
-            segment.endpoint_a != 2 && segment.endpoint_b != 2,
-            "remerging branch removed by BFS parent selection must not become a segment");
+            arc.u >= 0 && arc.v >= 0 && arc.u != arc.v
+                && static_cast<std::size_t>(arc.u) < global.nodes.size()
+                && static_cast<std::size_t>(arc.v) < global.nodes.size()
+                && arc.channel >= 0
+                && static_cast<std::size_t>(arc.channel) < global.channels.size(),
+            "every V17 traversal arc must identify valid nodes and one Channel resource");
     }
+    for (std::size_t tob = 0; tob < hardware::Interposer::TOB_SIZE; ++tob) {
+        const int node = global.tob_node_by_tob.at(tob);
+        const int channel = global.nodes[static_cast<std::size_t>(node)].channel;
+        const auto [cob0_coord, cob1_coord] = tob_pair_cob_coords(
+            tob / hardware::Interposer::TOB_ARRAY_WIDTH,
+            tob % hardware::Interposer::TOB_ARRAY_WIDTH);
+        const int cob0 = global.cob_node_by_coord.at(std::pair {
+            static_cast<int>(cob0_coord.row), static_cast<int>(cob0_coord.col)});
+        const int cob1 = global.cob_node_by_coord.at(std::pair {
+            static_cast<int>(cob1_coord.row), static_cast<int>(cob1_coord.col)});
+        auto endpoints = std::set<std::pair<int, int>> {};
+        for (const int arc_id : global.arc_ids_by_channel[static_cast<std::size_t>(channel)]) {
+            const auto& arc = global.arcs[static_cast<std::size_t>(arc_id)];
+            endpoints.emplace(arc.u, arc.v);
+        }
+        require(
+            endpoints == std::set<std::pair<int, int>> {
+                {cob0, node}, {node, cob0}, {cob1, node}, {node, cob1}},
+            "a TOB Channel must connect only its midpoint and two adjacent COBs");
+    }
+
+    const auto boundary_port = track_ref(
+        9, 5, hardware::TrackDirection::Vertical, 69);
+    const auto with_port = build_global_channel_graph(
+        detailed,
+        {two_pin_net(99, RoutingNetKind::Tnet, boundary_port, bump_ref(0, 0, 0))});
+    const auto port_node = with_port.port_node_by_key.at(GlobalPortKey {1, 9, 5, 69});
+    require(
+        with_port.nodes.size() == 167
+            && with_port.port_terminal_node_count == 1
+            && with_port.boundary_terminal_node_count == 42
+            && with_port.arcs.size() == 508
+            && std::count_if(
+                with_port.arcs.begin(),
+                with_port.arcs.end(),
+                [&](const GlobalChannelArc& arc) {
+                    return arc.restricted_port_node == port_node;
+                }) == 2,
+        "a real boundary port must coexist with V_B and add only two private arcs");
 }
 
-auto test_v15_pnnet_remerging_selected_source_is_rejected() -> void {
-    auto graph = synthetic_graph(
-        6,
-        {{0, 1}, {0, 2}, {1, 3}, {2, 3}, {3, 4}, {3, 5}});
-    graph.nodes[0].kind = UnifiedNodeKind::VirtualSource;
+auto test_v17_tob_halves_share_channel_capacity() -> void {
+    auto channels = std::Vector<GlobalChannelCoord> {};
+    for (int source = 0; source < 9; ++source) {
+        channels.push_back(GlobalChannelCoord {0, 0, source});
+    }
+    channels.push_back(GlobalChannelCoord {1, 1, 0});
+    for (int sink = 0; sink < 9; ++sink) {
+        channels.push_back(GlobalChannelCoord {1, 2, sink});
+    }
+
+    auto nodes = std::Vector<GlobalRouteNode> {};
+    for (int source = 0; source < 9; ++source) {
+        nodes.push_back(global_port_node(
+            track_ref(0, source, hardware::TrackDirection::Horizontal, 0), source));
+    }
+    nodes.push_back(global_cob_node(0, 0));
+    nodes.push_back(global_tob_node(0, 9));
+    nodes.push_back(global_cob_node(1, 0));
+    for (std::size_t sink = 0; sink < 9; ++sink) {
+        nodes.push_back(global_tob_node(sink + 1, static_cast<int>(10 + sink)));
+    }
+
+    auto segments = std::Vector<std::tuple<int, int, int>> {};
+    for (int source = 0; source < 9; ++source) {
+        segments.emplace_back(source, source < 5 ? 9 : 11, source);
+    }
+    segments.emplace_back(9, 10, 9);
+    segments.emplace_back(11, 10, 9);
+    for (int sink = 0; sink < 9; ++sink) {
+        segments.emplace_back(10, 12 + sink, 10 + sink);
+    }
+    const auto graph = synthetic_channel_graph(channels, nodes, segments);
+
+    auto nets = std::Vector<RoutingNet> {};
+    for (std::size_t index = 0; index < 9; ++index) {
+        nets.push_back(two_pin_net(
+            index,
+            RoutingNetKind::Tnet,
+            track_ref(
+                0,
+                static_cast<int>(index),
+                hardware::TrackDirection::Horizontal,
+                0),
+            bump_ref(index + 1, 0, 0)));
+    }
+    const auto route = solve_global_route_v17(UnifiedGraph {}, graph, nets, 0);
+    require(
+        !route.ok,
+        "nine same-unit routes on opposite TOB halves must overflow one shared Channel");
+}
+
+auto test_v17_global_route_bus_and_pn_source() -> void {
+    const auto a0 = tob_anchor_cob(0);
+    const auto a1 = tob_anchor_cob(1);
+    const auto a2 = tob_anchor_cob(2);
+    const auto a3 = tob_anchor_cob(3);
+    const auto bus_graph = synthetic_channel_graph(
+        {{1, static_cast<int>(a0.row), static_cast<int>(a0.col)},
+         {1, static_cast<int>(a1.row), static_cast<int>(a1.col)},
+         {1, static_cast<int>(a2.row), static_cast<int>(a2.col)},
+         {1, static_cast<int>(a3.row), static_cast<int>(a3.col)}},
+        {global_tob_node(0, 0), global_cob_node(0, 0), global_tob_node(1, 1),
+         global_tob_node(2, 2), global_cob_node(0, 1), global_tob_node(3, 3)},
+        {{0, 1, 0}, {1, 2, 1}, {3, 4, 2}, {4, 5, 3}});
+    auto bus = RoutingNet {};
+    bus.net_id = 7;
+    bus.kind = RoutingNetKind::Bnet;
+    bus.is_sync_bus = true;
+    bus.sources = {bump_ref(0, 0, 0), bump_ref(2, 0, 1)};
+    bus.demands = {
+        RoutingDemand {0, bump_ref(1, 0, 2), {0}, true},
+        RoutingDemand {1, bump_ref(3, 0, 3), {1}, true}};
+    const auto bus_route = solve_global_route_v17(UnifiedGraph {}, bus_graph, {bus}, 0);
+    require(bus_route.ok, "V17 synthetic two-member bus must be feasible");
+    require(
+        bus_route.channel_count_by_owner.at(GlobalUnitOwnerKey {7, 0})
+            == bus_route.channel_count_by_owner.at(GlobalUnitOwnerKey {7, 1}),
+        "V17 bus members must use equal Channel counts");
+
+    const auto sink_anchor = tob_anchor_cob(0);
+    const auto pn_source0 = track_ref(0, 0, hardware::TrackDirection::Horizontal, 0);
+    const auto pn_source1 = track_ref(0, 2, hardware::TrackDirection::Horizontal, 1);
+    const auto pn_graph = synthetic_channel_graph(
+        {{0, 0, 0},
+         {1, static_cast<int>(sink_anchor.row), static_cast<int>(sink_anchor.col)},
+         {0, 0, 2}},
+        {global_port_node(pn_source0, 0), global_cob_node(0, 0),
+         global_port_node(pn_source1, 2), global_cob_node(0, 1),
+         global_tob_node(0, 1)},
+        {{0, 1, 0}, {2, 3, 2}, {3, 4, 1}});
+    auto pn = RoutingNet {};
+    pn.net_id = 8;
+    pn.kind = RoutingNetKind::PNnet;
+    pn.sources = {
+        pn_source0,
+        pn_source1};
+    pn.demands = {RoutingDemand {0, bump_ref(0, 0, 4), {0, 1}, false}};
+    const auto pn_route = solve_global_route_v17(UnifiedGraph {}, pn_graph, {pn}, 0);
+    require(
+        pn_route.ok
+            && pn_route.selected_source_index_by_pair.at(PairKey {8, 0, 0}) == 1
+            && pn_route.unit_by_owner.at(GlobalUnitOwnerKey {8, 0}) == 1,
+        "V17 PN commodity must select a reachable same-polarity source and its unit");
+    auto pn_nets = std::Vector<RoutingNet> {pn};
+    auto pn_state = init_routing_problem_state(pn_nets);
+    apply_global_route_v17(pn_route, pn_state, pn_nets);
+    require(
+        pn_nets.front().global_selected_pn_source_indices
+            == std::set<std::size_t> {1},
+        "V17 PN source choice must be propagated into the detailed-routing scope");
+}
+
+auto test_v17_rejects_tob_necessary_condition_overflow() -> void {
+    const auto anchor = tob_anchor_cob(0);
+    auto channels = std::Vector<GlobalChannelCoord> {};
+    auto nodes = std::Vector<GlobalRouteNode> {};
+    auto segments = std::Vector<std::tuple<int, int, int>> {};
+    for (int source = 0; source < 9; ++source) {
+        channels.push_back(GlobalChannelCoord {0, 0, source});
+        nodes.push_back(global_port_node(
+            track_ref(0, source, hardware::TrackDirection::Horizontal, 0), source));
+        nodes.push_back(global_port_node(
+            track_ref(0, source, hardware::TrackDirection::Horizontal, 64), source));
+    }
+    channels.push_back(GlobalChannelCoord {
+        1, static_cast<int>(anchor.row), static_cast<int>(anchor.col)});
+    nodes.push_back(global_cob_node());
+    nodes.push_back(global_tob_node(0, 9));
+    for (int source = 0; source < 9; ++source) {
+        segments.emplace_back(2 * source, 18, source);
+        segments.emplace_back(2 * source + 1, 18, source);
+    }
+    segments.emplace_back(18, 19, 9);
+    const auto graph = synthetic_channel_graph(channels, nodes, segments);
+
+    auto make_fixed_nets = [&](const bool alternate_units, const bool alternate_banks) {
+        auto nets = std::Vector<RoutingNet> {};
+        for (std::size_t index = 0; index < 9; ++index) {
+            const std::size_t track = alternate_units && index % 2 != 0 ? 64 : 0;
+            const std::size_t bank = alternate_banks ? index % 2 : 0;
+            nets.push_back(two_pin_net(
+                index,
+                RoutingNetKind::Tnet,
+                track_ref(
+                    0,
+                    static_cast<int>(index),
+                    hardware::TrackDirection::Horizontal,
+                    track),
+                bump_ref(0, bank, index)));
+        }
+        return nets;
+    };
+
+    const auto unit_overflow = solve_global_route_v17(
+        UnifiedGraph {}, graph, make_fixed_nets(false, true), 0);
+    require(
+        !unit_overflow.ok,
+        "V17 must reject more than eight bumps assigned to one TOB unit");
+
+    const auto residue_overflow = solve_global_route_v17(
+        UnifiedGraph {}, graph, make_fixed_nets(true, false), 0);
+    require(
+        !residue_overflow.ok,
+        "V17 must reject more than eight same-bank bumps in one unit residue pair");
+}
+
+auto test_v17_guide_scope_unit_release() -> void {
+    auto graph = synthetic_graph(3, {});
     graph.nodes[1].kind = UnifiedNodeKind::Track;
-    graph.nodes[2].kind = UnifiedNodeKind::Track;
-    auto net = synthetic_net(0, {1, 2}, {{4, {0, 1}}, {5, {0, 1}}});
-    net.kind = RoutingNetKind::PNnet;
-    net.virtual_source_node = 0;
-    auto sat = SatRoutingResult {};
-    sat.ok = true;
-    sat.paths = {
-        SourceSinkPairPath {0, 0, 0, 1, {1, 3, 4}},
-        SourceSinkPairPath {0, 0, 1, 2, {2, 3, 5}},
-    };
-    auto locked = V15LockedResources {};
-    locked.node_used.assign(graph.nodes.size(), false);
-    try {
-        (void)build_v15_parents_and_segments(
-            graph,
-            {net},
-            {synthetic_scope(graph, 0)},
-            sat,
-            {0},
-            1,
-            locked);
-        require(false, "PN source remerge incompatible with a parent tree must be rejected");
-    }
-    catch (const V15PreparationInvariantError&) {
-    }
+    graph.nodes[1].track_dir = 1;
+    graph.nodes[1].track_row = 1;
+    graph.nodes[1].track_col = 0;
+    graph.nodes[1].unit = 3;
+    graph.nodes[2] = graph.nodes[1];
+    graph.nodes[2].unit = 4;
+    auto net = two_pin_net(
+        0, RoutingNetKind::Bnet, synthetic_ref(0), synthetic_ref(0));
+    net.has_global_route_guide = true;
+    net.global_route_channels.insert(GlobalChannelCoord {1, 1, 0});
+    net.global_unit_by_source[0] = 3;
+    const auto fixed = build_scope(graph, net, {0}, {0}, {});
+    require(
+        fixed.node_offset[1] >= 0 && fixed.node_offset[2] < 0,
+        "a fixed V17 unit must expose only that unit's lanes in the guide");
+    net.released_global_unit_sources.insert(0);
+    const auto released = build_scope(graph, net, {0}, {0}, {});
+    require(
+        released.node_offset[1] >= 0 && released.node_offset[2] >= 0,
+        "a released V17 unit must expose all units inside the same guide");
 }
 
-auto test_v15_locked_resource_collection() -> void {
-    auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}});
-    graph.nodes[1].kind = UnifiedNodeKind::HLine;
-    graph.nodes[2].kind = UnifiedNodeKind::VLine;
-    graph.arcs[1].physical_switch_id = 17;
-    graph.arcs[1].physical_switch_kind = PhysicalSwitchKind::HLineVLine;
-
-    auto sat = SatRoutingResult {};
-    sat.ok = true;
-    sat.paths.push_back(SourceSinkPairPath {0, 0, 0, -1, {0, 1, 2, 3}});
-    const auto locked = collect_v15_locked_resources(graph, sat, std::set<std::size_t> {});
-    require(
-        std::ranges::all_of(locked.node_used, [](bool used) { return used; }),
-        "every physical node on a locked path must be reserved");
-    require(
-        locked.switch_used.contains(17),
-        "every TOB switch on a locked path must be reserved");
-
-    const auto selected = collect_v15_locked_resources(graph, sat, std::set<std::size_t> {0});
-    require(
-        std::ranges::none_of(selected.node_used, [](bool used) { return used; })
-            && selected.switch_used.empty(),
-        "selected nets must be removed from locked resources");
-}
-
-auto test_v15_stretch_threshold_is_inclusive() -> void {
-    const auto selected = select_v15_net_ids(
-        {
-            NetStretchInfo {0, "below", 109, 100, 9.0},
-            NetStretchInfo {1, "boundary", 110, 100, 10.0},
-            NetStretchInfo {2, "above", 111, 100, 11.0},
-        },
-        10.0);
-    require(
-        selected == std::set<std::size_t>({1, 2}),
-        "v15 must select growth equal to or greater than -L");
-}
-
-auto test_v15_model_decomposed_fanout_tree() -> void {
-    auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {1, 3}});
-    auto locked = V15LockedResources {};
-    locked.node_used.assign(graph.nodes.size(), false);
-    auto options = V15IlpOptimizeOptions {};
-    options.gurobi_log_dir = "/tmp/pr_tool_v15_unit_gurobi";
-    const auto prepared = make_fanout_prepared(graph);
-    const auto solved = solve_v15_ilp_model(graph, prepared, locked, options, {});
-
-    require(solved.ok, "v15 decomposed fanout fixture must have a Gurobi solution");
-    require(solved.parents.size() == 1, "v15 solution must retain parent identity");
-    require(
-        solved.parents[0].selected_arc_ids == std::set<int>({0, 1, 2}),
-        "fanout solution must select the shared trunk and both leaves");
-}
-
-auto test_v15_sat_mip_start_from_guides() -> void {
-    auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {1, 3}});
-    auto sat = SatRoutingResult {};
-    sat.ok = true;
-    sat.paths = {
-        SourceSinkPairPath {0, 0, 0, -1, {0, 1, 2}},
-        SourceSinkPairPath {0, 0, 1, -1, {0, 1, 3}},
-    };
-    const auto prepared = make_fanout_prepared(graph);
-    const auto start = build_v15_sat_mip_start(prepared, sat);
-    require(start.available, "v15 must provide a MIP start from SAT guides");
-    require(
-        start.parent_arc_ids.at(0) == std::set<int>({0, 1, 2}),
-        "v15 SAT MIP start must union parent guide arcs");
-    require(
-        start.segment_flow_arc_ids.at(0) == std::set<int>({0})
-            && start.segment_flow_arc_ids.at(1) == std::set<int>({1})
-            && start.segment_flow_arc_ids.at(2) == std::set<int>({2}),
-        "v15 SAT MIP start must set one unit flow per segment guide arc");
-}
-
-auto test_v15_model_respects_locked_nodes() -> void {
-    auto graph = synthetic_graph(4, {{0, 1}, {1, 3}, {0, 2}, {2, 3}});
-    auto locked = V15LockedResources {};
-    locked.node_used.assign(graph.nodes.size(), false);
-    locked.node_used[1] = true;
-    auto options = V15IlpOptimizeOptions {};
-    options.gurobi_log_dir = "/tmp/pr_tool_v15_unit_gurobi";
-    auto prepared = V15PrepareResult {};
-    auto parent = V15Parent {};
-    parent.parent_id = 0;
-    parent.root_node = 0;
-    parent.origin_sinks = {3};
-    parent.source_unit_mask = 0xffff;
-    auto segment = V15Segment {};
-    segment.segment_id = 0;
-    segment.parent_id = 0;
-    segment.endpoint_a = 0;
-    segment.endpoint_b = 3;
-    segment.scope = scope_to_segment_scope(synthetic_scope(graph, 0));
-    parent.segment_ids = {0};
-    prepared.parents.push_back(parent);
-    prepared.segments.push_back(segment);
-    const auto solved = solve_v15_ilp_model(graph, prepared, locked, options, {});
-
-    require(solved.ok, "v15 locked-node fixture must remain routable");
-    require(
-        solved.parents[0].selected_arc_ids == std::set<int>({2, 3}),
-        "v15 model must route around a locked physical node");
-}
-
-auto test_v15_extract_ignores_disconnected_cycles() -> void {
-    auto graph = synthetic_graph(5, {{0, 1}, {1, 2}, {3, 4}, {4, 3}});
-    auto net = synthetic_net(0, {0}, {{2, {0}}});
-    auto prepared = V15PrepareResult {};
-    auto parent = V15Parent {};
-    parent.parent_id = 0;
-    parent.routing_net_id = 0;
-    parent.root_node = 0;
-    parent.origin_sinks = {2};
-    parent.demand_ids = {0};
-    parent.source_indices = {0};
-    parent.segment_ids = {0};
-    prepared.parents.push_back(parent);
-    prepared.segments.push_back(V15Segment {
-        0,
-        0,
-        0,
-        2,
-        {0, 1, 2},
-        {0, 1},
-        scope_to_segment_scope(synthetic_scope(graph, 0)),
-        false});
-
-    auto model = V15IlpModelResult {};
-    model.ok = true;
-    model.status = V15IlpStatus::Optimal;
-    model.parents.push_back(V15ParentModelSolution {
-        0,
-        {0, 1, 2, 3},
-        {0, 1, 2, 3, 4}});
-    model.segments.push_back(V15SegmentModelSolution {0, {0, 1, 2, 3}});
-    auto sat = SatRoutingResult {};
-    sat.ok = true;
-    sat.paths.push_back(SourceSinkPairPath {0, 0, 0, -1, {0, 1, 2}});
-
-    const auto extracted = extract_v15_routing_solution(
-        graph,
-        {net},
-        prepared,
-        model,
-        sat,
-        std::set<std::size_t> {0});
-    require(extracted.ok, "v15 extraction must accept a root-reachable route");
-    require(extracted.paths.size() == 1, "disconnected cycles must not produce paths");
-    require(
-        extracted.paths[0].node_path == std::Vector<int>({0, 1, 2}),
-        "v15 extraction must return only the root-to-sink path");
-    const auto validation = validate_v15_routing_solution(
-        graph,
-        {net},
-        {synthetic_scope(graph, 0)},
-        prepared,
-        model,
-        extracted);
-    require(validation.ok, "v15 extracted fixture must pass structural validation");
-}
-
-auto test_v15_validation_rejects_parent_arc_without_segment_flow() -> void {
-    auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
-    auto net = synthetic_net(0, {0}, {{2, {0}}});
-    auto prepared = V15PrepareResult {};
-    auto parent = V15Parent {};
-    parent.parent_id = 0;
-    parent.routing_net_id = 0;
-    parent.root_node = 0;
-    parent.origin_sinks = {2};
-    parent.demand_ids = {0};
-    parent.source_indices = {0};
-    parent.segment_ids = {0};
-    prepared.parents.push_back(parent);
-    prepared.segments.push_back(V15Segment {
-        0,
-        0,
-        0,
-        2,
-        {0, 1, 2},
-        {0, 1},
-        scope_to_segment_scope(synthetic_scope(graph, 0)),
-        false});
-
-    auto model = V15IlpModelResult {};
-    model.ok = true;
-    model.status = V15IlpStatus::Optimal;
-    model.parents.push_back(V15ParentModelSolution {0, {0, 1}, {0, 1, 2}});
-    model.segments.push_back(V15SegmentModelSolution {0, {0}});
-    auto result = SatRoutingResult {};
-    result.ok = true;
-    result.paths.push_back(SourceSinkPairPath {0, 0, 0, -1, {0, 1, 2}});
-    result.total_wirelength = total_wirelength(graph, result);
-
-    const auto validation = validate_v15_routing_solution(
-        graph,
-        {net},
-        {synthetic_scope(graph, 0)},
-        prepared,
-        model,
-        result,
-        {0});
-    require(!validation.ok, "v15 validation must reject a parent x arc unsupported by segment f");
-}
-
-auto test_v15_pnnet_virtual_root_is_removed_on_extract() -> void {
-    auto graph = synthetic_graph(4, {{0, 1}, {1, 3}, {0, 2}, {2, 3}});
-    graph.nodes[0].kind = UnifiedNodeKind::VirtualSource;
-    graph.nodes[1].kind = UnifiedNodeKind::Track;
-    auto net = synthetic_net(0, {1, 2}, {{3, {0}}});
-    net.kind = RoutingNetKind::PNnet;
-    net.virtual_source_node = 0;
-    auto prepared = V15PrepareResult {};
-    auto parent = V15Parent {};
-    parent.parent_id = 0;
-    parent.routing_net_id = 0;
-    parent.root_node = 0;
-    parent.fixed_track_nodes = {1};
-    parent.origin_sinks = {3};
-    parent.demand_ids = {0};
-    parent.source_indices = {0};
-    parent.segment_ids = {0};
-    prepared.parents.push_back(parent);
-    prepared.segments.push_back(V15Segment {
-        0,
-        0,
-        0,
-        3,
-        {0, 1, 3},
-        {0, 1},
-        scope_to_segment_scope(synthetic_scope(graph, 0)),
-        false});
-
-    auto model = V15IlpModelResult {};
-    model.ok = true;
-    model.status = V15IlpStatus::Optimal;
-    model.parents.push_back(V15ParentModelSolution {0, {0, 1}, {0, 1, 3}});
-    auto sat = SatRoutingResult {};
-    sat.ok = true;
-    sat.paths.push_back(SourceSinkPairPath {0, 0, 0, 1, {1, 3}});
-    const auto extracted = extract_v15_routing_solution(
-        graph,
-        {net},
-        prepared,
-        model,
-        sat,
-        {0});
-    require(
-        extracted.ok && extracted.paths.size() == 1
-            && extracted.paths[0].physical_source_node == 1
-            && extracted.paths[0].node_path == std::Vector<int>({1, 3}),
-        "v15 PNnet extraction must strip the virtual root and retain the selected track");
-}
-
-auto test_v15_bus_l_and_tob_conflicts() -> void {
-    auto graph = synthetic_graph(5, {{0, 1}, {2, 4}, {4, 3}});
-    auto locked = V15LockedResources {};
-    locked.node_used.assign(graph.nodes.size(), false);
-    auto options = V15IlpOptimizeOptions {};
-    options.gurobi_log_dir = "/tmp/pr_tool_v15_unit_gurobi";
-    auto make_bus_parent = [&](std::size_t parent_id, int root, int sink) {
-        auto parent = V15Parent {};
-        parent.parent_id = parent_id;
-        parent.root_node = root;
-        parent.origin_sinks = {sink};
-        parent.is_bus_member = true;
-        parent.source_unit_mask = 0xffff;
-        parent.segment_ids = {parent_id};
-        return parent;
-    };
-    auto make_bus_segment = [&](std::size_t segment_id, int root, int sink) {
-        return V15Segment {
-            segment_id,
-            segment_id,
-            root,
-            sink,
-            {root, sink},
-            {segment_id == 0 ? 0 : 1},
-            scope_to_segment_scope(synthetic_scope(graph, 0)),
-            false};
-    };
-    auto unequal_prepared = V15PrepareResult {};
-    unequal_prepared.parents = {make_bus_parent(0, 0, 1), make_bus_parent(1, 2, 3)};
-    unequal_prepared.segments = {make_bus_segment(0, 0, 1), make_bus_segment(1, 2, 3)};
-    const auto unequal_bus = solve_v15_ilp_model(
-        graph,
-        unequal_prepared,
-        locked,
-        options,
-        {});
-    require(!unequal_bus.ok, "v15 bus L constraint must reject unequal fixed member lengths");
-
-    auto matching_graph = synthetic_graph(4, {{0, 1}, {1, 2}, {1, 3}});
-    matching_graph.nodes[0].kind = UnifiedNodeKind::Bump;
-    matching_graph.nodes[1].kind = UnifiedNodeKind::HLine;
-    matching_graph.nodes[2].kind = UnifiedNodeKind::VLine;
-    matching_graph.nodes[3].kind = UnifiedNodeKind::VLine;
-    matching_graph.arcs[0].physical_switch_id = 0;
-    matching_graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::BumpH;
-    matching_graph.arcs[1].physical_switch_id = 1;
-    matching_graph.arcs[1].physical_switch_kind = PhysicalSwitchKind::HLineVLine;
-    matching_graph.arcs[2].physical_switch_id = 2;
-    matching_graph.arcs[2].physical_switch_kind = PhysicalSwitchKind::HLineVLine;
-    locked.node_used.assign(matching_graph.nodes.size(), false);
-    const auto matching_conflict = solve_v15_ilp_model(
-        matching_graph,
-        make_fanout_prepared(matching_graph),
-        locked,
-        options,
-        {});
-    require(!matching_conflict.ok, "v15 TOB partial matching must reject two HLine-VLine switches on one HLine");
-
-    auto mode_graph = synthetic_graph(3, {{0, 1}, {0, 2}});
-    mode_graph.nodes[0].kind = UnifiedNodeKind::VLine;
-    mode_graph.nodes[1].kind = UnifiedNodeKind::Track;
-    mode_graph.nodes[2].kind = UnifiedNodeKind::Track;
-    mode_graph.arcs[0].physical_switch_id = 0;
-    mode_graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
-    mode_graph.arcs[0].mode_group_id = 0;
-    mode_graph.arcs[0].is_vline_track_straight = true;
-    mode_graph.arcs[1].physical_switch_id = 1;
-    mode_graph.arcs[1].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
-    mode_graph.arcs[1].mode_group_id = 0;
-    mode_graph.arcs[1].is_vline_track_swap = true;
-    locked.node_used.assign(mode_graph.nodes.size(), false);
-  auto mode_prepared = make_fanout_prepared(mode_graph);
-    const auto mode_conflict = solve_v15_ilp_model(
-        mode_graph,
-        mode_prepared,
-        locked,
-        options,
-        {});
-    require(!mode_conflict.ok, "v15 final-stage straight/swap mode must reject mixed uses in one group");
-}
-
-auto test_v15_optimizer_skips_when_threshold_selects_nothing() -> void {
-    auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
-    auto net = synthetic_net(0, {0}, {{2, {0}}});
+auto test_v17_unit_assumption_is_traceable() -> void {
+    auto graph = synthetic_graph(2, {{0, 1}});
+    auto net = synthetic_net(0, {0}, {{1, {0}}});
+    net.kind = RoutingNetKind::Bnet;
+    net.global_unit_by_source[0] = 3;
     const auto scopes = std::Vector<UnifiedSatNetScope> {synthetic_scope(graph, 0)};
     const auto delays = compute_pair_delays(graph, {net}, scopes);
-    auto sat = SatRoutingResult {};
-    sat.ok = true;
-    sat.paths.push_back(SourceSinkPairPath {0, 0, 0, -1, {0, 1, 2}});
-    sat.total_wirelength = total_wirelength(graph, sat);
-    auto options = V15IlpOptimizeOptions {};
-    options.enabled = true;
-    options.stretch_threshold_percent = 1000.0;
-    options.gurobi_log_dir = "/tmp/pr_tool_v15_unit_gurobi";
-
-    const auto optimized = optimize_v15_routes(
-        nullptr,
-        graph,
-        {net},
-        scopes,
-        delays,
-        sat,
-        options);
+    auto session = CadicalSession {};
+    const auto model = build_unified_sat_model(session, graph, {net}, scopes, delays);
     require(
-        optimized.status == V15IlpStatus::SkippedNoCandidates
-            && optimized.routing.paths.size() == 1
-            && optimized.routing.paths[0].node_path == sat.paths[0].node_path,
-        "v15 optimizer must return the SAT result unchanged when no net reaches -L");
+        model.unit_assumption_vars.size() == 1
+            && model.unit_assumption_vars[0].unit == 3,
+        "V17 must emit one traceable gamma assumption for a fixed Bnet source unit");
+    const auto& source = model.sources[0];
+    session.add_clause({-source.unit_selector_var_by_unit[3]});
+    session.assume(model.alpha_vars[0].alpha_lit);
+    session.assume(model.unit_assumption_vars[0].assumption_lit);
+    const auto result = session.solve();
+    require(
+        !result.ok
+            && std::ranges::find(
+                   result.failed_assumption_literals,
+                   model.unit_assumption_vars[0].assumption_lit)
+                != result.failed_assumption_literals.end(),
+        "a unit conflict must identify only the releasable gamma assumption in the core");
+}
+
+auto test_v17_distance_domain_uses_global_cap() -> void {
+    const auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}, {1, 3}});
+    auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].global_route_distance_cap = 3;
+    const auto scopes = build_all_scopes(graph, nets);
+    const auto delays = compute_pair_delays(graph, nets, scopes, &state);
+    require(
+        delays.pairs[0].delays == std::Vector<int>({2, 3}),
+        "V17 initial distance domain must be the continuous interval from d_min through L_pair");
+}
+
+auto test_v17_bus_distance_domain_uses_shared_bounds() -> void {
+    const auto graph = synthetic_graph(
+        7, {{0, 1}, {1, 2}, {3, 4}, {4, 5}, {5, 6}});
+    auto bus = synthetic_net(0, {0, 3}, {{2, {0}}, {6, {1}}});
+    bus.is_sync_bus = true;
+    auto nets = std::Vector<RoutingNet> {bus};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].global_route_distance_cap = 4;
+    state.pairs[1].global_route_distance_cap = 5;
+    const auto scopes = build_all_scopes(graph, nets);
+    const auto delays = compute_pair_delays(graph, nets, scopes, &state);
+    const auto expected = std::Vector<int>({3, 4, 5});
+    require(
+        delays.pairs[0].delays == expected && delays.pairs[1].delays == expected,
+        "V17 bus members must share {max d_min,...,max L_pair}");
+}
+
+auto test_v17_pn_scope_retains_selected_union_only() -> void {
+    auto graph = build_unified_graph(nullptr, {});
+    auto pn = RoutingNet {};
+    pn.net_id = 9;
+    pn.kind = RoutingNetKind::PNnet;
+    pn.sources = {
+        track_ref(0, 0, hardware::TrackDirection::Horizontal, 0),
+        track_ref(0, 0, hardware::TrackDirection::Horizontal, 8),
+        track_ref(0, 1, hardware::TrackDirection::Horizontal, 1)};
+    pn.demands = {
+        RoutingDemand {0, bump_ref(0, 0, 0), {0, 1, 2}, false},
+        RoutingDemand {1, bump_ref(0, 0, 1), {0, 1, 2}, false}};
+    pn.global_selected_pn_source_indices = {0, 2};
+    pn.global_route_channels = {
+        GlobalChannelCoord {0, 0, 0},
+        GlobalChannelCoord {0, 0, 1},
+        GlobalChannelCoord {
+            1,
+            static_cast<int>(tob_anchor_cob(0).row),
+            static_cast<int>(tob_anchor_cob(0).col)}};
+    pn.has_global_route_guide = true;
+    auto nets = std::Vector<RoutingNet> {pn};
+    augment_graph_for_pnnet(graph, nets);
+    const auto scopes = build_all_scopes(graph, nets);
+    const int selected0 = resolve_graph_node(graph, nets[0].sources[0]);
+    const int rejected = resolve_graph_node(graph, nets[0].sources[1]);
+    const int selected2 = resolve_graph_node(graph, nets[0].sources[2]);
+    bool selected0_arc_in_scope = false;
+    bool selected2_arc_in_scope = false;
+    bool rejected_arc_in_scope = false;
+    for (const int arc_id : graph.out_arc_ids[static_cast<std::size_t>(nets[0].virtual_source_node)]) {
+        const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
+        const bool included = scopes[0].arc_offset[static_cast<std::size_t>(arc_id)] >= 0;
+        selected0_arc_in_scope |= arc.v == selected0 && included;
+        selected2_arc_in_scope |= arc.v == selected2 && included;
+        rejected_arc_in_scope |= arc.v == rejected && included;
+    }
+    require(
+        selected0_arc_in_scope && selected2_arc_in_scope && !rejected_arc_in_scope,
+        "V17 multi-sink PN scope must retain the selected-source union and mask an unselected same-Channel/unit virtual arc");
 }
 
 auto build_v14_model(
@@ -1519,14 +1507,19 @@ auto test_z3_optimize_cli_option() -> void {
     const auto enabled = parse_test_ilp_cli({"case", "--z3-optimize"});
     require(enabled.enable_z3_optimize, "--z3-optimize must enable the Z3 backend");
 
-    bool rejected = false;
+    const auto v17 = parse_test_ilp_cli({"case", "--global-route-v17"});
+    require(
+        v17.enable_global_route_v17 && v17.enable_z3_optimize,
+        "--global-route-v17 must enable global routing and the existing Z3 backend");
+
+    bool rejected_padding = false;
     try {
-        (void)parse_test_ilp_cli({"case", "--z3-optimize", "--ilp-optimize", "-L", "10"});
+        (void)parse_test_ilp_cli({"case", "--global-route-v17", "-s", "1"});
     }
     catch (const std::invalid_argument&) {
-        rejected = true;
+        rejected_padding = true;
     }
-    require(rejected, "--z3-optimize and --ilp-optimize must be mutually exclusive");
+    require(rejected_padding, "V17 must reject legacy scope/delay padding");
 }
 
 #ifdef USE_Z3
@@ -2407,67 +2400,6 @@ auto test_cli_output_dir_option() -> void {
     require_invalid({"test/config/case1", "--output"});
     require_invalid({"test/config/case1", "-o", "-v"});
     require_invalid({"test/config/case1", "--output", "--sat-log"});
-}
-
-auto test_cli_v15_ilp_options() -> void {
-    const auto integer_threshold = parse_test_ilp_cli({
-        "test/config/case7", "-v", "--ilp-optimize", "-L", "10"});
-    require(integer_threshold.enable_ilp_optimize, "CLI must enable v15 ILP optimization");
-    require(
-        integer_threshold.ilp_stretch_threshold_percent.has_value()
-            && integer_threshold.ilp_stretch_threshold_percent.value() == 10.0,
-        "CLI must parse integer-looking -L values as percentages");
-
-    const auto decimal_threshold = parse_test_ilp_cli({
-        "test/config/case7", "-L", "10.5", "--ilp-optimize"});
-    require(decimal_threshold.enable_ilp_optimize, "CLI option order must not matter");
-    require(
-        decimal_threshold.ilp_stretch_threshold_percent.has_value()
-            && decimal_threshold.ilp_stretch_threshold_percent.value() == 10.5,
-        "CLI must accept a non-negative decimal -L value");
-
-    const auto segment_pad = parse_test_ilp_cli({
-        "test/config/case7", "--ilp-optimize", "-L", "10", "-R", "2"});
-    require(
-        segment_pad.ilp_segment_bbox_pad.has_value()
-            && segment_pad.ilp_segment_bbox_pad.value() == 2,
-        "CLI must parse -R segment bbox pad");
-
-    const auto time_limit = parse_test_ilp_cli({
-        "test/config/case7", "--ilp-optimize", "-L", "10", "--time-limit", "2.5"});
-    require(
-        time_limit.ilp_time_limit_hours.has_value()
-            && time_limit.ilp_time_limit_hours.value() == 2.5,
-        "CLI must parse --time-limit hours");
-
-    const auto unlimited = parse_test_ilp_cli({
-        "test/config/case7", "--ilp-optimize", "-L", "10"});
-    require(
-        !unlimited.ilp_time_limit_hours.has_value(),
-        "missing --time-limit must leave ILP time unlimited");
-
-    const auto require_invalid = [](std::initializer_list<std::string_view> args) {
-        try {
-            (void)parse_test_ilp_cli(args);
-            require(false, "invalid v15 ILP CLI input must be rejected");
-        }
-        catch (const std::invalid_argument&) {
-        }
-    };
-    require_invalid({"test/config/case7", "--ilp-optimize"});
-    require_invalid({"test/config/case7", "-L", "10"});
-    require_invalid({"test/config/case7", "--ilp-optimize", "-L"});
-    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "-1"});
-    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "nan"});
-    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "inf"});
-    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "ten"});
-    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "10", "-R", "-1"});
-    require_invalid({"test/config/case7", "-R", "1"});
-    require_invalid({"test/config/case7", "--time-limit", "1"});
-    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "10", "--time-limit"});
-    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "10", "--time-limit", "0"});
-    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "10", "--time-limit", "-1"});
-    require_invalid({"test/config/case7", "--ilp-optimize", "-L", "10", "--time-limit", "nan"});
 }
 
 auto test_initial_search_padding_scope() -> void {
@@ -3529,21 +3461,16 @@ auto main() -> int {
         test_cli_max_rss_option();
         test_cli_initial_padding_options();
         test_cli_output_dir_option();
-        test_cli_v15_ilp_options();
-        test_v15_parent_construction();
-        test_v15_pnnet_keeps_all_sat_selected_tracks_as_virtual_hops();
-        test_v15_tree_prunes_remerging_dead_branch_before_segmenting();
-        test_v15_pnnet_remerging_selected_source_is_rejected();
-        test_v15_locked_resource_collection();
-        test_v15_stretch_threshold_is_inclusive();
-        test_v15_model_decomposed_fanout_tree();
-        test_v15_sat_mip_start_from_guides();
-        test_v15_model_respects_locked_nodes();
-        test_v15_extract_ignores_disconnected_cycles();
-        test_v15_validation_rejects_parent_arc_without_segment_flow();
-        test_v15_pnnet_virtual_root_is_removed_on_extract();
-        test_v15_bus_l_and_tob_conflicts();
-        test_v15_optimizer_skips_when_threshold_selects_nothing();
+        test_v17_global_route_two_pin_and_fixed_unit();
+        test_v17_channel_graph_collapses_real_hardware_topology();
+        test_v17_tob_halves_share_channel_capacity();
+        test_v17_global_route_bus_and_pn_source();
+        test_v17_rejects_tob_necessary_condition_overflow();
+        test_v17_guide_scope_unit_release();
+        test_v17_unit_assumption_is_traceable();
+        test_v17_distance_domain_uses_global_cap();
+        test_v17_bus_distance_domain_uses_shared_bounds();
+        test_v17_pn_scope_retains_selected_union_only();
         test_initial_search_padding_scope();
         test_initial_search_padding_delay();
         test_initial_search_padding_rejects_delay_overflow();
@@ -3583,7 +3510,6 @@ auto main() -> int {
         test_unique_failed_net_ids_deduplicates();
         test_ideal_two_pin_wirelength_matches_shortest_path();
         test_ideal_sync_bus_wirelength_scales_by_members();
-        test_wirelength_matches_testlength_golden();
         std::cout << "test_ILP_unit: all tests passed\n";
         return 0;
     }

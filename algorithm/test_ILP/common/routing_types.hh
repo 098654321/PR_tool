@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <std/collection.hh>
 #include <std/string.hh>
+#include <tuple>
 
 namespace PR_tool {
 
@@ -15,6 +16,14 @@ struct IlpBoundingBox {
     std::i64 row_max{0};
     std::i64 col_min{0};
     std::i64 col_max{0};
+};
+
+struct GlobalChannelCoord {
+    int dir{0};
+    int row{0};
+    int col{0};
+
+    auto operator<=>(const GlobalChannelCoord&) const = default;
 };
 
 enum class RoutingNetKind {
@@ -59,6 +68,15 @@ struct RoutingNet {
     IlpBoundingBox scope_bbox {};
     bool has_scope_bbox{false};
     bool is_sync_bus{false};
+    // V17 only: non-rectangular Channel guide shared by this normalized net.
+    bool has_global_route_guide{false};
+    std::set<GlobalChannelCoord> global_route_channels;
+    // Bnet only: initial Global Routing unit per logical source.
+    std::map<std::size_t, std::size_t> global_unit_by_source;
+    // Sources whose Global Routing unit assumption was removed by a Z3 core.
+    std::set<std::size_t> released_global_unit_sources;
+    // PNnet only: candidate sources selected by its per-demand global commodities.
+    std::set<std::size_t> global_selected_pn_source_indices;
     // PNnet only: global graph node id for virtual source r_n (-1 when unset).
     int virtual_source_node{-1};
 };
@@ -89,20 +107,25 @@ struct SatRoutingResult {
     std::Vector<SourceSinkPairPath> paths;
     std::map<std::size_t, bool> vline_mode_straight_by_group;
     std::Vector<int> used_tob_switch_ids;
-    // Optional v15 post-optimization diagnostics.  The SAT fields above keep
-    // their v14 meanings even when Gurobi is enabled.
-    bool ilp_optimization_requested{false};
-    bool ilp_optimization_applied{false};
-    bool ilp_fallback_to_sat{false};
-    std::String ilp_status;
-    std::size_t ilp_model_vars{0};
-    std::size_t ilp_model_constraints{0};
-    long long ilp_model_build_ms{0};
-    long long ilp_solve_ms{0};
-    // Wall time of optimize_v15_routes (prep + model + optimize + extract).
-    long long ilp_total_ms{0};
-    // Wall time from ILP begin until model.optimize() starts (prep + model build).
-    long long ilp_pre_ms{0};
+    // V17 Global Routing diagnostics. Detailed routing remains Z3 Optimize.
+    bool global_route_requested{false};
+    std::String global_route_status;
+    std::size_t global_route_nodes{0};
+    std::size_t global_route_cob_nodes{0};
+    std::size_t global_route_tob_terminal_nodes{0};
+    std::size_t global_route_port_terminal_nodes{0};
+    std::size_t global_route_boundary_terminal_nodes{0};
+    std::size_t global_route_channels{0};
+    std::size_t global_route_arcs{0};
+    std::size_t global_route_owners{0};
+    std::size_t global_route_commodities{0};
+    std::size_t global_route_vars{0};
+    std::size_t global_route_constraints{0};
+    std::size_t global_route_objective{0};
+    std::size_t global_route_released_sources{0};
+    long long global_route_build_ms{0};
+    long long global_route_solve_ms{0};
+    long long global_route_total_ms{0};
 };
 
 } // namespace PR_tool

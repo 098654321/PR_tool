@@ -1,7 +1,6 @@
 #include "test_ilp_cli.hh"
 
 #include <charconv>
-#include <cmath>
 #include <format>
 #include <stdexcept>
 
@@ -16,29 +15,6 @@ auto parse_non_negative_int(std::string_view value, const char* option_name) -> 
     if (error != std::errc {} || end != value.data() + value.size() || parsed < 0) {
         throw std::invalid_argument(
             std::format("{} requires a non-negative integer argument", option_name));
-    }
-    return parsed;
-}
-
-auto parse_non_negative_double(std::string_view value, const char* option_name) -> double {
-    double parsed = 0.0;
-    const auto [end, error] =
-        std::from_chars(value.data(), value.data() + value.size(), parsed);
-    if (error != std::errc {}
-        || end != value.data() + value.size()
-        || !std::isfinite(parsed)
-        || parsed < 0.0) {
-        throw std::invalid_argument(
-            std::format("{} requires a non-negative finite number", option_name));
-    }
-    return parsed;
-}
-
-auto parse_positive_double(std::string_view value, const char* option_name) -> double {
-    const auto parsed = parse_non_negative_double(value, option_name);
-    if (parsed <= 0.0) {
-        throw std::invalid_argument(
-            std::format("{} requires a positive finite number", option_name));
     }
     return parsed;
 }
@@ -96,35 +72,13 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
             options.initial_delay_pad = parse_non_negative_int(args[i], "-d");
             continue;
         }
-        if (arg == "--ilp-optimize") {
-            options.enable_ilp_optimize = true;
-            continue;
-        }
         if (arg == "--z3-optimize") {
             options.enable_z3_optimize = true;
             continue;
         }
-        if (arg == "-L") {
-            if (++i >= args.size()) {
-                throw std::invalid_argument("-L requires a non-negative finite number");
-            }
-            options.ilp_stretch_threshold_percent =
-                parse_non_negative_double(args[i], "-L");
-            continue;
-        }
-        if (arg == "-R") {
-            if (++i >= args.size()) {
-                throw std::invalid_argument("-R requires a non-negative integer argument");
-            }
-            options.ilp_segment_bbox_pad = parse_non_negative_int(args[i], "-R");
-            continue;
-        }
-        if (arg == "--time-limit") {
-            if (++i >= args.size()) {
-                throw std::invalid_argument(
-                    "--time-limit requires a positive finite number of hours");
-            }
-            options.ilp_time_limit_hours = parse_positive_double(args[i], "--time-limit");
+        if (arg == "--global-route-v17") {
+            options.enable_global_route_v17 = true;
+            options.enable_z3_optimize = true;
             continue;
         }
         if (arg.size() >= 2 && arg[0] == '-' && arg[1] == 'v') {
@@ -142,20 +96,10 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
         }
         throw std::invalid_argument(std::format("Unknown argument: {}", arg));
     }
-    if (options.enable_ilp_optimize && !options.ilp_stretch_threshold_percent.has_value()) {
-        throw std::invalid_argument("--ilp-optimize requires -L <percent>");
-    }
-    if (!options.enable_ilp_optimize && options.ilp_stretch_threshold_percent.has_value()) {
-        throw std::invalid_argument("-L requires --ilp-optimize");
-    }
-    if (!options.enable_ilp_optimize && options.ilp_segment_bbox_pad.has_value()) {
-        throw std::invalid_argument("-R requires --ilp-optimize");
-    }
-    if (!options.enable_ilp_optimize && options.ilp_time_limit_hours.has_value()) {
-        throw std::invalid_argument("--time-limit requires --ilp-optimize");
-    }
-    if (options.enable_z3_optimize && options.enable_ilp_optimize) {
-        throw std::invalid_argument("--z3-optimize cannot be combined with --ilp-optimize");
+    if (options.enable_global_route_v17
+        && (options.initial_scope_pad != 0 || options.initial_delay_pad != 0)) {
+        throw std::invalid_argument(
+            "--global-route-v17 cannot be combined with -s or -d; the global route initializes both domains");
     }
     return options;
 }

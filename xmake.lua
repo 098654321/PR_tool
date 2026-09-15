@@ -39,6 +39,31 @@ local function add_z3_dependency()
     return true
 end
 
+local function add_highs_dependency()
+    local highs_home = os.getenv("HIGHS_HOME")
+    if not highs_home or highs_home == "" then
+        highs_home = os.getenv("HIGHS_ROOT")
+    end
+    if not highs_home or highs_home == "" then
+        if is_host("macosx") and os.isdir("third_party/HiGHS/install-macos") then
+            highs_home = "third_party/HiGHS/install-macos"
+        elseif os.isdir("third_party/HiGHS/install") then
+            highs_home = "third_party/HiGHS/install"
+        end
+    end
+    if not highs_home or highs_home == "" then
+        return false
+    end
+    -- Absolute rpath: bare relative paths break under `xmake run` / non-PR_tool cwd.
+    highs_home = path.absolute(highs_home)
+    add_includedirs(highs_home .. "/include/highs")
+    add_linkdirs(highs_home .. "/lib")
+    add_rpathdirs(highs_home .. "/lib")
+    add_links("highs")
+    add_defines("USE_HIGHS")
+    return true
+end
+
 rule("qt.opengl")
     on_config(function (target) 
         import("detect.sdks.find_qt")
@@ -203,15 +228,9 @@ target("test_ILP")
         "algorithm/test_ILP/scope/scope_bbox.cc",
         "algorithm/test_ILP/scope/pair_routing_state.cc",
         "algorithm/test_ILP/graph/unified_routing_graph.cc",
+        "algorithm/test_ILP/global_route_v17/global_router.cc",
         "algorithm/test_ILP/common/cob_unit_mask.cc",
         "algorithm/test_ILP/delay/pair_delay_precompute.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_prepare.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_domain.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_segment.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_model.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_extract.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_validate.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_optimizer.cc",
         "algorithm/test_ILP/sat/unified_sat_scope.cc",
         "algorithm/test_ILP/sat/sat_constraint_kits.cc",
         "algorithm/test_ILP/sat/sat_encoding_stats.cc",
@@ -253,21 +272,7 @@ target("test_ILP")
     if add_z3_dependency() then
         add_files("algorithm/test_ILP/sat_allocation/z3_optimize_solver.cc")
     end
-    local gurobi_home = os.getenv("GUROBI_HOME")
-    if not gurobi_home or gurobi_home == "" then
-        if is_plat("linux") then
-            gurobi_home = "/opt/gurobi1302/linux64"
-        else
-            gurobi_home = "/Library/gurobi1302/macos_universal2"
-        end
-    end
-    add_includedirs(gurobi_home .. "/include")
-    add_linkdirs(gurobi_home .. "/lib")
-    add_rpathdirs(gurobi_home .. "/lib")
-    if is_plat("linux") then
-        add_links("pthread", "dl", "m")
-    end
-    add_links("gurobi_c++", "gurobi130")
+    add_highs_dependency()
 
 target("test_ILP_unit")
     set_kind("binary")
@@ -281,15 +286,9 @@ target("test_ILP_unit")
         "algorithm/test_ILP/scope/scope_bbox.cc",
         "algorithm/test_ILP/scope/pair_routing_state.cc",
         "algorithm/test_ILP/graph/unified_routing_graph.cc",
+        "algorithm/test_ILP/global_route_v17/global_router.cc",
         "algorithm/test_ILP/common/cob_unit_mask.cc",
         "algorithm/test_ILP/delay/pair_delay_precompute.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_prepare.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_domain.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_segment.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_model.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_extract.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_validate.cc",
-        "algorithm/test_ILP/ilp_v15/v15_ilp_optimizer.cc",
         "algorithm/test_ILP/sat/unified_sat_scope.cc",
         "algorithm/test_ILP/sat/sat_constraint_kits.cc",
         "algorithm/test_ILP/sat/sat_encoding_stats.cc",
@@ -331,21 +330,7 @@ target("test_ILP_unit")
     if add_z3_dependency() then
         add_files("algorithm/test_ILP/sat_allocation/z3_optimize_solver.cc")
     end
-    local gurobi_home = os.getenv("GUROBI_HOME")
-    if not gurobi_home or gurobi_home == "" then
-        if is_plat("linux") then
-            gurobi_home = "/opt/gurobi1302/linux64"
-        else
-            gurobi_home = "/Library/gurobi1302/macos_universal2"
-        end
-    end
-    add_includedirs(gurobi_home .. "/include")
-    add_linkdirs(gurobi_home .. "/lib")
-    add_rpathdirs(gurobi_home .. "/lib")
-    if is_plat("linux") then
-        add_links("pthread", "dl", "m")
-    end
-    add_links("gurobi_c++", "gurobi130")
+    add_highs_dependency()
 
 local function add_weighted_maxsat_sources()
     add_includedirs("source", "source/global", "algorithm/test_ILP", "algorithm/weighted_maxsat")
@@ -519,6 +504,32 @@ target("wirelength_study")
     end
     add_links("gurobi_c++", "gurobi130")
 
+target("tob_sat_assign")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_includedirs("source", "source/global", "algorithm/test_ILP")
+    add_files(
+        "algorithm/TOBindex/tob_sat_assign.cc",
+        "algorithm/test_ILP/sat_allocation/cadical_solver.cc",
+        "algorithm/test_ILP/sat/sat_constraint_kits.cc",
+        "algorithm/test_ILP/sat/sat_encoding_stats.cc",
+        "source/global/**.cc"
+    )
+    if has_config("cadical") then
+        add_defines("USE_CADICAL")
+        add_includedirs("third_party/cadical/src")
+        local cadical_build_dir = "third_party/cadical/build"
+        if is_plat("macosx") and os.isdir("third_party/cadical/build-macos") then
+            cadical_build_dir = "third_party/cadical/build-macos"
+        end
+        add_linkdirs(cadical_build_dir)
+        add_rpathdirs(cadical_build_dir)
+        add_links("cadical")
+        if is_plat("linux") then
+            add_syslinks("pthread")
+        end
+    end
 
 -- tools
 

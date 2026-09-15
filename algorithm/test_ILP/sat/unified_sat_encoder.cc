@@ -329,6 +329,39 @@ auto build_unified_sat_model(
         model.sources.push_back(std::move(source));
     }
 
+    if (create_alpha_vars) {
+        for (const auto& source : model.sources) {
+            if (source.unit_selector_var_by_unit.empty()) {
+                continue;
+            }
+            const auto net_it = std::find_if(
+                nets.begin(),
+                nets.end(),
+                [&](const RoutingNet& net) { return net.net_id == source.net_id; });
+            if (net_it == nets.end()
+                || net_it->released_global_unit_sources.contains(source.source_index)) {
+                continue;
+            }
+            const auto assigned = net_it->global_unit_by_source.find(source.source_index);
+            if (assigned == net_it->global_unit_by_source.end()
+                || assigned->second >= source.unit_selector_var_by_unit.size()) {
+                continue;
+            }
+            const int gamma = session.new_var();
+            add_implies(
+                session,
+                gamma,
+                source.unit_selector_var_by_unit[assigned->second],
+                stats,
+                SatClauseCategory::SourceUnitSelection);
+            model.unit_assumption_vars.push_back(SourceUnitAssumptionVar {
+                source.net_id,
+                source.source_index,
+                assigned->second,
+                gamma});
+        }
+    }
+
     for (auto& source : model.sources) {
         const auto& scope = scopes[source.scope_index];
         for (std::size_t node_offset = 0; node_offset < scope.node_ids.size(); ++node_offset) {
@@ -532,11 +565,13 @@ auto build_unified_sat_model(
     }
 
     debug::info_fmt(
-        "unified numeric SAT model v14: scopes={} sources={} pairs={} tob_arcs={} vars={} clauses={}",
+        "unified numeric SAT model v17-compatible: scopes={} sources={} pairs={} tob_arcs={} alpha_vars={} unit_assumptions={} vars={} clauses={}",
         model.scopes.size(),
         model.sources.size(),
         model.pair_delays.size(),
         model.tob_arcs.size(),
+        model.alpha_vars.size(),
+        model.unit_assumption_vars.size(),
         session.num_vars(),
         session.num_clauses());
     return model;

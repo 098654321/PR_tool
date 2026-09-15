@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <initializer_list>
-#include <optional>
 #include <span>
 #include <std/string.hh>
 #include <string_view>
@@ -18,10 +17,7 @@ struct TestIlpCliOptions {
     int initial_scope_pad{0};
     int initial_delay_pad{0};
     bool enable_z3_optimize{false};
-    bool enable_ilp_optimize{false};
-    std::optional<double> ilp_stretch_threshold_percent;
-    std::optional<int> ilp_segment_bbox_pad;
-    std::optional<double> ilp_time_limit_hours;
+    bool enable_global_route_v17{false};
 };
 
 auto parse_test_ilp_cli(std::span<const std::string_view> args) -> TestIlpCliOptions;

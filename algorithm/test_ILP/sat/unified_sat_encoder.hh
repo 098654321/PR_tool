@@ -36,6 +36,13 @@ struct PairAlphaVar {
     int alpha_lit{0};
 };
 
+struct SourceUnitAssumptionVar {
+    std::size_t net_id{0};
+    std::size_t source_index{0};
+    std::size_t unit{0};
+    int assumption_lit{0};
+};
+
 struct UnifiedSatModel {
     std::Vector<UnifiedSatNetScope> scopes;
     std::Vector<SourceDelayVars> sources;
@@ -43,6 +50,7 @@ struct UnifiedSatModel {
     std::map<std::pair<std::size_t, int>, std::size_t> tob_arc_index;
     std::Vector<PairDelayInfo> pair_delays;
     std::Vector<PairAlphaVar> alpha_vars;
+    std::Vector<SourceUnitAssumptionVar> unit_assumption_vars;
     std::map<PairKey, int> alpha_lit_by_pair;
     std::map<int, int> mode_var_by_group;
     std::map<int, int> switch_var_by_id;

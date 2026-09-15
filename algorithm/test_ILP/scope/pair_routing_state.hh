@@ -20,6 +20,8 @@ struct PairRoutingState {
     PairKey key;
     std::Vector<int> delays;
     IlpBoundingBox pair_bbox {};
+    std::set<GlobalChannelCoord> allowed_channels;
+    int global_route_distance_cap{-1};
 };
 
 struct RoutingProblemState {

@@ -2,7 +2,6 @@
 
 #include "delay/pair_delay_precompute.hh"
 #include "graph/unified_routing_graph.hh"
-#include "ilp_v15/v15_ilp_optimizer.hh"
 #include "sat/routing_path_log.hh"
 #include "sat/routing_round_diagnostics.hh"
 #include "sat/routing_solution_validate.hh"
@@ -296,40 +295,6 @@ auto solve_with_feedback(
                     round);
                 log_non_shortest_nets(interposer, graph, nets, delays, out);
                 stamp_sat_timing(out);
-                if (options.ilp_optimize.enabled) {
-                    const auto sat_total_ms = out.sat_total_ms;
-                    const auto sat_pre_ms = out.sat_pre_ms;
-                    const auto sat_solve_ms = out.solve_ms;
-                    const auto ilp = optimize_v15_routes(
-                        interposer,
-                        graph,
-                        nets,
-                        scopes,
-                        delays,
-                        out,
-                        options.ilp_optimize);
-                    out = ilp.routing;
-                    out.solve_ms = sat_solve_ms;
-                    out.sat_total_ms = sat_total_ms;
-                    out.sat_pre_ms = sat_pre_ms;
-                    out.ilp_optimization_requested = true;
-                    out.ilp_optimization_applied = ilp.status == V15IlpStatus::Optimal
-                        || ilp.status == V15IlpStatus::Suboptimal;
-                    out.ilp_fallback_to_sat = ilp.status == V15IlpStatus::Failed;
-                    out.ilp_status = ilp.message;
-                    out.ilp_model_vars = ilp.stats.f_vars + ilp.stats.x_vars
-                        + ilp.stats.y_vars + ilp.stats.mode_vars;
-                    out.ilp_model_constraints = ilp.stats.constraints;
-                    out.ilp_model_build_ms = ilp.stats.model_build_ms;
-                    out.ilp_solve_ms = ilp.stats.solve_ms;
-                    out.ilp_total_ms = ilp.stats.total_ms;
-                    out.ilp_pre_ms = ilp.stats.pre_ms;
-                    if (ilp.status == V15IlpStatus::Optimal
-                        || ilp.status == V15IlpStatus::Suboptimal) {
-                        log_routing_paths(graph, nets, out);
-                        log_non_shortest_nets(interposer, graph, nets, delays, out);
-                    }
-                }
                 log_feedback_round_end(round, FeedbackRoundStatus::SatSuccess);
                 return out;
             }

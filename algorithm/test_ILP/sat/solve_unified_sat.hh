@@ -1,7 +1,6 @@
 #pragma once
 
 #include "common/routing_types.hh"
-#include "ilp_v15/v15_ilp_types.hh"
 #include "sat_allocation/cadical_solver.hh"
 
 #include <hardware/interposer.hh>
@@ -16,7 +15,7 @@ struct UnifiedSatSolveOptions {
     int initial_scope_pad{0};
     int initial_delay_pad{0};
     bool enable_z3_optimize{false};
-    V15IlpOptimizeOptions ilp_optimize {};
+    bool enable_global_route_v17{false};
 };
 
 auto solve_unified_sat(

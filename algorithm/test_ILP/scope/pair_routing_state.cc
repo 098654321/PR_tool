@@ -61,12 +61,18 @@ auto apply_state_to_nets(const RoutingProblemState& state, std::Vector<RoutingNe
             continue;
         }
         auto boxes = std::Vector<IlpBoundingBox> {};
+        auto guide_channels = std::set<GlobalChannelCoord> {};
         boxes.reserve(net_it->second.size());
         for (const std::size_t pair_index : net_it->second) {
             boxes.push_back(state.pairs[pair_index].pair_bbox);
+            guide_channels.insert(
+                state.pairs[pair_index].allowed_channels.begin(),
+                state.pairs[pair_index].allowed_channels.end());
         }
         net.scope_bbox = rect_hull_boxes(boxes);
         net.has_scope_bbox = true;
+        net.global_route_channels = std::move(guide_channels);
+        net.has_global_route_guide = !net.global_route_channels.empty();
     }
 }
 

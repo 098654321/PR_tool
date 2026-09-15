@@ -19,7 +19,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--z3-optimize | --ilp-optimize -L percent [-R pad] [--time-limit hours]]";
+    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--z3-optimize | --global-route-v17]";
 
 auto get_peak_rss_mb() -> double {
     rusage usage {};
@@ -68,14 +68,7 @@ auto run_main(int argc, char** argv) -> int {
     options.initial_scope_pad = cli.initial_scope_pad;
     options.initial_delay_pad = cli.initial_delay_pad;
     options.enable_z3_optimize = cli.enable_z3_optimize;
-    options.ilp_optimize.enabled = cli.enable_ilp_optimize;
-    options.ilp_optimize.stretch_threshold_percent =
-        cli.ilp_stretch_threshold_percent.value_or(0.0);
-    options.ilp_optimize.segment_bbox_pad =
-        cli.ilp_segment_bbox_pad.value_or(0);
-    options.ilp_optimize.time_limit_hours = cli.ilp_time_limit_hours;
-    options.ilp_optimize.verbose_level = cli.verbose_level;
-    options.ilp_optimize.gurobi_log_dir = (log_dir / "gurobi").string();
+    options.enable_global_route_v17 = cli.enable_global_route_v17;
     if (cli.enable_sat_log) {
         debug::info_fmt("CaDiCal solver logs enabled: directory={}", options.cadical.log_dir);
     }
@@ -96,23 +89,11 @@ auto run_main(int argc, char** argv) -> int {
             cli.initial_scope_pad,
             cli.initial_delay_pad);
     }
-    if (cli.enable_ilp_optimize) {
-        if (options.ilp_optimize.time_limit_hours.has_value()) {
-            debug::info_fmt(
-                "v15 ILP optimization enabled: threshold={:.2f}% segment_bbox_pad={} time_limit_hours={} gurobi_log_dir={}",
-                options.ilp_optimize.stretch_threshold_percent,
-                options.ilp_optimize.segment_bbox_pad,
-                options.ilp_optimize.time_limit_hours.value(),
-                options.ilp_optimize.gurobi_log_dir);
-        } else {
-            debug::info_fmt(
-                "v15 ILP optimization enabled: threshold={:.2f}% segment_bbox_pad={} time_limit=unlimited gurobi_log_dir={}",
-                options.ilp_optimize.stretch_threshold_percent,
-                options.ilp_optimize.segment_bbox_pad,
-                options.ilp_optimize.gurobi_log_dir);
-        }
+    if (cli.enable_global_route_v17) {
+        debug::info(
+            "v17 flow enabled: HiGHS Channel/COBUnit global routing -> guided Z3 weighted partial MaxSAT");
     }
-    if (cli.enable_z3_optimize) {
+    else if (cli.enable_z3_optimize) {
         debug::info("v16 Z3 Optimize enabled: hard constraints + alpha assumptions, node-occupancy soft objective");
     }
 
@@ -137,15 +118,25 @@ auto run_main(int argc, char** argv) -> int {
         result.sat_pre_ms,
         result.solve_ms);
     debug::info_fmt(
-        "unified ILP: requested={} status={} fallback_to_SAT={} vars={} constraints={} total_ms={} pre_ms={} solve_ms={}",
-        result.ilp_optimization_requested,
-        result.ilp_optimization_requested ? result.ilp_status : "n/a",
-        result.ilp_fallback_to_sat,
-        result.ilp_model_vars,
-        result.ilp_model_constraints,
-        result.ilp_total_ms,
-        result.ilp_pre_ms,
-        result.ilp_solve_ms);
+        "v17 global route: requested={} status={} nodes={} cob_nodes={} tob_terminal_nodes={} port_terminal_nodes={} boundary_terminal_nodes={} physical_channels={} traversal_arcs={} owners={} commodities={} vars={} constraints={} objective={} released_unit_sources={} total_ms={} build_ms={} solve_ms={}",
+        result.global_route_requested,
+        result.global_route_requested ? result.global_route_status : "n/a",
+        result.global_route_nodes,
+        result.global_route_cob_nodes,
+        result.global_route_tob_terminal_nodes,
+        result.global_route_port_terminal_nodes,
+        result.global_route_boundary_terminal_nodes,
+        result.global_route_channels,
+        result.global_route_arcs,
+        result.global_route_owners,
+        result.global_route_commodities,
+        result.global_route_vars,
+        result.global_route_constraints,
+        result.global_route_objective,
+        result.global_route_released_sources,
+        result.global_route_total_ms,
+        result.global_route_build_ms,
+        result.global_route_solve_ms);
     debug::info_fmt(
         "routing result: total_wirelength={}",
         result.total_wirelength);
