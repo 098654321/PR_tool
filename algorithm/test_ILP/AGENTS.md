@@ -65,7 +65,7 @@ xmake build test_ILP_unit
 ./output/test_ILP_unit
 ```
 
-HiGHS 搜索顺序：`HIGHS_HOME`、`HIGHS_ROOT`、macOS `third_party/HiGHS/install-macos`、通用 `third_party/HiGHS/install`。Z3 搜索顺序：`Z3_HOME`、`Z3_ROOT`、`third_party/z3/install`、macOS Homebrew。
+路径均相对 `xmake.lua` 所在工程根目录解析，可在子目录执行 `xmake`。HiGHS：`HIGHS_HOME`、`HIGHS_ROOT`、macOS `third_party/HiGHS/install-macos`、`third_party/HiGHS/install`（Linux 可用 `lib` 或 `lib64`）。Z3：`Z3_HOME`、`Z3_ROOT`、`third_party/z3/install`、macOS Homebrew。CaDiCaL：`third_party/cadical/src` + `build`（macOS 若存在则优先 `build-macos`）。
 
 第十七版运行：
 

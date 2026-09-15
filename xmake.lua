@@ -11,6 +11,45 @@ if is_plat("windows") then
 end
 -- add_requires("xlnt", {configs = {shared = false}})
 
+-- Resolve third_party paths from xmake.lua, not the shell cwd.
+-- `xmake f` from third_party/cadical would otherwise miss Z3/CaDiCaL/HiGHS.
+local function third_party_path(...)
+    return path.join(os.projectdir(), "third_party", ...)
+end
+
+local function first_existing_dir(candidates)
+    for _, dir in ipairs(candidates) do
+        if dir and dir ~= "" and os.isdir(dir) then
+            return dir
+        end
+    end
+    return nil
+end
+
+-- Prefix installs on Linux often use lib64 instead of lib.
+-- Prefer the directory that actually contains the named library.
+local function find_lib_dir(home, libname)
+    home = path.absolute(home)
+    local function has_lib(dir)
+        return os.isfile(path.join(dir, "lib" .. libname .. ".so"))
+            or os.isfile(path.join(dir, "lib" .. libname .. ".dylib"))
+            or os.isfile(path.join(dir, "lib" .. libname .. ".a"))
+    end
+    for _, sub in ipairs({"lib", "lib64"}) do
+        local dir = path.join(home, sub)
+        if has_lib(dir) then
+            return dir
+        end
+    end
+    for _, sub in ipairs({"lib", "lib64"}) do
+        local dir = path.join(home, sub)
+        if os.isdir(dir) then
+            return dir
+        end
+    end
+    return path.join(home, "lib")
+end
+
 local function add_z3_dependency()
     if not has_config("z3") then
         return false
@@ -20,22 +59,26 @@ local function add_z3_dependency()
         z3_home = os.getenv("Z3_ROOT")
     end
     if not z3_home or z3_home == "" then
-        if os.isdir("third_party/z3/install") then
-            z3_home = "third_party/z3/install"
-        elseif is_host("macosx") and os.isdir("/opt/homebrew/opt/z3") then
-            z3_home = "/opt/homebrew/opt/z3"
-        elseif is_host("macosx") and os.isdir("/usr/local/opt/z3") then
-            z3_home = "/usr/local/opt/z3"
+        local candidates = {third_party_path("z3", "install")}
+        if is_host("macosx") then
+            table.insert(candidates, "/opt/homebrew/opt/z3")
+            table.insert(candidates, "/usr/local/opt/z3")
         end
+        z3_home = first_existing_dir(candidates)
     end
     if not z3_home or z3_home == "" then
         return false
     end
-    add_includedirs(z3_home .. "/include")
-    add_linkdirs(z3_home .. "/lib")
-    add_rpathdirs(z3_home .. "/lib")
+    z3_home = path.absolute(z3_home)
+    local lib_dir = find_lib_dir(z3_home, "z3")
+    add_includedirs(path.join(z3_home, "include"))
+    add_linkdirs(lib_dir)
+    add_rpathdirs(lib_dir)
     add_links("z3")
     add_defines("USE_Z3")
+    if is_plat("linux") then
+        add_syslinks("pthread", "dl")
+    end
     return true
 end
 
@@ -45,22 +88,46 @@ local function add_highs_dependency()
         highs_home = os.getenv("HIGHS_ROOT")
     end
     if not highs_home or highs_home == "" then
-        if is_host("macosx") and os.isdir("third_party/HiGHS/install-macos") then
-            highs_home = "third_party/HiGHS/install-macos"
-        elseif os.isdir("third_party/HiGHS/install") then
-            highs_home = "third_party/HiGHS/install"
+        local candidates = {}
+        if is_host("macosx") then
+            table.insert(candidates, third_party_path("HiGHS", "install-macos"))
         end
+        table.insert(candidates, third_party_path("HiGHS", "install"))
+        highs_home = first_existing_dir(candidates)
     end
     if not highs_home or highs_home == "" then
         return false
     end
-    -- Absolute rpath: bare relative paths break under `xmake run` / non-PR_tool cwd.
     highs_home = path.absolute(highs_home)
-    add_includedirs(highs_home .. "/include/highs")
-    add_linkdirs(highs_home .. "/lib")
-    add_rpathdirs(highs_home .. "/lib")
+    local lib_dir = find_lib_dir(highs_home, "highs")
+    add_includedirs(path.join(highs_home, "include", "highs"))
+    add_linkdirs(lib_dir)
+    add_rpathdirs(lib_dir)
     add_links("highs")
     add_defines("USE_HIGHS")
+    if is_plat("linux") then
+        add_syslinks("pthread", "dl", "m")
+    end
+    return true
+end
+
+local function add_cadical_dependency()
+    if not has_config("cadical") then
+        return false
+    end
+    local src_dir = third_party_path("cadical", "src")
+    local build_dir = third_party_path("cadical", "build")
+    local macos_build = third_party_path("cadical", "build-macos")
+    if is_plat("macosx") and os.isfile(path.join(macos_build, "libcadical.a")) then
+        build_dir = macos_build
+    end
+    add_defines("USE_CADICAL")
+    add_includedirs(src_dir)
+    add_linkdirs(build_dir)
+    add_links("cadical")
+    if is_plat("linux") then
+        add_syslinks("pthread")
+    end
     return true
 end
 
@@ -256,19 +323,7 @@ target("test_ILP")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
-    if has_config("cadical") then
-        add_defines("USE_CADICAL")
-        add_includedirs("third_party/cadical/src")
-        local cadical_build_dir = "third_party/cadical/build"
-        if is_plat("macosx") and os.isdir("third_party/cadical/build-macos") then
-            cadical_build_dir = "third_party/cadical/build-macos"
-        end
-        add_linkdirs(cadical_build_dir)
-        add_links("cadical")
-        if is_plat("linux") then
-            add_syslinks("pthread")
-        end
-    end
+    add_cadical_dependency()
     if add_z3_dependency() then
         add_files("algorithm/test_ILP/sat_allocation/z3_optimize_solver.cc")
     end
@@ -314,19 +369,7 @@ target("test_ILP_unit")
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
-    if has_config("cadical") then
-        add_defines("USE_CADICAL")
-        add_includedirs("third_party/cadical/src")
-        local cadical_build_dir = "third_party/cadical/build"
-        if is_plat("macosx") and os.isdir("third_party/cadical/build-macos") then
-            cadical_build_dir = "third_party/cadical/build-macos"
-        end
-        add_linkdirs(cadical_build_dir)
-        add_links("cadical")
-        if is_plat("linux") then
-            add_syslinks("pthread")
-        end
-    end
+    add_cadical_dependency()
     if add_z3_dependency() then
         add_files("algorithm/test_ILP/sat_allocation/z3_optimize_solver.cc")
     end
@@ -357,19 +400,7 @@ local function add_weighted_maxsat_sources()
         "source/parse/**.cc",
         "source/serde/**.cc"
     )
-    if has_config("cadical") then
-        add_defines("USE_CADICAL")
-        add_includedirs("third_party/cadical/src")
-        local cadical_build_dir = "third_party/cadical/build"
-        if is_plat("macosx") and os.isdir("third_party/cadical/build-macos") then
-            cadical_build_dir = "third_party/cadical/build-macos"
-        end
-        add_linkdirs(cadical_build_dir)
-        add_links("cadical")
-        if is_plat("linux") then
-            add_syslinks("pthread")
-        end
-    end
+    add_cadical_dependency()
 end
 
 target("weighted_maxsat")
@@ -516,20 +547,7 @@ target("tob_sat_assign")
         "algorithm/test_ILP/sat/sat_encoding_stats.cc",
         "source/global/**.cc"
     )
-    if has_config("cadical") then
-        add_defines("USE_CADICAL")
-        add_includedirs("third_party/cadical/src")
-        local cadical_build_dir = "third_party/cadical/build"
-        if is_plat("macosx") and os.isdir("third_party/cadical/build-macos") then
-            cadical_build_dir = "third_party/cadical/build-macos"
-        end
-        add_linkdirs(cadical_build_dir)
-        add_rpathdirs(cadical_build_dir)
-        add_links("cadical")
-        if is_plat("linux") then
-            add_syslinks("pthread")
-        end
-    end
+    add_cadical_dependency()
 
 -- tools
 
