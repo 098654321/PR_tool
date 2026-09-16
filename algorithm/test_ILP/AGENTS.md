@@ -7,28 +7,28 @@
 - 默认：统一图 + D/A 精确距离状态 + CaDiCaL assumptions，UNSAT core 驱动 bbox/distance 扩展。
 - `--z3-optimize`：原 CNF 全部作为 hard constraints，所有 pair alpha 作为 external assumptions，以物理 Track/Bump 占用 `U_v` 的单位软约束最小化并集线长。
 - `--global-route-v17`：自动启用 Z3 Optimize；先用 HiGHS 在 Channel 图上联合选择 COBUnit、MCF route guide 和 bus Channel 数等长，再以 guide 和 unit assumption 初始化详细求解。
-- `--global-route-v18`：HiGHS 前端使用无 `W` 的 Channel--unit 迭代容量剪切；详细阶段不生成 occupancy `U`、`D⇒U` 和 soft objective，直接流式送入 CaDiCaL，首个可行解即返回。
+- `--global-route-v18`：先用小型 HiGHS 模型为 PNnet bump 预选物理 source/unit，并按 source 转换为 fixed-source multi-sink Tnet；正式 HiGHS 前端使用无 `W` 的 Channel--unit 迭代容量剪切，详细阶段不生成 occupancy `U`、`D⇒U` 和 soft objective，直接流式送入 CaDiCaL，首个可行解即返回。
 
 旧 `--ilp-optimize/-L/-R/--time-limit` 与 `ilp_v15/` Gurobi refinement 已删除。
 
 ## 第十七/十八版共享流水线
 
 1. `build_routing_nets` 归一化 Bnet、Tnet、PNnet、fanout 和 SyncNet。
-2. `build_unified_graph` 构造真实 Track/TOB/COB 细粒度图；`augment_graph_for_pnnet` 加 PN virtual source。
-3. `build_global_channel_graph` 使用显式 COB/terminal 节点和物理 Channel 边资源。普通 Channel 连接相邻 COB；TOB 挂接节点插在其下方 Channel 两个 COB 之间，两个半段共享一个 `channel_id`；实际出现的 external/01 port 建立私有 terminal 节点，并保留 42 个 boundary terminal。
+2. `build_unified_graph` 构造真实 Track/TOB/COB 细粒度图。V17/普通流程随后由 `augment_graph_for_pnnet` 加 PN virtual source；V18 在调用它之前完成 PN 预选和 Tnet 转换，因此转换成功后不会建立 PN virtual source。
+3. `build_global_channel_graph` 使用显式 COB/terminal 节点和物理 Channel 边资源。普通 Channel 连接相邻 COB；TOB 挂接节点插在其下方 Channel 两个 COB 之间，两个半段共享一个 `channel_id`；实际出现的 external/01 port 建立私有 terminal 节点，并保留 42 个 boundary terminal。V18 先用包含全部 PN 候选端口的临时 Channel 图运行小型 HiGHS 0--1 模型，按 `(PNnet,bump,unit,physical-source)` 预选端点，再把每个非空 `(PNnet,physical-source)` 组转成 fixed-source/unit 的 multi-sink Tnet；正式 MCF 使用转换后的 nets 重建 Channel 图，从而删除未选 source 的 port 节点。
 4. HiGHS MIP 使用：
    - owner/unit 变量 `Q`，普通 bump net 可选 16 unit，external track 固定 `map_track(track)`；
    - owner/Channel 占用 `X`；
    - V17 为非固定 unit 创建稠密 `W=X∧Q`；V18 不创建 `W`，对整数 incumbent 的超载 `(Channel,unit)` 迭代加入 9-owner cut `sum(X+Q)<=17`；
    - 每个 per-pair/commodity 使用带 `channel_id` 的二进制拓扑弧流 `F`，port 弧只对对应 commodity 建变量；
-   - PNnet 保留 per-demand owner、`Q/F/X` 和候选源 exactly-one `S`；只额外建 net-level `Z` 表示各 demand `X` 的 Channel 并集；
+   - V17 基线的 PNnet 保留 per-demand owner、`Q/F/X/S/Z`；V18 预选后的 PNnet 已是 fixed-source/unit Tnet，正式 MCF 不再产生 PN `S/Z`，每棵 physical source-tree 以其 `X` 独立计长和占用容量；
    - 节点 flow conservation、terminal Channel、`F_a⇒X_{channel(a)}` 与 `X⇒incident F/source`；
    - `(Channel,unit)` 容量不超过 8；
    - 每 TOB/unit load 不超过 8、每 TOB/bank/residue load 不超过 8；
    - 2-pin SyncBus members 的 `sum X` 相等。
-5. 目标最小化非 PN owner 的 `sum X` 与 PNnet 的 `sum Z`。PNnet 的不同 demand，包括选择不同 unit 的 demand，使用同一 Channel 时在整网线长中只计一次；容量仍按 per-demand `X/Q` 计数，`Z` 不进入容量。宏观模型不增加 MTZ/无环约束；无用 `X/Z` 由目标和双向 support 约束排除，`F` 在已选 Channel 内允许环。
+5. V17 基线目标最小化非 PN owner 的 `sum X` 与 PNnet 的 `sum Z`；V18 则对预选后的每棵 physical source-tree 直接累加 `sum X`，不同 source-tree 使用同一 Channel 仍分别计长和占用资源。宏观模型不增加 MTZ/无环约束；无用 `X/Z` 由目标和双向 support 约束排除，`F` 在已选 Channel 内允许环。
 6. `apply_global_route_v17` 写入 per-pair 非矩形 Channel guide、per-source unit 和由选中宏观弧数加端点开销得到的 detailed distance cap。
-   - multi-sink PNnet 直接从每个 demand 的 `S/F` 恢复 source 和路径；第三层保留各 demand 已选 source 的并集，不保留 per-demand source-choice 标签。
+   - V17 基线的 multi-sink PNnet 直接从每个 demand 的 `S/F` 恢复 source 和路径；V18 转换后的 Tnet 直接从预选物理 source 建立 guide，详细 SAT 不再开放 PN virtual-source 候选。
 7. `compute_pair_delays` 在 guide 的细粒度投影中求 `d_min`，首轮 domain 初始化为连续区间 `{d_min,...,max(d_min,L_pair)}`。
 8. Bnet 的 Global Routing unit 通过可追踪 assumption `gamma⇒Q_sat(unit)` 固定；不写不可撤销 unit clause。
 9. Z3 或 V18 CaDiCaL hard-UNSAT 时分别处理：
@@ -39,6 +39,8 @@
 
 第一层只编码必要条件，不能保证 TOB mux、Wilton lane、跨 COB lane 一致性或详细资源互斥可解；最终 Z3/CaDiCaL hard model 才是物理可行性证明。V17 的第一次 Optimal 只保证当前 guide/domain 内最优；V18 只返回当前 guide/domain 内的第一个可行解，两者都不声称完整硬件图上的全局线长最优。
 
+V18 PN 预选中的 TOB 固定负载只包含已有 Tnet：external/01 track 决定 unit，连接到它的每个物理 bump 按所在 TOB、bank 和 unit/residue 分别计数。Bnet 的 unit 尚未确定，不进入该固定负载。预选使用距离、source-tree 激活代价和 unit-aware COB-grid RUDY，是启发式端点固定而不是可行性证明；若后续正式 MCF 因该分配 Infeasible，只能说明当前预选失败。当前实现不会自动释放 PN source/unit 后重跑预选。
+
 SyncBus 的 Channel-count 等长是用户选定的宏观代理约束，不是细粒度 exact-distance 等长的数学必要条件。因此 `GLOBAL_ROUTE_Infeasible` 只表示 V17 前端未生成 guide，不能报告整个设计物理无解。当 guide 和 distance 未达到完整域时，反馈轮数耗尽统一返回 `SEARCH_LIMIT`，也不报告全局 `UNSAT`。
 
 ## 目录职责
@@ -48,7 +50,7 @@ SyncBus 的 Channel-count 等长是用户选定的宏观代理约束，不是细
 | `common/` | RoutingNet、结果统计、COBUnit/硬件坐标映射 |
 | `scope/` | net 聚合、pair 状态、bbox 与 Channel guide 状态 |
 | `graph/` | 统一细粒度图与 PN virtual source |
-| `global_route_v17/` | Channel 图、HiGHS MCF、结果提取、guide 应用/扩展 |
+| `global_route_v17/` | Channel 图、V18 PN source/unit 预选与 Tnet 转换、HiGHS MCF、结果提取、guide 应用/扩展 |
 | `delay/` | scoped BFS、连续 distance domain、active D/A 稀疏 mask |
 | `sat/unified_sat_scope` | bbox 或 V17 Channel/unit guide 到细粒度 node/arc scope |
 | `sat/unified_sat_encoder` | D/A/Q/alpha/gamma/Y/M、TOB 与 bus hard constraints |
@@ -87,6 +89,7 @@ xmake build test_ILP_unit
 - 普通 2-pin net 恰好一个 unit、terminal 连通和 Channel 目标重算；
 - external track fixed unit；
 - PN reachable candidate source/unit；per-demand `X/Q/F/S` 必须保留；net-level `Z` 必须等于全部 demand `X` 的 Channel 并集，并对目标中的共享 Channel 去重；
+- V18 PN 预选必须覆盖 Tnet 固定 bump 对 TOB unit/bank-residue 的逐 bump 占用、unit-aware RUDY 对等距离 source 选择的实际影响，以及 PNnet 按物理 source 转换为 fixed-source multi-sink Tnet；
 - SyncBus member Channel 数等长；
 - fixed/released unit 的 guide lane 开放范围；
 - `gamma` assumption 冲突能出现在 failed core；
@@ -101,15 +104,17 @@ xmake build test_ILP_unit
 关键阶段使用 `debug::info_fmt`，字段稳定、可统计：
 
 - `V17 Global Routing graph`：COB/TOB/port/boundary 节点数、physical_channels、directed_traversal_arcs、collapsed_track_nodes；
+- `V18 PN source preselection model built`：PNnet/bump/candidate 数，`Y/A/O` 变量规模、五类约束、Tnet 固定 bump 数、`lambda_A/lambda_R/alpha` 与 build 时间；`-v` 时输出变量和约束分类；
+- `V18 PN source preselection summary`：status、source-tree 数、转换后 net 数、objective、total/build/solve 时间；
 - `prepare`：nets/owners/demands/PNnets/buses；
 - `model built`：vars/constraints/build_ms 与 `capacity_mode`；
 - `V17 Global Routing ILP model stats (-v)`：图节点/Channel/owner/demand 维度，`Q/X/Z/W/F/S` 变量分解，15 类线性约束及与 HiGHS 总数的一致性；
 - per-owner/per-pair（`-v`）：net、owner、unit、Channel 数、selected arcs；
 - `validation`：objective、最大 Channel-unit load、pair 数；
 - V18 capacity cuts：每轮 overloaded Channel--unit 数、新增/累计 cuts、累计 solve ms，以及收敛时的 rounds/cuts/final constraints；
-- `summary`：status、规模、objective、total/build/solve ms；
+- `summary`：status、vars、constraints、objective、estimated_wirelength、total/build/solve ms；
 - Z3 每轮：alpha/unit assumptions、soft 数、core 分类、release/guide expansion；V18 CaDiCaL 每轮记录 hard clauses、alpha/unit assumptions、`occupancy_soft_clauses=0`、core 分类与 expansion；
-- main 汇总：Global Routing 规模/耗时/released sources，SAT 规模/耗时，最终 wirelength。
+- main 汇总：`global route` 与 summary 相同字段，SAT 规模/耗时，最终 wirelength。
 
 不要把 Global Routing Channel objective 记为 detailed wirelength，也不要把 Channel 数直接用作 SAT distance。
 

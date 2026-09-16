@@ -1,6 +1,7 @@
 #include "common/cob_unit_mask.hh"
 #include "common/hw_map.hh"
 #include "delay/pair_delay_precompute.hh"
+#include "global_route_v17/pn_source_preselection.hh"
 #include "global_route_v17/global_router.hh"
 #include "graph/unified_routing_graph.hh"
 #include "sat/ideal_shortest_wirelength.hh"
@@ -880,6 +881,146 @@ auto two_pin_net(
     net.sources = {source};
     net.demands = {RoutingDemand {0, sink, {0}, true}};
     return net;
+}
+
+auto pn_preselection_net(
+    std::size_t net_id,
+    const std::Vector<GraphNodeRef>& sources,
+    const std::Vector<GraphNodeRef>& sinks
+) -> RoutingNet {
+    auto net = RoutingNet {};
+    net.net_id = net_id;
+    net.name = "synthetic-PN";
+    net.origin_uid = "synthetic-PN";
+    net.origin_key = "synthetic-PN";
+    net.kind = RoutingNetKind::PNnet;
+    net.sources = sources;
+    auto candidates = std::Vector<std::size_t> {};
+    for (std::size_t source = 0; source < sources.size(); ++source) {
+        candidates.push_back(source);
+    }
+    for (std::size_t demand = 0; demand < sinks.size(); ++demand) {
+        net.demands.push_back(RoutingDemand {demand, sinks[demand], candidates, false});
+    }
+    return net;
+}
+
+auto test_v18_pn_preselection_reserves_fixed_tnet_unit_load() -> void {
+    const auto unit0_source = track_ref(
+        0, 0, hardware::TrackDirection::Vertical, track_from_unit_inner(0, 0));
+    const auto unit1_source = track_ref(
+        1, static_cast<int>(hardware::Interposer::COB_ARRAY_WIDTH),
+        hardware::TrackDirection::Horizontal,
+        track_from_unit_inner(1, 0));
+    auto nets = std::Vector<RoutingNet> {};
+    for (std::size_t bump = 0; bump < 8; ++bump) {
+        nets.push_back(two_pin_net(
+            bump,
+            RoutingNetKind::Tnet,
+            unit0_source,
+            bump_ref(0, 0, bump)));
+    }
+    nets.push_back(pn_preselection_net(
+        8, {unit0_source, unit1_source}, {bump_ref(0, 1, 0)}));
+
+    const auto detailed = build_unified_graph(nullptr, nets);
+    const auto global = build_global_channel_graph(detailed, nets);
+    const auto selected = preselect_pn_sources_v18(global, nets, 0);
+    require(selected.ok, "V18 PN preselection fixed-unit fixture must be feasible");
+    require(
+        selected.stats.fixed_tnet_bumps == 8
+            && selected.stats.candidates == 2
+            && selected.stats.source_trees == 1
+            && selected.stats.overflow_vars
+                == hardware::Interposer::COB_ARRAY_WIDTH + 2
+            && selected.stats.alpha > 0.0
+            && selected.stats.lambda_a
+                == static_cast<double>(hardware::Interposer::COB_ARRAY_WIDTH - 2),
+        "V18 PN preselection must report fixed Tnet load and sparse RUDY variables");
+    require(
+        selected.nets.size() == 9
+            && std::ranges::none_of(
+                selected.nets,
+                [](const RoutingNet& net) { return net.kind == RoutingNetKind::PNnet; })
+            && selected.nets.back().kind == RoutingNetKind::Tnet
+            && selected.nets.back().sources.size() == 1
+            && map_track(selected.nets.back().sources.front().track_index) == 1,
+        "eight fixed unit-0 Tnet bumps must force the PN bump onto unit 1");
+}
+
+auto test_v18_pn_preselection_uses_unit_aware_rudy() -> void {
+    const auto unit0_source = track_ref(
+        1, 0, hardware::TrackDirection::Horizontal, track_from_unit_inner(0, 0));
+    const auto unit1_source = track_ref(
+        1, 0, hardware::TrackDirection::Horizontal, track_from_unit_inner(1, 0));
+    const auto far_tob = hardware::Interposer::TOB_SIZE - 1;
+    const auto nets = std::Vector<RoutingNet> {
+        two_pin_net(
+            0,
+            RoutingNetKind::Tnet,
+            unit0_source,
+            bump_ref(far_tob, 0, 0)),
+        pn_preselection_net(
+            1,
+            {unit0_source, unit1_source},
+            {bump_ref(far_tob, 1, 0)})};
+
+    const auto detailed = build_unified_graph(nullptr, nets);
+    const auto global = build_global_channel_graph(detailed, nets);
+    const auto selected = preselect_pn_sources_v18(global, nets, 0);
+    require(selected.ok, "V18 PN preselection RUDY fixture must be feasible");
+    require(
+        selected.stats.alpha > 0.0
+            && selected.stats.overflow_vars > 0
+            && selected.nets.size() == 2
+            && selected.nets.back().kind == RoutingNetKind::Tnet
+            && map_track(selected.nets.back().sources.front().track_index) == 1,
+        "unit-aware RUDY must prefer the equally distant unit without fixed Tnet demand");
+}
+
+auto test_v18_pn_preselection_reserves_fixed_tnet_bank_residue_load() -> void {
+    const auto fixed_source = track_ref(
+        1, 0, hardware::TrackDirection::Horizontal, track_from_unit_inner(0, 0));
+    const auto residue0_source = track_ref(
+        1, 0, hardware::TrackDirection::Horizontal, track_from_unit_inner(8, 0));
+    const auto residue1_source = track_ref(
+        1, static_cast<int>(hardware::Interposer::COB_ARRAY_WIDTH),
+        hardware::TrackDirection::Horizontal,
+        track_from_unit_inner(1, 0));
+    auto sinks = std::Vector<GraphNodeRef> {};
+    for (std::size_t bump = 0; bump < 8; ++bump) {
+        sinks.push_back(bump_ref(0, 0, bump));
+    }
+    auto fixed_bump = bump_ref(0, 0, 0);
+    fixed_bump.bump.Group = 1;
+    auto nets = std::Vector<RoutingNet> {
+        two_pin_net(0, RoutingNetKind::Tnet, fixed_source, fixed_bump),
+        pn_preselection_net(1, {residue0_source, residue1_source}, sinks)};
+
+    const auto detailed = build_unified_graph(nullptr, nets);
+    const auto global = build_global_channel_graph(detailed, nets);
+    const auto selected = preselect_pn_sources_v18(global, nets, 0);
+    require(selected.ok, "V18 PN preselection bank-residue fixture must be feasible");
+    require(
+        selected.stats.source_trees == 2 && selected.nets.size() == 3,
+        "bank-residue pressure must create two physical source-tree Tnets");
+    std::size_t unit1_bumps = 0;
+    std::size_t unit8_bumps = 0;
+    for (const auto& net : selected.nets) {
+        if (net.name.find("synthetic-PN#source") == std::String::npos) {
+            continue;
+        }
+        const auto unit = map_track(net.sources.front().track_index);
+        if (unit == 1) {
+            unit1_bumps += net.demands.size();
+        }
+        if (unit == 8) {
+            unit8_bumps += net.demands.size();
+        }
+    }
+    require(
+        unit1_bumps >= 1 && unit8_bumps <= 7 && unit1_bumps + unit8_bumps == 8,
+        "fixed unit-0 load must leave at most seven same-bank residue-0 slots for unit 8");
 }
 
 auto test_v17_global_route_two_pin_and_fixed_unit() -> void {
@@ -3793,6 +3934,9 @@ auto main() -> int {
         test_cli_max_rss_option();
         test_cli_initial_padding_options();
         test_cli_output_dir_option();
+        test_v18_pn_preselection_reserves_fixed_tnet_unit_load();
+        test_v18_pn_preselection_uses_unit_aware_rudy();
+        test_v18_pn_preselection_reserves_fixed_tnet_bank_residue_load();
         test_v17_global_route_two_pin_and_fixed_unit();
         test_v17_estimated_wirelength_deduplicates_multi_terminal_channels();
         test_v18_capacity_cuts_repair_overloaded_incumbent();

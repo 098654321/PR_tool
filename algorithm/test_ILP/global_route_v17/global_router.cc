@@ -1322,24 +1322,12 @@ auto solve_global_route_v17(
     out.stats.total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         total_end - total_begin).count();
     debug::info_fmt(
-        "V17 Global Routing summary: status={} nodes={} cob_nodes={} tob_terminal_nodes={} port_terminal_nodes={} boundary_terminal_nodes={} physical_channels={} traversal_arcs={} owners={} demands={} vars={} constraints={} objective={} estimated_wirelength={} capacity_mode={} capacity_cut_rounds={} capacity_cuts={} total_ms={} build_ms={} solve_ms={}",
+        "V17 Global Routing summary: status={} vars={} constraints={} objective={} estimated_wirelength={} total_ms={} build_ms={} solve_ms={}",
         out.ok ? "OPTIMAL" : out.message,
-        out.stats.nodes,
-        out.stats.cob_nodes,
-        out.stats.tob_terminal_nodes,
-        out.stats.port_terminal_nodes,
-        out.stats.boundary_terminal_nodes,
-        out.stats.channels,
-        out.stats.arcs,
-        out.stats.owners,
-        out.stats.commodities,
         out.stats.variables,
         out.stats.constraints,
         out.stats.objective,
         out.stats.estimated_wirelength,
-        out.stats.capacity_cuts_enabled ? "iterative-cuts(no-W)" : "dense-W",
-        out.stats.capacity_cut_rounds,
-        out.stats.capacity_cuts,
         out.stats.total_ms,
         out.stats.build_ms,
         out.stats.solve_ms);

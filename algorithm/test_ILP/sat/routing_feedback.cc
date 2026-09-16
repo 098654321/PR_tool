@@ -1,6 +1,7 @@
 #include "sat/routing_feedback.hh"
 
 #include "delay/pair_delay_precompute.hh"
+#include "global_route_v17/pn_source_preselection.hh"
 #include "global_route_v17/global_router.hh"
 #include "graph/unified_routing_graph.hh"
 #include "sat/routing_path_log.hh"
@@ -238,10 +239,26 @@ auto solve_with_feedback(
     }
     auto out = SatRoutingResult {};
     auto nets = build_routing_nets(basedie.nets_to_vector());
+    auto graph = build_unified_graph(interposer, nets);
+    const bool has_pnnet = std::ranges::any_of(
+        nets,
+        [](const RoutingNet& net) { return net.kind == RoutingNetKind::PNnet; });
+    if (options.enable_global_route_v18 && has_pnnet) {
+        const auto candidate_channel_graph = build_global_channel_graph(graph, nets);
+        auto preselection = preselect_pn_sources_v18(
+            candidate_channel_graph, nets, options.verbose_level);
+        if (!preselection.ok) {
+            debug::error(
+                "V18 PN source preselection produced no endpoint assignment; this is not a proof that the full design is UNSAT");
+            out.message = std::format("PN_PRESELECTION_{}", preselection.message);
+            out.global_route_requested = true;
+            out.global_route_status = out.message;
+            return out;
+        }
+        nets = std::move(preselection.nets);
+    }
     auto problem_state = init_routing_problem_state(nets);
     apply_state_to_nets(problem_state, nets);
-
-    auto graph = build_unified_graph(interposer, nets);
     augment_graph_for_pnnet(graph, nets);
     debug::info_fmt(
         "unified graph: nodes={} arcs={} track_nodes={} tob_nodes={}",
