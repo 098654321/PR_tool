@@ -75,6 +75,7 @@ struct GlobalRouteStats {
         // Binary variables.
         std::size_t q_vars{0};
         std::size_t x_vars{0};
+        std::size_t z_vars{0};
         std::size_t w_vars{0};
         std::size_t w_dense_slots{0};
         std::size_t f_vars{0};
@@ -90,6 +91,8 @@ struct GlobalRouteStats {
         std::size_t terminal_channel{0};
         std::size_t channel_flow_support{0};
         std::size_t pn_source_unit_coupling{0};
+        std::size_t pn_x_implies_net_channel{0};
+        std::size_t pn_net_channel_support{0};
         std::size_t channel_unit_capacity{0};
         std::size_t tob_unit_capacity{0};
         std::size_t tob_bank_residue_capacity{0};
@@ -111,6 +114,7 @@ struct GlobalRouteStats {
     std::size_t variables{0};
     std::size_t constraints{0};
     std::size_t objective{0};
+    std::size_t estimated_wirelength{0};
     bool capacity_cuts_enabled{false};
     std::size_t capacity_cut_rounds{0};
     std::size_t capacity_cuts{0};
@@ -134,6 +138,7 @@ struct GlobalRouteResult {
     std::map<PairKey, std::set<std::pair<int, int>>> pair_cobs;
     std::map<GlobalUnitOwnerKey, std::size_t> unit_by_owner;
     std::map<PairKey, std::size_t> selected_source_index_by_pair;
+    std::map<PairKey, std::size_t> selected_unit_by_pair;
     std::map<GlobalUnitOwnerKey, std::size_t> channel_count_by_owner;
     std::map<PairKey, int> detailed_distance_cap_by_pair;
 };

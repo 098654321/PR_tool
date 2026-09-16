@@ -5,10 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cmath>
 #include <debug/debug.hh>
 #include <format>
-#include <limits>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -21,13 +19,14 @@
 namespace PR_tool {
 
 auto GlobalRouteStats::ModelBreakdown::total_variables() const -> std::size_t {
-    return q_vars + x_vars + w_vars + f_vars + source_choice_vars;
+    return q_vars + x_vars + z_vars + w_vars + f_vars + source_choice_vars;
 }
 
 auto GlobalRouteStats::ModelBreakdown::total_constraints() const -> std::size_t {
     return q_exactly_one + source_exactly_one + w_linearization
         + flow_conservation + flow_implies_channel + source_implies_channel
         + terminal_channel + channel_flow_support + pn_source_unit_coupling
+        + pn_x_implies_net_channel + pn_net_channel_support
         + channel_unit_capacity + tob_unit_capacity + tob_bank_residue_capacity
         + sync_bus_equal_length;
 }
@@ -66,6 +65,7 @@ struct PreparedProblem {
     std::Vector<CommodityData> commodities;
     std::map<GlobalUnitOwnerKey, std::size_t> owner_index_by_key;
     std::map<std::size_t, std::Vector<std::size_t>> bus_owner_indices_by_net;
+    std::map<std::size_t, std::Vector<std::size_t>> pn_owner_indices_by_net;
 };
 
 auto channel_coord(const UnifiedNode& node) -> GlobalChannelCoord {
@@ -210,6 +210,9 @@ auto prepare_problem(
                     add_bump_if_present(owner.bumps, net.sources.at(source_index));
                 }
                 problem.owners.push_back(std::move(owner));
+                if (net.kind == RoutingNetKind::PNnet) {
+                    problem.pn_owner_indices_by_net[net_index].push_back(owner_it->second);
+                }
             }
             auto& owner = problem.owners[owner_it->second];
             add_bump_if_present(owner.bumps, demand.sink);
@@ -332,6 +335,7 @@ private:
 struct ModelVars {
     std::Vector<std::array<int, 16>> q;
     std::Vector<std::Vector<int>> x;
+    std::Vector<std::Vector<int>> z;
     std::Vector<std::Vector<std::array<int, 16>>> w;
     std::Vector<std::Vector<int>> f;
     std::Vector<std::Vector<int>> source_choice;
@@ -355,11 +359,12 @@ auto log_global_route_model_stats(
     debug::info_fmt("  physical Channel resources      : {}", graph.channels.size());
     debug::info_fmt("  directed traversal arcs         : {}", graph.arcs.size());
     debug::info_fmt("  unit/route owners               : {}", owners);
-    debug::info_fmt("  MCF commodities                 : {}", commodities);
+    debug::info_fmt("  source/sink demands             : {}", commodities);
 
     debug::info("Binary variables:");
     debug::info_fmt("  Q   (owner COBUnit)             : {}", stats.q_vars);
     debug::info_fmt("  X   (owner Channel occupancy)   : {}", stats.x_vars);
+    debug::info_fmt("  Z   (PNnet Channel union)       : {}", stats.z_vars);
     debug::info_fmt("  W   (X and Q)                   : {}", stats.w_vars);
     debug::info_fmt("  W dense slots                   : {}", stats.w_dense_slots);
     if (stats.w_dense_slots > 0) {
@@ -382,12 +387,14 @@ auto log_global_route_model_stats(
     debug::info_fmt("  [7]  terminal X fixed           : {}", stats.terminal_channel);
     debug::info_fmt("  [8]  X requires flow/source     : {}", stats.channel_flow_support);
     debug::info_fmt("  [9]  PN source-unit coupling    : {}", stats.pn_source_unit_coupling);
-    debug::info_fmt("  [10] Channel-unit capacity      : {}", stats.channel_unit_capacity);
-    debug::info_fmt("  [11] TOB unit <= 8 (necessary)  : {}", stats.tob_unit_capacity);
+    debug::info_fmt("  [10] PN X implies net Z         : {}", stats.pn_x_implies_net_channel);
+    debug::info_fmt("  [11] PN Z requires owner X      : {}", stats.pn_net_channel_support);
+    debug::info_fmt("  [12] Channel-unit capacity      : {}", stats.channel_unit_capacity);
+    debug::info_fmt("  [13] TOB unit <= 8 (necessary)  : {}", stats.tob_unit_capacity);
     debug::info_fmt(
-        "  [12] TOB bank-residue <= 8      : {}",
+        "  [14] TOB bank-residue <= 8      : {}",
         stats.tob_bank_residue_capacity);
-    debug::info_fmt("  [13] SyncBus Channel equality   : {}", stats.sync_bus_equal_length);
+    debug::info_fmt("  [15] SyncBus Channel equality   : {}", stats.sync_bus_equal_length);
     debug::info_fmt("  total MIP constraints           : {}", total_constraints);
     debug::info("=============================================================");
 }
@@ -442,7 +449,10 @@ auto build_and_solve(
         vars.x[owner_index].reserve(channel_count);
         vars.w[owner_index].resize(channel_count);
         for (std::size_t channel = 0; channel < channel_count; ++channel) {
-            vars.x[owner_index].push_back(mip.add_binary(1.0));
+            const double x_cost = nets[owner.net_index].kind == RoutingNetKind::PNnet
+                ? 0.0
+                : 1.0;
+            vars.x[owner_index].push_back(mip.add_binary(x_cost));
             ++model_stats.x_vars;
             vars.w[owner_index][channel].fill(-1);
             if (owner.fixed_unit.has_value() || use_capacity_cuts) {
@@ -462,6 +472,25 @@ auto build_and_solve(
                 mip.add_row(-1.0, kHighsInf, {{w, 1.0}, {x, -1.0}, {q, -1.0}});
                 model_stats.w_linearization += 3;
             }
+        }
+    }
+
+    vars.z.resize(nets.size());
+    for (const auto& [net_index, owner_indices] : problem.pn_owner_indices_by_net) {
+        vars.z[net_index].reserve(channel_count);
+        for (std::size_t channel = 0; channel < channel_count; ++channel) {
+            const int z = mip.add_binary(1.0);
+            vars.z[net_index].push_back(z);
+            ++model_stats.z_vars;
+            auto support_terms = std::Vector<std::pair<int, double>> {{z, 1.0}};
+            for (const std::size_t owner_index : owner_indices) {
+                const int x = vars.x[owner_index][channel];
+                mip.add_row(-kHighsInf, 0.0, {{x, 1.0}, {z, -1.0}});
+                ++model_stats.pn_x_implies_net_channel;
+                support_terms.emplace_back(x, -1.0);
+            }
+            mip.add_row(-kHighsInf, 0.0, support_terms);
+            ++model_stats.pn_net_channel_support;
         }
     }
 
@@ -722,7 +751,7 @@ auto build_and_solve(
     out.stats.build_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         build_end - build_begin).count();
     debug::info_fmt(
-        "V17 Global Routing model built: vars={} constraints={} build_ms={} owners={} commodities={} capacity_mode={} TOB_filters=necessary-only(unit<=8,bank-residue<=8)",
+        "V17 Global Routing model built: vars={} constraints={} build_ms={} owners={} demands={} capacity_mode={} TOB_filters=necessary-only(unit<=8,bank-residue<=8)",
         out.stats.variables,
         out.stats.constraints,
         out.stats.build_ms,
@@ -838,6 +867,8 @@ auto build_and_solve(
             && static_cast<std::size_t>(variable) < values.size()
             && values[static_cast<std::size_t>(variable)] > 0.5;
     };
+    std::size_t tob_bump_wirelength = 0;
+    auto bumps_by_net = std::map<std::size_t, std::set<Bump_coord>> {};
     for (std::size_t owner_index = 0; owner_index < owner_count; ++owner_index) {
         std::size_t chosen_unit = 16;
         std::size_t channel_uses = 0;
@@ -855,7 +886,11 @@ auto build_and_solve(
         }
         out.unit_by_owner.emplace(problem.owners[owner_index].key, chosen_unit);
         out.channel_count_by_owner.emplace(problem.owners[owner_index].key, channel_uses);
-        out.stats.objective += channel_uses;
+        const auto& owner = problem.owners[owner_index];
+        if (nets[owner.net_index].kind != RoutingNetKind::PNnet) {
+            out.stats.objective += channel_uses;
+        }
+        bumps_by_net[owner.net_index].insert(owner.bumps.begin(), owner.bumps.end());
         if (verbose_level >= 1) {
             debug::info_fmt(
                 "V17 Global Routing owner: net={} owner={} unit={} channels={}",
@@ -864,7 +899,6 @@ auto build_and_solve(
                 chosen_unit,
                 channel_uses);
         }
-        const auto& owner = problem.owners[owner_index];
         if (owner.fixed_unit.has_value() && owner.fixed_unit.value() != chosen_unit) {
             throw std::runtime_error("V17 fixed-unit extraction validation failed");
         }
@@ -884,6 +918,38 @@ auto build_and_solve(
             }
         }
     }
+    for (const auto& [net_index, owner_indices] : problem.pn_owner_indices_by_net) {
+        std::size_t pn_net_channels = 0;
+        for (std::size_t channel = 0; channel < channel_count; ++channel) {
+            const bool expected = std::ranges::any_of(
+                owner_indices,
+                [&](const std::size_t owner_index) {
+                    return selected(vars.x[owner_index][channel]);
+                });
+            const bool net_uses_channel = selected(vars.z[net_index][channel]);
+            if (net_uses_channel != expected) {
+                throw std::runtime_error("V17 PNnet Z union extraction validation failed");
+            }
+            pn_net_channels += net_uses_channel ? 1 : 0;
+        }
+        out.stats.objective += pn_net_channels;
+        if (verbose_level >= 1) {
+            debug::info_fmt(
+                "V17 Global Routing PNnet union: net={} owners={} channels={}",
+                nets[net_index].net_id,
+                owner_indices.size(),
+                pn_net_channels);
+        }
+    }
+    for (const auto& [_, bumps] : bumps_by_net) {
+        tob_bump_wirelength += bumps.size();
+    }
+    out.stats.estimated_wirelength = out.stats.objective + tob_bump_wirelength;
+    debug::info_fmt(
+        "V17 Global Routing Estimated wirelength: total={} channels={} tob_bumps={}",
+        out.stats.estimated_wirelength,
+        out.stats.objective,
+        tob_bump_wirelength);
 
     for (std::size_t commodity_index = 0;
          commodity_index < problem.commodities.size();
@@ -896,16 +962,25 @@ auto build_and_solve(
         int selected_source_node = commodity.source_options.front().node;
         std::size_t selected_source_index = commodity.source_options.front().source_index;
         if (commodity.variable_source) {
+            bool found_source = false;
             for (std::size_t option = 0; option < commodity.source_options.size(); ++option) {
-                if (selected(vars.source_choice[commodity_index][option])) {
-                    const auto& source = commodity.source_options[option];
-                    selected_source_node = source.node;
-                    selected_source_index = source.source_index;
-                    guide.insert(graph.channels[static_cast<std::size_t>(source.channel)]);
-                    out.selected_source_index_by_pair.emplace(commodity.key, source.source_index);
-                    break;
+                if (!selected(vars.source_choice[commodity_index][option])) {
+                    continue;
                 }
+                const auto& source = commodity.source_options[option];
+                selected_source_node = source.node;
+                selected_source_index = source.source_index;
+                guide.insert(graph.channels[static_cast<std::size_t>(source.channel)]);
+                out.selected_source_index_by_pair.emplace(commodity.key, source.source_index);
+                found_source = true;
+                break;
             }
+            if (!found_source) {
+                throw std::runtime_error("V17 PN commodity has no selected source");
+            }
+            out.selected_unit_by_pair.emplace(
+                commodity.key,
+                out.unit_by_owner.at(problem.owners[commodity.owner].key));
         }
         else {
             guide.insert(graph.channels[static_cast<std::size_t>(commodity.source_options.front().channel)]);
@@ -1223,10 +1298,12 @@ auto solve_global_route_v17(
         out.stats.owners = problem.owners.size();
         out.stats.commodities = problem.commodities.size();
         debug::info_fmt(
-            "V17 Global Routing prepare: nets={} owners={} commodities={} buses={}",
+            "V17 Global Routing prepare: nets={} owners={} demands={} "
+            "PNnets={} buses={}",
             nets.size(),
             problem.owners.size(),
-            problem.commodities.size(),
+            out.stats.commodities,
+            problem.pn_owner_indices_by_net.size(),
             problem.bus_owner_indices_by_net.size());
 #ifdef USE_HIGHS
         build_and_solve(
@@ -1245,7 +1322,7 @@ auto solve_global_route_v17(
     out.stats.total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         total_end - total_begin).count();
     debug::info_fmt(
-        "V17 Global Routing summary: status={} nodes={} cob_nodes={} tob_terminal_nodes={} port_terminal_nodes={} boundary_terminal_nodes={} physical_channels={} traversal_arcs={} owners={} commodities={} vars={} constraints={} objective={} capacity_mode={} capacity_cut_rounds={} capacity_cuts={} total_ms={} build_ms={} solve_ms={}",
+        "V17 Global Routing summary: status={} nodes={} cob_nodes={} tob_terminal_nodes={} port_terminal_nodes={} boundary_terminal_nodes={} physical_channels={} traversal_arcs={} owners={} demands={} vars={} constraints={} objective={} estimated_wirelength={} capacity_mode={} capacity_cut_rounds={} capacity_cuts={} total_ms={} build_ms={} solve_ms={}",
         out.ok ? "OPTIMAL" : out.message,
         out.stats.nodes,
         out.stats.cob_nodes,
@@ -1259,6 +1336,7 @@ auto solve_global_route_v17(
         out.stats.variables,
         out.stats.constraints,
         out.stats.objective,
+        out.stats.estimated_wirelength,
         out.stats.capacity_cuts_enabled ? "iterative-cuts(no-W)" : "dense-W",
         out.stats.capacity_cut_rounds,
         out.stats.capacity_cuts,

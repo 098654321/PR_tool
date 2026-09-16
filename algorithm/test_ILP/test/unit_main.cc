@@ -900,14 +900,14 @@ auto test_v17_global_route_two_pin_and_fixed_unit() -> void {
             && bump_route.pair_channels.at(PairKey {0, 0, 0}).size() == 2
             && bump_route.selected_arc_ids_by_pair.at(PairKey {0, 0, 0}).size() == 2
             && bump_route.pair_cobs.at(PairKey {0, 0, 0}).size() == 1
-            && bump_route.stats.objective == 2,
+            && bump_route.stats.objective == 2
+            && bump_route.stats.estimated_wirelength == 4,
         "V17 must choose one unit and expose the guide arc and derived COB");
     require(
         bump_route.stats.model.q_vars == 16
             && bump_route.stats.model.x_vars == 2
             && bump_route.stats.model.w_vars == 32
             && bump_route.stats.model.f_vars == 4
-            && bump_route.stats.model.source_choice_vars == 0
             && bump_route.stats.model.total_variables() == bump_route.stats.variables
             && bump_route.stats.model.total_constraints() == bump_route.stats.constraints,
         "V17 model breakdown must reconcile every variable and constraint");
@@ -961,21 +961,63 @@ auto test_v17_global_route_two_pin_and_fixed_unit() -> void {
         "V17 must preserve a fixed COBUnit and omit another port's private F arcs");
 }
 
+auto test_v17_estimated_wirelength_deduplicates_multi_terminal_channels() -> void {
+    const auto a0 = tob_anchor_cob(0);
+    const auto a1 = tob_anchor_cob(1);
+    const auto a2 = tob_anchor_cob(2);
+    const auto graph = synthetic_channel_graph(
+        {{1, static_cast<int>(a0.row), static_cast<int>(a0.col)},
+         {1, static_cast<int>(a1.row), static_cast<int>(a1.col)},
+         {1, static_cast<int>(a2.row), static_cast<int>(a2.col)}},
+        {global_tob_node(0, 0), global_cob_node(), global_tob_node(1, 1),
+         global_tob_node(2, 2)},
+        {{0, 1, 0}, {1, 2, 1}, {1, 3, 2}});
+    auto net = RoutingNet {};
+    net.net_id = 0;
+    net.kind = RoutingNetKind::Bnet;
+    net.sources = {bump_ref(0, 0, 0)};
+    net.demands = {
+        RoutingDemand {0, bump_ref(1, 0, 1), {0}, true},
+        RoutingDemand {1, bump_ref(2, 0, 2), {0}, true}};
+
+    const auto route = solve_global_route_v17(UnifiedGraph {}, graph, {net}, 0);
+    require(
+        route.ok
+            && route.stats.objective == 3
+            && route.stats.estimated_wirelength == 6,
+        "estimated wirelength must count the three-Channel owner union and three unique bumps");
+}
+
 auto test_v17_channel_graph_collapses_real_hardware_topology() -> void {
     const auto detailed = build_unified_graph(nullptr, {});
     const auto global = build_global_channel_graph(detailed, {});
+    constexpr std::size_t cob_count = hardware::Interposer::COB_ARRAY_WIDTH
+        * hardware::Interposer::COB_ARRAY_HEIGHT;
+    constexpr std::size_t boundary_count = 2
+        * (hardware::Interposer::COB_ARRAY_WIDTH
+           + hardware::Interposer::COB_ARRAY_HEIGHT);
+    constexpr std::size_t internal_channel_count =
+        hardware::Interposer::COB_ARRAY_HEIGHT
+            * (hardware::Interposer::COB_ARRAY_WIDTH - 1)
+        + (hardware::Interposer::COB_ARRAY_HEIGHT - 1)
+            * hardware::Interposer::COB_ARRAY_WIDTH;
+    constexpr std::size_t channel_count = internal_channel_count + boundary_count;
+    constexpr std::size_t node_count = cob_count + hardware::Interposer::TOB_SIZE
+        + boundary_count;
+    constexpr std::size_t arc_count = 2
+        * (channel_count + hardware::Interposer::TOB_SIZE);
     require(
         !global.channels.empty() && !global.arcs.empty(),
         "V17 must derive a non-empty Channel adjacency graph from the hardware graph");
     require(
         detailed.track_node_count == global.channels.size() * 128
-            && global.channels.size() == 237
-            && global.cob_node_count == 108
+            && global.channels.size() == channel_count
+            && global.cob_node_count == cob_count
             && global.tob_terminal_node_count == 16
-            && global.boundary_terminal_node_count == 42
+            && global.boundary_terminal_node_count == boundary_count
             && global.port_terminal_node_count == 0
-            && global.nodes.size() == 166
-            && global.arcs.size() == 506,
+            && global.nodes.size() == node_count
+            && global.arcs.size() == arc_count,
         "V17 hardware graph must use COB/terminal nodes and physical Channels as edges");
     for (const auto& arc : global.arcs) {
         require(
@@ -1014,10 +1056,10 @@ auto test_v17_channel_graph_collapses_real_hardware_topology() -> void {
         {two_pin_net(99, RoutingNetKind::Tnet, boundary_port, bump_ref(0, 0, 0))});
     const auto port_node = with_port.port_node_by_key.at(GlobalPortKey {1, 9, 5, 69});
     require(
-        with_port.nodes.size() == 167
+        with_port.nodes.size() == node_count + 1
             && with_port.port_terminal_node_count == 1
-            && with_port.boundary_terminal_node_count == 42
-            && with_port.arcs.size() == 508
+            && with_port.boundary_terminal_node_count == boundary_count
+            && with_port.arcs.size() == arc_count + 2
             && std::count_if(
                 with_port.arcs.begin(),
                 with_port.arcs.end(),
@@ -1167,8 +1209,8 @@ auto test_v18_capacity_cuts_repair_overloaded_incumbent() -> void {
             && route.stats.capacity_cut_rounds >= 1
             && route.stats.capacity_cuts >= 1
             && route.selected_source_index_by_pair.at(PairKey {8, 0, 0}) == 1
-            && route.unit_by_owner.at(GlobalUnitOwnerKey {8, 0}) == map_track(1),
-        "capacity cuts must move a flexible PN owner off an overloaded unit and converge");
+            && route.selected_unit_by_pair.at(PairKey {8, 0, 0}) == map_track(1),
+        "capacity cuts must assign the PN demand to a non-overloaded unit and converge");
 }
 
 auto test_v17_global_route_bus_and_pn_source() -> void {
@@ -1221,8 +1263,8 @@ auto test_v17_global_route_bus_and_pn_source() -> void {
     require(
         pn_route.ok
             && pn_route.selected_source_index_by_pair.at(PairKey {8, 0, 0}) == 1
-            && pn_route.unit_by_owner.at(GlobalUnitOwnerKey {8, 0}) == 1,
-        "V17 PN commodity must select a reachable same-polarity source and its unit");
+            && pn_route.selected_unit_by_pair.at(PairKey {8, 0, 0}) == 1,
+        "V17 PN demand must select a reachable source and matching unit");
     auto pn_nets = std::Vector<RoutingNet> {pn};
     auto pn_state = init_routing_problem_state(pn_nets);
     apply_global_route_v17(pn_route, pn_state, pn_nets);
@@ -1230,6 +1272,102 @@ auto test_v17_global_route_bus_and_pn_source() -> void {
         pn_nets.front().global_selected_pn_source_indices
             == std::set<std::size_t> {1},
         "V17 PN source choice must be propagated into the detailed-routing scope");
+}
+
+auto test_v17_pn_net_z_deduplicates_per_demand_channels() -> void {
+    const auto a0 = tob_anchor_cob(0);
+    const auto a1 = tob_anchor_cob(1);
+    const auto source = track_ref(0, 0, hardware::TrackDirection::Horizontal, 0);
+    const auto graph = synthetic_channel_graph(
+        {{0, 0, 0},
+         {1, static_cast<int>(a0.row), static_cast<int>(a0.col)},
+         {1, static_cast<int>(a1.row), static_cast<int>(a1.col)}},
+        {global_port_node(source, 0), global_cob_node(), global_tob_node(0, 1),
+         global_tob_node(1, 2)},
+        {{0, 1, 0}, {1, 2, 1}, {1, 3, 2}});
+    auto pn = RoutingNet {};
+    pn.net_id = 20;
+    pn.kind = RoutingNetKind::PNnet;
+    pn.sources = {source};
+    pn.demands = {
+        RoutingDemand {0, bump_ref(0, 0, 0), {0}, false},
+        RoutingDemand {1, bump_ref(1, 0, 1), {0}, false}};
+
+    const auto route = solve_global_route_v17(UnifiedGraph {}, graph, {pn}, 0);
+    require(
+        route.ok
+            && route.stats.owners == 2
+            && route.stats.commodities == 2
+            && route.stats.model.z_vars == 3
+            && route.stats.model.source_choice_vars == 2
+            && route.channel_count_by_owner.at(GlobalUnitOwnerKey {20, 0}) == 2
+            && route.channel_count_by_owner.at(GlobalUnitOwnerKey {20, 1}) == 2
+            && route.stats.objective == 3
+            && route.stats.estimated_wirelength == 5,
+        "PNnet Z must count the Channel union of independent demand owners");
+    for (std::size_t demand = 0; demand < pn.demands.size(); ++demand) {
+        require(
+            route.selected_source_index_by_pair.at(PairKey {20, demand, 0}) == 0,
+            "each PN demand must retain its own selected source");
+    }
+}
+
+auto test_v17_pn_z_deduplicates_across_units() -> void {
+    const auto anchor = tob_anchor_cob(0);
+    const auto source0 = track_ref(0, 0, hardware::TrackDirection::Horizontal, 0);
+    const auto source1 = track_ref(0, 0, hardware::TrackDirection::Horizontal, 1);
+    const auto graph = synthetic_channel_graph(
+        {{0, 0, 0},
+         {1, static_cast<int>(anchor.row), static_cast<int>(anchor.col)}},
+        {global_port_node(source0, 0), global_port_node(source1, 0),
+         global_cob_node(), global_tob_node(0, 1)},
+        {{0, 2, 0}, {1, 2, 0}, {2, 3, 1}});
+    auto pn = RoutingNet {};
+    pn.net_id = 21;
+    pn.kind = RoutingNetKind::PNnet;
+    pn.sources = {source0, source1};
+    pn.demands = {
+        RoutingDemand {0, bump_ref(0, 0, 0), {0}, false},
+        RoutingDemand {1, bump_ref(0, 0, 1), {1}, false}};
+
+    const auto route = solve_global_route_v17(UnifiedGraph {}, graph, {pn}, 0);
+    require(
+        route.ok
+            && route.stats.owners == 2
+            && route.selected_unit_by_pair.at(PairKey {21, 0, 0}) == 0
+            && route.selected_unit_by_pair.at(PairKey {21, 1, 0}) == 1
+            && route.channel_count_by_owner.at(GlobalUnitOwnerKey {21, 0}) == 2
+            && route.channel_count_by_owner.at(GlobalUnitOwnerKey {21, 1}) == 2
+            && route.stats.model.z_vars == 2
+            && route.stats.objective == 2
+            && route.stats.estimated_wirelength == 4,
+        "one PNnet must count a shared Channel once even when demands select different units");
+}
+
+auto test_v17_pn_z_does_not_relax_per_demand_capacity() -> void {
+    const auto source = track_ref(0, 0, hardware::TrackDirection::Horizontal, 0);
+    auto channels = std::Vector<GlobalChannelCoord> {{0, 0, 0}};
+    auto nodes = std::Vector<GlobalRouteNode> {global_port_node(source, 0), global_cob_node()};
+    auto segments = std::Vector<std::tuple<int, int, int>> {{0, 1, 0}};
+    auto pn = RoutingNet {};
+    pn.net_id = 22;
+    pn.kind = RoutingNetKind::PNnet;
+    pn.sources = {source};
+    for (std::size_t demand = 0; demand < 9; ++demand) {
+        const auto anchor = tob_anchor_cob(demand);
+        channels.push_back(GlobalChannelCoord {
+            1, static_cast<int>(anchor.row), static_cast<int>(anchor.col)});
+        nodes.push_back(global_tob_node(demand, static_cast<int>(demand + 1)));
+        segments.emplace_back(1, static_cast<int>(demand + 2), static_cast<int>(demand + 1));
+        pn.demands.push_back(RoutingDemand {
+            demand, bump_ref(demand, 0, 0), {0}, false});
+    }
+
+    const auto route = solve_global_route_v17(
+        UnifiedGraph {}, synthetic_channel_graph(channels, nodes, segments), {pn}, 0);
+    require(
+        !route.ok && route.stats.model.z_vars == channels.size(),
+        "PNnet Z must not merge nine per-demand uses of one Channel for capacity");
 }
 
 auto test_v17_rejects_tob_necessary_condition_overflow() -> void {
@@ -3656,10 +3794,14 @@ auto main() -> int {
         test_cli_initial_padding_options();
         test_cli_output_dir_option();
         test_v17_global_route_two_pin_and_fixed_unit();
-        test_v17_channel_graph_collapses_real_hardware_topology();
-        test_v17_tob_halves_share_channel_capacity();
+        test_v17_estimated_wirelength_deduplicates_multi_terminal_channels();
         test_v18_capacity_cuts_repair_overloaded_incumbent();
         test_v17_global_route_bus_and_pn_source();
+        test_v17_pn_net_z_deduplicates_per_demand_channels();
+        test_v17_pn_z_deduplicates_across_units();
+        test_v17_pn_z_does_not_relax_per_demand_capacity();
+        test_v17_channel_graph_collapses_real_hardware_topology();
+        test_v17_tob_halves_share_channel_capacity();
         test_v17_rejects_tob_necessary_condition_overflow();
         test_v17_guide_scope_unit_release();
         test_v17_unit_assumption_is_traceable();

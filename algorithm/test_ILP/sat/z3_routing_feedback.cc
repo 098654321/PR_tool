@@ -215,6 +215,8 @@ auto solve_with_z3_optimize_feedback(
             result.global_route_vars = global_route->stats.variables;
             result.global_route_constraints = global_route->stats.constraints;
             result.global_route_objective = global_route->stats.objective;
+            result.global_route_estimated_wirelength =
+                global_route->stats.estimated_wirelength;
             result.global_route_capacity_cuts_enabled =
                 global_route->stats.capacity_cuts_enabled;
             result.global_route_capacity_cut_rounds =

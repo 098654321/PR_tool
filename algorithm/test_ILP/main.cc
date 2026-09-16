@@ -123,7 +123,7 @@ auto run_main(int argc, char** argv) -> int {
         result.sat_pre_ms,
         result.solve_ms);
     debug::info_fmt(
-        "global route: method={} detailed_solver={} requested={} status={} nodes={} cob_nodes={} tob_terminal_nodes={} port_terminal_nodes={} boundary_terminal_nodes={} physical_channels={} traversal_arcs={} owners={} commodities={} vars={} constraints={} objective={} capacity_cuts_enabled={} capacity_cut_rounds={} capacity_cuts={} released_unit_sources={} total_ms={} build_ms={} solve_ms={}",
+        "global route: method={} detailed_solver={} requested={} status={} nodes={} cob_nodes={} tob_terminal_nodes={} port_terminal_nodes={} boundary_terminal_nodes={} physical_channels={} traversal_arcs={} owners={} demands={} vars={} constraints={} objective={} estimated_wirelength={} capacity_cuts_enabled={} capacity_cut_rounds={} capacity_cuts={} released_unit_sources={} total_ms={} build_ms={} solve_ms={}",
         cli.enable_global_route_v18 ? "v18" : (cli.enable_global_route_v17 ? "v17" : "n/a"),
         cli.enable_global_route_v18 ? "CaDiCaL" : (cli.enable_global_route_v17 ? "Z3-Optimize" : "n/a"),
         result.global_route_requested,
@@ -140,6 +140,7 @@ auto run_main(int argc, char** argv) -> int {
         result.global_route_vars,
         result.global_route_constraints,
         result.global_route_objective,
+        result.global_route_estimated_wirelength,
         result.global_route_capacity_cuts_enabled,
         result.global_route_capacity_cut_rounds,
         result.global_route_capacity_cuts,

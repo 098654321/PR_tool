@@ -126,6 +126,7 @@ struct SatRoutingResult {
     std::size_t global_route_vars{0};
     std::size_t global_route_constraints{0};
     std::size_t global_route_objective{0};
+    std::size_t global_route_estimated_wirelength{0};
     std::size_t global_route_released_sources{0};
     bool global_route_capacity_cuts_enabled{false};
     std::size_t global_route_capacity_cut_rounds{0};

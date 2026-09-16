@@ -20,15 +20,15 @@
    - owner/unit 变量 `Q`，普通 bump net 可选 16 unit，external track 固定 `map_track(track)`；
    - owner/Channel 占用 `X`；
    - V17 为非固定 unit 创建稠密 `W=X∧Q`；V18 不创建 `W`，对整数 incumbent 的超载 `(Channel,unit)` 迭代加入 9-owner cut `sum(X+Q)<=17`；
-   - per-pair/commodity 带 `channel_id` 的拓扑弧流 `F`，port 弧只对对应 commodity 建变量；
-   - PN candidate source-choice；
+   - 每个 per-pair/commodity 使用带 `channel_id` 的二进制拓扑弧流 `F`，port 弧只对对应 commodity 建变量；
+   - PNnet 保留 per-demand owner、`Q/F/X` 和候选源 exactly-one `S`；只额外建 net-level `Z` 表示各 demand `X` 的 Channel 并集；
    - 节点 flow conservation、terminal Channel、`F_a⇒X_{channel(a)}` 与 `X⇒incident F/source`；
    - `(Channel,unit)` 容量不超过 8；
    - 每 TOB/unit load 不超过 8、每 TOB/bank/residue load 不超过 8；
    - 2-pin SyncBus members 的 `sum X` 相等。
-5. 目标最小化所有 owner 的 Channel 并集 `sum X`。宏观模型不增加 MTZ/无环约束；无用 `X` 由正目标排除，`F` 在已选 Channel 内允许环。
+5. 目标最小化非 PN owner 的 `sum X` 与 PNnet 的 `sum Z`。PNnet 的不同 demand，包括选择不同 unit 的 demand，使用同一 Channel 时在整网线长中只计一次；容量仍按 per-demand `X/Q` 计数，`Z` 不进入容量。宏观模型不增加 MTZ/无环约束；无用 `X/Z` 由目标和双向 support 约束排除，`F` 在已选 Channel 内允许环。
 6. `apply_global_route_v17` 写入 per-pair 非矩形 Channel guide、per-source unit 和由选中宏观弧数加端点开销得到的 detailed distance cap。
-   - multi-sink PNnet 在现有共享 virtual-root 语义下保留各 demand 所选等价同极性 source 的并集，并屏蔽其余 virtual arcs；第三层不再保留 per-demand source-choice 标签。
+   - multi-sink PNnet 直接从每个 demand 的 `S/F` 恢复 source 和路径；第三层保留各 demand 已选 source 的并集，不保留 per-demand source-choice 标签。
 7. `compute_pair_delays` 在 guide 的细粒度投影中求 `d_min`，首轮 domain 初始化为连续区间 `{d_min,...,max(d_min,L_pair)}`。
 8. Bnet 的 Global Routing unit 通过可追踪 assumption `gamma⇒Q_sat(unit)` 固定；不写不可撤销 unit clause。
 9. Z3 或 V18 CaDiCaL hard-UNSAT 时分别处理：
@@ -86,7 +86,7 @@ xmake build test_ILP_unit
 
 - 普通 2-pin net 恰好一个 unit、terminal 连通和 Channel 目标重算；
 - external track fixed unit；
-- PN reachable candidate source/unit；
+- PN reachable candidate source/unit；per-demand `X/Q/F/S` 必须保留；net-level `Z` 必须等于全部 demand `X` 的 Channel 并集，并对目标中的共享 Channel 去重；
 - SyncBus member Channel 数等长；
 - fixed/released unit 的 guide lane 开放范围；
 - `gamma` assumption 冲突能出现在 failed core；
@@ -101,9 +101,9 @@ xmake build test_ILP_unit
 关键阶段使用 `debug::info_fmt`，字段稳定、可统计：
 
 - `V17 Global Routing graph`：COB/TOB/port/boundary 节点数、physical_channels、directed_traversal_arcs、collapsed_track_nodes；
-- `prepare`：nets/owners/commodities/buses；
+- `prepare`：nets/owners/demands/PNnets/buses；
 - `model built`：vars/constraints/build_ms 与 `capacity_mode`；
-- `V17 Global Routing ILP model stats (-v)`：图节点/Channel/owner/commodity 维度，`Q/X/W/F/S` 变量分解，13 类线性约束及与 HiGHS 总数的一致性；
+- `V17 Global Routing ILP model stats (-v)`：图节点/Channel/owner/demand 维度，`Q/X/Z/W/F/S` 变量分解，15 类线性约束及与 HiGHS 总数的一致性；
 - per-owner/per-pair（`-v`）：net、owner、unit、Channel 数、selected arcs；
 - `validation`：objective、最大 Channel-unit load、pair 数；
 - V18 capacity cuts：每轮 overloaded Channel--unit 数、新增/累计 cuts、累计 solve ms，以及收敛时的 rounds/cuts/final constraints；
