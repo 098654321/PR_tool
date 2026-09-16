@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <std/collection.hh>
 #include <std/string.hh>
+#include <string_view>
 
 namespace PR_tool {
 
@@ -75,10 +76,12 @@ struct GlobalRouteStats {
         // Binary variables.
         std::size_t q_vars{0};
         std::size_t x_vars{0};
+        std::size_t x_dense_slots{0};
         std::size_t z_vars{0};
         std::size_t w_vars{0};
         std::size_t w_dense_slots{0};
         std::size_t f_vars{0};
+        std::size_t f_dense_slots{0};
         std::size_t source_choice_vars{0};
 
         // Linear constraints, grouped by their modeling role.
@@ -115,9 +118,19 @@ struct GlobalRouteStats {
     std::size_t constraints{0};
     std::size_t objective{0};
     std::size_t estimated_wirelength{0};
+    bool bbox_scope_enabled{false};
+    std::size_t bbox_scope_padding{0};
     bool capacity_cuts_enabled{false};
+    std::size_t initial_fixed_unit_capacity_rows{0};
     std::size_t capacity_cut_rounds{0};
     std::size_t capacity_cuts{0};
+    std::size_t mip_start_owners{0};
+    std::size_t mip_start_two_pin_owners{0};
+    std::size_t mip_start_multi_pin_owners{0};
+    std::size_t mip_start_commodities{0};
+    std::size_t mip_start_skipped_owners{0};
+    std::size_t mip_start_entries{0};
+    long long mip_start_ms{0};
     long long build_ms{0};
     long long solve_ms{0};
     long long total_ms{0};
@@ -126,6 +139,11 @@ struct GlobalRouteStats {
 enum class GlobalRouteCapacityMode {
     DenseW,
     IterativeCuts
+};
+
+enum class GlobalRouteScopeMode {
+    FullGraph,
+    BboxPlusOne
 };
 
 struct GlobalRouteResult {
@@ -153,7 +171,11 @@ auto solve_global_route_v17(
     const GlobalChannelGraph& channel_graph,
     const std::Vector<RoutingNet>& nets,
     int verbose_level,
-    GlobalRouteCapacityMode capacity_mode = GlobalRouteCapacityMode::DenseW
+    GlobalRouteCapacityMode capacity_mode = GlobalRouteCapacityMode::DenseW,
+    std::string_view highs_log_path = {},
+    bool highs_log_append = false,
+    GlobalRouteScopeMode scope_mode = GlobalRouteScopeMode::FullGraph,
+    int highs_time_limit_minutes = 0
 ) -> GlobalRouteResult;
 
 auto apply_global_route_v17(

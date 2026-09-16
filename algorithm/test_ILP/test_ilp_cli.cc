@@ -72,6 +72,22 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
             options.initial_delay_pad = parse_non_negative_int(args[i], "-d");
             continue;
         }
+        if (arg == "--time-limit") {
+            if (++i >= args.size()) {
+                throw std::invalid_argument(
+                    "--time-limit requires a positive integer argument in minutes");
+            }
+            const auto value = args[i];
+            int parsed = 0;
+            const auto [end, error] =
+                std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (error != std::errc {} || end != value.data() + value.size() || parsed <= 0) {
+                throw std::invalid_argument(
+                    "--time-limit requires a positive integer argument in minutes");
+            }
+            options.highs_time_limit_minutes = parsed;
+            continue;
+        }
         if (arg == "--z3-optimize") {
             options.enable_z3_optimize = true;
             continue;

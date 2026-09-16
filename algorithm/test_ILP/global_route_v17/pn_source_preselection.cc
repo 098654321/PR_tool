@@ -13,6 +13,7 @@
 #include <tuple>
 
 #ifdef USE_HIGHS
+#include "global_route_v17/highs_log_sink.hh"
 #include <Highs.h>
 #endif
 
@@ -191,8 +192,9 @@ auto transformed_nets(const std::Vector<RoutingNet>& nets, const std::Vector<Can
 
 class SmallMip {
   public:
-    explicit SmallMip(const int verbose_level) {
-        highs_.setOptionValue("output_flag", verbose_level >= 3);
+    explicit SmallMip(const int verbose_level, const std::string_view highs_log_path)
+        : log_sink_(highs_log_path, verbose_level >= 2, false) {
+        log_sink_.attach(highs_);
         highs_.setOptionValue("mip_rel_gap", 0.0);
     }
 
@@ -250,6 +252,7 @@ class SmallMip {
         }
     }
 
+    HighsLogSink log_sink_;
     Highs highs_;
     std::size_t variables_{0};
     std::size_t constraints_{0};
@@ -259,8 +262,12 @@ class SmallMip {
 
 } // namespace
 
-auto preselect_pn_sources_v18(const GlobalChannelGraph& graph, const std::Vector<RoutingNet>& nets,
-                              const int verbose_level) -> PnSourcePreselectionResult {
+auto preselect_pn_sources_v18(
+    const GlobalChannelGraph& graph,
+    const std::Vector<RoutingNet>& nets,
+    const int verbose_level,
+    const std::string_view highs_log_path
+) -> PnSourcePreselectionResult {
     const auto total_begin = std::chrono::steady_clock::now();
     auto out = PnSourcePreselectionResult{};
     out.stats.lambda_r = kRudyWeight;
@@ -399,7 +406,7 @@ auto preselect_pn_sources_v18(const GlobalChannelGraph& graph, const std::Vector
         out.stats.alpha = reference_sum / static_cast<double>(cell_unit_count);
 
         const auto build_begin = std::chrono::steady_clock::now();
-        auto mip = SmallMip{verbose_level};
+        auto mip = SmallMip{verbose_level, highs_log_path};
         for (auto& candidate : candidates) {
             candidate.variable = mip.add_binary(static_cast<double>(candidate.distance));
         }

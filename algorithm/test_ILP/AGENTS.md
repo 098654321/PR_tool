@@ -1,13 +1,13 @@
 # PR_tool / algorithm/test_ILP 工程指南
 
-本目录实现统一细粒度 SAT 路由及其优化前端。默认流程是第十四版 CaDiCaL 可行性路由；`--z3-optimize` 是第十六版 Z3 Weighted Partial MaxSAT；`--global-route-v17` 是稠密 `W` 的 HiGHS Global Routing 后接 Z3 Detailed Routing；`--global-route-v18` 将第一层改为无 `W` 容量剪切，第三层改为 CaDiCaL 纯 SAT。方法定义以 `../../问题定义与方法/第十七版方法.md` 和 `../../问题定义与方法/第十八版方法.md` 为准。
+本目录实现统一细粒度 SAT 路由及其优化前端。默认流程是第十四版 CaDiCaL 可行性路由；`--z3-optimize` 是第十六版 Z3 Weighted Partial MaxSAT；`--global-route-v17` 是稠密 `W` 的 HiGHS Global Routing 后接 Z3 Detailed Routing；`--global-route-v18` 将第一层改为无稠密 `W` 的容量剪切，第三层改为 CaDiCaL 纯 SAT，并已接入第十九版的 fixed-unit 初始精确容量行、maze-routing MIP start 和固定 bbox+1 Global Routing scope。方法定义以 `../../问题定义与方法/第十七版方法.md`、`第十八版方法.md` 和 `第十九版方法.md` 为准。
 
 ## 当前四条入口
 
 - 默认：统一图 + D/A 精确距离状态 + CaDiCaL assumptions，UNSAT core 驱动 bbox/distance 扩展。
 - `--z3-optimize`：原 CNF 全部作为 hard constraints，所有 pair alpha 作为 external assumptions，以物理 Track/Bump 占用 `U_v` 的单位软约束最小化并集线长。
 - `--global-route-v17`：自动启用 Z3 Optimize；先用 HiGHS 在 Channel 图上联合选择 COBUnit、MCF route guide 和 bus Channel 数等长，再以 guide 和 unit assumption 初始化详细求解。
-- `--global-route-v18`：先用小型 HiGHS 模型为 PNnet bump 预选物理 source/unit，并按 source 转换为 fixed-source multi-sink Tnet；正式 HiGHS 前端使用无 `W` 的 Channel--unit 迭代容量剪切，详细阶段不生成 occupancy `U`、`D⇒U` 和 soft objective，直接流式送入 CaDiCaL，首个可行解即返回。
+- `--global-route-v18`：先用小型 HiGHS 模型为 PNnet bump 预选物理 source/unit，并按 source 转换为 fixed-source multi-sink Tnet；正式 HiGHS 前端将第十四版每个子连接的 bbox 各外推 1 格并取并集，只为 scope 内资源建立 `F/X`及关联约束；随后建立不需要 `W` 的 fixed-unit 精确容量行，再用受同一 scope 限制的 2-pin/单源多-pin maze routing 生成部分 MIP start，未覆盖的 Channel--unit 资源由迭代容量剪切补齐；详细阶段不生成 occupancy `U`、`D⇒U` 和 soft objective，直接流式送入 CaDiCaL，首个可行解即返回。当前不扩展 Global Routing bbox，bbox+1 下 HiGHS 失败会直接返回错误。
 
 旧 `--ilp-optimize/-L/-R/--time-limit` 与 `ilp_v15/` Gurobi refinement 已删除。
 
@@ -19,7 +19,8 @@
 4. HiGHS MIP 使用：
    - owner/unit 变量 `Q`，普通 bump net 可选 16 unit，external track 固定 `map_track(track)`；
    - owner/Channel 占用 `X`；
-   - V17 为非固定 unit 创建稠密 `W=X∧Q`；V18 不创建 `W`，对整数 incumbent 的超载 `(Channel,unit)` 迭代加入 9-owner cut `sum(X+Q)<=17`；
+   - V17 为非固定 unit 创建稠密 `W=X∧Q`；V18 不创建 `W`，首次求解前对潜在 fixed owner 数超过 8 的 `(Channel,unit)` 加入 `sum X<=8`，然后对整数 incumbent 中其余超载资源迭代加入 9-owner cut `sum(X+Q)<=17`；
+   - V18 在首次 HiGHS 求解前用 Global Routing 图上的 maze routing 生成部分 MIP start：2-pin owner 取新增物理 Channel 数最少的路径，单源多-pin owner 从已有树反复连接 Channel 增量最小的 sink，TOB 同一 Channel 的两个半段只计一次；只提交已确定的 `F/X/source-choice=1`，其余变量由 HiGHS 补全；
    - 每个 per-pair/commodity 使用带 `channel_id` 的二进制拓扑弧流 `F`，port 弧只对对应 commodity 建变量；
    - V17 基线的 PNnet 保留 per-demand owner、`Q/F/X/S/Z`；V18 预选后的 PNnet 已是 fixed-source/unit Tnet，正式 MCF 不再产生 PN `S/Z`，每棵 physical source-tree 以其 `X` 独立计长和占用容量；
    - 节点 flow conservation、terminal Channel、`F_a⇒X_{channel(a)}` 与 `X⇒incident F/source`；
@@ -82,6 +83,8 @@ xmake build test_ILP_unit
 ./output/test_ILP <config_path> --global-route-v18 -v -o <output_dir>
 ```
 
+`--time-limit MIN` 只限制正式 Global Routing 的 HiGHS 墙钟时间（分钟）；省略或未设置表示不限时。容量剪切多轮重求解共用同一预算。超时若已有可行 incumbent 则继续提取 guide，否则报失败。PN 预选不受该参数约束。
+
 `--global-route-v17/--global-route-v18` 不与 `-s/-d` 联用，因为 guide 和 distance cap 已由第一层初始化。V18 不与 `--z3-optimize` 联用。普通 `--z3-optimize` 和默认 CaDiCaL 流程仍支持原 `-s/-d`。
 
 合成单测必须至少覆盖：
@@ -93,7 +96,9 @@ xmake build test_ILP_unit
 - SyncBus member Channel 数等长；
 - fixed/released unit 的 guide lane 开放范围；
 - `gamma` assumption 冲突能出现在 failed core；
-- 容量剪切在无拥塞 case 中保持相同 objective 且 `W=0`；在 9 个 fixed-unit owner 共用 Channel 时必须分离超载 incumbent；还应覆盖加 cut 后将可选源/COBUnit 改到可行解并收敛；
+- 容量剪切在无拥塞 case 中保持相同 objective 且 `W=0`；9 个 fixed-unit owner 共用 Channel 时必须由首次求解前的精确容量行直接判定不可行；另外覆盖可选 unit/source 超载在加 cut 后改到可行解并收敛；
+- maze MIP start 必须分别覆盖 2-pin 和单源多-pin owner，记录提交的 commodity/变量数，且不改变原 MIP objective 和最终容量校验结果；
+- bbox+1 Global Routing scope 必须验证无关 `F/X` 变量被实际删除，以及唯一绕路在 scope 外时直接返回 Infeasible，不进行自动扩展；
 - V18 合成 case 必须完成 HiGHS guide 并由 CaDiCaL 在无 `U`/无 soft clauses 的 hard CNF 上找到可行解；
 - 既有 TOB/COB/SAT、路径提取、bus detailed 等长和 Z3 objective 不变量。
 
@@ -108,8 +113,13 @@ xmake build test_ILP_unit
 - `V18 PN source preselection summary`：status、source-tree 数、转换后 net 数、objective、total/build/solve 时间；
 - `prepare`：nets/owners/demands/PNnets/buses；
 - `model built`：vars/constraints/build_ms 与 `capacity_mode`；
+- `V19 fixed-unit capacity initialization`：首次求解前建立的 fixed-unit 精确容量行数、fixed owner 数和 Channel 数；
+- `V19 maze MIP start`：已路由 owner、2-pin/multi-pin owner、commodity、跳过 owner、提交变量数及构造时间；
+- `V19 Global Routing scope`：`full-graph` 或 `bbox-plus-one`，以及 `X/F` 的 active slots、dense slots 和裁剪比例；
 - `V17 Global Routing ILP model stats (-v)`：图节点/Channel/owner/demand 维度，`Q/X/Z/W/F/S` 变量分解，15 类线性约束及与 HiGHS 总数的一致性；
 - per-owner/per-pair（`-v`）：net、owner、unit、Channel 数、selected arcs；
+- `-vv`：终端回显 HiGHS 求解日志；无论是否 `-vv`，PN 预选与正式 Global Routing 都会把求解日志写入 `-o` 目录下的 `highs.log`（求解过程中逐行 flush）；
+- `-vvv`：额外打印 scope child bbox；
 - `validation`：objective、最大 Channel-unit load、pair 数；
 - V18 capacity cuts：每轮 overloaded Channel--unit 数、新增/累计 cuts、累计 solve ms，以及收敛时的 rounds/cuts/final constraints；
 - `summary`：status、vars、constraints、objective、estimated_wirelength、total/build/solve ms；

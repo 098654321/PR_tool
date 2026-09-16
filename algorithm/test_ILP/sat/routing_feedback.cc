@@ -243,10 +243,11 @@ auto solve_with_feedback(
     const bool has_pnnet = std::ranges::any_of(
         nets,
         [](const RoutingNet& net) { return net.kind == RoutingNetKind::PNnet; });
+    auto highs_log_append = false;
     if (options.enable_global_route_v18 && has_pnnet) {
         const auto candidate_channel_graph = build_global_channel_graph(graph, nets);
         auto preselection = preselect_pn_sources_v18(
-            candidate_channel_graph, nets, options.verbose_level);
+            candidate_channel_graph, nets, options.verbose_level, options.highs_log_path);
         if (!preselection.ok) {
             debug::error(
                 "V18 PN source preselection produced no endpoint assignment; this is not a proof that the full design is UNSAT");
@@ -256,6 +257,7 @@ auto solve_with_feedback(
             return out;
         }
         nets = std::move(preselection.nets);
+        highs_log_append = true;
     }
     auto problem_state = init_routing_problem_state(nets);
     apply_state_to_nets(problem_state, nets);
@@ -309,7 +311,11 @@ auto solve_with_feedback(
             global_channel_graph,
             nets,
             options.verbose_level,
-            GlobalRouteCapacityMode::IterativeCuts);
+            GlobalRouteCapacityMode::IterativeCuts,
+            options.highs_log_path,
+            highs_log_append,
+            GlobalRouteScopeMode::BboxPlusOne,
+            options.highs_time_limit_minutes);
         if (!global_route->ok) {
             debug::error(
                 "V18 front-end produced no guide; this is not a proof that the full detailed-routing design is UNSAT");

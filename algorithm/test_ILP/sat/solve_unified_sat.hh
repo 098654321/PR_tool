@@ -17,6 +17,8 @@ struct UnifiedSatSolveOptions {
     bool enable_z3_optimize{false};
     bool enable_global_route_v17{false};
     bool enable_global_route_v18{false};
+    std::String highs_log_path;
+    int highs_time_limit_minutes{0};
 };
 
 auto solve_unified_sat(

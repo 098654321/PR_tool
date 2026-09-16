@@ -19,7 +19,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--z3-optimize | --global-route-v17 | --global-route-v18]";
+    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [--time-limit MIN] [-s S] [-d D] [--z3-optimize | --global-route-v17 | --global-route-v18]";
 
 auto get_peak_rss_mb() -> double {
     rusage usage {};
@@ -70,6 +70,13 @@ auto run_main(int argc, char** argv) -> int {
     options.enable_z3_optimize = cli.enable_z3_optimize;
     options.enable_global_route_v17 = cli.enable_global_route_v17;
     options.enable_global_route_v18 = cli.enable_global_route_v18;
+    options.highs_log_path = (log_dir / "highs.log").string();
+    options.highs_time_limit_minutes = cli.highs_time_limit_minutes;
+    if (cli.highs_time_limit_minutes != 0) {
+        debug::info_fmt(
+            "HiGHS Global Routing time limit: {} min",
+            cli.highs_time_limit_minutes);
+    }
     if (cli.enable_sat_log) {
         debug::info_fmt("CaDiCal solver logs enabled: directory={}", options.cadical.log_dir);
     }

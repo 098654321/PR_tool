@@ -1064,6 +1064,10 @@ auto test_v17_global_route_two_pin_and_fixed_unit() -> void {
             && cut_route.stats.capacity_cuts_enabled
             && cut_route.stats.model.w_vars == 0
             && cut_route.stats.model.w_linearization == 0
+            && cut_route.stats.mip_start_owners == 1
+            && cut_route.stats.mip_start_two_pin_owners == 1
+            && cut_route.stats.mip_start_commodities == 1
+            && cut_route.stats.mip_start_entries > 0
             && cut_route.stats.capacity_cuts == 0
             && cut_route.stats.objective == bump_route.stats.objective
             && cut_route.stats.variables < bump_route.stats.variables
@@ -1127,6 +1131,117 @@ auto test_v17_estimated_wirelength_deduplicates_multi_terminal_channels() -> voi
             && route.stats.objective == 3
             && route.stats.estimated_wirelength == 6,
         "estimated wirelength must count the three-Channel owner union and three unique bumps");
+
+    const auto warm_route = solve_global_route_v17(
+        UnifiedGraph {}, graph, {net}, 0, GlobalRouteCapacityMode::IterativeCuts);
+    require(
+        warm_route.ok
+            && warm_route.stats.objective == route.stats.objective
+            && warm_route.stats.mip_start_owners == 1
+            && warm_route.stats.mip_start_multi_pin_owners == 1
+            && warm_route.stats.mip_start_commodities == 2
+            && warm_route.stats.mip_start_skipped_owners == 0
+            && warm_route.stats.mip_start_entries > 0,
+        "V19 maze MIP start must build one shared single-source multi-pin tree");
+}
+
+auto test_v19_bbox_plus_one_global_route_scope() -> void {
+    const auto a0 = tob_anchor_cob(0);
+    const auto a1 = tob_anchor_cob(1);
+    const auto channels = std::Vector<GlobalChannelCoord> {
+        {1, static_cast<int>(a0.row), static_cast<int>(a0.col)},
+        {1, static_cast<int>(a1.row), static_cast<int>(a1.col)},
+        {0, 2, 4},
+        {0, 8, 11}};
+    const auto nodes = std::Vector<GlobalRouteNode> {
+        global_tob_node(0, 0),
+        global_cob_node(1, 1),
+        global_tob_node(1, 1),
+        global_cob_node(8, 10),
+        global_cob_node(8, 11)};
+    const auto graph = synthetic_channel_graph(
+        channels,
+        nodes,
+        {{0, 1, 0}, {1, 3, 2}, {3, 2, 1}, {3, 4, 3}});
+    const auto net = two_pin_net(
+        0, RoutingNetKind::Bnet, bump_ref(0, 0, 0), bump_ref(1, 0, 1));
+    const auto scoped = solve_global_route_v17(
+        UnifiedGraph {},
+        graph,
+        {net},
+        0,
+        GlobalRouteCapacityMode::IterativeCuts,
+        {},
+        false,
+        GlobalRouteScopeMode::BboxPlusOne);
+    require(
+        scoped.ok
+            && scoped.stats.bbox_scope_enabled
+            && scoped.stats.bbox_scope_padding == 1
+            && scoped.stats.model.x_vars == 3
+            && scoped.stats.model.x_dense_slots == 4
+            && scoped.stats.model.f_vars == 6
+            && scoped.stats.model.f_dense_slots == 8,
+        "V19 bbox+1 scope must retain the required +1 ring and omit unrelated X/F variables");
+
+    const auto detour_graph = synthetic_channel_graph(
+        {channels[0], channels[1], channels[3]},
+        {global_tob_node(0, 0), global_cob_node(1, 1),
+         global_cob_node(8, 10), global_tob_node(1, 1)},
+        {{0, 1, 0}, {1, 2, 2}, {2, 3, 1}});
+    const auto full = solve_global_route_v17(
+        UnifiedGraph {},
+        detour_graph,
+        {net},
+        0,
+        GlobalRouteCapacityMode::IterativeCuts);
+    const auto clipped = solve_global_route_v17(
+        UnifiedGraph {},
+        detour_graph,
+        {net},
+        0,
+        GlobalRouteCapacityMode::IterativeCuts,
+        {},
+        false,
+        GlobalRouteScopeMode::BboxPlusOne);
+    require(
+        full.ok && !clipped.ok && clipped.message == "Infeasible",
+        "V19 bbox+1 experiment must report failure directly when the only detour is outside scope");
+
+    const auto a8 = tob_anchor_cob(8);
+    const auto a3 = tob_anchor_cob(3);
+    const auto fanout_graph = synthetic_channel_graph(
+        {{1, static_cast<int>(a0.row), static_cast<int>(a0.col)},
+         {1, static_cast<int>(a8.row), static_cast<int>(a8.col)},
+         {1, static_cast<int>(a3.row), static_cast<int>(a3.col)},
+         {0, static_cast<int>(a8.row), static_cast<int>(a3.col)}},
+        {global_tob_node(0, 0), global_cob_node(1, 0),
+         global_tob_node(8, 1), global_tob_node(3, 2),
+         global_cob_node(5, 9)},
+        {{0, 1, 0}, {1, 2, 1}, {1, 3, 2}, {1, 4, 3}});
+    auto fanout = RoutingNet {};
+    fanout.net_id = 1;
+    fanout.kind = RoutingNetKind::Bnet;
+    fanout.sources = {bump_ref(0, 0, 0)};
+    fanout.demands = {
+        RoutingDemand {0, bump_ref(8, 0, 1), {0}, true},
+        RoutingDemand {1, bump_ref(3, 0, 2), {0}, true}};
+    const auto fanout_scoped = solve_global_route_v17(
+        UnifiedGraph {},
+        fanout_graph,
+        {fanout},
+        0,
+        GlobalRouteCapacityMode::IterativeCuts,
+        {},
+        false,
+        GlobalRouteScopeMode::BboxPlusOne);
+    require(
+        fanout_scoped.ok
+            && fanout_scoped.stats.model.x_vars == 3
+            && fanout_scoped.stats.model.x_dense_slots == 4
+            && fanout_scoped.stats.model.f_vars == 12
+            && fanout_scoped.stats.model.f_dense_slots == 16,
+        "V19 multi-sink scope must keep the expanded child-bbox union, not its rectangular hull");
 }
 
 auto test_v17_channel_graph_collapses_real_hardware_topology() -> void {
@@ -1273,9 +1388,40 @@ auto test_v17_tob_halves_share_channel_capacity() -> void {
             && cut_route.message == "Infeasible"
             && cut_route.stats.capacity_cuts_enabled
             && cut_route.stats.model.w_vars == 0
-            && cut_route.stats.capacity_cut_rounds == 1
-            && cut_route.stats.capacity_cuts >= 1,
-        "capacity cuts must separate an overloaded incumbent before reporting infeasible");
+            && cut_route.stats.initial_fixed_unit_capacity_rows >= 1
+            && cut_route.stats.model.channel_unit_capacity
+                == cut_route.stats.initial_fixed_unit_capacity_rows
+            && cut_route.stats.capacity_cut_rounds == 0
+            && cut_route.stats.capacity_cuts == 0,
+        "fixed-unit capacity rows must reject a known overload in the first solve");
+
+    auto bypass_channels = channels;
+    bypass_channels.push_back(GlobalChannelCoord {0, 3, 0});
+    bypass_channels.push_back(GlobalChannelCoord {0, 3, 1});
+    bypass_channels.push_back(GlobalChannelCoord {0, 3, 2});
+    auto bypass_nodes = nodes;
+    bypass_nodes.push_back(global_cob_node(2, 0));
+    bypass_nodes.push_back(global_cob_node(2, 1));
+    auto bypass_segments = segments;
+    bypass_segments.emplace_back(8, 21, 19);
+    bypass_segments.emplace_back(21, 22, 20);
+    bypass_segments.emplace_back(22, 20, 21);
+    const auto bypass_graph = synthetic_channel_graph(
+        bypass_channels, bypass_nodes, bypass_segments);
+    const auto bypass_route = solve_global_route_v17(
+        UnifiedGraph {},
+        bypass_graph,
+        nets,
+        0,
+        GlobalRouteCapacityMode::IterativeCuts);
+    require(
+        bypass_route.ok
+            && bypass_route.stats.initial_fixed_unit_capacity_rows >= 1
+            && bypass_route.stats.mip_start_owners == 9
+            && bypass_route.stats.mip_start_skipped_owners == 0
+            && bypass_route.stats.capacity_cut_rounds == 0
+            && bypass_route.stats.capacity_cuts == 0,
+        "the ninth fixed-unit maze route must avoid a full Channel by using its bypass");
 }
 
 auto test_v18_capacity_cuts_repair_overloaded_incumbent() -> void {
@@ -2761,6 +2907,31 @@ auto test_cli_max_rss_option() -> void {
     require_invalid({"test/config/case1", "--max-rss-mb", "12MB"});
 }
 
+auto test_cli_time_limit_option() -> void {
+    const auto parsed = parse_test_ilp_cli({
+        "test/config/case1", "--global-route-v18", "--time-limit", "30"});
+    require(parsed.highs_time_limit_minutes == 30, "CLI must parse --time-limit in minutes");
+
+    const auto unlimited = parse_test_ilp_cli({"test/config/case1", "--global-route-v18"});
+    require(
+        unlimited.highs_time_limit_minutes == 0,
+        "missing --time-limit must mean no HiGHS time limit");
+
+    const auto require_invalid = [](std::initializer_list<std::string_view> args) {
+        try {
+            (void)parse_test_ilp_cli(args);
+            require(false, "invalid --time-limit input must be rejected");
+        }
+        catch (const std::invalid_argument&) {
+        }
+    };
+    require_invalid({"test/config/case1", "--time-limit"});
+    require_invalid({"test/config/case1", "--time-limit", "0"});
+    require_invalid({"test/config/case1", "--time-limit", "-1"});
+    require_invalid({"test/config/case1", "--time-limit", "1.5"});
+    require_invalid({"test/config/case1", "--time-limit", "10min"});
+}
+
 auto test_cli_initial_padding_options() -> void {
     const auto parsed = parse_test_ilp_cli({
         "algorithm/test_ILP/test/case_2btb",
@@ -3932,6 +4103,7 @@ auto main() -> int {
         test_v14_bus_forall_d_equiv();
         test_v14_bus_sync_covers_reachable_delay_domain();
         test_cli_max_rss_option();
+        test_cli_time_limit_option();
         test_cli_initial_padding_options();
         test_cli_output_dir_option();
         test_v18_pn_preselection_reserves_fixed_tnet_unit_load();
@@ -3939,6 +4111,7 @@ auto main() -> int {
         test_v18_pn_preselection_reserves_fixed_tnet_bank_residue_load();
         test_v17_global_route_two_pin_and_fixed_unit();
         test_v17_estimated_wirelength_deduplicates_multi_terminal_channels();
+        test_v19_bbox_plus_one_global_route_scope();
         test_v18_capacity_cuts_repair_overloaded_incumbent();
         test_v17_global_route_bus_and_pn_source();
         test_v17_pn_net_z_deduplicates_per_demand_channels();

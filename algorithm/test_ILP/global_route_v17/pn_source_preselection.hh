@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <std/collection.hh>
 #include <std/string.hh>
+#include <string_view>
 
 namespace PR_tool {
 
@@ -36,7 +37,11 @@ struct PnSourcePreselectionResult {
 
 // V18-only endpoint preselection.  Every PNnet is replaced by one fixed-source,
 // fixed-unit multi-sink Tnet per selected physical source.
-auto preselect_pn_sources_v18(const GlobalChannelGraph& graph, const std::Vector<RoutingNet>& nets,
-                              int verbose_level) -> PnSourcePreselectionResult;
+auto preselect_pn_sources_v18(
+    const GlobalChannelGraph& graph,
+    const std::Vector<RoutingNet>& nets,
+    int verbose_level,
+    std::string_view highs_log_path = {}
+) -> PnSourcePreselectionResult;
 
 } // namespace PR_tool

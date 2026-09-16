@@ -259,7 +259,7 @@ auto log_scope_bboxes(const std::Vector<RoutingNet>& nets, int verbose_level) ->
             format_routing_kind(net.kind),
             net_display_kind_name(infer_net_display_kind(net)),
             format_bbox_corners(net.scope_bbox));
-        if (verbose_level >= 2) {
+        if (verbose_level >= 3) {
             const auto child_boxes = compute_scope_child_bboxes(net);
             for (std::size_t i = 0; i < child_boxes.size(); ++i) {
                 debug::info_fmt(

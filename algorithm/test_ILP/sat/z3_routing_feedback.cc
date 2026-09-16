@@ -151,7 +151,15 @@ auto solve_with_z3_optimize_feedback(
     if (options.enable_global_route_v17) {
         global_channel_graph = build_global_channel_graph(graph, nets);
         global_route = solve_global_route_v17(
-            graph, global_channel_graph, nets, options.verbose_level);
+            graph,
+            global_channel_graph,
+            nets,
+            options.verbose_level,
+            GlobalRouteCapacityMode::DenseW,
+            options.highs_log_path,
+            false,
+            GlobalRouteScopeMode::FullGraph,
+            options.highs_time_limit_minutes);
         if (!global_route->ok) {
             debug::error(
                 "V17 front-end produced no guide; this is not a proof that the full detailed-routing design is UNSAT");
