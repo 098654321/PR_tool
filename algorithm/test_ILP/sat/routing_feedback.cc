@@ -114,33 +114,7 @@ auto apply_v18_pair_feedback(
     const GlobalChannelGraph& channel_graph,
     const std::Vector<PairKey>& critical
 ) -> std::size_t {
-    auto nets_to_expand = std::set<std::size_t> {};
-    for (const auto& key : critical) {
-        if (auto* pair = find_pair_state(state, key); pair != nullptr) {
-            expand_pair_delay_one(*pair);
-            nets_to_expand.insert(key.net_id);
-        }
-    }
-    auto guide_pairs = std::Vector<PairKey> {};
-    for (const auto net_id : nets_to_expand) {
-        const int failure_count = ++state.feedback_failure_count_by_net[net_id];
-        if (failure_count % 2 == 0) {
-            const auto indices = state.pair_indices_by_net.find(net_id);
-            if (indices != state.pair_indices_by_net.end()) {
-                for (const auto index : indices->second) {
-                    guide_pairs.push_back(state.pairs[index].key);
-                }
-            }
-        }
-        const auto net_it = std::find_if(
-            nets.begin(),
-            nets.end(),
-            [&](const RoutingNet& net) { return net.net_id == net_id; });
-        if (net_it != nets.end() && net_it->is_sync_bus) {
-            sync_bus_after_expand(state, nets, net_id);
-        }
-    }
-    return expand_global_route_guides_one_hop(channel_graph, state, guide_pairs);
+    return apply_global_route_feedback_step(channel_graph, state, nets, critical).added_channels;
 }
 
 auto critical_net_ids(const std::Vector<PairKey>& critical_pairs) -> std::set<std::size_t> {
@@ -323,7 +297,7 @@ auto solve_with_feedback(
             stamp_global_route(out);
             return out;
         }
-        apply_global_route_v17(*global_route, problem_state, nets);
+        apply_global_route_v17(*global_route, global_channel_graph, problem_state, nets);
         debug::info_fmt(
             "V18 guide initialization: guided_pairs={} assigned_units={} objective_channels={}",
             global_route->pair_channels.size(),
@@ -367,26 +341,23 @@ auto solve_with_feedback(
         try {
             delays_holder = compute_pair_delays(graph, nets, scopes, &problem_state);
         }
-        catch (const std::runtime_error& error) {
-            if (!options.enable_global_route_v18
-                || std::string_view {error.what()}.find("has no scoped path")
-                    == std::string_view::npos) {
+        catch (const ScopedPathUnavailable& error) {
+            if (!options.enable_global_route_v18) {
                 throw;
             }
-            auto all_pairs = std::Vector<PairKey> {};
-            all_pairs.reserve(problem_state.pairs.size());
-            for (const auto& pair : problem_state.pairs) {
-                all_pairs.push_back(pair.key);
-            }
-            const auto added = expand_global_route_guides_one_hop(
-                global_channel_graph, problem_state, all_pairs);
+            const auto expansion = expand_global_route_guides_one_hop(
+                global_channel_graph, problem_state, {error.pair_key});
             apply_state_to_nets(problem_state, nets);
             debug::info_fmt(
-                "V18 scoped delay precompute had no detailed path: round={} guide_channels_added={} reason={}",
+                "V18 scoped delay precompute had no detailed path: round={} net={} demand={} source={} pair_local_channels_added={} net_union_channels_added={} reason={}",
                 round,
-                added,
+                error.pair_key.net_id,
+                error.pair_key.demand_id,
+                error.pair_key.source_index,
+                expansion.pair_local_added_channels,
+                expansion.added_channels,
                 error.what());
-            if (added == 0) {
+            if (expansion.pair_local_added_channels == 0) {
                 out.message = std::format("DETAILED_SCOPE_UNREACHABLE: {}", error.what());
                 log_feedback_round_end(round, FeedbackRoundStatus::UnsatExhausted);
                 stamp_sat_timing(out);

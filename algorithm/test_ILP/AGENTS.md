@@ -28,12 +28,12 @@
    - 每 TOB/unit load 不超过 8、每 TOB/bank/residue load 不超过 8；
    - 2-pin SyncBus members 的 `sum X` 相等。
 5. V17 基线目标最小化非 PN owner 的 `sum X` 与 PNnet 的 `sum Z`；V18 则对预选后的每棵 physical source-tree 直接累加 `sum X`，不同 source-tree 使用同一 Channel 仍分别计长和占用资源。宏观模型不增加 MTZ/无环约束；无用 `X/Z` 由目标和双向 support 约束排除，`F` 在已选 Channel 内允许环。
-6. `apply_global_route_v17` 写入 per-pair 非矩形 Channel guide、per-source unit 和由选中宏观弧数加端点开销得到的 detailed distance cap。
+6. `apply_global_route_v17` 写入 per-pair 非矩形 Channel guide、per-source unit 和由选中宏观弧数加端点开销得到的 detailed distance cap。随后，每个 pair 只在自己的 TOB 端点加入固定局部修补：非 TOB--TOB pair 使用两侧相邻 COB 的两行三列 9-Channel 模板（中央 TOB Channel、上下边界 Channel、四条横向和左右两条纵向）；TOB--TOB pair 使用紧凑 7-Channel 模板（中央 TOB Channel、上下两个纵向 Channel、上下相邻 COB 各两条横向 Channel），不含左右外侧纵向 Channel。物理边界外的不存在 Channel 自动裁剪。`PairRoutingState` 保留各 pair 自己的 guide，详细 SAT scope 才取同一 net 所有 pair guide 的并集。
    - V17 基线的 multi-sink PNnet 直接从每个 demand 的 `S/F` 恢复 source 和路径；V18 转换后的 Tnet 直接从预选物理 source 建立 guide，详细 SAT 不再开放 PN virtual-source 候选。
-7. `compute_pair_delays` 在 guide 的细粒度投影中求 `d_min`，首轮 domain 初始化为连续区间 `{d_min,...,max(d_min,L_pair)}`。
+7. `compute_pair_delays` 在 guide（含初始 TOB 修补）的细粒度投影中求 `d_min`，首轮每个普通 pair 的 domain 仅为 `{d_min}`；SyncBus 共享 `{max(member d_min)}`。`detailed distance cap` 保留为 Global Routing 诊断，不能扩大首轮详细 distance domain。
 8. Bnet 的 Global Routing unit 通过可追踪 assumption `gamma⇒Q_sat(unit)` 固定；不写不可撤销 unit clause。
 9. Z3 或 V18 CaDiCaL hard-UNSAT 时分别处理：
-   - alpha core：critical pair 每次扩一个 distance；同 net 每第二次失败把非矩形 Channel guide 扩一跳；
+   - alpha core：critical pair 每次扩一个 distance；每个 pair 独立计数，累计4次 distance-only 失败后的第5次，在保留本次 distance 扩展的同时，只把该 pair 的局部 guide 扩一跳；TOB--TOB pair 使用相同阈值。详细 SAT 使用同一 net 所有 pair 局部 guide 的并集，不同 demand 的失败不互相累计；
    - gamma core：只取消 core 中对应 Bnet/source 的 unit 固定，并在原 guide 内开放全部 16 unit；
    - 非 core net 的 unit 保持不变。
 10. V17 Z3 Optimal 后校验 `objective == reconstructed union wirelength`；V18 CaDiCaL SAT 后使用同一提取与物理合法性校验，仅把 `total_wirelength` 作为后验统计。
@@ -92,14 +92,14 @@ xmake build test_ILP_unit
 - 普通 2-pin net 恰好一个 unit、terminal 连通和 Channel 目标重算；
 - external track fixed unit；
 - PN reachable candidate source/unit；per-demand `X/Q/F/S` 必须保留；net-level `Z` 必须等于全部 demand `X` 的 Channel 并集，并对目标中的共享 Channel 去重；
-- V18 PN 预选必须覆盖 Tnet 固定 bump 对 TOB unit/bank-residue 的逐 bump 占用、unit-aware RUDY 对等距离 source 选择的实际影响，以及 PNnet 按物理 source 转换为 fixed-source multi-sink Tnet；
+- V18 PN 预选必须覆盖 Tnet 固定 bump 对 TOB unit/bank-residue 的逐 bump 占用、unit-aware RUDY 对等距离 source 选择的实际影响、`lambda_A=lambda_A_base*k_hat` 的 physical-01-port 平均树规模缩放，以及 PNnet 按物理 source 转换为 fixed-source multi-sink Tnet；
 - SyncBus member Channel 数等长；
 - fixed/released unit 的 guide lane 开放范围；
 - `gamma` assumption 冲突能出现在 failed core；
 - 容量剪切在无拥塞 case 中保持相同 objective 且 `W=0`；9 个 fixed-unit owner 共用 Channel 时必须由首次求解前的精确容量行直接判定不可行；另外覆盖可选 unit/source 超载在加 cut 后改到可行解并收敛；
 - maze MIP start 必须分别覆盖 2-pin 和单源多-pin owner，记录提交的 commodity/变量数，且不改变原 MIP objective 和最终容量校验结果；
 - bbox+1 Global Routing scope 必须验证无关 `F/X` 变量被实际删除，以及唯一绕路在 scope 外时直接返回 Infeasible，不进行自动扩展；
-- V18 合成 case 必须完成 HiGHS guide 并由 CaDiCaL 在无 `U`/无 soft clauses 的 hard CNF 上找到可行解；
+- V18 合成 case 必须完成 HiGHS guide 并由 CaDiCaL 在无 `U`/无 soft clauses 的 hard CNF 上找到可行解；TOB repair 单测必须覆盖内部 TOB 的9/7-Channel 模板、pair-local guide 与整网 union、首轮 singleton domain 和所有 pair 第5次反馈阈值；scoped-path 不可达时必须携带准确 `PairKey`，只扩展该 pair 所属 net；
 - 既有 TOB/COB/SAT、路径提取、bus detailed 等长和 Z3 objective 不变量。
 
 无需用 `test/config` 真实 case 作为第十七版的基本回归。
@@ -109,7 +109,7 @@ xmake build test_ILP_unit
 关键阶段使用 `debug::info_fmt`，字段稳定、可统计：
 
 - `V17 Global Routing graph`：COB/TOB/port/boundary 节点数、physical_channels、directed_traversal_arcs、collapsed_track_nodes；
-- `V18 PN source preselection model built`：PNnet/bump/candidate 数，`Y/A/O` 变量规模、五类约束、Tnet 固定 bump 数、`lambda_A/lambda_R/alpha` 与 build 时间；`-v` 时输出变量和约束分类；
+- `V18 PN source preselection model built`：PNnet/bump/去重 physical-01-port/candidate 数，`Y/A/O` 变量规模、五类约束、Tnet 固定 bump 数、`lambda_A_base/k_hat/lambda_A/lambda_R/alpha` 与 build 时间；`-v` 时输出变量和约束分类；
 - `V18 PN source preselection summary`：status、source-tree 数、转换后 net 数、objective、total/build/solve 时间；
 - `prepare`：nets/owners/demands/PNnets/buses；
 - `model built`：vars/constraints/build_ms 与 `capacity_mode`；
@@ -123,7 +123,7 @@ xmake build test_ILP_unit
 - `validation`：objective、最大 Channel-unit load、pair 数；
 - V18 capacity cuts：每轮 overloaded Channel--unit 数、新增/累计 cuts、累计 solve ms，以及收敛时的 rounds/cuts/final constraints；
 - `summary`：status、vars、constraints、objective、estimated_wirelength、total/build/solve ms；
-- Z3 每轮：alpha/unit assumptions、soft 数、core 分类、release/guide expansion；V18 CaDiCaL 每轮记录 hard clauses、alpha/unit assumptions、`occupancy_soft_clauses=0`、core 分类与 expansion；
+- Z3 每轮：alpha/unit assumptions、soft 数、core 分类、release/guide expansion；V18 CaDiCaL 每轮记录 hard clauses、alpha/unit assumptions、`occupancy_soft_clauses=0`、core 分类与 expansion；Global Routing guide 初始化额外记录 TOB repair 的 net/TOB/Channel 数，反馈记录 net 类型、连续 distance failure、阈值和 scope expansion；
 - main 汇总：`global route` 与 summary 相同字段，SAT 规模/耗时，最终 wirelength。
 
 不要把 Global Routing Channel objective 记为 detailed wirelength，也不要把 Channel 数直接用作 SAT distance。

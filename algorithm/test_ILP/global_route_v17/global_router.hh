@@ -161,6 +161,12 @@ struct GlobalRouteResult {
     std::map<PairKey, int> detailed_distance_cap_by_pair;
 };
 
+struct GlobalRouteGuideExpandStats {
+    std::size_t pair_local_added_channels{0};
+    std::size_t added_channels{0};
+    std::set<std::size_t> expanded_nets;
+};
+
 auto build_global_channel_graph(
     const UnifiedGraph& graph,
     const std::Vector<RoutingNet>& nets
@@ -184,11 +190,35 @@ auto apply_global_route_v17(
     std::Vector<RoutingNet>& nets
 ) -> void;
 
+// Guided detailed routing uses the channel graph to add the fixed local TOB
+// repair template before projecting pair guides into a net-level scope.
+auto apply_global_route_v17(
+    const GlobalRouteResult& route,
+    const GlobalChannelGraph& channel_graph,
+    RoutingProblemState& state,
+    std::Vector<RoutingNet>& nets
+) -> void;
+
+auto net_is_tob_to_tob(const RoutingNet& net) -> bool;
+
+auto global_route_distance_failures_before_scope_expand(const RoutingNet& net) -> int;
+
+// Extends each critical pair's exact-distance domain by one.  Once that same
+// pair has reached four distance-only failures, expands only its
+// local guide by one Channel adjacency hop.  The detailed net scope is the
+// union of these pair-local guides.
+auto apply_global_route_feedback_step(
+    const GlobalChannelGraph& graph,
+    RoutingProblemState& state,
+    const std::Vector<RoutingNet>& nets,
+    const std::Vector<PairKey>& critical_pairs
+) -> GlobalRouteGuideExpandStats;
+
 auto expand_global_route_guides_one_hop(
     const GlobalChannelGraph& graph,
     RoutingProblemState& state,
     const std::Vector<PairKey>& critical_pairs
-) -> std::size_t;
+) -> GlobalRouteGuideExpandStats;
 
 auto all_global_route_guides_full(const RoutingProblemState& state, std::size_t channel_count)
     -> bool;

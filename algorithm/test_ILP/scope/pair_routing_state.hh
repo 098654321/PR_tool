@@ -29,6 +29,7 @@ struct RoutingProblemState {
     std::map<PairKey, std::size_t> pair_index_by_key;
     std::map<std::size_t, std::Vector<std::size_t>> pair_indices_by_net;
     std::map<std::size_t, int> feedback_failure_count_by_net;
+    std::map<PairKey, int> global_route_feedback_failure_count_by_pair;
 };
 
 auto init_routing_problem_state(const std::Vector<RoutingNet>& nets) -> RoutingProblemState;

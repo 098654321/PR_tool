@@ -76,6 +76,10 @@ TOB_BUMP_RE = re.compile(
 )
 WIRELENGTH_RE = re.compile(r"\bnet_wirelength=\d+\b")
 FAILED_RE = re.compile(r"Routing failed for this net: (?P<net_name>.+)$")
+UNSAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+PER_NET_DISPLAYS = frozenset({"TrackToBumps", "TracksToBumps"})
+PER_NET_NAME_PREFIXES = ("Pose", "Nege", "TrackToBumpsNet_")
+TRACK_TO_BUMPS_PREFIX = "TrackToBumpsNet_"
 LEGACY_BUMP_SOURCE_RE = re.compile(
     r"(?P<net_name>.+): Begin bump: '\{ row: (?P<row>\d+), col: (?P<col>\d+), "
     r"index: (?P<index>\d+) \}' to .+"
@@ -604,6 +608,96 @@ def draw_array(
     plt.close(fig)
 
 
+def net_output_stem(net_id: int, net_name: str) -> str:
+    safe_name = UNSAFE_FILENAME_RE.sub("_", net_name).strip("_")
+    return f"id{net_id}_{safe_name}"
+
+
+def is_per_net_target(path: RoutedPath) -> bool:
+    return path.net_name.startswith(PER_NET_NAME_PREFIXES)
+
+
+def render_path_group(
+    paths: list[RoutedPath],
+    rows: int,
+    cols: int,
+    output: Path,
+    label: str,
+) -> None:
+    if not paths:
+        raise ValueError(f"no {label} paths found to render")
+    draw_array(paths, {}, rows, cols, output)
+    print(
+        f"rendered {len(paths)} paths from "
+        f"{len({path.net_id for path in paths})} {label} to {output}"
+    )
+
+
+def render_per_net_routes(
+    paths: list[RoutedPath],
+    rows: int,
+    cols: int,
+    output_dir: Path,
+    name_prefixes: tuple[str, ...] = PER_NET_NAME_PREFIXES,
+) -> None:
+    selected = [path for path in paths if path.net_name.startswith(name_prefixes)]
+    if not selected:
+        raise ValueError(f"no nets starting with {name_prefixes} found to render per net")
+
+    by_net: dict[int, list[RoutedPath]] = {}
+    for path in selected:
+        by_net.setdefault(path.net_id, []).append(path)
+
+    for net_id in sorted(by_net):
+        net_paths = by_net[net_id]
+        output = output_dir / f"{net_output_stem(net_id, net_paths[0].net_name)}.png"
+        draw_array(net_paths, {}, rows, cols, output)
+        print(
+            f"rendered {len(net_paths)} paths from net id={net_id} "
+            f"name={net_paths[0].net_name!r} to {output}"
+        )
+    print(f"rendered {len(by_net)} per-net figures under {output_dir}")
+
+
+def render_case_vis(
+    paths: list[RoutedPath],
+    rows: int,
+    cols: int,
+    output_dir: Path,
+) -> None:
+    render_per_net_routes(
+        paths, rows, cols, output_dir, name_prefixes=(TRACK_TO_BUMPS_PREFIX,)
+    )
+    render_path_group(
+        [path for path in paths if path.net_name.startswith("Pose")],
+        rows,
+        cols,
+        output_dir / "all_pose_nets.png",
+        "Pose nets",
+    )
+    render_path_group(
+        [path for path in paths if path.net_name.startswith("Nege")],
+        rows,
+        cols,
+        output_dir / "all_nege_nets.png",
+        "Nege nets",
+    )
+    render_path_group(
+        [path for path in paths if path.net_name.startswith(TRACK_TO_BUMPS_PREFIX)],
+        rows,
+        cols,
+        output_dir / "all_track_to_bumps.png",
+        "TrackToBumpsNets",
+    )
+    render_path_group(
+        [path for path in paths if path.display == "SyncBus"],
+        rows,
+        cols,
+        output_dir / "all_sync_nets.png",
+        "SyncNets",
+    )
+
+
 def render_log(
     log: Path,
     rows: int,
@@ -647,9 +741,37 @@ def main() -> None:
     parser.add_argument("--col", type=int, help="number of COB columns")
     parser.add_argument(
         "--output", type=Path,
-        help="output PNG (default: tools/vis_sat/<log-stem>_routes.png)",
+        help="output PNG, or a directory when --per-net is set "
+             "(default: tools/vis_sat/<log-stem>_routes.png)",
+    )
+    parser.add_argument(
+        "--per-net", action="store_true",
+        help="write one PNG per Pose/Nege/TrackToBumps net into --output",
+    )
+    parser.add_argument(
+        "--case-vis", action="store_true",
+        help="write one PNG per TrackToBumpsNet plus combined Pose, Nege, "
+             "TrackToBumps, and SyncNet figures into --output",
     )
     args = parser.parse_args()
+
+    if args.case_vis or args.per_net:
+        if args.log is None or args.row is None or args.col is None or args.output is None:
+            parser.error(
+                "--case-vis/--per-net requires --log, --row, --col, and --output (directory)"
+            )
+        if args.row <= 0 or args.col <= 0:
+            parser.error("--row and --col must both be positive integers")
+        try:
+            paths = read_final_paths(args.log)
+            validate_paths(paths, args.row, args.col)
+            if args.case_vis:
+                render_case_vis(paths, args.row, args.col, args.output)
+            else:
+                render_per_net_routes(paths, args.row, args.col, args.output)
+        except (OSError, UnicodeError, ValueError) as error:
+            parser.error(str(error))
+        return
 
     if args.log is None:
         if args.row is not None or args.col is not None or args.output is not None:

@@ -270,9 +270,7 @@ auto compute_pair_delays(
             if (problem_state != nullptr) {
                 existing = find_pair_state(*problem_state, pair_key);
             }
-            if (existing == nullptr
-                || !existing->delays.empty()
-                || existing->global_route_distance_cap < 0) {
+            if (existing == nullptr || !existing->delays.empty()) {
                 initialize_global_bus_domain = false;
             }
 
@@ -284,7 +282,7 @@ auto compute_pair_delays(
             else if (net.kind == RoutingNetKind::PNnet) {
                 const int shortest = shortest_for(0, source_node, sink_node);
                 if (shortest < 0) {
-                    throw std::runtime_error(std::format(
+                    throw ScopedPathUnavailable(pair_key, std::format(
                         "net {} demand {} has no scoped path from any candidate source to sink {}",
                         net.net_id,
                         demand.demand_id,
@@ -296,7 +294,7 @@ auto compute_pair_delays(
             else {
                 const int shortest = shortest_for(source_index, source_node, sink_node);
                 if (shortest < 0) {
-                    throw std::runtime_error(std::format(
+                    throw ScopedPathUnavailable(pair_key, std::format(
                         "net {} demand {} has no scoped path from source {} to sink {}",
                         net.net_id,
                         demand.demand_id,
@@ -305,19 +303,6 @@ auto compute_pair_delays(
                 }
                 delay_values = {shortest};
                 member_shortest = shortest;
-            }
-
-            if (existing != nullptr
-                && existing->delays.empty()
-                && existing->global_route_distance_cap >= 0) {
-                const int upper = std::max(
-                    member_shortest,
-                    existing->global_route_distance_cap);
-                delay_values.clear();
-                delay_values.reserve(static_cast<std::size_t>(upper - member_shortest + 1));
-                for (int delay = member_shortest; delay <= upper; ++delay) {
-                    delay_values.push_back(delay);
-                }
             }
 
             auto pair = PairDelayInfo {
@@ -335,18 +320,10 @@ auto compute_pair_delays(
         if (net.is_sync_bus) {
             if (initialize_global_bus_domain) {
                 int bus_d_min = 0;
-                int bus_upper = 0;
                 for (const auto& pair : member_pairs) {
                     bus_d_min = std::max(bus_d_min, pair.member_shortest_delay);
-                    bus_upper = std::max(bus_upper, max_delay(pair.delays));
                 }
-                bus_upper = std::max(bus_upper, bus_d_min);
-                auto shared_delays = std::Vector<int> {};
-                shared_delays.reserve(
-                    static_cast<std::size_t>(bus_upper - bus_d_min + 1));
-                for (int delay = bus_d_min; delay <= bus_upper; ++delay) {
-                    shared_delays.push_back(delay);
-                }
+                const auto shared_delays = std::Vector<int> {bus_d_min};
                 for (auto& pair : member_pairs) {
                     set_pair_delay(pair, shared_delays);
                 }

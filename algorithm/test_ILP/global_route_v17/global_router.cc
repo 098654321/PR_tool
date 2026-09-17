@@ -1915,8 +1915,149 @@ auto solve_global_route_v17(
     return out;
 }
 
-auto apply_global_route_v17(
+auto net_is_tob_to_tob(const RoutingNet& net) -> bool {
+    return !net.sources.empty()
+        && !net.demands.empty()
+        && std::ranges::all_of(
+            net.sources,
+            [](const GraphNodeRef& endpoint) { return endpoint.kind == GraphNodeRef::Kind::Bump; })
+        && std::ranges::all_of(
+            net.demands,
+            [](const RoutingDemand& demand) {
+                return demand.sink.kind == GraphNodeRef::Kind::Bump;
+            });
+}
+
+auto global_route_distance_failures_before_scope_expand(const RoutingNet& net) -> int {
+    (void)net;
+    return 4;
+}
+
+namespace {
+
+auto tob_repair_channels(
+    const GlobalChannelGraph& graph,
+    const std::size_t tob,
+    const bool compact
+) -> std::set<GlobalChannelCoord> {
+    const auto tob_it = graph.tob_node_by_tob.find(tob);
+    if (tob_it == graph.tob_node_by_tob.end()) {
+        throw std::invalid_argument(std::format("V19 TOB repair has no terminal node for TOB {}", tob));
+    }
+    const auto& tob_node = graph.nodes[static_cast<std::size_t>(tob_it->second)];
+    if (tob_node.channel < 0
+        || static_cast<std::size_t>(tob_node.channel) >= graph.channels.size()) {
+        throw std::logic_error(std::format("V19 TOB repair has no anchor Channel for TOB {}", tob));
+    }
+
+    const auto central = graph.channels[static_cast<std::size_t>(tob_node.channel)];
+    const auto [first, second] = tob_pair_cob_coords(
+        tob / hardware::Interposer::TOB_ARRAY_WIDTH,
+        tob % hardware::Interposer::TOB_ARRAY_WIDTH);
+    const int top = static_cast<int>(std::min(first.row, second.row));
+    const int bottom = static_cast<int>(std::max(first.row, second.row));
+    const int col = static_cast<int>(first.col);
+    if (central != GlobalChannelCoord {1, bottom, col}) {
+        throw std::logic_error(std::format(
+            "V19 TOB repair anchor mismatch for TOB {}: got ({},{},{}), expected ({},{})",
+            tob, central.dir, central.row, central.col, bottom, col));
+    }
+
+    auto candidates = std::array<GlobalChannelCoord, 9> {
+        central,
+        GlobalChannelCoord {1, top, col},
+        GlobalChannelCoord {1, bottom + 1, col},
+        GlobalChannelCoord {0, top, col},
+        GlobalChannelCoord {0, top, col + 1},
+        GlobalChannelCoord {0, bottom, col},
+        GlobalChannelCoord {0, bottom, col + 1},
+        GlobalChannelCoord {1, bottom, col - 1},
+        GlobalChannelCoord {1, bottom, col + 1}};
+    const auto count = compact ? std::size_t {7} : candidates.size();
+    auto result = std::set<GlobalChannelCoord> {};
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto& channel = candidates[index];
+        if (graph.channel_id_by_coord.contains(channel)) {
+            result.insert(channel);
+        }
+    }
+    return result;
+}
+
+auto apply_tob_repair_templates(
+    const GlobalChannelGraph& graph,
+    RoutingProblemState& state,
+    const std::Vector<RoutingNet>& nets
+) -> void {
+    std::size_t patched_nets = 0;
+    std::size_t patched_tobs = 0;
+    std::size_t compact_tob_to_tob_pairs = 0;
+    std::size_t added_channels = 0;
+    for (const auto& net : nets) {
+        const auto indices = state.pair_indices_by_net.find(net.net_id);
+        if (indices == state.pair_indices_by_net.end()) {
+            continue;
+        }
+        auto before_union = std::set<GlobalChannelCoord> {};
+        for (const auto pair_index : indices->second) {
+            before_union.insert(
+                state.pairs[pair_index].allowed_channels.begin(),
+                state.pairs[pair_index].allowed_channels.end());
+        }
+        auto tobs = std::set<std::size_t> {};
+        for (const auto pair_index : indices->second) {
+            auto& pair = state.pairs[pair_index];
+            auto pair_tobs = std::set<std::size_t> {};
+            bool source_is_tob = false;
+            bool sink_is_tob = false;
+            if (pair.key.source_index < net.sources.size()) {
+                const auto& source = net.sources[pair.key.source_index];
+                if (source.kind == GraphNodeRef::Kind::Bump) {
+                    pair_tobs.insert(source.bump.TOB);
+                    source_is_tob = true;
+                }
+            }
+            const auto demand = std::find_if(
+                net.demands.begin(), net.demands.end(), [&](const RoutingDemand& candidate) {
+                    return candidate.demand_id == pair.key.demand_id;
+                });
+            if (demand != net.demands.end() && demand->sink.kind == GraphNodeRef::Kind::Bump) {
+                pair_tobs.insert(demand->sink.bump.TOB);
+                sink_is_tob = true;
+            }
+            const bool compact = source_is_tob && sink_is_tob;
+            if (compact) {
+                ++compact_tob_to_tob_pairs;
+            }
+            for (const auto tob : pair_tobs) {
+                const auto channels = tob_repair_channels(graph, tob, compact);
+                pair.allowed_channels.insert(channels.begin(), channels.end());
+                tobs.insert(tob);
+            }
+        }
+        if (!tobs.empty()) {
+            ++patched_nets;
+            patched_tobs += tobs.size();
+        }
+        auto after_union = std::set<GlobalChannelCoord> {};
+        for (const auto pair_index : indices->second) {
+            after_union.insert(
+                state.pairs[pair_index].allowed_channels.begin(),
+                state.pairs[pair_index].allowed_channels.end());
+        }
+        added_channels += after_union.size() - before_union.size();
+    }
+    debug::info_fmt(
+        "V19 TOB guide repair: nets={} tobs={} channels_added={} compact_tob_to_tob_pairs={}",
+        patched_nets,
+        patched_tobs,
+        added_channels,
+        compact_tob_to_tob_pairs);
+}
+
+auto apply_global_route_v17_impl(
     const GlobalRouteResult& route,
+    const GlobalChannelGraph* channel_graph,
     RoutingProblemState& state,
     std::Vector<RoutingNet>& nets
 ) -> void {
@@ -1955,16 +2096,58 @@ auto apply_global_route_v17(
             }
         }
     }
+    if (channel_graph != nullptr) {
+        apply_tob_repair_templates(*channel_graph, state, nets);
+    }
     apply_state_to_nets(state, nets);
+}
+
+} // namespace
+
+auto apply_global_route_v17(
+    const GlobalRouteResult& route,
+    RoutingProblemState& state,
+    std::Vector<RoutingNet>& nets
+) -> void {
+    apply_global_route_v17_impl(route, nullptr, state, nets);
+}
+
+auto apply_global_route_v17(
+    const GlobalRouteResult& route,
+    const GlobalChannelGraph& channel_graph,
+    RoutingProblemState& state,
+    std::Vector<RoutingNet>& nets
+) -> void {
+    apply_global_route_v17_impl(route, &channel_graph, state, nets);
 }
 
 auto expand_global_route_guides_one_hop(
     const GlobalChannelGraph& graph,
     RoutingProblemState& state,
     const std::Vector<PairKey>& critical_pairs
-) -> std::size_t {
-    std::size_t added = 0;
+) -> GlobalRouteGuideExpandStats {
+    auto out = GlobalRouteGuideExpandStats {};
+    auto unique_pairs = std::set<PairKey> {};
     for (const auto& key : critical_pairs) {
+        unique_pairs.insert(key);
+    }
+    auto affected_nets = std::set<std::size_t> {};
+    auto before_by_net = std::map<std::size_t, std::set<GlobalChannelCoord>> {};
+    for (const auto& key : unique_pairs) {
+        affected_nets.insert(key.net_id);
+    }
+    for (const auto net_id : affected_nets) {
+        const auto indices = state.pair_indices_by_net.find(net_id);
+        if (indices != state.pair_indices_by_net.end()) {
+            auto& before = before_by_net[net_id];
+            for (const auto pair_index : indices->second) {
+                before.insert(
+                    state.pairs[pair_index].allowed_channels.begin(),
+                    state.pairs[pair_index].allowed_channels.end());
+            }
+        }
+    }
+    for (const auto& key : unique_pairs) {
         auto* pair = find_pair_state(state, key);
         if (pair == nullptr || pair->allowed_channels.empty()) {
             continue;
@@ -1980,23 +2163,107 @@ auto expand_global_route_guides_one_hop(
                 expanded.insert(graph.channels[static_cast<std::size_t>(adjacent)]);
             }
         }
-        added += expanded.size() - pair->allowed_channels.size();
+        out.pair_local_added_channels += expanded.size() - pair->allowed_channels.size();
         pair->allowed_channels = std::move(expanded);
     }
-    return added;
+    for (const auto net_id : affected_nets) {
+        const auto indices = state.pair_indices_by_net.find(net_id);
+        if (indices == state.pair_indices_by_net.end()) {
+            continue;
+        }
+        auto after = std::set<GlobalChannelCoord> {};
+        for (const auto pair_index : indices->second) {
+            after.insert(
+                state.pairs[pair_index].allowed_channels.begin(),
+                state.pairs[pair_index].allowed_channels.end());
+        }
+        const auto before_size = before_by_net[net_id].size();
+        if (after.size() > before_size) {
+            out.added_channels += after.size() - before_size;
+            out.expanded_nets.insert(net_id);
+        }
+    }
+    return out;
+}
+
+auto apply_global_route_feedback_step(
+    const GlobalChannelGraph& graph,
+    RoutingProblemState& state,
+    const std::Vector<RoutingNet>& nets,
+    const std::Vector<PairKey>& critical_pairs
+) -> GlobalRouteGuideExpandStats {
+    auto unique_critical_pairs = std::set<PairKey> {
+        critical_pairs.begin(), critical_pairs.end()};
+    auto touched_net_ids = std::set<std::size_t> {};
+    for (const auto& key : unique_critical_pairs) {
+        if (auto* pair = find_pair_state(state, key); pair != nullptr) {
+            expand_pair_delay_one(*pair);
+            touched_net_ids.insert(key.net_id);
+        }
+    }
+    for (const auto net_id : touched_net_ids) {
+        sync_bus_after_expand(state, nets, net_id);
+    }
+
+    auto scope_pairs = std::Vector<PairKey> {};
+    for (const auto& key : unique_critical_pairs) {
+        auto* pair = find_pair_state(state, key);
+        if (pair == nullptr) {
+            continue;
+        }
+        const auto net_id = key.net_id;
+        const auto net_it = std::find_if(
+            nets.begin(), nets.end(), [&](const RoutingNet& net) { return net.net_id == net_id; });
+        if (net_it == nets.end()) {
+            continue;
+        }
+        const int threshold = global_route_distance_failures_before_scope_expand(*net_it);
+        const int failure_count = ++state.global_route_feedback_failure_count_by_pair[key];
+        const bool expand_scope = failure_count > threshold;
+        debug::info_fmt(
+            "V19 guide feedback: net={} demand={} source={} type={} pair_distance_failures={}/{} scope_expansion={}",
+            net_id,
+            key.demand_id,
+            key.source_index,
+            net_is_tob_to_tob(*net_it) ? "TOB-TOB-compact-repair" : "TOB-repair/other",
+            failure_count,
+            threshold,
+            expand_scope ? "yes" : "no");
+        if (!expand_scope) {
+            continue;
+        }
+        scope_pairs.push_back(key);
+        state.global_route_feedback_failure_count_by_pair[key] = 0;
+    }
+
+    auto out = expand_global_route_guides_one_hop(graph, state, scope_pairs);
+    debug::info_fmt(
+        "V19 guide feedback scope expansion: nets={} pair_local_channels_added={} net_union_channels_added={}",
+        out.expanded_nets.size(),
+        out.pair_local_added_channels,
+        out.added_channels);
+    return out;
 }
 
 auto all_global_route_guides_full(
     const RoutingProblemState& state,
     const std::size_t channel_count
 ) -> bool {
-    return !state.pairs.empty()
-        && std::all_of(
-            state.pairs.begin(),
-            state.pairs.end(),
-            [&](const PairRoutingState& pair) {
-                return pair.allowed_channels.size() >= channel_count;
-            });
+    if (state.pairs.empty()) {
+        return false;
+    }
+    for (const auto& [_, indices] : state.pair_indices_by_net) {
+        auto channels = std::set<GlobalChannelCoord> {};
+        for (const auto pair_index : indices) {
+            channels.insert(
+                state.pairs[pair_index].allowed_channels.begin(),
+                state.pairs[pair_index].allowed_channels.end());
+        }
+        if (channels.size() < channel_count) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace PR_tool

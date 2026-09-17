@@ -13,12 +13,15 @@ namespace PR_tool {
 struct PnSourcePreselectionStats {
     std::size_t pn_nets{0};
     std::size_t pn_bumps{0};
+    std::size_t pn_01_ports{0};
     std::size_t candidates{0};
     std::size_t source_activations{0};
     std::size_t overflow_vars{0};
     std::size_t constraints{0};
     std::size_t source_trees{0};
     std::size_t fixed_tnet_bumps{0};
+    double lambda_a_base{1.0};
+    double k_hat{1.0};
     double lambda_a{1.0};
     double lambda_r{1.0};
     double alpha{0.0};

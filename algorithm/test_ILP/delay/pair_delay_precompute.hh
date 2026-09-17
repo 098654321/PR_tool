@@ -6,9 +6,20 @@
 #include "scope/pair_routing_state.hh"
 
 #include <cstdint>
+#include <stdexcept>
 #include <std/collection.hh>
+#include <string>
+#include <utility>
 
 namespace PR_tool {
+
+class ScopedPathUnavailable final : public std::runtime_error {
+public:
+    ScopedPathUnavailable(PairKey pair_key, std::string message)
+        : std::runtime_error(std::move(message)), pair_key(pair_key) {}
+
+    PairKey pair_key;
+};
 
 struct PairDelayInfo {
     std::size_t net_id{0};

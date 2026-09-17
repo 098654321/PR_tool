@@ -11,7 +11,7 @@ namespace PR_tool {
 struct UnifiedSatSolveOptions {
     CadicalDiagnosticsOptions cadical {};
     int verbose_level{0};
-    std::size_t max_feedback_rounds{64};
+    std::size_t max_feedback_rounds{200};
     int initial_scope_pad{0};
     int initial_delay_pad{0};
     bool enable_z3_optimize{false};

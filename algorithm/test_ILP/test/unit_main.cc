@@ -978,6 +978,27 @@ auto test_v18_pn_preselection_uses_unit_aware_rudy() -> void {
         "unit-aware RUDY must prefer the equally distant unit without fixed Tnet demand");
 }
 
+auto test_v18_pn_preselection_scales_lambda_a_by_k_hat() -> void {
+    const auto source0 = track_ref(
+        0, 0, hardware::TrackDirection::Horizontal, track_from_unit_inner(0, 0));
+    const auto source1 = track_ref(
+        0, 0, hardware::TrackDirection::Horizontal, track_from_unit_inner(1, 0));
+    const auto nets = std::Vector<RoutingNet> {
+        pn_preselection_net(0, {source0, source1}, {bump_ref(0, 0, 0)}),
+        pn_preselection_net(1, {source0, source1}, {bump_ref(0, 0, 1)})};
+    const auto detailed = build_unified_graph(nullptr, nets);
+    const auto global = build_global_channel_graph(detailed, nets);
+    const auto selected = preselect_pn_sources_v18(global, nets, 0);
+    require(selected.ok, "V18 PN preselection k_hat fixture must be feasible");
+    require(
+        selected.stats.pn_bumps == 2
+            && selected.stats.pn_01_ports == 2
+            && selected.stats.k_hat == 2.0
+            && selected.stats.lambda_a_base > 0.0
+            && selected.stats.lambda_a == selected.stats.lambda_a_base * selected.stats.k_hat,
+        "V18 PN lambda_A must use all PN bumps and deduplicate physical ports across PNnets");
+}
+
 auto test_v18_pn_preselection_reserves_fixed_tnet_bank_residue_load() -> void {
     const auto fixed_source = track_ref(
         1, 0, hardware::TrackDirection::Horizontal, track_from_unit_inner(0, 0));
@@ -1763,7 +1784,7 @@ auto test_v17_unit_assumption_is_traceable() -> void {
         "a unit conflict must identify only the releasable gamma assumption in the core");
 }
 
-auto test_v17_distance_domain_uses_global_cap() -> void {
+auto test_v17_distance_domain_starts_at_scoped_minimum() -> void {
     const auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}, {1, 3}});
     auto nets = std::Vector<RoutingNet> {synthetic_net(0, {0}, {{3, {0}}})};
     auto state = init_routing_problem_state(nets);
@@ -1771,11 +1792,11 @@ auto test_v17_distance_domain_uses_global_cap() -> void {
     const auto scopes = build_all_scopes(graph, nets);
     const auto delays = compute_pair_delays(graph, nets, scopes, &state);
     require(
-        delays.pairs[0].delays == std::Vector<int>({2, 3}),
-        "V17 initial distance domain must be the continuous interval from d_min through L_pair");
+        delays.pairs[0].delays == std::Vector<int>({2}),
+        "V17 initial global-guide distance domain must contain only scoped d_min");
 }
 
-auto test_v17_bus_distance_domain_uses_shared_bounds() -> void {
+auto test_v17_bus_distance_domain_starts_at_shared_minimum() -> void {
     const auto graph = synthetic_graph(
         7, {{0, 1}, {1, 2}, {3, 4}, {4, 5}, {5, 6}});
     auto bus = synthetic_net(0, {0, 3}, {{2, {0}}, {6, {1}}});
@@ -1786,10 +1807,232 @@ auto test_v17_bus_distance_domain_uses_shared_bounds() -> void {
     state.pairs[1].global_route_distance_cap = 5;
     const auto scopes = build_all_scopes(graph, nets);
     const auto delays = compute_pair_delays(graph, nets, scopes, &state);
-    const auto expected = std::Vector<int>({3, 4, 5});
+    const auto expected = std::Vector<int>({3});
     require(
         delays.pairs[0].delays == expected && delays.pairs[1].delays == expected,
-        "V17 bus members must share {max d_min,...,max L_pair}");
+        "V17 bus members must share singleton {max member d_min}");
+}
+
+auto test_scoped_path_error_identifies_pair() -> void {
+    const auto graph = synthetic_graph(3, {{0, 1}});
+    const auto nets = std::Vector<RoutingNet> {synthetic_net(17, {0}, {{2, {0}}})};
+    const auto scopes = std::Vector<UnifiedSatNetScope> {synthetic_scope(graph, 17)};
+    try {
+        (void)compute_pair_delays(graph, nets, scopes);
+        require(false, "disconnected scoped pair must fail delay precompute");
+    }
+    catch (const ScopedPathUnavailable& error) {
+        require(
+            error.pair_key == PairKey {17, 0, 0},
+            "scoped-path failure must identify only the unreachable pair");
+    }
+}
+
+auto test_v19_tob_repair_template_and_shared_guide() -> void {
+    const auto detailed = build_unified_graph(nullptr, {});
+    const auto channel_graph = build_global_channel_graph(detailed, {});
+    constexpr std::size_t tob = 5; // TOB(1,1), between COB(2,3) and COB(3,3).
+    const auto [first, second] = tob_pair_cob_coords(1, 1);
+    require(
+        (first == hardware::COBCoord {3, 3} && second == hardware::COBCoord {2, 3})
+            || (first == hardware::COBCoord {2, 3} && second == hardware::COBCoord {3, 3}),
+        "TOB(1,1) must be located between COB(2,3) and COB(3,3)");
+
+    auto net = RoutingNet {};
+    net.net_id = 31;
+    net.kind = RoutingNetKind::Tnet;
+    net.sources = {track_ref(0, 0)};
+    net.demands = {
+        RoutingDemand {0, bump_ref(tob, 0, 0), {0}, true},
+        RoutingDemand {1, bump_ref(tob, 0, 1), {0}, true}};
+    auto nets = std::Vector<RoutingNet> {net};
+    auto state = init_routing_problem_state(nets);
+    const auto central = GlobalChannelCoord {1, 3, 3};
+    const auto branch = GlobalChannelCoord {0, 0, 1};
+    auto route = GlobalRouteResult {};
+    route.ok = true;
+    route.pair_channels.emplace(state.pairs[0].key, std::set {central});
+    route.pair_channels.emplace(state.pairs[1].key, std::set {branch});
+    apply_global_route_v17(route, channel_graph, state, nets);
+
+    const auto repair = std::set<GlobalChannelCoord> {
+        {1, 3, 3}, {1, 2, 3}, {1, 4, 3},
+        {0, 2, 3}, {0, 2, 4}, {0, 3, 3}, {0, 3, 4},
+        {1, 3, 2}, {1, 3, 4}};
+    auto expected = repair;
+    expected.insert(branch);
+    auto second_pair_expected = repair;
+    second_pair_expected.insert(branch);
+    require(
+        state.pairs[0].allowed_channels == repair
+            && state.pairs[1].allowed_channels == second_pair_expected
+            && nets[0].global_route_channels == expected,
+        "V19 multi-pin repair must preserve pair-local guides and expose their union to SAT");
+    require(
+        !expected.contains(GlobalChannelCoord {1, 1, 3}),
+        "the repair template must include only its upper boundary Channel, not an extra outer COB side");
+
+    auto tob_to_tob = two_pin_net(
+        32, RoutingNetKind::Bnet, bump_ref(tob, 0, 0), bump_ref(tob, 0, 1));
+    auto tob_nets = std::Vector<RoutingNet> {tob_to_tob};
+    auto tob_state = init_routing_problem_state(tob_nets);
+    auto tob_route = GlobalRouteResult {};
+    tob_route.ok = true;
+    tob_route.pair_channels.emplace(tob_state.pairs[0].key, std::set {central});
+    apply_global_route_v17(tob_route, channel_graph, tob_state, tob_nets);
+    const auto compact_repair = std::set<GlobalChannelCoord> {
+        {1, 3, 3}, {1, 2, 3}, {1, 4, 3},
+        {0, 2, 3}, {0, 2, 4}, {0, 3, 3}, {0, 3, 4}};
+    require(
+        net_is_tob_to_tob(tob_nets[0])
+            && tob_state.pairs[0].allowed_channels == compact_repair
+            && compact_repair.size() == 7
+            && !compact_repair.contains(GlobalChannelCoord {1, 3, 2})
+            && !compact_repair.contains(GlobalChannelCoord {1, 3, 4}),
+        "V19 TOB-TOB pair must receive the compact seven-Channel TOB repair template");
+
+    auto boundary = RoutingNet {};
+    boundary.net_id = 33;
+    boundary.kind = RoutingNetKind::Tnet;
+    boundary.sources = {track_ref(0, 0)};
+    boundary.demands = {RoutingDemand {0, bump_ref(0, 0, 0), {0}, true}};
+    auto boundary_nets = std::Vector<RoutingNet> {boundary};
+    auto boundary_state = init_routing_problem_state(boundary_nets);
+    auto boundary_route = GlobalRouteResult {};
+    boundary_route.ok = true;
+    boundary_route.pair_channels.emplace(
+        boundary_state.pairs[0].key, std::set {GlobalChannelCoord {1, 1, 0}});
+    apply_global_route_v17(boundary_route, channel_graph, boundary_state, boundary_nets);
+    const auto boundary_expected = std::set<GlobalChannelCoord> {
+        {1, 1, 0}, {1, 0, 0}, {1, 2, 0}, {0, 0, 0},
+        {0, 0, 1}, {0, 1, 0}, {0, 1, 1}, {1, 1, 1}};
+    require(
+        boundary_state.pairs[0].allowed_channels == boundary_expected,
+        "V19 boundary TOB repair must retain boundary Channels and clip the nonexistent outer side");
+
+    auto tob_bus = RoutingNet {};
+    tob_bus.net_id = 34;
+    tob_bus.kind = RoutingNetKind::Bnet;
+    tob_bus.is_sync_bus = true;
+    tob_bus.sources = {bump_ref(tob, 0, 0), bump_ref(6, 0, 0)};
+    tob_bus.demands = {
+        RoutingDemand {0, bump_ref(7, 0, 0), {0}, true},
+        RoutingDemand {1, bump_ref(8, 0, 0), {1}, true}};
+    auto bus_nets = std::Vector<RoutingNet> {tob_bus};
+    auto bus_state = init_routing_problem_state(bus_nets);
+    auto bus_route = GlobalRouteResult {};
+    bus_route.ok = true;
+    bus_route.pair_channels.emplace(bus_state.pairs[0].key, std::set {central});
+    bus_route.pair_channels.emplace(bus_state.pairs[1].key, std::set {branch});
+    apply_global_route_v17(bus_route, channel_graph, bus_state, bus_nets);
+    require(
+        net_is_tob_to_tob(bus_nets[0])
+            && bus_state.pairs[0].allowed_channels != bus_state.pairs[1].allowed_channels
+            && bus_state.pairs[0].allowed_channels.contains(central)
+            && bus_state.pairs[1].allowed_channels.contains(branch)
+            && bus_nets[0].global_route_channels.size() > 2,
+        "all-TOB SyncBus must compact-repair each pair locally before exposing their union to SAT");
+}
+
+auto test_v19_global_guide_feedback_thresholds_and_union() -> void {
+    const auto c0 = GlobalChannelCoord {0, 0, 1};
+    const auto c1 = GlobalChannelCoord {1, 1, 1};
+    const auto c2 = GlobalChannelCoord {0, 2, 1};
+    const auto channel_graph = synthetic_channel_graph(
+        {c0, c1, c2},
+        {global_cob_node(0, 0), global_cob_node(0, 1), global_cob_node(1, 1)},
+        {{0, 1, 0}, {1, 2, 1}});
+
+    auto net = RoutingNet {};
+    net.net_id = 41;
+    net.kind = RoutingNetKind::Tnet;
+    net.sources = {track_ref(0, 0)};
+    net.demands = {
+        RoutingDemand {0, bump_ref(0, 0, 0), {0}, true},
+        RoutingDemand {1, bump_ref(1, 0, 0), {0}, true}};
+    auto unrelated = synthetic_net(43, {0}, {{1, {0}}});
+    auto nets = std::Vector<RoutingNet> {net, unrelated};
+    auto state = init_routing_problem_state(nets);
+    state.pairs[0].allowed_channels = {c0};
+    state.pairs[1].allowed_channels = {c2};
+    state.pairs[2].allowed_channels = {c2};
+    state.pairs[0].delays = {7};
+    state.pairs[1].delays = {9};
+    state.pairs[2].delays = {5};
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto stats = apply_global_route_feedback_step(
+            channel_graph, state, nets, {state.pairs[0].key});
+        require(stats.expanded_nets.empty(), "ordinary net must wait four distance-only extensions");
+    }
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto stats = apply_global_route_feedback_step(
+            channel_graph, state, nets, {state.pairs[1].key});
+        require(
+            stats.expanded_nets.empty(),
+            "different demands must not pool their distance failures");
+    }
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto stats = apply_global_route_feedback_step(
+            channel_graph, state, nets, {state.pairs[0].key});
+        require(stats.expanded_nets.empty(), "the same pair must get four distance-only extensions");
+    }
+    const auto normal_stats = apply_global_route_feedback_step(
+        channel_graph, state, nets, {state.pairs[0].key});
+    const auto expected = std::set<GlobalChannelCoord> {c0, c1, c2};
+    apply_state_to_nets(state, nets);
+    require(
+        normal_stats.expanded_nets == std::set<std::size_t> {41}
+            && normal_stats.pair_local_added_channels == 1
+            && normal_stats.added_channels == 1
+            && state.pairs[0].allowed_channels == std::set<GlobalChannelCoord>({c0, c1})
+            && state.pairs[1].allowed_channels == std::set<GlobalChannelCoord> {c2}
+            && nets[0].global_route_channels == expected
+            && state.pairs[0].delays == std::Vector<int>({7, 8, 9, 10, 11, 12})
+            && state.pairs[1].delays == std::Vector<int>({9, 10, 11})
+            && state.global_route_feedback_failure_count_by_pair[state.pairs[0].key] == 0
+            && state.global_route_feedback_failure_count_by_pair[state.pairs[1].key] == 2
+            && state.pairs[2].allowed_channels == std::set<GlobalChannelCoord> {c2}
+            && state.pairs[2].delays == std::Vector<int> {5},
+        "the fifth failure of one pair must expand only its guide and expose the net union");
+
+    auto overlap_state = init_routing_problem_state({net});
+    overlap_state.pairs[0].allowed_channels = {c0};
+    overlap_state.pairs[1].allowed_channels = {c1};
+    const auto overlap_graph = synthetic_channel_graph(
+        {c0, c1, c2},
+        {global_cob_node(0, 0), global_cob_node(0, 1),
+         global_cob_node(0, 2), global_cob_node(0, 3)},
+        {{0, 1, 0}, {1, 2, 1}, {2, 3, 2}});
+    const auto overlap_first = expand_global_route_guides_one_hop(
+        overlap_graph, overlap_state, {overlap_state.pairs[0].key});
+    const auto overlap_second = expand_global_route_guides_one_hop(
+        overlap_graph, overlap_state, {overlap_state.pairs[0].key});
+    require(
+        overlap_first.pair_local_added_channels == 1
+            && overlap_first.added_channels == 0
+            && overlap_second.pair_local_added_channels == 1
+            && overlap_second.added_channels == 1
+            && overlap_state.pairs[0].allowed_channels
+                == std::set<GlobalChannelCoord>({c0, c1, c2}),
+        "pair-local growth must continue when its first new Channel already exists in the net union");
+
+    auto tob_to_tob = two_pin_net(
+        42, RoutingNetKind::Bnet, bump_ref(0, 0, 0), bump_ref(1, 0, 0));
+    const auto tob_nets = std::Vector<RoutingNet> {tob_to_tob};
+    auto tob_state = init_routing_problem_state(tob_nets);
+    tob_state.pairs[0].allowed_channels = {c0};
+    tob_state.pairs[0].delays = {3};
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        const auto stats = apply_global_route_feedback_step(
+            channel_graph, tob_state, tob_nets, {tob_state.pairs[0].key});
+        require(stats.expanded_nets.empty(), "TOB-TOB net must wait four distance-only extensions");
+    }
+    const auto tob_stats = apply_global_route_feedback_step(
+        channel_graph, tob_state, tob_nets, {tob_state.pairs[0].key});
+    require(
+        tob_stats.expanded_nets == std::set<std::size_t> {42}
+            && tob_state.pairs[0].delays == std::Vector<int>({3, 4, 5, 6, 7, 8}),
+        "the fifth TOB-TOB failure must expand scope after preserving its fifth distance extension");
 }
 
 auto test_v17_pn_scope_retains_selected_union_only() -> void {
@@ -4108,6 +4351,7 @@ auto main() -> int {
         test_cli_output_dir_option();
         test_v18_pn_preselection_reserves_fixed_tnet_unit_load();
         test_v18_pn_preselection_uses_unit_aware_rudy();
+        test_v18_pn_preselection_scales_lambda_a_by_k_hat();
         test_v18_pn_preselection_reserves_fixed_tnet_bank_residue_load();
         test_v17_global_route_two_pin_and_fixed_unit();
         test_v17_estimated_wirelength_deduplicates_multi_terminal_channels();
@@ -4122,8 +4366,11 @@ auto main() -> int {
         test_v17_rejects_tob_necessary_condition_overflow();
         test_v17_guide_scope_unit_release();
         test_v17_unit_assumption_is_traceable();
-        test_v17_distance_domain_uses_global_cap();
-        test_v17_bus_distance_domain_uses_shared_bounds();
+        test_v17_distance_domain_starts_at_scoped_minimum();
+        test_v17_bus_distance_domain_starts_at_shared_minimum();
+        test_scoped_path_error_identifies_pair();
+        test_v19_tob_repair_template_and_shared_guide();
+        test_v19_global_guide_feedback_thresholds_and_union();
         test_v17_pn_scope_retains_selected_union_only();
         test_v18_guided_cadical_smoke();
         test_initial_search_padding_scope();

@@ -24,6 +24,11 @@ namespace {
 constexpr std::size_t kUnitCount = 16;
 constexpr std::size_t kResidueCount = 8;
 constexpr double kRudyWeight = 1.0;
+// Empirical fraction of all physical 01 ports available to one Pose/Nege
+// polarity.  Adjust this single parameter when changing the source-tree
+// average-load estimate used by lambda_A.
+constexpr double kPnSourceTreePortFractionPerPolarity = 0.5;
+static_assert(kPnSourceTreePortFractionPerPolarity > 0.0);
 
 struct GridPoint {
     int row{0};
@@ -278,6 +283,7 @@ auto preselect_pn_sources_v18(
         auto base_demand = std::Vector<double>(cell_unit_count, 0.0);
         auto candidates = std::Vector<Candidate>{};
         auto candidates_by_demand = std::Vector<std::Vector<std::size_t>>{};
+        auto pn_01_ports = std::set<GlobalPortKey>{};
 
         auto fixed_unit_load = std::map<std::pair<std::size_t, std::size_t>, std::size_t>{};
         auto fixed_residue_load =
@@ -287,6 +293,13 @@ auto preselect_pn_sources_v18(
             const auto& net = nets[net_index];
             if (net.kind == RoutingNetKind::PNnet) {
                 ++out.stats.pn_nets;
+                for (const auto& source : net.sources) {
+                    if (source.kind != GraphNodeRef::Kind::Track) {
+                        throw std::invalid_argument(
+                            "V18 PN preselection requires physical Track sources");
+                    }
+                    pn_01_ports.insert(port_key(source));
+                }
                 for (std::size_t demand_index = 0; demand_index < net.demands.size();
                      ++demand_index) {
                     const auto& demand = net.demands[demand_index];
@@ -383,7 +396,16 @@ auto preselect_pn_sources_v18(
         return out;
 #else
         out.stats.candidates = candidates.size();
-        out.stats.lambda_a = median_positive_distance_gap(candidates, candidates_by_demand);
+        out.stats.pn_01_ports = pn_01_ports.size();
+        if (out.stats.pn_01_ports == 0) {
+            throw std::logic_error("V18 PN preselection has no physical 01-port source");
+        }
+        out.stats.lambda_a_base =
+            median_positive_distance_gap(candidates, candidates_by_demand);
+        out.stats.k_hat = static_cast<double>(out.stats.pn_bumps)
+            / (static_cast<double>(out.stats.pn_01_ports)
+               * kPnSourceTreePortFractionPerPolarity);
+        out.stats.lambda_a = out.stats.lambda_a_base * out.stats.k_hat;
 
         auto nearest_reference = base_demand;
         for (const auto& demand_candidates : candidates_by_demand) {
@@ -539,18 +561,24 @@ auto preselect_pn_sources_v18(
         }
         out.stats.build_ms =
             std::chrono::duration_cast<std::chrono::milliseconds>(build_end - build_begin).count();
-        debug::info_fmt("V18 PN source preselection model built: PNnets={} bumps={} "
+        debug::info_fmt("V18 PN source preselection model built: PNnets={} bumps={} pn_01_ports={} "
                         "candidates={} A={} O={} vars={} constraints={} fixed_Tnet_bumps={} "
-                        "lambda_A={:.3f} lambda_R={:.3f} alpha={:.6f} build_ms={}",
-                        out.stats.pn_nets, out.stats.pn_bumps, out.stats.candidates,
+                        "lambda_A_base={:.3f} k_hat={:.3f} lambda_A={:.3f} "
+                        "lambda_R={:.3f} alpha={:.6f} build_ms={}",
+                        out.stats.pn_nets, out.stats.pn_bumps, out.stats.pn_01_ports,
+                        out.stats.candidates,
                         out.stats.source_activations, out.stats.overflow_vars, mip.variables(),
-                        out.stats.constraints, out.stats.fixed_tnet_bumps, out.stats.lambda_a,
+                        out.stats.constraints, out.stats.fixed_tnet_bumps, out.stats.lambda_a_base,
+                        out.stats.k_hat, out.stats.lambda_a,
                         out.stats.lambda_r, out.stats.alpha, out.stats.build_ms);
         if (verbose_level >= 1) {
             debug::info("========== V18 PN source preselection ILP stats (-v) ==========");
             debug::info_fmt("  Y   (bump/unit/source choice) : {}", candidates.size());
             debug::info_fmt("  A   (physical source-tree)    : {}", activations.size());
             debug::info_fmt("  O   (cell/unit overflow)      : {}", out.stats.overflow_vars);
+            debug::info_fmt("  PN physical 01 ports           : {}", out.stats.pn_01_ports);
+            debug::info_fmt("  lambda_A base / k_hat / final  : {:.3f} / {:.3f} / {:.3f}",
+                            out.stats.lambda_a_base, out.stats.k_hat, out.stats.lambda_a);
             debug::info_fmt("  [1] Y exactly-one             : {}", exactly_one_constraints);
             debug::info_fmt("  [2] Y/A activation            : {}", activation_constraints);
             debug::info_fmt("  [3] TOB unit <= 8             : {}", tob_unit_constraints);
