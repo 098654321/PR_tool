@@ -7,6 +7,7 @@
 #include <debug/debug.hh>
 #include <parse/reader/module.hh>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -19,7 +20,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [--time-limit MIN] [-s S] [-d D] [--z3-optimize | --global-route-v17 | --global-route-v18]";
+    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [--time-limit MIN] [-s S] [-d D] [--z3-optimize | --global-route-v17 | --global-route-v18 [--ilp-optimize | --maze-optimize]]";
 
 auto get_peak_rss_mb() -> double {
     rusage usage {};
@@ -70,11 +71,13 @@ auto run_main(int argc, char** argv) -> int {
     options.enable_z3_optimize = cli.enable_z3_optimize;
     options.enable_global_route_v17 = cli.enable_global_route_v17;
     options.enable_global_route_v18 = cli.enable_global_route_v18;
+    options.enable_post_sat_ilp = cli.enable_post_sat_ilp;
+    options.enable_post_sat_maze = cli.enable_post_sat_maze;
     options.highs_log_path = (log_dir / "highs.log").string();
     options.highs_time_limit_minutes = cli.highs_time_limit_minutes;
     if (cli.highs_time_limit_minutes != 0) {
         debug::info_fmt(
-            "HiGHS Global Routing time limit: {} min",
+            "HiGHS per-stage time limit: {} min",
             cli.highs_time_limit_minutes);
     }
     if (cli.enable_sat_log) {
@@ -101,6 +104,12 @@ auto run_main(int argc, char** argv) -> int {
         debug::info(
             "v18 flow enabled: HiGHS Channel/COBUnit capacity cuts (no W) -> guided CaDiCaL pure SAT");
     }
+    if (cli.enable_post_sat_ilp) {
+        debug::info("V20 post-SAT ILP refinement enabled by --ilp-optimize");
+    }
+    else if (cli.enable_post_sat_maze) {
+        debug::info("V20 post-SAT local maze/RRR refinement enabled by --maze-optimize");
+    }
     else if (cli.enable_global_route_v17) {
         debug::info(
             "v17 flow enabled: HiGHS Channel/COBUnit global routing -> guided Z3 weighted partial MaxSAT");
@@ -114,8 +123,14 @@ auto run_main(int argc, char** argv) -> int {
     debug::info_fmt("Process peak RSS: {:.2f} MB", peak_rss_mb);
 
     const auto run_end = std::chrono::steady_clock::now();
-    const auto run_ms = std::chrono::duration_cast<std::chrono::milliseconds>(run_end - run_begin).count();
-    debug::info_fmt("run_main total elapsed: {} ms", run_ms);
+    const auto raw_run_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(run_end - run_begin).count();
+    const auto run_ms = std::max(0LL, raw_run_ms - result.excluded_diagnostic_ms);
+    debug::info_fmt(
+        "run_main total elapsed: {} ms (raw={} excluded_diagnostic_ms={})",
+        run_ms,
+        raw_run_ms,
+        result.excluded_diagnostic_ms);
 
     if (!result.ok) {
         debug::error_fmt("unified SAT routing failed: {}", result.message);
@@ -139,6 +154,35 @@ auto run_main(int argc, char** argv) -> int {
         result.global_route_total_ms,
         result.global_route_build_ms,
         result.global_route_solve_ms);
+    debug::info_fmt(
+        "post-SAT ILP: attempted={} accepted={} status={} parents={} segments={} vars={} constraints={} wirelength={}->{} objective={:.0f} bound={:.3f} gap={:.6f} total_ms={} build_ms={} solve_ms={}",
+        result.post_sat_ilp_attempted,
+        result.post_sat_ilp_accepted,
+        result.post_sat_ilp_attempted ? result.post_sat_ilp_status : "n/a",
+        result.post_sat_ilp_parents,
+        result.post_sat_ilp_segments,
+        result.post_sat_ilp_variables,
+        result.post_sat_ilp_constraints,
+        result.post_sat_ilp_baseline_wirelength,
+        result.post_sat_ilp_wirelength,
+        result.post_sat_ilp_objective,
+        result.post_sat_ilp_bound,
+        result.post_sat_ilp_gap,
+        result.post_sat_ilp_total_ms,
+        result.post_sat_ilp_build_ms,
+        result.post_sat_ilp_solve_ms);
+    debug::info_fmt(
+        "post-SAT maze: attempted={} accepted={} status={} triggers={} accepted_triggers={} rrr_iterations={} rerouted_owners={} wirelength={}->{} total_ms={}",
+        result.post_sat_maze_attempted,
+        result.post_sat_maze_accepted,
+        result.post_sat_maze_attempted ? result.post_sat_maze_status : "n/a",
+        result.post_sat_maze_triggers,
+        result.post_sat_maze_accepted_triggers,
+        result.post_sat_maze_rrr_iterations,
+        result.post_sat_maze_rerouted_owners,
+        result.post_sat_maze_baseline_wirelength,
+        result.post_sat_maze_wirelength,
+        result.post_sat_maze_total_ms);
     debug::info_fmt(
         "routing result: total_wirelength={}",
         result.total_wirelength);

@@ -1,9 +1,12 @@
 #include "sat/routing_feedback.hh"
 
 #include "delay/pair_delay_precompute.hh"
+#include "global_route_v17/global_guide_log.hh"
 #include "global_route_v17/pn_source_preselection.hh"
 #include "global_route_v17/global_router.hh"
 #include "graph/unified_routing_graph.hh"
+#include "post_sat_ilp/post_sat_ilp.hh"
+#include "post_sat_rrr/post_sat_rrr.hh"
 #include "sat/routing_path_log.hh"
 #include "sat/routing_round_diagnostics.hh"
 #include "sat/routing_solution_validate.hh"
@@ -245,6 +248,9 @@ auto solve_with_feedback(
 
     auto global_channel_graph = GlobalChannelGraph {};
     auto global_route = std::optional<GlobalRouteResult> {};
+    // Kept outside SatRoutingResult because SAT extraction replaces the result.
+    // stamp_sat_timing writes it back on every success/failure return path.
+    long long global_guide_log_ms = 0;
     const auto stamp_global_route = [&](SatRoutingResult& result) {
         if (!global_route.has_value()) {
             return;
@@ -298,6 +304,8 @@ auto solve_with_feedback(
             return out;
         }
         apply_global_route_v17(*global_route, global_channel_graph, problem_state, nets);
+        global_guide_log_ms = log_global_route_guides(
+            *global_route, global_channel_graph, problem_state, nets);
         debug::info_fmt(
             "V18 guide initialization: guided_pairs={} assigned_units={} objective_channels={}",
             global_route->pair_channels.size(),
@@ -328,6 +336,7 @@ auto solve_with_feedback(
         if (result.sat_pre_ms < 0) {
             result.sat_pre_ms = 0;
         }
+        result.excluded_diagnostic_ms = global_guide_log_ms;
         stamp_global_route(result);
     };
 
@@ -454,7 +463,6 @@ auto solve_with_feedback(
                 out.solve_ms = total_solve_ms;
                 out.feedback_rounds = round;
                 out.total_wirelength = total_wirelength(graph, out);
-                log_routing_paths(graph, nets, out);
                 const auto validation = validate_routing_solution(graph, nets, model, session, out);
                 log_validation_report(validation, options.verbose_level);
                 if (!validation.pass) {
@@ -477,9 +485,30 @@ auto solve_with_feedback(
                     out.solve_ms,
                     out.total_wirelength,
                     round);
-                log_non_shortest_nets(interposer, graph, nets, delays, out);
                 stamp_sat_timing(out);
                 log_feedback_round_end(round, FeedbackRoundStatus::SatSuccess);
+                if (options.enable_post_sat_ilp) {
+                    out = optimize_post_sat_routes(
+                        graph,
+                        nets,
+                        scopes,
+                        out,
+                        PostSatIlpOptions {
+                            options.verbose_level,
+                            0,
+                            options.highs_log_path,
+                            options.highs_time_limit_minutes});
+                }
+                else if (options.enable_post_sat_maze) {
+                    out = optimize_post_sat_routes_rrr(
+                        graph,
+                        nets,
+                        scopes,
+                        out,
+                        PostSatRrrOptions {options.verbose_level});
+                }
+                log_routing_paths(graph, nets, out);
+                log_non_shortest_nets(interposer, graph, nets, delays, out);
                 return out;
             }
 

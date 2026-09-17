@@ -68,6 +68,11 @@ struct RoutingNet {
     IlpBoundingBox scope_bbox {};
     bool has_scope_bbox{false};
     bool is_sync_bus{false};
+    // V18 fixed-source tree transformed from a Pose/Nege PNnet.
+    bool pn_source_tree{false};
+    // V20: eligible for the fixed-source post-SAT ILP refinement. Set only for
+    // TrackToBump(s) and PN source trees; normalized BumpToTrack stays frozen.
+    bool post_sat_ilp_target{false};
     // V17 only: non-rectangular Channel guide shared by this normalized net.
     bool has_global_route_guide{false};
     std::set<GlobalChannelCoord> global_route_channels;
@@ -134,6 +139,36 @@ struct SatRoutingResult {
     long long global_route_build_ms{0};
     long long global_route_solve_ms{0};
     long long global_route_total_ms{0};
+    // Diagnostic work deliberately excluded from all routing wall-clock summaries.
+    long long excluded_diagnostic_ms{0};
+    // V20 post-SAT ILP refinement summary. A failed refinement preserves SAT paths.
+    bool post_sat_ilp_attempted{false};
+    bool post_sat_ilp_accepted{false};
+    std::String post_sat_ilp_status;
+    long long post_sat_ilp_total_ms{0};
+    long long post_sat_ilp_build_ms{0};
+    long long post_sat_ilp_solve_ms{0};
+    std::size_t post_sat_ilp_baseline_wirelength{0};
+    std::size_t post_sat_ilp_wirelength{0};
+    std::size_t post_sat_ilp_parents{0};
+    std::size_t post_sat_ilp_segments{0};
+    std::size_t post_sat_ilp_variables{0};
+    std::size_t post_sat_ilp_constraints{0};
+    double post_sat_ilp_objective{0.0};
+    double post_sat_ilp_bound{0.0};
+    double post_sat_ilp_gap{0.0};
+    // V20 post-SAT maze/RRR summary. The SAT result is retained on every
+    // failed or non-improving transaction.
+    bool post_sat_maze_attempted{false};
+    bool post_sat_maze_accepted{false};
+    std::String post_sat_maze_status;
+    long long post_sat_maze_total_ms{0};
+    std::size_t post_sat_maze_baseline_wirelength{0};
+    std::size_t post_sat_maze_wirelength{0};
+    std::size_t post_sat_maze_triggers{0};
+    std::size_t post_sat_maze_accepted_triggers{0};
+    std::size_t post_sat_maze_rrr_iterations{0};
+    std::size_t post_sat_maze_rerouted_owners{0};
 };
 
 } // namespace PR_tool

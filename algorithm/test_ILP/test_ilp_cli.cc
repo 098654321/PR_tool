@@ -101,6 +101,14 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
             options.enable_global_route_v18 = true;
             continue;
         }
+        if (arg == "--ilp-optimize") {
+            options.enable_post_sat_ilp = true;
+            continue;
+        }
+        if (arg == "--maze-optimize") {
+            options.enable_post_sat_maze = true;
+            continue;
+        }
         if (arg.size() >= 2 && arg[0] == '-' && arg[1] == 'v') {
             bool all_v = true;
             for (std::size_t char_index = 1; char_index < arg.size(); ++char_index) {
@@ -123,6 +131,15 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
     if (options.enable_global_route_v18 && options.enable_z3_optimize) {
         throw std::invalid_argument(
             "--global-route-v18 uses CaDiCaL and cannot be combined with --z3-optimize");
+    }
+    if (options.enable_post_sat_ilp && options.enable_post_sat_maze) {
+        throw std::invalid_argument(
+            "--ilp-optimize and --maze-optimize are mutually exclusive");
+    }
+    if ((options.enable_post_sat_ilp || options.enable_post_sat_maze)
+        && !options.enable_global_route_v18) {
+        throw std::invalid_argument(
+            "post-SAT optimization requires --global-route-v18");
     }
     if ((options.enable_global_route_v17 || options.enable_global_route_v18)
         && (options.initial_scope_pad != 0 || options.initial_delay_pad != 0)) {

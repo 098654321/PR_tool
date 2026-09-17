@@ -78,8 +78,8 @@ WIRELENGTH_RE = re.compile(r"\bnet_wirelength=\d+\b")
 FAILED_RE = re.compile(r"Routing failed for this net: (?P<net_name>.+)$")
 UNSAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 PER_NET_DISPLAYS = frozenset({"TrackToBumps", "TracksToBumps"})
-PER_NET_NAME_PREFIXES = ("Pose", "Nege", "TrackToBumpsNet_")
-TRACK_TO_BUMPS_PREFIX = "TrackToBumpsNet_"
+PER_NET_NAME_PREFIXES = ("Pose", "Nege", "TrackToBumpsNet_", "TrackToBumpNet_")
+TRACK_TO_BUMPS_PREFIXES = ("TrackToBumpsNet_", "TrackToBumpNet_")
 LEGACY_BUMP_SOURCE_RE = re.compile(
     r"(?P<net_name>.+): Begin bump: '\{ row: (?P<row>\d+), col: (?P<col>\d+), "
     r"index: (?P<index>\d+) \}' to .+"
@@ -666,7 +666,7 @@ def render_case_vis(
     output_dir: Path,
 ) -> None:
     render_per_net_routes(
-        paths, rows, cols, output_dir, name_prefixes=(TRACK_TO_BUMPS_PREFIX,)
+        paths, rows, cols, output_dir, name_prefixes=TRACK_TO_BUMPS_PREFIXES
     )
     render_path_group(
         [path for path in paths if path.net_name.startswith("Pose")],
@@ -683,7 +683,7 @@ def render_case_vis(
         "Nege nets",
     )
     render_path_group(
-        [path for path in paths if path.net_name.startswith(TRACK_TO_BUMPS_PREFIX)],
+        [path for path in paths if path.net_name.startswith(TRACK_TO_BUMPS_PREFIXES)],
         rows,
         cols,
         output_dir / "all_track_to_bumps.png",

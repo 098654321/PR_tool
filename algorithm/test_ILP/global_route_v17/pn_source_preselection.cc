@@ -171,6 +171,8 @@ auto transformed_nets(const std::Vector<RoutingNet>& nets, const std::Vector<Can
             tree.origin_uid = net.origin_uid;
             tree.origin_key = net.origin_key;
             tree.kind = RoutingNetKind::Tnet;
+            tree.pn_source_tree = true;
+            tree.post_sat_ilp_target = true;
             tree.sources = {net.sources.at(source_index)};
             for (const auto demand_index : demand_indices) {
                 auto demand = net.demands.at(demand_index);

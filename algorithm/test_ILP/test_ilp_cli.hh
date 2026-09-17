@@ -19,6 +19,8 @@ struct TestIlpCliOptions {
     bool enable_z3_optimize{false};
     bool enable_global_route_v17{false};
     bool enable_global_route_v18{false};
+    bool enable_post_sat_ilp{false};
+    bool enable_post_sat_maze{false};
     int highs_time_limit_minutes{0};
 };
 

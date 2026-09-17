@@ -2,8 +2,11 @@
 #include "common/hw_map.hh"
 #include "delay/pair_delay_precompute.hh"
 #include "global_route_v17/pn_source_preselection.hh"
+#include "global_route_v17/global_guide_log.hh"
 #include "global_route_v17/global_router.hh"
 #include "graph/unified_routing_graph.hh"
+#include "post_sat_ilp/post_sat_ilp.hh"
+#include "post_sat_rrr/post_sat_rrr.hh"
 #include "sat/ideal_shortest_wirelength.hh"
 #include "sat/node_occupancy.hh"
 #include "sat_allocation/z3_optimize_solver.hh"
@@ -2035,6 +2038,193 @@ auto test_v19_global_guide_feedback_thresholds_and_union() -> void {
         "the fifth TOB-TOB failure must expand scope after preserving its fifth distance extension");
 }
 
+auto test_v20_global_guide_logger_handles_walk_and_residual() -> void {
+    const auto source = bump_ref(0, 0, 0);
+    const auto sink = bump_ref(1, 0, 0);
+    auto net = two_pin_net(61, RoutingNetKind::Bnet, source, sink);
+    auto nets = std::Vector<RoutingNet>{net};
+    auto state = init_routing_problem_state(nets);
+    const auto c0 = GlobalChannelCoord{1, 1, 0};
+    const auto c1 = GlobalChannelCoord{0, 1, 1};
+    const auto graph =
+        synthetic_channel_graph({c0, c1},
+                                {global_tob_node(0, 0), global_cob_node(0, 0),
+                                 global_cob_node(0, 1), global_tob_node(1, 1)},
+                                {{0, 1, 0}, {1, 2, 1}, {2, 3, 1}});
+    auto route = GlobalRouteResult{};
+    route.ok = true;
+    const auto key = state.pairs.front().key;
+    route.pair_channels.emplace(key, std::set{c0, c1});
+    // Arc 1 goes back over the first physical Channel and is intentionally
+    // residual beside the complete forward source-to-sink walk 0,2,4.
+    route.selected_arc_ids_by_pair.emplace(key, std::Vector<int>{0, 1, 2, 4});
+    route.selected_unit_by_pair.emplace(key, 3);
+    state.pairs.front().allowed_channels = {c0, c1};
+    require(
+        log_global_route_guides(route, graph, state, nets) >= 0,
+        "V20 guide logger must handle a directed walk plus residual selected "
+        "arc");
+}
+
+auto test_v20_post_sat_ilp_target_filter() -> void {
+    auto target = RoutingNet{};
+    target.kind = RoutingNetKind::Tnet;
+    target.post_sat_ilp_target = true;
+    target.sources = {track_ref(0, 0, hardware::TrackDirection::Horizontal, 0)};
+    target.demands = {RoutingDemand{0, bump_ref(0, 0, 0), {0}, true}};
+    require(is_post_sat_ilp_target(target),
+            "explicit Track-to-Bump target must be selected");
+
+    auto normalized_bump_to_track = target;
+    normalized_bump_to_track.post_sat_ilp_target = false;
+    require(!is_post_sat_ilp_target(normalized_bump_to_track),
+            "structurally normalized BumpToTrack must remain frozen without an "
+            "explicit target tag");
+
+    auto sync = target;
+    sync.is_sync_bus = true;
+    require(!is_post_sat_ilp_target(sync),
+            "Sync must remain frozen even if accidentally tagged");
+}
+
+auto test_v20_post_sat_ilp_improves_fixed_source_path() -> void {
+    auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}, {0, 3}});
+    graph.bump_node_by_key.erase(graph.nodes[0].bump);
+    graph.nodes[0].kind = UnifiedNodeKind::Track;
+    graph.nodes[0].unit = map_track(0);
+    graph.nodes[0].track_dir = 0;
+    graph.nodes[0].track_row = 0;
+    graph.nodes[0].track_col = 0;
+    graph.nodes[0].track_index = 0;
+    graph.track_node_by_key.emplace(
+        std::tuple{map_track(0), 0, 0, 0, std::size_t{0}}, 0);
+    for (int node : {1, 2}) {
+        graph.bump_node_by_key.erase(
+            graph.nodes[static_cast<std::size_t>(node)].bump);
+        graph.nodes[static_cast<std::size_t>(node)].kind =
+            UnifiedNodeKind::Track;
+        graph.nodes[static_cast<std::size_t>(node)].unit = map_track(0);
+        graph.nodes[static_cast<std::size_t>(node)].track_dir = 0;
+        graph.nodes[static_cast<std::size_t>(node)].track_row = 0;
+        graph.nodes[static_cast<std::size_t>(node)].track_col = node;
+        graph.nodes[static_cast<std::size_t>(node)].track_index = 0;
+    }
+
+    auto net = RoutingNet{};
+    net.net_id = 0;
+    net.name = "TrackToBumpNet_synthetic";
+    net.kind = RoutingNetKind::Tnet;
+    net.post_sat_ilp_target = true;
+    net.sources = {track_ref(0, 0, hardware::TrackDirection::Horizontal, 0)};
+    net.demands = {RoutingDemand{0, synthetic_ref(3), {0}, true}};
+    const auto nets = std::Vector<RoutingNet>{net};
+    const auto scopes =
+        std::Vector<UnifiedSatNetScope>{synthetic_scope(graph, 0)};
+    auto baseline = SatRoutingResult{};
+    baseline.ok = true;
+    baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2, 3}}};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
+
+    const auto refined = optimize_post_sat_routes(graph, nets, scopes, baseline,
+                                                  PostSatIlpOptions{});
+    require(refined.ok, "post-SAT ILP must preserve a successful SAT result");
+    require(refined.post_sat_ilp_accepted,
+            "synthetic shorter incumbent must be accepted");
+    require(refined.total_wirelength == 2 && refined.paths.size() == 1 &&
+                refined.paths.front().node_path == std::Vector<int>({0, 3}),
+            "post-SAT ILP must choose the shorter fixed-source path");
+}
+
+auto test_v20_post_sat_rrr_improves_within_final_scope() -> void {
+    const auto graph = synthetic_graph(
+        4, {{0, 1}, {1, 2}, {2, 3}, {0, 3}});
+    const auto nets = std::Vector<RoutingNet> {
+        synthetic_net(0, {0}, {{3, {0}}})};
+    const auto scopes = std::Vector<UnifiedSatNetScope> {
+        synthetic_scope(graph, 0)};
+    auto baseline = SatRoutingResult {};
+    baseline.ok = true;
+    baseline.paths = {
+        SourceSinkPairPath {0, 0, 0, -1, {0, 1, 2, 3}}};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
+
+    const auto refined = optimize_post_sat_routes_rrr(
+        graph, nets, scopes, baseline,
+        PostSatRrrOptions {.max_iterations = 8, .stagnation_limit = 4,
+                           .max_sweeps = 1});
+    require(refined.ok, "post-SAT RRR must preserve the SAT success state");
+    require(refined.post_sat_maze_attempted
+                && refined.post_sat_maze_accepted,
+            "post-SAT RRR must accept a strictly shorter legal route");
+    require(refined.total_wirelength == 2 && refined.paths.size() == 1
+                && refined.paths.front().node_path
+                    == std::Vector<int>({0, 3}),
+            "post-SAT RRR must stay in scope and select the shorter path");
+}
+
+auto test_v20_post_sat_rrr_keeps_sync_as_hard_obstacle() -> void {
+    const auto graph = synthetic_graph(
+        7, {{0, 1}, {1, 2}, {2, 3}, {0, 4}, {4, 3}, {5, 4}, {4, 6}});
+    auto ordinary = synthetic_net(0, {0}, {{3, {0}}});
+    auto sync = synthetic_net(1, {5}, {{6, {0}}});
+    sync.is_sync_bus = true;
+    const auto nets = std::Vector<RoutingNet> {ordinary, sync};
+    const auto scopes = std::Vector<UnifiedSatNetScope> {
+        synthetic_scope(graph, 0), synthetic_scope(graph, 1)};
+    auto baseline = SatRoutingResult {};
+    baseline.ok = true;
+    baseline.paths = {
+        SourceSinkPairPath {0, 0, 0, -1, {0, 1, 2, 3}},
+        SourceSinkPairPath {1, 0, 0, -1, {5, 4, 6}}};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
+
+    const auto refined = optimize_post_sat_routes_rrr(
+        graph, nets, scopes, baseline,
+        PostSatRrrOptions {.max_iterations = 8, .stagnation_limit = 4,
+                           .max_sweeps = 1});
+    require(!refined.post_sat_maze_accepted
+                && refined.total_wirelength == baseline.total_wirelength,
+            "a shorter route through a Sync resource must not be accepted");
+    const auto sync_path = std::find_if(
+        refined.paths.begin(), refined.paths.end(),
+        [](const auto& path) { return path.net_id == 1; });
+    require(sync_path != refined.paths.end()
+                && sync_path->node_path == std::Vector<int>({5, 4, 6}),
+            "post-SAT RRR must keep every Sync path byte-for-byte unchanged");
+}
+
+auto test_v20_post_sat_rrr_repairs_non_sync_overflow_cascade() -> void {
+    const auto graph = synthetic_graph(
+        16,
+        {{0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6},
+         {6, 7}, {7, 8}, {8, 9}, {9, 10}, {0, 11}, {11, 10},
+         {12, 11}, {11, 13}, {12, 14}, {14, 15}, {15, 13}});
+    const auto nets = std::Vector<RoutingNet> {
+        synthetic_net(0, {0}, {{10, {0}}}),
+        synthetic_net(1, {12}, {{13, {0}}})};
+    const auto scopes = std::Vector<UnifiedSatNetScope> {
+        synthetic_scope(graph, 0), synthetic_scope(graph, 1)};
+    auto baseline = SatRoutingResult {};
+    baseline.ok = true;
+    baseline.paths = {
+        SourceSinkPairPath {0, 0, 0, -1,
+                            {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}},
+        SourceSinkPairPath {1, 0, 0, -1, {12, 11, 13}}};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
+
+    const auto refined = optimize_post_sat_routes_rrr(
+        graph, nets, scopes, baseline,
+        PostSatRrrOptions {.max_iterations = 8, .stagnation_limit = 4,
+                           .max_sweeps = 1});
+    require(refined.post_sat_maze_accepted
+                && refined.total_wirelength < baseline.total_wirelength,
+            "a seed conflict with another non-Sync net must be repairable by "
+            "dirty-owner RRR");
+    require(refined.post_sat_maze_rrr_iterations >= 1
+                && refined.post_sat_maze_rerouted_owners >= 2,
+            "overflow repair must rip the full dirty set before rerouting");
+}
+
 auto test_v17_pn_scope_retains_selected_union_only() -> void {
     auto graph = build_unified_graph(nullptr, {});
     auto pn = RoutingNet {};
@@ -2316,6 +2506,17 @@ auto test_z3_optimize_cli_option() -> void {
     require(
         v18.enable_global_route_v18 && !v18.enable_z3_optimize,
         "--global-route-v18 must select guided CaDiCaL without Z3 Optimize");
+    require(!v18.enable_post_sat_ilp && !v18.enable_post_sat_maze,
+            "V18 post-SAT optimizers must be disabled by default");
+
+    const auto ilp = parse_test_ilp_cli(
+        {"case", "--global-route-v18", "--ilp-optimize"});
+    require(ilp.enable_post_sat_ilp && !ilp.enable_post_sat_maze,
+            "--ilp-optimize must explicitly enable only post-SAT ILP");
+    const auto maze = parse_test_ilp_cli(
+        {"case", "--global-route-v18", "--maze-optimize"});
+    require(maze.enable_post_sat_maze && !maze.enable_post_sat_ilp,
+            "--maze-optimize must explicitly enable only post-SAT RRR");
 
     bool rejected_padding = false;
     try {
@@ -2334,6 +2535,28 @@ auto test_z3_optimize_cli_option() -> void {
         rejected_v18_z3 = true;
     }
     require(rejected_v18_z3, "V18 pure SAT must reject Z3 Optimize");
+
+    bool rejected_post_without_v18 = false;
+    try {
+        (void)parse_test_ilp_cli({"case", "--maze-optimize"});
+    }
+    catch (const std::invalid_argument&) {
+        rejected_post_without_v18 = true;
+    }
+    require(rejected_post_without_v18,
+            "post-SAT optimization must require the V18 guided flow");
+
+    bool rejected_two_post_optimizers = false;
+    try {
+        (void)parse_test_ilp_cli(
+            {"case", "--global-route-v18", "--ilp-optimize",
+             "--maze-optimize"});
+    }
+    catch (const std::invalid_argument&) {
+        rejected_two_post_optimizers = true;
+    }
+    require(rejected_two_post_optimizers,
+            "post-SAT ILP and maze optimization must be mutually exclusive");
 }
 
 #ifdef USE_Z3
@@ -4371,6 +4594,12 @@ auto main() -> int {
         test_scoped_path_error_identifies_pair();
         test_v19_tob_repair_template_and_shared_guide();
         test_v19_global_guide_feedback_thresholds_and_union();
+        test_v20_global_guide_logger_handles_walk_and_residual();
+        test_v20_post_sat_ilp_target_filter();
+        test_v20_post_sat_ilp_improves_fixed_source_path();
+        test_v20_post_sat_rrr_improves_within_final_scope();
+        test_v20_post_sat_rrr_keeps_sync_as_hard_obstacle();
+        test_v20_post_sat_rrr_repairs_non_sync_overflow_cascade();
         test_v17_pn_scope_retains_selected_union_only();
         test_v18_guided_cadical_smoke();
         test_initial_search_padding_scope();
