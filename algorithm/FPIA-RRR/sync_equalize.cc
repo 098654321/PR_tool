@@ -502,7 +502,7 @@ auto equalize_sync_group(
                 queue.size());
 
             bool failed = false;
-            auto next_target = target_length + 1;
+            std::size_t next_target = 0;
             for (const std::size_t idx : queue) {
                 auto& lane = lanes[idx];
                 if (sync_lane_length(graph, lane.path, interposer, lane.is_bnet) >= target_length) {
@@ -525,7 +525,7 @@ auto equalize_sync_group(
                     length_limit);
                 if (outcome.kind != TailKind::Equal || outcome.path.empty()) {
                     if (outcome.kind == TailKind::Longer) {
-                        next_target = std::max(next_target, outcome.n_f);
+                        next_target = outcome.n_f;
                     }
                     failed = true;
                     break;
@@ -537,7 +537,7 @@ auto equalize_sync_group(
             if (!failed && all_lanes_equal(graph, interposer, lanes)) {
                 return true;
             }
-            if (next_target <= target_length || next_target > length_limit) {
+            if (!failed || next_target <= target_length || next_target > length_limit) {
                 break;
             }
             debug::debug_fmt(

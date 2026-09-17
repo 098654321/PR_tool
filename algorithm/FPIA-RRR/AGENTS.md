@@ -93,7 +93,7 @@ Node/Switch/Matching/TobMux claimed key 互斥（Mode/BnetUnit 为兼容与 per-
 `N_i`：按访问序计数 Track 节点，得到 `N_track`，再加 PathPackage TOB 端点常数：
 Bnet +2，Tnet +1。组成员不同时混 Bnet/Tnet。
 
-`sync_equalize.hh/.cc`：`sync_track_cut_index(Ni, r) = floor(Ni*(1-r))`；`sync_lane_length(...)`；`equalize_sync_group(...)` 短 lane 按 `r={0.5,0.75,1.0}` 切尾。每次对整组使用同一固定 target，任一 lane 无法精确到达则整组回滚，再在预算内上调 target；其他 SyncNet lane 硬阻塞，前缀与 parent chain 禁止回环。仅当全部 lane `N_i` 精确相等才提交并返回 true。
+`sync_equalize.hh/.cc`：`sync_track_cut_index(Ni, r) = floor(Ni*(1-r))`；`sync_lane_length(...)`；`equalize_sync_group(...)` 短 lane 按 `r={0.5,0.75,1.0}` 切尾。每次对整组使用同一固定 target；若某 lane 只找到更长的 `N_f`，则整组回滚、以 `N_f` 更新 target 后重来，普通不可达不自动 `target+1`。其他 SyncNet lane 硬阻塞，前缀与 parent chain 禁止回环。仅当全部 lane `N_i` 精确相等才提交并返回 true。
 
 ## Maze / 资源 / 图
 

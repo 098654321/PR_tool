@@ -301,7 +301,7 @@ auto compute_pair_delays(
                         source_node,
                         sink_node));
                 }
-                delay_values = net.pn_source_tree
+                delay_values = net.pn_source_tree || net.post_sat_ilp_target
                     ? std::Vector<int> {shortest, shortest + 1, shortest + 2}
                     : std::Vector<int> {shortest};
                 member_shortest = shortest;

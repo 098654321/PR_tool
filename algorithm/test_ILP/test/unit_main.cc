@@ -1799,6 +1799,26 @@ auto test_v17_distance_domain_starts_at_scoped_minimum() -> void {
         "V17 initial global-guide distance domain must contain only scoped d_min");
 }
 
+auto test_v20_track_targets_start_with_two_step_distance_padding() -> void {
+    const auto graph = synthetic_graph(
+        5, {{0, 1}, {1, 2}, {2, 3}, {3, 4}});
+    auto track_to_bump = synthetic_net(0, {0}, {{2, {0}}});
+    track_to_bump.name = "TrackToBumpNet";
+    track_to_bump.post_sat_ilp_target = true;
+    auto track_to_bumps = synthetic_net(1, {0}, {{3, {0}}, {4, {0}}});
+    track_to_bumps.name = "TrackToBumpsNet";
+    track_to_bumps.post_sat_ilp_target = true;
+    const auto nets = std::Vector<RoutingNet> {track_to_bump, track_to_bumps};
+    const auto scopes = build_all_scopes(graph, nets);
+    const auto delays = compute_pair_delays(graph, nets, scopes);
+    require(
+        delays.pairs.size() == 3
+            && delays.pairs[0].delays == std::Vector<int>({2, 3, 4})
+            && delays.pairs[1].delays == std::Vector<int>({3, 4, 5})
+            && delays.pairs[2].delays == std::Vector<int>({4, 5, 6}),
+        "TrackToBump and every TrackToBumps demand must start with d_min through d_min+2");
+}
+
 auto test_v17_bus_distance_domain_starts_at_shared_minimum() -> void {
     const auto graph = synthetic_graph(
         7, {{0, 1}, {1, 2}, {3, 4}, {4, 5}, {5, 6}});
@@ -4590,6 +4610,7 @@ auto main() -> int {
         test_v17_guide_scope_unit_release();
         test_v17_unit_assumption_is_traceable();
         test_v17_distance_domain_starts_at_scoped_minimum();
+        test_v20_track_targets_start_with_two_step_distance_padding();
         test_v17_bus_distance_domain_starts_at_shared_minimum();
         test_scoped_path_error_identifies_pair();
         test_v19_tob_repair_template_and_shared_guide();
