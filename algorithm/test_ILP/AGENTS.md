@@ -33,7 +33,7 @@
 5. V17 基线目标最小化非 PN owner 的 `sum X` 与 PNnet 的 `sum Z`；V18 则对预选后的每棵 physical source-tree 直接累加 `sum X`，不同 source-tree 使用同一 Channel 仍分别计长和占用资源。宏观模型不增加 MTZ/无环约束；无用 `X/Z` 由目标和双向 support 约束排除，`F` 在已选 Channel 内允许环。
 6. `apply_global_route_v17` 写入 per-pair 非矩形 Channel guide、per-source unit 和由选中宏观弧数加端点开销得到的 detailed distance cap。随后，每个 pair 只在自己的 TOB 端点加入固定局部修补：非 TOB--TOB pair 使用两侧相邻 COB 的两行三列 9-Channel 模板（中央 TOB Channel、上下边界 Channel、四条横向和左右两条纵向）；TOB--TOB pair 使用紧凑 7-Channel 模板（中央 TOB Channel、上下两个纵向 Channel、上下相邻 COB 各两条横向 Channel），不含左右外侧纵向 Channel。物理边界外的不存在 Channel 自动裁剪。`PairRoutingState` 保留各 pair 自己的 guide，详细 SAT scope 才取同一 net 所有 pair guide 的并集。
    - V17 基线的 multi-sink PNnet 直接从每个 demand 的 `S/F` 恢复 source 和路径；V18 转换后的 Tnet 直接从预选物理 source 建立 guide，详细 SAT 不再开放 PN virtual-source 候选。
-7. `compute_pair_delays` 在 guide（含初始 TOB 修补）的细粒度投影中求 `d_min`；V18 预选后的 Pose/Nege physical-source tree 首轮 domain 为 `{d_min,d_min+1}`，其余普通 pair 仍为 `{d_min}`，SyncBus 共享 `{max(member d_min)}`。`detailed distance cap` 保留为 Global Routing 诊断，不能扩大首轮详细 distance domain。
+7. `compute_pair_delays` 在 guide（含初始 TOB 修补）的细粒度投影中求 `d_min`；V18 预选后的 Pose/Nege physical-source tree 首轮 domain 为 `{d_min,d_min+1,d_min+2}`，其余普通 pair 仍为 `{d_min}`，SyncBus 共享 `{max(member d_min)}`。`detailed distance cap` 保留为 Global Routing 诊断，不能扩大首轮详细 distance domain。
 8. Bnet 的 Global Routing unit 通过可追踪 assumption `gamma⇒Q_sat(unit)` 固定；不写不可撤销 unit clause。
 9. Z3 或 V18 CaDiCaL hard-UNSAT 时分别处理：
    - alpha core：critical pair 每次扩一个 distance；每个 pair 独立计数，累计4次 distance-only 失败后的第5次，在保留本次 distance 扩展的同时，只把该 pair 的局部 guide 扩一跳；TOB--TOB pair 使用相同阈值。详细 SAT 使用同一 net 所有 pair 局部 guide 的并集，不同 demand 的失败不互相累计；

@@ -339,7 +339,7 @@ public:
     )
         : log_sink_(highs_log_path, verbose_level >= 2, highs_log_append) {
         log_sink_.attach(highs_);
-        highs_.setOptionValue("mip_rel_gap", 0.01);
+        highs_.setOptionValue("mip_rel_gap", 0.10);
     }
 
     auto add_binary(const double cost = 0.0, const double lower = 0.0, const double upper = 1.0)

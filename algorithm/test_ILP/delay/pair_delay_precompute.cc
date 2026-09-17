@@ -302,7 +302,7 @@ auto compute_pair_delays(
                         sink_node));
                 }
                 delay_values = net.pn_source_tree
-                    ? std::Vector<int> {shortest, shortest + 1}
+                    ? std::Vector<int> {shortest, shortest + 1, shortest + 2}
                     : std::Vector<int> {shortest};
                 member_shortest = shortest;
             }
