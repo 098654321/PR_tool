@@ -1,7 +1,6 @@
 # PR_tool / algorithm/FPIA-RRR 工程指南
 
-本目录实现独立的 FPIA `rip-up-and-reroute`（RRR）全局布线器，作为
-`algorithm/test_ILP/` 中 SAT + ILP 方法的对比实验。方法规范见同目录 `spec.md`。
+本目录实现独立的 FPIA `rip-up-and-reroute`（RRR）全局布线器，作为 `algorithm/test_ILP/` 中 SAT + ILP 方法的对比实验。方法规范见同目录 `spec.md`。
 
 **当前状态：RRR 主循环、SyncNet 等长修复、TOB mux 端口独占与独立合法性校验已接通。**
 不写 controlbits，不改 `Interposer` 寄存器。
@@ -18,8 +17,7 @@
 
 ## 目的与边界
 
-- 与 `test_ILP` 使用相同配置输入、`source/` 解析器、`hardware::Interposer` 拓扑与
-  wirelength 语义；仅路由策略不同。
+- 与 `test_ILP` 使用相同配置输入、`source/` 解析器、`hardware::Interposer` 拓扑与 wirelength 语义；仅路由策略不同。
 - 每次运行只路由 `mode = 0`。不切换 mode，不加载旧路径，不做 incremental routing。
 - 不调用 `suspend()` / `give_out()` / `connect()` / `PathPackage::connect_all()`。
 - occupancy 只存在于 `ResourceModel`。不修改 `algorithm/test_ILP/`。不链接 CaDiCal/Gurobi。
@@ -58,8 +56,7 @@ xmake build FPIA_RRR_mux_test && ./output/FPIA_RRR_mux_test
 
 `run_rrr(graph, nets, params, interposer, verbose_level=0) -> RrrResult`。`interposer` 必须非空；
 这保证 SyncNet 的等长检查不会被静默跳过。
-`RrrResult`：`status`、`iterations`、`best_overflow`、`total_wirelength`、`paths`、
-`routing_ms`。`paths[net][demand]` 为节点 id 序列。
+`RrrResult`：`status`、`iterations`、`best_overflow`、`unequal_sync_groups`、`total_sync_gap`、`total_wirelength`、`paths`、`routing_ms`。`paths[net][demand]` 为节点 id 序列。
 
 Owner：普通 Bnet/Tnet/PNnet/fanout 为 `{net_id,0}`；SyncNet 成员为
 `{net_id,demand_id}`。初始顺序：全部 bus owner（lane 数、组 HPWL、`net_id`，组内
@@ -68,15 +65,11 @@ HPWL、id（除 id 外均降序）。HPWL 为 Track/Bump 终端包围盒；Bump 
 PNnet 计入全部候选源。fanout/PNnet rip 整棵树后按 `demand_id` 升序重生。
 `add_tree_node` 只插入 Track；后续 demand 不得从已占用 HLine/VLine 起步。
 
-调度：一组的第一个 SyncNet owner 走 `route_sync_group`（maze 全 lane，sibling
-物理资源 `hard_block`（Node/Switch/Matching/TobMux；Mode/BnetUnit 不互斥），再
+调度：一组的第一个 SyncNet owner 走 `route_sync_group`（maze 全 lane，sibling 物理资源 `hard_block`（Node/Switch/Matching/TobMux；Mode/BnetUnit 不互斥），再
 `equalize_sync_group`）；已填 sibling 经 `routed_sync` 跳过。Dirty
 任一 SyncNet 成员扩到整组后再 rip。overflow 0 且各组 `N_i` 相等才 success。
 
-循环（spec §7）：analyze → legal best 字典序 `(overflow, total_wirelength)`（bus 须
-等长）→ overflow 0 且等长则 success → `history_next` → 连续 4 轮无改进则
-`H=min(H+4,16)` → dirty → 先全部 rip 再 reroute。`stagnation_limit` 后 `stagnated`；
-用尽 `max_iterations` 则 `iteration_limit`。结束 restore best。maze 不可达 →
+循环（spec §7）：analyze → 全部 live state 按 `(overflow, unequal_sync_groups, total_sync_gap, total_wirelength)` 字典序保存 best → overflow 0 且等长则 success → `history_next` → dirty → 先全部 rip 再 reroute。每连续 4 轮无改进则 `H=min(H+4,16)` 并重置停滞计数；只有在 `H=16` 阶段再达到 `stagnation_limit` 才 `stagnated`；用尽 `max_iterations` 则 `iteration_limit`。结束 restore best。maze 不可达 →
 `unroutable`。Claim 使用 `path_resource_keys`（与 maze `arc_resource_keys` 同一投影），
 Bnet 另 claim `bnet_unit_key`。`route_demand` 传入 `interposer` 做 NESW。
 
@@ -100,10 +93,7 @@ Node/Switch/Matching/TobMux claimed key 互斥（Mode/BnetUnit 为兼容与 per-
 `N_i`：按访问序计数 Track 节点，得到 `N_track`，再加 PathPackage TOB 端点常数：
 Bnet +2，Tnet +1。组成员不同时混 Bnet/Tnet。
 
-`sync_equalize.hh/.cc`：`sync_track_cut_index(Ni, r) = floor(Ni*(1-r))`；
-`sync_lane_length(...)`；`equalize_sync_group(...)` 短 lane 按 `r={0.5,0.75,1.0}`
-切尾。其他 SyncNet lane 硬阻塞；前缀与 parent chain 禁止回环。仅当全部 lane `N_i`
-相等返回 true。
+`sync_equalize.hh/.cc`：`sync_track_cut_index(Ni, r) = floor(Ni*(1-r))`；`sync_lane_length(...)`；`equalize_sync_group(...)` 短 lane 按 `r={0.5,0.75,1.0}` 切尾。每次对整组使用同一固定 target，任一 lane 无法精确到达则整组回滚，再在预算内上调 target；其他 SyncNet lane 硬阻塞，前缀与 parent chain 禁止回环。仅当全部 lane `N_i` 精确相等才提交并返回 true。
 
 ## Maze / 资源 / 图
 
@@ -127,13 +117,13 @@ CLI 只暴露 `--max-iterations` 与 `--seed`；其余为编译期常数，全�
 |---|---|---|
 | `seed` | 1 | 只记日志；搜索与排序确定，不使用随机数 |
 | `max_iterations` | 64 | overflow 迭代上限 |
-| `stagnation_limit` | 8 | 字典序连续无改进则停止 |
+| `stagnation_limit` | 8 | `H=16` 阶段字典序连续无改进则停止 |
 | `H` | 4 | 拥塞高度（FastRoute `COSHEIGHT`） |
 | `k` | 1.0 | logistic 陡峭度 |
 | `s` | 20 | 超容量后的线性斜率 |
 | `decay` / `increment` / `history_weight` | 0.9 / 1 / 1 | `history_next = decay×history + increment×overflow` |
 | `detour_bias` | 0 | 首版关闭 |
-| `sync_tail_extra_tracks` | 64 | tail maze 超出当前最长 lane 的 Track 预算 |
+| `sync_tail_extra_tracks` | 64 | 共同 target 超出初始最长 lane 的 Track 预算 |
 | `r` | 0.5, 0.75, 1.0 | SyncNet 切尾比例 |
 
 `H/k/s` 进入 maze 的 present cost（`cap=1`；普通资源 `u` 为加入后的 owner 数，mux 用 distinct peers）：
@@ -143,7 +133,7 @@ P(u) = 1 + H/(exp(k×(cap-u))+1) + [u>cap]×H/s×(u-cap)
 present_cost = type_weight × P(u)
 ```
 
-- 增大 `H`：空闲占用和冲突占用都更贵，冲突项按 `H` 放大，maze 更倾向绕开热点，线长往往变大。连续 4 轮字典序无改进时 `H ← min(H+4, 16)`。
+- 增大 `H`：空闲占用和冲突占用都更贵，冲突项按 `H` 放大，maze 更倾向绕开热点，线长往往变大。连续 4 轮字典序无改进时 `H ← min(H+4, 16)` 并重新计数，依次尝试 4/8/12/16 拥塞高度。
 - 增大 `k`：从“还能再挤一个”到“已经 overflow”的代价跳变更陡，更早避开将满资源。
 - 减小 `s`：已经 overflow 时线性罚分 `H/s × (u-cap)` 更陡，更强力驱离热点；增大 `s` 则允许更长地挤占。
 
@@ -161,7 +151,7 @@ present_cost = type_weight × P(u)
 `-v`/`-vv`（`Debug`，二者目前同级）：在过程中额外打印
 - 每轮 RRR 的 overflow owner 集合（`overflow owners=[name,...]`；SyncNet lane 为
   `name#demand_id`，`demand_id` 是组内 lane 编号）
-- SyncNet `equalize r= N_MAX= short_lanes=`、`sync tail maze ...`、`N_MAX raised`
+- SyncNet `equalize r= target= limit= short_lanes=`、`sync tail maze ...`、`sync target advance`
 不打印 `sync net_id=... N_i=... equal=`。`sync tail cutoff` 用 `info`，无 `-v`
 也会出现。结束时仍打最终路径；`-v` 再追加一次结束时的 overflow 明细。
 
@@ -193,11 +183,11 @@ owner 数（碰到 overflow 资源的网；SyncNet 任一成员脏则扩到整�
 ```text
 FPIA RRR: graph nodes=<N> arcs=<M> route_owners=<K>
 FPIA RRR: params max_iterations=<N> seed=<S> H=<H> k=<k> s=<s> sync_tail_extra_tracks=<T>
-FPIA RRR: initial overflow=<O> total_wirelength=<W>
-FPIA RRR: iter=<I> overflow=<O> max_resource_overflow=<M>
-          dirty_owners=<D> rerouted=<R> total_wirelength=<W>
+FPIA RRR: initial overflow=<O> unequal_sync_groups=<G> sync_gap=<S> total_wirelength=<W>
+FPIA RRR: iter=<I> overflow=<O> new_overflow=<NO> max_resource_overflow=<M>
+          dirty_owners=<D> rerouted=<R> total_wirelength=<W> unequal_sync_groups=<G> sync_gap=<S> H=<H>
 FPIA RRR: status=<success|iteration_limit|stagnated|unroutable>
-          iterations=<I> best_overflow=<O> routing_ms=<T> elapsed_ms=<E>
+          iterations=<I> best_overflow=<O> unequal_sync_groups=<G> sync_gap=<S> routing_ms=<T> elapsed_ms=<E>
 routing result: total_wirelength=<W> RRR_routing_time=<T> elapsed_ms=<E>
 ```
 

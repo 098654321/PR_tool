@@ -22,6 +22,8 @@ struct RrrResult {
     std::String status;
     int iterations{0};
     int best_overflow{0};
+    int unequal_sync_groups{0};
+    std::size_t total_sync_gap{0};
     std::size_t total_wirelength{0};
     std::Vector<std::Vector<std::Vector<int>>> paths;
     std::i64 routing_ms{0};

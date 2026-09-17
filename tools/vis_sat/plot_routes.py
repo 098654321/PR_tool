@@ -659,14 +659,21 @@ def render_per_net_routes(
     print(f"rendered {len(by_net)} per-net figures under {output_dir}")
 
 
+def track_to_bumps_prefixes(paths: list[RoutedPath]) -> tuple[str, ...]:
+    if any(path.net_name.startswith("TrackToBumpsNet_") for path in paths):
+        return ("TrackToBumpsNet_",)
+    return TRACK_TO_BUMPS_PREFIXES
+
+
 def render_case_vis(
     paths: list[RoutedPath],
     rows: int,
     cols: int,
     output_dir: Path,
 ) -> None:
+    ttb_prefixes = track_to_bumps_prefixes(paths)
     render_per_net_routes(
-        paths, rows, cols, output_dir, name_prefixes=TRACK_TO_BUMPS_PREFIXES
+        paths, rows, cols, output_dir, name_prefixes=ttb_prefixes
     )
     render_path_group(
         [path for path in paths if path.net_name.startswith("Pose")],
@@ -683,7 +690,7 @@ def render_case_vis(
         "Nege nets",
     )
     render_path_group(
-        [path for path in paths if path.net_name.startswith(TRACK_TO_BUMPS_PREFIXES)],
+        [path for path in paths if path.net_name.startswith(ttb_prefixes)],
         rows,
         cols,
         output_dir / "all_track_to_bumps.png",

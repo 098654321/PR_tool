@@ -281,7 +281,8 @@ auto maze_tail(
     const SyncLaneState& lane,
     const std::Vector<int>& prefix,
     const std::Set<ResourceKey>& hard_block,
-    std::size_t n_max
+    std::size_t target_length,
+    std::size_t length_limit
 ) -> TailOutcome {
     auto starts = std::Set<int> {};
     if (prefix.empty()) {
@@ -306,10 +307,9 @@ auto maze_tail(
 
     const int initial_unit = lane.is_bnet ? resources.selected_unit(lane.id) : -1;
     const auto tob_constant = sync_tob_length_constant(lane.is_bnet);
-    const int n_max_tracks = n_max > tob_constant
-        ? static_cast<int>(n_max - tob_constant)
+    const int max_tracks = length_limit > tob_constant
+        ? static_cast<int>(length_limit - tob_constant)
         : 0;
-    const int max_tracks = n_max_tracks + params.sync_tail_extra_tracks;
     const std::size_t recs_cap = std::min(
         static_cast<std::size_t>(graph.nodes.size()) * 3 + 2048,
         static_cast<std::size_t>(80000));
@@ -320,10 +320,11 @@ auto maze_tail(
     int seq = 0;
     bool logged_track_limit = false;
     debug::debug_fmt(
-        "FPIA RRR: sync tail maze sink={} prefix={} N_MAX={} recs_cap={}",
+        "FPIA RRR: sync tail maze sink={} prefix={} target={} limit={} recs_cap={}",
         lane.sink,
         prefix.size(),
-        n_max,
+        target_length,
+        length_limit,
         recs_cap);
 
     for (const int node : starts) {
@@ -352,9 +353,9 @@ auto maze_tail(
         if (rec.track_count > max_tracks) {
             if (!logged_track_limit) {
                 debug::info_fmt(
-                    "FPIA RRR: sync tail cutoff sink={} N_MAX={} max_track_nodes={} extra_tracks={}",
+                    "FPIA RRR: sync tail cutoff sink={} target={} max_track_nodes={} extra_tracks={}",
                     lane.sink,
-                    n_max,
+                    target_length,
                     max_tracks,
                     params.sync_tail_extra_tracks);
                 logged_track_limit = true;
@@ -366,10 +367,11 @@ auto maze_tail(
             const auto tail = reconstruct_tail(recs, item.rec);
             const auto full = join_prefix_tail(prefix, tail);
             const auto n_f = sync_lane_length(graph, full, interposer, lane.is_bnet);
-            if (n_f == n_max) {
+            if (n_f == target_length) {
                 return TailOutcome {TailKind::Equal, full, n_f};
             }
-            if (n_f > n_max && (best_over.kind == TailKind::Fail || n_f < best_over.n_f)) {
+            if (n_f > target_length && n_f <= length_limit
+                && (best_over.kind == TailKind::Fail || n_f < best_over.n_f)) {
                 best_over = TailOutcome {TailKind::Longer, full, n_f};
             }
             continue;
@@ -484,59 +486,65 @@ auto equalize_sync_group(
         ratios = {0.5, 0.75, 1.0};
     }
 
+    const auto base_length = group_max_length(graph, interposer, lanes);
+    const auto length_limit = base_length
+        + static_cast<std::size_t>(std::max(0, params.sync_tail_extra_tracks));
     for (const double r : ratios) {
-        install_lane_paths(graph, resources, lanes, snapshot);
-        auto n_max = group_max_length(graph, interposer, lanes);
-        auto queue = short_lane_indices(graph, interposer, lanes, n_max);
-        debug::debug_fmt(
-            "FPIA RRR: sync equalize r={} N_MAX={} short_lanes={}",
-            r,
-            n_max,
-            queue.size());
+        auto target_length = base_length;
+        while (target_length <= length_limit) {
+            install_lane_paths(graph, resources, lanes, snapshot);
+            const auto queue = short_lane_indices(graph, interposer, lanes, target_length);
+            debug::debug_fmt(
+                "FPIA RRR: sync equalize r={} target={} limit={} short_lanes={}",
+                r,
+                target_length,
+                length_limit,
+                queue.size());
 
-        bool failed = false;
-        std::size_t guard = 0;
-        const std::size_t guard_limit = lanes.size() * 8 + 8;
-        while (!queue.empty() && guard < guard_limit) {
-            ++guard;
-            const std::size_t idx = queue.front();
-            queue.erase(queue.begin());
-            auto& lane = lanes[idx];
-            if (sync_lane_length(graph, lane.path, interposer, lane.is_bnet) >= n_max) {
-                continue;
+            bool failed = false;
+            auto next_target = target_length + 1;
+            for (const std::size_t idx : queue) {
+                auto& lane = lanes[idx];
+                if (sync_lane_length(graph, lane.path, interposer, lane.is_bnet) >= target_length) {
+                    continue;
+                }
+                const auto tracks = track_nodes_of(graph, lane.path);
+                const auto keep = sync_track_cut_index(tracks.size(), r);
+                const auto prefix = prefix_through_cut(graph, lane.path, keep);
+                claim_prefix_only(graph, resources, lane, prefix);
+                const auto blocked = sibling_hard_block(graph, lanes, idx);
+                const auto outcome = maze_tail(
+                    graph,
+                    resources,
+                    params,
+                    interposer,
+                    lane,
+                    prefix,
+                    blocked,
+                    target_length,
+                    length_limit);
+                if (outcome.kind != TailKind::Equal || outcome.path.empty()) {
+                    if (outcome.kind == TailKind::Longer) {
+                        next_target = std::max(next_target, outcome.n_f);
+                    }
+                    failed = true;
+                    break;
+                }
+                resources.release(lane.id);
+                resources.claim(lane.id, path_resource_keys(graph, outcome.path, lane.is_bnet));
+                lane.path = outcome.path;
             }
-            const auto tracks = track_nodes_of(graph, lane.path);
-            const auto keep = sync_track_cut_index(tracks.size(), r);
-            const auto prefix = prefix_through_cut(graph, lane.path, keep);
-            claim_prefix_only(graph, resources, lane, prefix);
-            const auto blocked = sibling_hard_block(graph, lanes, idx);
-            const auto outcome = maze_tail(
-                graph,
-                resources,
-                params,
-                interposer,
-                lane,
-                prefix,
-                blocked,
-                n_max);
-            if (outcome.kind == TailKind::Fail || outcome.path.empty()) {
-                failed = true;
+            if (!failed && all_lanes_equal(graph, interposer, lanes)) {
+                return true;
+            }
+            if (next_target <= target_length || next_target > length_limit) {
                 break;
             }
-            resources.release(lane.id);
-            resources.claim(lane.id, path_resource_keys(graph, outcome.path, lane.is_bnet));
-            lane.path = outcome.path;
-            if (outcome.kind == TailKind::Longer) {
-                n_max = outcome.n_f;
-                queue = short_lane_indices(graph, interposer, lanes, n_max);
-                debug::debug_fmt(
-                    "FPIA RRR: sync N_MAX raised to {} remaining_short={}",
-                    n_max,
-                    queue.size());
-            }
-        }
-        if (!failed && all_lanes_equal(graph, interposer, lanes)) {
-            return true;
+            debug::debug_fmt(
+                "FPIA RRR: sync target advance from {} to {}",
+                target_length,
+                next_target);
+            target_length = next_target;
         }
     }
 

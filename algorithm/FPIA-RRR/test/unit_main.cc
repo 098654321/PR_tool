@@ -785,11 +785,24 @@ auto test_path_resource_keys_match_maze_and_bnet_unit() -> void {
 }
 
 auto test_rrr_best_save_lex_order() -> void {
-    require(rrr_is_better(0, 100, 1, 10), "smaller overflow must beat a shorter overflowing solution");
-    require(rrr_is_better(1, 5, 1, 10), "equal overflow must keep the shorter wirelength");
-    require(!rrr_is_better(1, 10, 1, 5), "equal overflow must reject a longer wirelength");
-    require(!rrr_is_better(2, 1, 1, 100), "higher overflow must not replace the best");
-    require(!rrr_is_better(0, 8, 0, 8), "an identical solution is not an improvement");
+    require(
+        rrr_is_better(0, 2, 10, 100, 1, 0, 0, 10),
+        "smaller overflow must beat a synchronized overflowing solution");
+    require(
+        rrr_is_better(0, 1, 20, 100, 0, 2, 1, 10),
+        "equal overflow must prefer fewer unequal SyncNet groups");
+    require(
+        rrr_is_better(0, 1, 5, 100, 0, 1, 10, 10),
+        "equal overflow and group count must prefer smaller sync gap");
+    require(
+        rrr_is_better(1, 0, 0, 5, 1, 0, 0, 10),
+        "equal feasibility score must keep the shorter wirelength");
+    require(
+        !rrr_is_better(1, 0, 0, 10, 1, 0, 0, 5),
+        "equal feasibility score must reject a longer wirelength");
+    require(
+        !rrr_is_better(0, 0, 0, 8, 0, 0, 0, 8),
+        "an identical solution is not an improvement");
 }
 
 auto add_synth_bump_node(
@@ -1008,6 +1021,94 @@ auto add_directed_path(UnifiedGraph& graph, const std::Vector<int>& path) -> voi
     }
 }
 
+auto test_sync_equalize_advances_common_target_atomically() -> void {
+    auto graph = UnifiedGraph {};
+
+    const int c0 = add_synth_track(graph, 30, 0, 2);
+    const int c1 = add_synth_track(graph, 30, 1, 2);
+    const int c_sink = add_synth_track(graph, 30, 2, 2);
+    const int c3 = add_synth_track(graph, 31, 1, 2);
+    const int c4 = add_synth_track(graph, 31, 2, 2);
+    const int c5 = add_synth_track(graph, 32, 1, 2);
+    const int c6 = add_synth_track(graph, 32, 2, 2);
+    const int c7 = add_synth_track(graph, 32, 3, 2);
+    const int c8 = add_synth_track(graph, 32, 4, 2);
+    const auto c_initial = std::Vector<int> {c0, c1, c_sink};
+    const auto c_length5 = std::Vector<int> {c0, c3, c4, c_sink};
+    const auto c_length7 = std::Vector<int> {c0, c5, c6, c7, c8, c_sink};
+    add_directed_path(graph, c_initial);
+    add_directed_path(graph, c_length5);
+    add_directed_path(graph, c_length7);
+
+    const int a0 = add_synth_track(graph, 10, 0, 0);
+    const int a1 = add_synth_track(graph, 10, 1, 0);
+    const int a2 = add_synth_track(graph, 10, 2, 0);
+    const int a_sink = add_synth_track(graph, 10, 3, 0);
+    const int a4 = add_synth_track(graph, 11, 1, 0);
+    const int a5 = add_synth_track(graph, 11, 2, 0);
+    const int a6 = add_synth_track(graph, 11, 3, 0);
+    const int a7 = add_synth_track(graph, 11, 4, 0);
+    const auto a_initial = std::Vector<int> {a0, a1, a2, a_sink};
+    const auto a_length7 = std::Vector<int> {a0, a4, a5, a6, a7, a_sink};
+    add_directed_path(graph, a_initial);
+    add_directed_path(graph, a_length7);
+
+    const int b0 = add_synth_track(graph, 20, 0, 1);
+    const int b1 = add_synth_track(graph, 20, 1, 1);
+    const int b_sink = add_synth_track(graph, 20, 2, 1);
+    const int b3 = add_synth_track(graph, 21, 1, 1);
+    const int b4 = add_synth_track(graph, 21, 2, 1);
+    const int b5 = add_synth_track(graph, 21, 3, 1);
+    const int b6 = add_synth_track(graph, 22, 1, 1);
+    const int b7 = add_synth_track(graph, 22, 2, 1);
+    const int b8 = add_synth_track(graph, 22, 3, 1);
+    const int b9 = add_synth_track(graph, 22, 4, 1);
+    const auto b_initial = std::Vector<int> {b0, b1, b_sink};
+    const auto b_length6 = std::Vector<int> {b0, b3, b4, b5, b_sink};
+    const auto b_length7 = std::Vector<int> {b0, b6, b7, b8, b9, b_sink};
+    add_directed_path(graph, b_initial);
+    add_directed_path(graph, b_length6);
+    add_directed_path(graph, b_length7);
+
+    auto interposer = hardware::Interposer {};
+    auto resources = ResourceModel {};
+    auto lanes = std::Vector<SyncLaneState> {
+        SyncLaneState {OwnerId {30, 0}, false, {c0}, c_sink, c_initial},
+        SyncLaneState {OwnerId {30, 1}, false, {b0}, b_sink, b_initial},
+        SyncLaneState {OwnerId {30, 2}, false, {a0}, a_sink, a_initial}};
+    for (const auto& lane : lanes) {
+        resources.claim(lane.id, path_resource_keys(graph, lane.path, lane.is_bnet));
+    }
+
+    auto params = RrrParams {};
+    params.r_sequence = {1.0};
+    params.sync_tail_extra_tracks = 0;
+    require(
+        !equalize_sync_group(graph, resources, params, &interposer, lanes),
+        "an infeasible fixed target must reject the whole SyncNet attempt");
+    require_path(
+        lanes[0].path,
+        c_initial,
+        "failed equalization must roll back an earlier lane change");
+    require_path(lanes[1].path, b_initial, "failed equalization must restore lane B");
+    require_path(lanes[2].path, a_initial, "failed equalization must restore lane A");
+    require(resources.overflow() == 0, "failed equalization must restore resource occupancy");
+
+    params.sync_tail_extra_tracks = 2;
+    require(
+        equalize_sync_group(graph, resources, params, &interposer, lanes),
+        "equalization must advance to a common fixed target when lower targets are infeasible");
+    require_path(lanes[0].path, c_length7, "lane C must route at the shared raised target");
+    require_path(lanes[1].path, b_length7, "lane B must not retain its earlier shorter candidate");
+    require_path(lanes[2].path, a_length7, "lane A must route at the shared raised target");
+    require(
+        sync_lane_length(graph, lanes[0].path, &interposer, false) == 7
+            && sync_lane_length(graph, lanes[1].path, &interposer, false) == 7
+            && sync_lane_length(graph, lanes[2].path, &interposer, false) == 7,
+        "all lanes must commit the same fixed target length");
+    require(resources.overflow() == 0, "raised-target equalization must stay conflict-free");
+}
+
 auto test_rrr_sync_bus_ripup_and_normal_detour() -> void {
     constexpr std::size_t kLaneCount = 5;
     const std::Vector<int> initial_tracks {9, 7, 6, 5, 3};
@@ -1098,6 +1199,9 @@ auto test_rrr_sync_bus_ripup_and_normal_detour() -> void {
 
     require(result.status == "success", "synthetic 5-lane SyncNet RRR must finish successfully");
     require(result.best_overflow == 0, "synthetic 5-lane SyncNet RRR must clear local congestion");
+    require(
+        result.unequal_sync_groups == 0 && result.total_sync_gap == 0,
+        "successful synthetic RRR must report exact SyncNet equality");
     require(result.iterations >= 1, "synthetic congestion must trigger at least one RRR iteration");
     require(result.paths.size() == 2, "synthetic result must contain the SyncNet and normal net");
     require(result.paths[0].size() == kLaneCount, "synthetic SyncNet result must retain five lanes");
@@ -1191,6 +1295,7 @@ auto main() -> int {
         test_rrr_sort_keys();
         test_sync_track_cut_index();
         test_sync_tail_equalize_replaces_short_lane();
+        test_sync_equalize_advances_common_target_atomically();
         test_rrr_sync_bus_ripup_and_normal_detour();
         test_validate_empty_path_fails();
         test_validate_illegal_overflow_fails();

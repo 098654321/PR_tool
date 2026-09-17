@@ -20,12 +20,22 @@ namespace PR_tool {
 
 auto rrr_is_better(
     int overflow,
+    int unequal_sync_groups,
+    std::size_t sync_gap,
     std::size_t wirelength,
     int best_overflow,
+    int best_unequal_sync_groups,
+    std::size_t best_sync_gap,
     std::size_t best_wirelength
 ) -> bool {
     if (overflow != best_overflow) {
         return overflow < best_overflow;
+    }
+    if (unequal_sync_groups != best_unequal_sync_groups) {
+        return unequal_sync_groups < best_unequal_sync_groups;
+    }
+    if (sync_gap != best_sync_gap) {
+        return sync_gap < best_sync_gap;
     }
     return wirelength < best_wirelength;
 }
@@ -95,6 +105,8 @@ struct OwnerRecord {
 struct BestSnapshot {
     bool valid{false};
     int overflow{std::numeric_limits<int>::max()};
+    int unequal_sync_groups{std::numeric_limits<int>::max()};
+    std::size_t sync_gap{std::numeric_limits<std::size_t>::max()};
     std::size_t wirelength{std::numeric_limits<std::size_t>::max()};
     ResourceModel resources;
     std::Vector<OwnerRecord> owners;
@@ -522,14 +534,20 @@ auto route_sync_group(
     return equal;
 }
 
-auto sync_groups_equal_length(
+struct SyncViolation {
+    int unequal_groups{0};
+    std::size_t total_gap{0};
+};
+
+auto sync_violation(
     const UnifiedGraph& graph,
     const std::Vector<RoutingNet>& nets,
     const std::Vector<OwnerRecord>& owners,
     hardware::Interposer* interposer
-) -> bool {
+) -> SyncViolation {
+    auto violation = SyncViolation {};
     if (interposer == nullptr) {
-        return false;
+        return SyncViolation {1, 1};
     }
     for (std::size_t net_index = 0; net_index < nets.size(); ++net_index) {
         if (!nets[net_index].is_sync_bus) {
@@ -539,26 +557,34 @@ auto sync_groups_equal_length(
         if (group.size() <= 1) {
             continue;
         }
-        std::size_t expected = 0;
-        bool have = false;
+        auto lengths = std::Vector<std::size_t> {};
         for (const std::size_t index : group) {
             if (owners[index].demand_paths.empty() || owners[index].demand_paths.front().empty()) {
-                return false;
+                ++violation.unequal_groups;
+                ++violation.total_gap;
+                lengths.clear();
+                break;
             }
-            const auto n_i = sync_lane_length(
+            lengths.push_back(sync_lane_length(
                 graph,
                 owners[index].demand_paths.front(),
                 interposer,
-                owners[index].is_bnet);
-            if (!have) {
-                expected = n_i;
-                have = true;
-            } else if (n_i != expected) {
-                return false;
-            }
+                owners[index].is_bnet));
+        }
+        if (lengths.empty()) {
+            continue;
+        }
+        const auto n_max = *std::max_element(lengths.begin(), lengths.end());
+        std::size_t group_gap = 0;
+        for (const auto length : lengths) {
+            group_gap += n_max - length;
+        }
+        if (group_gap != 0) {
+            ++violation.unequal_groups;
+            violation.total_gap += group_gap;
         }
     }
-    return true;
+    return violation;
 }
 
 auto unequal_sync_owner_ids(
@@ -617,35 +643,30 @@ auto unequal_sync_owner_ids(
 auto save_best_if_improved(
     BestSnapshot& best,
     int overflow,
+    const SyncViolation& sync,
     std::size_t wirelength,
     const ResourceModel& resources,
     const std::Vector<OwnerRecord>& owners
 ) -> bool {
-    if (best.valid && !rrr_is_better(overflow, wirelength, best.overflow, best.wirelength)) {
+    if (best.valid && !rrr_is_better(
+            overflow,
+            sync.unequal_groups,
+            sync.total_gap,
+            wirelength,
+            best.overflow,
+            best.unequal_sync_groups,
+            best.sync_gap,
+            best.wirelength)) {
         return false;
     }
     best.valid = true;
     best.overflow = overflow;
+    best.unequal_sync_groups = sync.unequal_groups;
+    best.sync_gap = sync.total_gap;
     best.wirelength = wirelength;
     best.resources = resources;
     best.owners = owners;
     return true;
-}
-
-auto save_legal_best(
-    BestSnapshot& best,
-    int overflow,
-    std::size_t wirelength,
-    const ResourceModel& resources,
-    const std::Vector<OwnerRecord>& owners,
-    const UnifiedGraph& graph,
-    const std::Vector<RoutingNet>& nets,
-    hardware::Interposer* interposer
-) -> bool {
-    if (overflow == 0 && !sync_groups_equal_length(graph, nets, owners, interposer)) {
-        return false;
-    }
-    return save_best_if_improved(best, overflow, wirelength, resources, owners);
 }
 
 auto routing_kind_name(const RoutingNet& net) -> std::String {
@@ -871,23 +892,28 @@ auto run_rrr(
             owners = best.owners;
         }
         const auto paths = collect_paths_by_net(nets, owners);
+        const auto final_sync = sync_violation(graph, nets, owners, interposer);
         result.status = final_status;
         result.iterations = iterations;
         result.best_overflow = best.valid ? best.overflow : resources.overflow();
+        result.unequal_sync_groups = best.valid ? best.unequal_sync_groups : final_sync.unequal_groups;
+        result.total_sync_gap = best.valid ? best.sync_gap : final_sync.total_gap;
         result.total_wirelength = best.valid ? best.wirelength : total_wirelength(graph, paths);
         result.paths = paths;
         result.routing_ms = routing_ms;
         if (final_status == "success"
-            && (result.best_overflow != 0 || !all_demands_connected(nets, owners)
-                || !sync_groups_equal_length(graph, nets, owners, interposer))) {
+            && (result.best_overflow != 0 || result.unequal_sync_groups != 0
+                || !all_demands_connected(nets, owners))) {
             result.status = "unroutable";
         }
         const auto elapsed_ms = Elapsed::milliseconds();
         debug::info_fmt(
-            "FPIA RRR: status={} iterations={} best_overflow={} routing_ms={} elapsed_ms={}",
+            "FPIA RRR: status={} iterations={} best_overflow={} unequal_sync_groups={} sync_gap={} routing_ms={} elapsed_ms={}",
             result.status,
             result.iterations,
             result.best_overflow,
+            result.unequal_sync_groups,
+            result.total_sync_gap,
             result.routing_ms,
             elapsed_ms);
         debug::info_fmt(
@@ -923,9 +949,12 @@ auto run_rrr(
     {
         const int initial_overflow = resources.overflow();
         const auto initial_wl = current_wirelength(graph, nets, owners);
+        const auto initial_sync = sync_violation(graph, nets, owners, interposer);
         debug::info_fmt(
-            "FPIA RRR: initial overflow={} total_wirelength={}",
+            "FPIA RRR: initial overflow={} unequal_sync_groups={} sync_gap={} total_wirelength={}",
             initial_overflow,
+            initial_sync.unequal_groups,
+            initial_sync.total_gap,
             initial_wl);
     }
 
@@ -933,28 +962,29 @@ auto run_rrr(
         const int overflow = resources.overflow();
         const auto wirelength = current_wirelength(graph, nets, owners);
         const int max_ov = max_resource_overflow(owners, resources);
-        save_legal_best(best, overflow, wirelength, resources, owners, graph, nets, interposer);
+        const auto sync = sync_violation(graph, nets, owners, interposer);
+        save_best_if_improved(best, overflow, sync, wirelength, resources, owners);
 
-        const bool sync_equal = sync_groups_equal_length(graph, nets, owners, interposer);
+        const bool sync_equal = sync.unequal_groups == 0;
         if (overflow == 0 && sync_equal) {
             iterations = iter;
             debug::info_fmt(
-                "FPIA RRR: iter={} overflow={} max_resource_overflow={} dirty_owners={} rerouted={} total_wirelength={}",
+                "FPIA RRR: iter={} overflow={} new_overflow={} max_resource_overflow={} dirty_owners={} rerouted={} total_wirelength={} unequal_sync_groups={} sync_gap={} H={}",
                 iter,
+                overflow,
                 overflow,
                 max_ov,
                 0,
                 0,
-                wirelength);
+                wirelength,
+                sync.unequal_groups,
+                sync.total_gap,
+                params.H);
             status = "success";
             break;
         }
 
         resources.history_next();
-        if (stagnant > 0 && stagnant % 4 == 0) {
-            params.H = std::min(params.H + 4, 16);
-        }
-
         auto dirty_ids = std::Vector<OwnerId> {};
         auto dirty_set = std::Set<OwnerId> {};
         for (const auto& owner : owners) {
@@ -987,13 +1017,17 @@ auto run_rrr(
             iterations = iter;
             status = sync_equal && overflow == 0 ? "success" : "stagnated";
             debug::info_fmt(
-                "FPIA RRR: iter={} overflow={} max_resource_overflow={} dirty_owners={} rerouted={} total_wirelength={}",
+                "FPIA RRR: iter={} overflow={} new_overflow={} max_resource_overflow={} dirty_owners={} rerouted={} total_wirelength={} unequal_sync_groups={} sync_gap={} H={}",
                 iter,
+                overflow,
                 overflow,
                 max_ov,
                 0,
                 0,
-                wirelength);
+                wirelength,
+                sync.unequal_groups,
+                sync.total_gap,
+                params.H);
             break;
         }
 
@@ -1047,39 +1081,50 @@ auto run_rrr(
 
         const int new_overflow = resources.overflow();
         const auto new_wirelength = current_wirelength(graph, nets, owners);
-        const bool improved = save_legal_best(
+        const auto new_sync = sync_violation(graph, nets, owners, interposer);
+        const bool improved = save_best_if_improved(
             best,
             new_overflow,
+            new_sync,
             new_wirelength,
             resources,
-            owners,
-            graph,
-            nets,
-            interposer);
+            owners);
         if (improved) {
             stagnant = 0;
         } else {
             ++stagnant;
         }
 
+        constexpr int kStagnationHBoost = 4;
+        constexpr int kMaxH = 16;
+        if (!improved && stagnant >= kStagnationHBoost && params.H < kMaxH) {
+            params.H = std::min(params.H + 4, kMaxH);
+            stagnant = 0;
+            debug::info_fmt("FPIA RRR: congestion boost H={}", params.H);
+        }
+
         debug::info_fmt(
-            "FPIA RRR: iter={} overflow={} max_resource_overflow={} dirty_owners={} rerouted={} total_wirelength={}",
+            "FPIA RRR: iter={} overflow={} new_overflow={} max_resource_overflow={} dirty_owners={} rerouted={} total_wirelength={} unequal_sync_groups={} sync_gap={} H={}",
             iter,
             overflow,
+            new_overflow,
             max_ov,
             dirty_count,
             rerouted,
-            new_wirelength);
+            new_wirelength,
+            new_sync.unequal_groups,
+            new_sync.total_gap,
+            params.H);
         if (verbose_level >= 1) {
             dump_overflows(owners, nets, resources);
         }
 
         iterations = iter + 1;
-        if (new_overflow == 0 && sync_groups_equal_length(graph, nets, owners, interposer)) {
+        if (new_overflow == 0 && new_sync.unequal_groups == 0) {
             status = "success";
             break;
         }
-        if (stagnant >= params.stagnation_limit) {
+        if (params.H >= kMaxH && stagnant >= params.stagnation_limit) {
             status = "stagnated";
             break;
         }
@@ -1089,8 +1134,9 @@ auto run_rrr(
     if (status != "success") {
         const int overflow = resources.overflow();
         const auto wirelength = current_wirelength(graph, nets, owners);
-        save_legal_best(best, overflow, wirelength, resources, owners, graph, nets, interposer);
-        if (best.valid && best.overflow == 0) {
+        const auto sync = sync_violation(graph, nets, owners, interposer);
+        save_best_if_improved(best, overflow, sync, wirelength, resources, owners);
+        if (best.valid && best.overflow == 0 && best.unequal_sync_groups == 0) {
             status = "success";
         }
     }

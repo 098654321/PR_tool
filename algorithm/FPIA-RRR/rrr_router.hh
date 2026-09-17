@@ -10,8 +10,12 @@ namespace PR_tool {
 
 auto rrr_is_better(
     int overflow,
+    int unequal_sync_groups,
+    std::size_t sync_gap,
     std::size_t wirelength,
     int best_overflow,
+    int best_unequal_sync_groups,
+    std::size_t best_sync_gap,
     std::size_t best_wirelength
 ) -> bool;
 
