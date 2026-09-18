@@ -21,6 +21,9 @@ struct PairRoutingState {
     std::Vector<int> delays;
     IlpBoundingBox pair_bbox {};
     std::set<GlobalChannelCoord> allowed_channels;
+    // Channels added by the optional initial one-hop guide expansion, kept
+    // separately from the TOB patch for guide diagnostics.
+    std::set<GlobalChannelCoord> initial_expanded_channels;
     int global_route_distance_cap{-1};
 };
 

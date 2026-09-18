@@ -4,7 +4,7 @@
 
 namespace PR_tool {
 
-// Prints the raw MCF guide separately from the TOB-repair/final detailed scope.
+// Prints the raw MCF guide separately from TOB-patch/initial-hop additions.
 // The returned wall time is deliberately diagnostic-only: callers must exclude
 // it from end-to-end routing timing summaries.
 auto log_global_route_guides(const GlobalRouteResult& route,

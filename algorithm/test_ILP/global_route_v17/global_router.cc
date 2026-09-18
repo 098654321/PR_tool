@@ -2055,6 +2055,45 @@ auto apply_tob_repair_templates(
         compact_tob_to_tob_pairs);
 }
 
+auto expand_initial_target_scopes_one_hop(
+    const GlobalChannelGraph& graph,
+    RoutingProblemState& state,
+    const std::Vector<RoutingNet>& nets
+) -> void {
+    auto keys = std::Vector<PairKey> {};
+    auto before = std::map<PairKey, std::set<GlobalChannelCoord>> {};
+    for (const auto& net : nets) {
+        if (!net.post_sat_ilp_target && net.kind != RoutingNetKind::PNnet) {
+            continue;
+        }
+        const auto indices = state.pair_indices_by_net.find(net.net_id);
+        if (indices == state.pair_indices_by_net.end()) {
+            continue;
+        }
+        for (const auto pair_index : indices->second) {
+            auto& pair = state.pairs[pair_index];
+            keys.push_back(pair.key);
+            before.emplace(pair.key, pair.allowed_channels);
+        }
+    }
+    const auto stats = expand_global_route_guides_one_hop(graph, state, keys);
+    for (const auto& key : keys) {
+        auto* pair = find_pair_state(state, key);
+        if (pair == nullptr) {
+            continue;
+        }
+        for (const auto& channel : pair->allowed_channels) {
+            if (!before.at(key).contains(channel)) {
+                pair->initial_expanded_channels.insert(channel);
+            }
+        }
+    }
+    debug::info_fmt(
+        "V20 initial target scope expansion: pairs={} pair_local_channels_added={} "
+        "net_union_channels_added={} hops=1",
+        keys.size(), stats.pair_local_added_channels, stats.added_channels);
+}
+
 auto apply_global_route_v17_impl(
     const GlobalRouteResult& route,
     const GlobalChannelGraph* channel_graph,
@@ -2073,6 +2112,7 @@ auto apply_global_route_v17_impl(
                 pair.key.demand_id));
         }
         pair.allowed_channels = it->second;
+        pair.initial_expanded_channels.clear();
         pair.delays.clear();
         const auto cap = route.detailed_distance_cap_by_pair.find(pair.key);
         pair.global_route_distance_cap = cap == route.detailed_distance_cap_by_pair.end()
@@ -2098,6 +2138,7 @@ auto apply_global_route_v17_impl(
     }
     if (channel_graph != nullptr) {
         apply_tob_repair_templates(*channel_graph, state, nets);
+        expand_initial_target_scopes_one_hop(*channel_graph, state, nets);
     }
     apply_state_to_nets(state, nets);
 }

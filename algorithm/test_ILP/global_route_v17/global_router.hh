@@ -191,7 +191,8 @@ auto apply_global_route_v17(
 ) -> void;
 
 // Guided detailed routing uses the channel graph to add the fixed local TOB
-// repair template before projecting pair guides into a net-level scope.
+// repair template, then one-hop expands TrackToBump(s)/PN pair scopes before
+// projecting pair-local scopes into a net-level scope.
 auto apply_global_route_v17(
     const GlobalRouteResult& route,
     const GlobalChannelGraph& channel_graph,

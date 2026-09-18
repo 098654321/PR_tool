@@ -1799,7 +1799,7 @@ auto test_v17_distance_domain_starts_at_scoped_minimum() -> void {
         "V17 initial global-guide distance domain must contain only scoped d_min");
 }
 
-auto test_v20_track_targets_start_with_two_step_distance_padding() -> void {
+auto test_v20_track_targets_start_at_scoped_minimum() -> void {
     const auto graph = synthetic_graph(
         5, {{0, 1}, {1, 2}, {2, 3}, {3, 4}});
     auto track_to_bump = synthetic_net(0, {0}, {{2, {0}}});
@@ -1813,10 +1813,10 @@ auto test_v20_track_targets_start_with_two_step_distance_padding() -> void {
     const auto delays = compute_pair_delays(graph, nets, scopes);
     require(
         delays.pairs.size() == 3
-            && delays.pairs[0].delays == std::Vector<int>({2, 3, 4})
-            && delays.pairs[1].delays == std::Vector<int>({3, 4, 5})
-            && delays.pairs[2].delays == std::Vector<int>({4, 5, 6}),
-        "TrackToBump and every TrackToBumps demand must start with d_min through d_min+2");
+            && delays.pairs[0].delays == std::Vector<int>({2})
+            && delays.pairs[1].delays == std::Vector<int>({3})
+            && delays.pairs[2].delays == std::Vector<int>({4}),
+        "TrackToBump and every TrackToBumps demand must start with only scoped d_min");
 }
 
 auto test_v17_bus_distance_domain_starts_at_shared_minimum() -> void {
@@ -1955,6 +1955,44 @@ auto test_v19_tob_repair_template_and_shared_guide() -> void {
             && bus_state.pairs[1].allowed_channels.contains(branch)
             && bus_nets[0].global_route_channels.size() > 2,
         "all-TOB SyncBus must compact-repair each pair locally before exposing their union to SAT");
+}
+
+auto test_v20_target_scopes_expand_guide_and_tob_patch_one_hop() -> void {
+    const auto detailed = build_unified_graph(nullptr, {});
+    const auto graph = build_global_channel_graph(detailed, {});
+    const auto apply = [&](const std::size_t id, const RoutingNetKind kind,
+                           const bool target) {
+        auto net = two_pin_net(
+            id, kind, track_ref(0, 0), bump_ref(0, 0, 0));
+        net.post_sat_ilp_target = target;
+        auto nets = std::Vector<RoutingNet> {net};
+        auto state = init_routing_problem_state(nets);
+        auto route = GlobalRouteResult {};
+        route.ok = true;
+        route.pair_channels.emplace(
+            state.pairs[0].key, std::set {GlobalChannelCoord {1, 1, 0}});
+        apply_global_route_v17(route, graph, state, nets);
+        return state.pairs[0];
+    };
+    const auto control = apply(35, RoutingNetKind::Tnet, false);
+    auto expected = control.allowed_channels;
+    for (const auto& channel : control.allowed_channels) {
+        const auto id = graph.channel_id_by_coord.at(channel);
+        for (const int adjacent : graph.adjacent_channel_ids[static_cast<std::size_t>(id)]) {
+            expected.insert(graph.channels[static_cast<std::size_t>(adjacent)]);
+        }
+    }
+    const auto track_target = apply(36, RoutingNetKind::Tnet, true);
+    const auto pn_target = apply(37, RoutingNetKind::PNnet, false);
+    require(
+        !track_target.initial_expanded_channels.empty()
+            && track_target.allowed_channels == expected
+            && pn_target.allowed_channels == expected,
+        "TrackToBump(s) targets and PNnet must expand guide plus TOB patch by one hop");
+    require(
+        control.initial_expanded_channels.empty()
+            && control.allowed_channels != expected,
+        "non-target Tnet such as normalized BumpToTrack must keep guide plus TOB patch");
 }
 
 auto test_v19_global_guide_feedback_thresholds_and_union() -> void {
@@ -4610,10 +4648,11 @@ auto main() -> int {
         test_v17_guide_scope_unit_release();
         test_v17_unit_assumption_is_traceable();
         test_v17_distance_domain_starts_at_scoped_minimum();
-        test_v20_track_targets_start_with_two_step_distance_padding();
+        test_v20_track_targets_start_at_scoped_minimum();
         test_v17_bus_distance_domain_starts_at_shared_minimum();
         test_scoped_path_error_identifies_pair();
         test_v19_tob_repair_template_and_shared_guide();
+        test_v20_target_scopes_expand_guide_and_tob_patch_one_hop();
         test_v19_global_guide_feedback_thresholds_and_union();
         test_v20_global_guide_logger_handles_walk_and_residual();
         test_v20_post_sat_ilp_target_filter();

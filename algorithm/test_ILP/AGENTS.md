@@ -31,9 +31,9 @@
    - 每 TOB/unit load 不超过 8、每 TOB/bank/residue load 不超过 8；
    - 2-pin SyncBus members 的 `sum X` 相等。
 5. V17 基线目标最小化非 PN owner 的 `sum X` 与 PNnet 的 `sum Z`；V18 则对预选后的每棵 physical source-tree 直接累加 `sum X`，不同 source-tree 使用同一 Channel 仍分别计长和占用资源。宏观模型不增加 MTZ/无环约束；无用 `X/Z` 由目标和双向 support 约束排除，`F` 在已选 Channel 内允许环。
-6. `apply_global_route_v17` 写入 per-pair 非矩形 Channel guide、per-source unit 和由选中宏观弧数加端点开销得到的 detailed distance cap。随后，每个 pair 只在自己的 TOB 端点加入固定局部修补：非 TOB--TOB pair 使用两侧相邻 COB 的两行三列 9-Channel 模板（中央 TOB Channel、上下边界 Channel、四条横向和左右两条纵向）；TOB--TOB pair 使用紧凑 7-Channel 模板（中央 TOB Channel、上下两个纵向 Channel、上下相邻 COB 各两条横向 Channel），不含左右外侧纵向 Channel。物理边界外的不存在 Channel 自动裁剪。`PairRoutingState` 保留各 pair 自己的 guide，详细 SAT scope 才取同一 net 所有 pair guide 的并集。
+6. `apply_global_route_v17` 写入 per-pair 非矩形 Channel guide、per-source unit 和由选中宏观弧数加端点开销得到的 detailed distance cap。随后，每个 pair 在自己的 TOB 端点加入固定局部修补：非 TOB--TOB pair 使用两侧相邻 COB 的两行三列 9-Channel 模板；TOB--TOB pair 使用紧凑 7-Channel 模板。物理边界外的不存在 Channel 自动裁剪。完成 patch 后，`TrackToBumpNet`、`TrackToBumpsNet` 和 PNnet（包括 V18 预选后的 physical-source tree）的每个 pair 将当前 `Guide∪TOBPatch` 在 Channel 相邻图上做恰好一次 one-hop 外推；其它 net 不外推。`PairRoutingState` 保留各 pair 自己的初始 scope，详细 SAT scope 才取同一 net 所有 pair scope 的并集。
    - V17 基线的 multi-sink PNnet 直接从每个 demand 的 `S/F` 恢复 source 和路径；V18 转换后的 Tnet 直接从预选物理 source 建立 guide，详细 SAT 不再开放 PN virtual-source 候选。
-7. `compute_pair_delays` 在 guide（含初始 TOB 修补）的细粒度投影中求 `d_min`；TrackToBump、TrackToBumps 的每个 pair 以及 V18 预选后的 Pose/Nege physical-source tree 首轮 domain 为 `{d_min,d_min+1,d_min+2}`，其余普通 pair 仍为 `{d_min}`，SyncBus 共享 `{max(member d_min)}`。`detailed distance cap` 保留为 Global Routing 诊断，不能扩大首轮详细 distance domain。
+7. `compute_pair_delays` 在上述初始 scope（guide、TOB patch 以及指定 net 的 one-hop 外推）的细粒度投影中求 `d_min`；TrackToBump、TrackToBumps 与其它普通 pair 的首轮 domain 均为 `{d_min}`，只有 V18 预选后的 Pose/Nege physical-source tree 使用 `{d_min,d_min+1,d_min+2}`，SyncBus 共享 `{max(member d_min)}`。`detailed distance cap` 保留为 Global Routing 诊断，不能扩大首轮详细 distance domain。
 8. Bnet 的 Global Routing unit 通过可追踪 assumption `gamma⇒Q_sat(unit)` 固定；不写不可撤销 unit clause。
 9. Z3 或 V18 CaDiCaL hard-UNSAT 时分别处理：
    - alpha core：critical pair 每次扩一个 distance；每个 pair 独立计数，累计4次 distance-only 失败后的第5次，在保留本次 distance 扩展的同时，只把该 pair 的局部 guide 扩一跳；TOB--TOB pair 使用相同阈值。详细 SAT 使用同一 net 所有 pair 局部 guide 的并集，不同 demand 的失败不互相累计；
@@ -111,7 +111,7 @@ xmake build test_ILP_unit
 - 容量剪切在无拥塞 case 中保持相同 objective 且 `W=0`；9 个 fixed-unit owner 共用 Channel 时必须由首次求解前的精确容量行直接判定不可行；另外覆盖可选 unit/source 超载在加 cut 后改到可行解并收敛；
 - maze MIP start 必须分别覆盖 2-pin 和单源多-pin owner，记录提交的 commodity/变量数，且不改变原 MIP objective 和最终容量校验结果；
 - bbox+1 Global Routing scope 必须验证无关 `F/X` 变量被实际删除，以及唯一绕路在 scope 外时直接返回 Infeasible，不进行自动扩展；
-- V18 合成 case 必须完成 HiGHS guide 并由 CaDiCaL 在无 `U`/无 soft clauses 的 hard CNF 上找到可行解；TOB repair 单测必须覆盖内部 TOB 的9/7-Channel 模板、pair-local guide 与整网 union、首轮 singleton domain 和所有 pair 第5次反馈阈值；scoped-path 不可达时必须携带准确 `PairKey`，只扩展该 pair 所属 net；
+- V18 合成 case 必须完成 HiGHS guide 并由 CaDiCaL 在无 `U`/无 soft clauses 的 hard CNF 上找到可行解；TOB/scope 单测必须覆盖内部 TOB 的9/7-Channel 模板、TrackToBump(s) 和 PNnet 在 guide+patch 上恰好 one-hop 外推、BumpToTrack 等非目标 net 不外推、pair-local guide 与整网 union、首轮 singleton domain 和所有 pair 第5次反馈阈值；scoped-path 不可达时必须携带准确 `PairKey`，只扩展该 pair 所属 net；
 - V20 post-SAT maze 合成测试必须覆盖 scope 内直接缩短、Sync 硬障碍不变，以及 trigger 产生 non-Sync overflow 后 dirty owner 全拆并收敛到更短合法解；
 - 既有 TOB/COB/SAT、路径提取、bus detailed 等长和 Z3 objective 不变量。
 
@@ -138,7 +138,7 @@ xmake build test_ILP_unit
 - `summary`：status、vars、constraints、objective、estimated_wirelength、total/build/solve ms；
 - Z3 每轮：alpha/unit assumptions、soft 数、core 分类、release/guide expansion；V18 CaDiCaL 每轮记录 hard clauses、alpha/unit assumptions、`occupancy_soft_clauses=0`、core 分类与 expansion；Global Routing guide 初始化额外记录 TOB repair 的 net/TOB/Channel 数，反馈记录 net 类型、连续 distance failure、阈值和 scope expansion；
 - main 汇总：`global route` 与 summary 相同字段，SAT 规模/耗时，最终 wirelength。
-- V20 guide：`global guide` 的 source/target/unit、selected Channel/COB/arc 数、有序 walk、residual、TOB repair 增量和 final scope；结尾打印 `body_log_ms`，并在 `run_main total elapsed` 中打印 raw/excluded 值。
+- V20 guide：`global guide` 的 source/target/unit、selected Channel/COB/arc 数、有序 walk、residual、TOB repair 增量、初始 one-hop 增量和 final scope；结尾打印 `body_log_ms`，并在 `run_main total elapsed` 中打印 raw/excluded 值。
 - V20 post-SAT ILP：目标/fixed net 数、segment bbox 资源槽、locked node/switch 数，`F/X/Y/M` 变量、九类约束、warm-start 提交规模、每目标 net 与总体 wirelength 改善、gap/耗时、校验状态或 fallback 原因。
 - V20 post-SAT maze：non-Sync owner 数、每个 trigger 的 stretch/状态/回滚、每轮 overflow/dirty owner/线长，以及 trigger/接受/RRR 迭代/累计重布 owner/最终线长汇总。
 

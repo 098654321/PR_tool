@@ -27,8 +27,8 @@ struct PairDelayInfo {
     std::size_t source_index{0};
     int source_node{-1};
     int sink_node{-1};
-    // Allowed sink delays for constraint 3: normally {d_min}; TrackToBump(s)
-    // and V18 Pose/Nege source trees start from {d_min, d_min+1, d_min+2}.
+    // Allowed sink delays for constraint 3: normally {d_min}; only V18
+    // Pose/Nege source trees start from {d_min, d_min+1, d_min+2}.
     // Feedback may expand either form.
     std::Vector<int> delays;
     // Maximum allowed delay after precompute.

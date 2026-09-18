@@ -264,6 +264,7 @@ auto log_global_route_guides(const GlobalRouteResult& route,
             debug::info_fmt("  residual_selected_arcs={{{}}}", items);
         }
         const auto* pair = find_pair_state(state, key);
+        auto expanded = std::set<int>{};
         auto patch = std::set<int>{};
         auto final_channels = std::set<int>{};
         if (pair != nullptr) {
@@ -274,14 +275,17 @@ auto log_global_route_guides(const GlobalRouteResult& route,
                     const auto raw = route.pair_channels.find(key);
                     if (raw == route.pair_channels.end() ||
                         !raw->second.contains(c)) {
-                        patch.insert(it->second);
+                        (pair->initial_expanded_channels.contains(c) ? expanded : patch)
+                            .insert(it->second);
                     }
                 }
             }
         }
         debug::info_fmt(
-            "  scope_added_by_tob_patch={} final_pair_scope_channels={}",
-            format_channels(graph, patch), final_channels.size());
+            "  scope_added_by_tob_patch={} scope_added_by_initial_one_hop={} "
+            "final_pair_scope_channels={}",
+            format_channels(graph, patch), format_channels(graph, expanded),
+            final_channels.size());
     }
     for (const auto& net : nets) {
         const auto pairs = state.pair_indices_by_net.find(net.net_id);
