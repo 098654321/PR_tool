@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <debug/debug.hh>
 #include <deque>
 #include <format>
@@ -23,7 +24,8 @@
 namespace PR_tool {
 
 auto GlobalRouteStats::ModelBreakdown::total_variables() const -> std::size_t {
-    return q_vars + x_vars + z_vars + w_vars + f_vars + source_choice_vars;
+    return q_vars + x_vars + z_vars + w_vars + f_vars + source_choice_vars
+        + tob_h7_vars + tob_h8_vars;
 }
 
 auto GlobalRouteStats::ModelBreakdown::total_constraints() const -> std::size_t {
@@ -32,10 +34,16 @@ auto GlobalRouteStats::ModelBreakdown::total_constraints() const -> std::size_t 
         + terminal_channel + channel_flow_support + pn_source_unit_coupling
         + pn_x_implies_net_channel + pn_net_channel_support
         + channel_unit_capacity + tob_unit_capacity + tob_bank_residue_capacity
-        + sync_bus_equal_length;
+        + tob_peak_threshold + sync_bus_equal_length;
 }
 
 namespace {
+
+// V21: tune the TOB-unit occupancy costs and Global Routing MIP gap here.
+constexpr double lambda_TOB = 1.0;
+constexpr double kTobLoad7Weight = 0.5;
+constexpr double kTobLoad8Weight = 1.0;
+constexpr double kGlobalRoutingMipRelativeGap = 0.08;
 
 struct SourceOption {
     std::size_t source_index{0};
@@ -339,7 +347,7 @@ public:
     )
         : log_sink_(highs_log_path, verbose_level >= 2, highs_log_append) {
         log_sink_.attach(highs_);
-        highs_.setOptionValue("mip_rel_gap", 0.10);
+        highs_.setOptionValue("mip_rel_gap", kGlobalRoutingMipRelativeGap);
     }
 
     auto add_binary(const double cost = 0.0, const double lower = 0.0, const double upper = 1.0)
@@ -413,6 +421,10 @@ public:
         return highs_.getSolution();
     }
 
+    [[nodiscard]] auto objective_value() const -> double {
+        return highs_.getInfo().objective_function_value;
+    }
+
     [[nodiscard]] auto status_string() const -> std::String {
         return highs_.modelStatusToString(highs_.getModelStatus());
     }
@@ -440,6 +452,8 @@ struct ModelVars {
     std::Vector<std::Vector<std::array<int, 16>>> w;
     std::Vector<std::Vector<int>> f;
     std::Vector<std::Vector<int>> source_choice;
+    std::Vector<std::array<int, 16>> tob_h7;
+    std::Vector<std::array<int, 16>> tob_h8;
 };
 
 struct MazePath {
@@ -806,6 +820,8 @@ auto log_global_route_model_stats(
                 / static_cast<double>(stats.f_dense_slots));
     }
     debug::info_fmt("  S   (PN candidate source)       : {}", stats.source_choice_vars);
+    debug::info_fmt("  H7  (TOB unit load == 7)        : {}", stats.tob_h7_vars);
+    debug::info_fmt("  H8  (TOB unit load == 8)        : {}", stats.tob_h8_vars);
     debug::info_fmt("  total MIP variables             : {}", total_variables);
 
     debug::info("Linear constraints by category:");
@@ -825,7 +841,8 @@ auto log_global_route_model_stats(
     debug::info_fmt(
         "  [14] TOB bank-residue <= 8      : {}",
         stats.tob_bank_residue_capacity);
-    debug::info_fmt("  [15] SyncBus Channel equality   : {}", stats.sync_bus_equal_length);
+    debug::info_fmt("  [15] TOB H7/H8 segments         : {}", stats.tob_peak_threshold);
+    debug::info_fmt("  [16] SyncBus Channel equality   : {}", stats.sync_bus_equal_length);
     debug::info_fmt("  total MIP constraints           : {}", total_constraints);
     debug::info("=============================================================");
 }
@@ -868,6 +885,33 @@ auto build_and_solve(
     vars.q.resize(owner_count);
     vars.x.resize(owner_count);
     vars.w.resize(owner_count);
+    vars.tob_h7.resize(hardware::Interposer::TOB_SIZE);
+    vars.tob_h8.resize(hardware::Interposer::TOB_SIZE);
+    auto mandatory_unit_by_owner = std::Vector<std::optional<std::size_t>>(owner_count);
+    for (std::size_t owner_index = 0; owner_index < owner_count; ++owner_index) {
+        const auto& owner = problem.owners[owner_index];
+        if (owner.fixed_unit.has_value()) {
+            mandatory_unit_by_owner[owner_index] = owner.fixed_unit;
+            continue;
+        }
+        auto only_unit = std::optional<std::size_t> {};
+        for (std::size_t unit = 0; unit < owner.allowed_units.size(); ++unit) {
+            if (!owner.allowed_units[unit]) {
+                continue;
+            }
+            if (only_unit.has_value()) {
+                only_unit.reset();
+                break;
+            }
+            only_unit = unit;
+        }
+        mandatory_unit_by_owner[owner_index] = only_unit;
+    }
+
+    for (std::size_t tob = 0; tob < hardware::Interposer::TOB_SIZE; ++tob) {
+        vars.tob_h7[tob].fill(-1);
+        vars.tob_h8[tob].fill(-1);
+    }
     for (std::size_t owner_index = 0; owner_index < owner_count; ++owner_index) {
         const auto& owner = problem.owners[owner_index];
         auto q_vars = std::Vector<int> {};
@@ -1187,6 +1231,8 @@ auto build_and_solve(
     for (std::size_t tob = 0; tob < hardware::Interposer::TOB_SIZE; ++tob) {
         for (std::size_t unit = 0; unit < 16; ++unit) {
             auto terms = std::Vector<std::pair<int, double>> {};
+            std::size_t maximum_possible_load = 0;
+            std::size_t minimum_forced_load = 0;
             for (std::size_t owner_index = 0; owner_index < owner_count; ++owner_index) {
                 const auto count = static_cast<double>(std::count_if(
                     problem.owners[owner_index].bumps.begin(),
@@ -1194,11 +1240,61 @@ auto build_and_solve(
                     [&](const Bump_coord& bump) { return bump.TOB == tob; }));
                 if (count != 0.0) {
                     terms.emplace_back(vars.q[owner_index][unit], count);
+                    const auto& owner = problem.owners[owner_index];
+                    const bool must_use_unit = mandatory_unit_by_owner[owner_index]
+                        == std::optional<std::size_t> {unit};
+                    if (owner.allowed_units[unit]) {
+                        maximum_possible_load += static_cast<std::size_t>(count);
+                    }
+                    if (must_use_unit) {
+                        minimum_forced_load += static_cast<std::size_t>(count);
+                    }
                 }
             }
             if (!terms.empty()) {
                 mip.add_row(-kHighsInf, 8.0, terms);
                 ++model_stats.tob_unit_capacity;
+            }
+            int h7 = -1;
+            int h8 = -1;
+            if (maximum_possible_load >= 7) {
+                const bool forced = minimum_forced_load == 7
+                    && maximum_possible_load == 7;
+                h7 = mip.add_binary(forced ? 0.0 : kTobLoad7Weight * lambda_TOB);
+                vars.tob_h7[tob][unit] = h7;
+                ++model_stats.tob_h7_vars;
+                if (forced) {
+                    ++out.stats.tob_load7_forced;
+                    out.stats.tob_peak_constant_cost += kTobLoad7Weight * lambda_TOB;
+                }
+            }
+            if (maximum_possible_load >= 8) {
+                const bool forced = minimum_forced_load >= 8;
+                h8 = mip.add_binary(forced ? 0.0 : kTobLoad8Weight * lambda_TOB);
+                vars.tob_h8[tob][unit] = h8;
+                ++model_stats.tob_h8_vars;
+                if (forced) {
+                    ++out.stats.tob_load8_forced;
+                    out.stats.tob_peak_constant_cost += kTobLoad8Weight * lambda_TOB;
+                }
+            }
+            if (h7 >= 0) {
+                // With 0 <= n <= 8 these rows jointly encode the three mutually
+                // exclusive states n <= 6, n == 7, and n == 8.
+                auto lower_terms = terms;
+                lower_terms.emplace_back(h7, -7.0);
+                if (h8 >= 0) {
+                    lower_terms.emplace_back(h8, -8.0);
+                }
+                mip.add_row(0.0, kHighsInf, lower_terms);
+
+                auto upper_terms = terms;
+                upper_terms.emplace_back(h7, -1.0);
+                if (h8 >= 0) {
+                    upper_terms.emplace_back(h8, -2.0);
+                }
+                mip.add_row(-kHighsInf, 6.0, upper_terms);
+                model_stats.tob_peak_threshold += 2;
             }
         }
         for (std::size_t bank = 0; bank < 2; ++bank) {
@@ -1286,13 +1382,23 @@ auto build_and_solve(
         model_stats.f_vars,
         model_stats.f_dense_slots);
     debug::info_fmt(
-        "V17 Global Routing model built: vars={} constraints={} build_ms={} owners={} demands={} capacity_mode={} TOB_filters=necessary-only(unit<=8,bank-residue<=8)",
+        "V21 Global Routing model built: vars={} constraints={} build_ms={} owners={} demands={} capacity_mode={} mip_gap={} TOB_filters=necessary(unit<=8,bank-residue<=8) TOB_peak(lambda={} weights=7:{}/8:{} H7={} H8={} forced_H7={} forced_H8={} constant_cost={} constraints={})",
         out.stats.variables,
         out.stats.constraints,
         out.stats.build_ms,
         owner_count,
         problem.commodities.size(),
-        use_capacity_cuts ? "iterative-cuts(no-W)" : "dense-W");
+        use_capacity_cuts ? "iterative-cuts(no-W)" : "dense-W",
+        kGlobalRoutingMipRelativeGap,
+        lambda_TOB,
+        kTobLoad7Weight,
+        kTobLoad8Weight,
+        model_stats.tob_h7_vars,
+        model_stats.tob_h8_vars,
+        out.stats.tob_load7_forced,
+        out.stats.tob_load8_forced,
+        out.stats.tob_peak_constant_cost,
+        model_stats.tob_peak_threshold);
     if (verbose_level >= 1) {
         log_global_route_model_stats(
             model_stats,
@@ -1633,11 +1739,40 @@ auto build_and_solve(
         if (std::ranges::any_of(unit_load, [](const std::size_t load) { return load > 8; })) {
             throw std::runtime_error("V17 TOB unit-load validation failed");
         }
+        for (std::size_t unit = 0; unit < 16; ++unit) {
+            const auto load = unit_load[unit];
+            out.stats.max_tob_unit_load = std::max(out.stats.max_tob_unit_load, load);
+            const bool expected_h7 = load == 7;
+            const bool expected_h8 = load == 8;
+            const int h7 = vars.tob_h7[tob][unit];
+            const int h8 = vars.tob_h8[tob][unit];
+            if ((h7 >= 0 && selected(h7) != expected_h7)
+                || (h7 < 0 && expected_h7)
+                || (h8 >= 0 && selected(h8) != expected_h8)
+                || (h8 < 0 && expected_h8)) {
+                throw std::runtime_error("V21 TOB H7/H8 extraction validation failed");
+            }
+            out.stats.tob_load7 += expected_h7 ? 1 : 0;
+            out.stats.tob_load8 += expected_h8 ? 1 : 0;
+        }
         for (const auto& bank : bank_residue_load) {
             if (std::ranges::any_of(bank, [](const std::size_t load) { return load > 8; })) {
                 throw std::runtime_error("V17 TOB bank-residue validation failed");
             }
         }
+    }
+    out.stats.tob_load7_cost =
+        kTobLoad7Weight * lambda_TOB * static_cast<double>(out.stats.tob_load7);
+    out.stats.tob_load8_cost =
+        kTobLoad8Weight * lambda_TOB * static_cast<double>(out.stats.tob_load8);
+    out.stats.tob_peak_cost = out.stats.tob_load7_cost + out.stats.tob_load8_cost;
+    out.stats.solver_objective = mip.objective_value();
+    out.stats.full_objective =
+        static_cast<double>(out.stats.objective) + out.stats.tob_peak_cost;
+    const double reconstructed_solver_objective =
+        out.stats.full_objective - out.stats.tob_peak_constant_cost;
+    if (std::abs(out.stats.solver_objective - reconstructed_solver_objective) > 1e-6) {
+        throw std::runtime_error("V21 HiGHS objective extraction validation failed");
     }
     for (const auto& [_, owner_indices] : problem.bus_owner_indices_by_net) {
         if (owner_indices.empty()) {
@@ -1652,8 +1787,20 @@ auto build_and_solve(
         }
     }
     debug::info_fmt(
-        "V17 Global Routing validation: status=ok objective={} max_channel_unit_load={} pairs={}",
+        "V21 Global Routing validation: status=ok wirelength_cost={} tob_load_eq7_cost={} tob_load_eq8_cost={} tob_peak_cost={} fixed_peak_offset={} solver_objective={} full_objective={} lambda_TOB={} tob_load_eq7={} tob_load_eq8={} forced_H7={} forced_H8={} max_tob_unit_load={} max_channel_unit_load={} pairs={}",
         out.stats.objective,
+        out.stats.tob_load7_cost,
+        out.stats.tob_load8_cost,
+        out.stats.tob_peak_cost,
+        out.stats.tob_peak_constant_cost,
+        out.stats.solver_objective,
+        out.stats.full_objective,
+        lambda_TOB,
+        out.stats.tob_load7,
+        out.stats.tob_load8,
+        out.stats.tob_load7_forced,
+        out.stats.tob_load8_forced,
+        out.stats.max_tob_unit_load,
         max_channel_unit_load,
         out.pair_channels.size());
     out.ok = true;
@@ -1903,12 +2050,21 @@ auto solve_global_route_v17(
     out.stats.total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         total_end - total_begin).count();
     debug::info_fmt(
-        "V17 Global Routing summary: status={} vars={} constraints={} objective={} estimated_wirelength={} total_ms={} build_ms={} solve_ms={}",
-        out.ok ? "OPTIMAL" : out.message,
+        "V21 Global Routing summary: status={} vars={} constraints={} objective={} estimated_wirelength={} solver_objective={} full_objective={} tob_load_eq7_cost={} tob_load_eq8_cost={} tob_peak_cost={} fixed_peak_offset={} tob_load_eq7={} tob_load_eq8={} max_tob_unit_load={} total_ms={} build_ms={} solve_ms={}",
+        out.message,
         out.stats.variables,
         out.stats.constraints,
         out.stats.objective,
         out.stats.estimated_wirelength,
+        out.stats.solver_objective,
+        out.stats.full_objective,
+        out.stats.tob_load7_cost,
+        out.stats.tob_load8_cost,
+        out.stats.tob_peak_cost,
+        out.stats.tob_peak_constant_cost,
+        out.stats.tob_load7,
+        out.stats.tob_load8,
+        out.stats.max_tob_unit_load,
         out.stats.total_ms,
         out.stats.build_ms,
         out.stats.solve_ms);

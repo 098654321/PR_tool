@@ -28,9 +28,9 @@
    - V17 基线的 PNnet 保留 per-demand owner、`Q/F/X/S/Z`；V18 预选后的 PNnet 已是 fixed-source/unit Tnet，正式 MCF 不再产生 PN `S/Z`，每棵 physical source-tree 以其 `X` 独立计长和占用容量；
    - 节点 flow conservation、terminal Channel、`F_a⇒X_{channel(a)}` 与 `X⇒incident F/source`；
    - `(Channel,unit)` 容量不超过 8；
-   - 每 TOB/unit load 不超过 8、每 TOB/bank/residue load 不超过 8；
+   - 每 TOB/unit load 不超过 8、每 TOB/bank/residue load 不超过 8；第二十一版额外复用同一 bump 系数项，为理论上可达 7/8 的 `(TOB,unit)` 建立互斥的 H7/H8，在线长目标上加入 `lambda_TOB*(0.5*H7 + H8)`；Global Routing HiGHS relative MIP gap 保留用户设置的 8%；
    - 2-pin SyncBus members 的 `sum X` 相等。
-5. V17 基线目标最小化非 PN owner 的 `sum X` 与 PNnet 的 `sum Z`；V18 则对预选后的每棵 physical source-tree 直接累加 `sum X`，不同 source-tree 使用同一 Channel 仍分别计长和占用资源。宏观模型不增加 MTZ/无环约束；无用 `X/Z` 由目标和双向 support 约束排除，`F` 在已选 Channel 内允许环。
+5. V17 基线目标最小化非 PN owner 的 `sum X` 与 PNnet 的 `sum Z`；V18 则对预选后的每棵 physical source-tree 直接累加 `sum X`，不同 source-tree 使用同一 Channel 仍分别计长和占用资源。第二十一版把可由 unit 决策改变的 TOB H7/H8 峰值代价加入 HiGHS objective；固定 unit 等已经强制达到档位的代价作为 `fixed_peak_offset` 从原始 objective 剔除，避免稀释 relative MIP gap，但会在 `full_objective` 中加回。`GlobalRouteStats::objective` 与 `estimated_wirelength` 仍只表示原有 Channel union 线长，各峰值目标分量另行统计并校验。宏观模型不增加 MTZ/无环约束；无用 `X/Z` 由目标和双向 support 约束排除，`F` 在已选 Channel 内允许环。
 6. `apply_global_route_v17` 写入 per-pair 非矩形 Channel guide、per-source unit 和由选中宏观弧数加端点开销得到的 detailed distance cap。随后，每个 pair 在自己的 TOB 端点加入固定局部修补：非 TOB--TOB pair 使用两侧相邻 COB 的两行三列 9-Channel 模板；TOB--TOB pair 使用紧凑 7-Channel 模板。物理边界外的不存在 Channel 自动裁剪。完成 patch 后，`TrackToBumpNet`、`TrackToBumpsNet` 和 PNnet（包括 V18 预选后的 physical-source tree）的每个 pair 将当前 `Guide∪TOBPatch` 在 Channel 相邻图上做恰好一次 one-hop 外推；其它 net 不外推。`PairRoutingState` 保留各 pair 自己的初始 scope，详细 SAT scope 才取同一 net 所有 pair scope 的并集。
    - V17 基线的 multi-sink PNnet 直接从每个 demand 的 `S/F` 恢复 source 和路径；V18 转换后的 Tnet 直接从预选物理 source 建立 guide，详细 SAT 不再开放 PN virtual-source 候选。
 7. `compute_pair_delays` 在上述初始 scope（guide、TOB patch 以及指定 net 的 one-hop 外推）的细粒度投影中求 `d_min`；TrackToBump、TrackToBumps 与其它普通 pair 的首轮 domain 均为 `{d_min}`，只有 V18 预选后的 Pose/Nege physical-source tree 使用 `{d_min,d_min+1,d_min+2}`，SyncBus 共享 `{max(member d_min)}`。`detailed distance cap` 保留为 Global Routing 诊断，不能扩大首轮详细 distance domain。
@@ -129,7 +129,8 @@ xmake build test_ILP_unit
 - `V19 fixed-unit capacity initialization`：首次求解前建立的 fixed-unit 精确容量行数、fixed owner 数和 Channel 数；
 - `V19 maze MIP start`：已路由 owner、2-pin/multi-pin owner、commodity、跳过 owner、提交变量数及构造时间；
 - `V19 Global Routing scope`：`full-graph` 或 `bbox-plus-one`，以及 `X/F` 的 active slots、dense slots 和裁剪比例；
-- `V17 Global Routing ILP model stats (-v)`：图节点/Channel/owner/demand 维度，`Q/X/Z/W/F/S` 变量分解，15 类线性约束及与 HiGHS 总数的一致性；
+- `V17 Global Routing ILP model stats (-v)`：图节点/Channel/owner/demand 维度，`Q/X/Z/W/F/S/H7/H8` 变量分解，16 类线性约束及与 HiGHS 总数的一致性；
+- V21 TOB peak：`lambda_TOB`、H7/H8 变量和分段约束、TOB-unit 的 load=7/load=8/max、纯 `wirelength_cost`、`tob_load_eq7_cost/tob_load_eq8_cost`、`tob_peak_cost`、`fixed_peak_offset`、`solver_objective` 和 `full_objective`；
 - per-owner/per-pair（`-v`）：net、owner、unit、Channel 数、selected arcs；
 - `-vv`：终端回显 HiGHS 求解日志；无论是否 `-vv`，PN 预选与正式 Global Routing 都会把求解日志写入 `-o` 目录下的 `highs.log`（求解过程中逐行 flush）；
 - `-vvv`：额外打印 scope child bbox；
@@ -146,8 +147,8 @@ xmake build test_ILP_unit
 
 ## 修改要求
 
-- 改动前核对方法文档和 `source/hardware` 映射；优先只改 `algorithm/test_ILP/`。
-- 不修改 `source/algo/router/` 的正式路由流程。
+- 改动前核对方法文档和 `source/hardware` 映射；优先只改 `algorithm/test_ILP/`，不修改 `source/algo/router/` 的正式路由流程。
 - 关键约束必须有合成单测；不要依赖大 case 才暴露基本建模错误。
 - 单文件保持紧凑，避免无关重构；新增关键步骤保留日志和规模/耗时统计。
-- 单次修改超过 100 行时，在实现完成后启动独立 reviewer 子 agent。
+- 对算法做工程实现的时候，需要注意一下写出来的代码的运行速度，在不影响算法正确实现的前提下尽可能使速度更快
+- 代码文件的单次修改超过 200 行时，在实现完成后进行分离审查：如果实现过程是启动子agent实现的，那么可以由原主agent自己审查；如果实现是由主agent自己实现的，那么需要启动一个子agent审查。如果单词修改不超过200行，可以由实现的agent自己审查。如果审查之后有问题需要修正，但是修正之后不需要再进行单独的审查工作。

@@ -83,6 +83,8 @@ struct GlobalRouteStats {
         std::size_t f_vars{0};
         std::size_t f_dense_slots{0};
         std::size_t source_choice_vars{0};
+        std::size_t tob_h7_vars{0};
+        std::size_t tob_h8_vars{0};
 
         // Linear constraints, grouped by their modeling role.
         std::size_t q_exactly_one{0};
@@ -99,6 +101,7 @@ struct GlobalRouteStats {
         std::size_t channel_unit_capacity{0};
         std::size_t tob_unit_capacity{0};
         std::size_t tob_bank_residue_capacity{0};
+        std::size_t tob_peak_threshold{0};
         std::size_t sync_bus_equal_length{0};
 
         [[nodiscard]] auto total_variables() const -> std::size_t;
@@ -116,8 +119,23 @@ struct GlobalRouteStats {
     std::size_t commodities{0};
     std::size_t variables{0};
     std::size_t constraints{0};
+    // Channel-union wirelength only. The V21 TOB peak cost is kept separate
+    // so existing guide and detailed-wirelength semantics remain unchanged.
     std::size_t objective{0};
     std::size_t estimated_wirelength{0};
+    // Raw HiGHS objective excludes unavoidable fixed-unit TOB peak constants
+    // so the relative MIP gap remains meaningful. full_objective adds them back.
+    double solver_objective{0.0};
+    double full_objective{0.0};
+    double tob_peak_cost{0.0};
+    double tob_peak_constant_cost{0.0};
+    double tob_load7_cost{0.0};
+    double tob_load8_cost{0.0};
+    std::size_t tob_load7{0};
+    std::size_t tob_load8{0};
+    std::size_t tob_load7_forced{0};
+    std::size_t tob_load8_forced{0};
+    std::size_t max_tob_unit_load{0};
     bool bbox_scope_enabled{false};
     std::size_t bbox_scope_padding{0};
     bool capacity_cuts_enabled{false};

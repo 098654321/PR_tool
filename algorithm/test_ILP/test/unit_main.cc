@@ -38,6 +38,7 @@
 #include <parse/reader/module.hh>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <bit>
@@ -1733,6 +1734,146 @@ auto test_v17_rejects_tob_necessary_condition_overflow() -> void {
     require(
         !residue_overflow.ok,
         "V17 must reject more than eight same-bank bumps in one unit residue pair");
+}
+
+auto test_v21_tob_peak_objective() -> void {
+    const auto make_fixture = [](const std::size_t bump_count) {
+        const auto anchor = tob_anchor_cob(0);
+        const auto source = track_ref(
+            0,
+            0,
+            hardware::TrackDirection::Horizontal,
+            track_from_unit_inner(0, 0));
+        auto net = RoutingNet {};
+        net.net_id = 0;
+        net.kind = RoutingNetKind::Tnet;
+        net.sources = {source};
+        for (std::size_t index = 0; index < bump_count; ++index) {
+            net.demands.push_back(RoutingDemand {
+                index, bump_ref(0, 0, index), {0}, true});
+        }
+        const auto graph = synthetic_channel_graph(
+            {{0, 0, 0},
+             {1, static_cast<int>(anchor.row), static_cast<int>(anchor.col)}},
+            {global_port_node(source, 0), global_cob_node(), global_tob_node(0, 1)},
+            {{0, 1, 0}, {1, 2, 1}});
+        return std::pair {graph, std::Vector<RoutingNet> {std::move(net)}};
+    };
+
+    const auto solve = [&](const std::size_t bump_count, const GlobalRouteCapacityMode mode) {
+        auto [graph, nets] = make_fixture(bump_count);
+        const auto route = solve_global_route_v17(UnifiedGraph {}, graph, nets, 0, mode);
+        require(route.ok, "V21 TOB peak fixture must be feasible");
+        require(
+            route.stats.objective == 2
+                && route.stats.estimated_wirelength == route.stats.objective + bump_count,
+            "V21 must count a shared multi-sink Channel union once while keeping every TOB bump in estimated wirelength");
+        require(
+            std::abs(route.stats.full_objective
+                     - (static_cast<double>(route.stats.objective) + route.stats.tob_peak_cost))
+                    < 1e-6
+                && std::abs(route.stats.solver_objective
+                            - (route.stats.full_objective
+                               - route.stats.tob_peak_constant_cost))
+                    < 1e-6,
+            "V21 full objective must include all TOB peaks while the HiGHS objective excludes unavoidable fixed offsets");
+        require(
+            route.stats.model.total_variables() == route.stats.variables
+                && route.stats.model.total_constraints() == route.stats.constraints,
+            "V21 TOB peak variables and rows must reconcile with the full model totals");
+        return route;
+    };
+
+    for (const auto mode : {GlobalRouteCapacityMode::DenseW,
+                            GlobalRouteCapacityMode::IterativeCuts}) {
+        const auto below = solve(6, mode);
+        require(
+            below.stats.model.tob_h7_vars == 0 && below.stats.model.tob_h8_vars == 0
+                && below.stats.tob_load7 == 0 && below.stats.tob_load8 == 0
+                && below.stats.tob_peak_cost == 0.0 && below.stats.max_tob_unit_load == 6,
+            "a TOB-unit whose possible load is below seven must not create or select H variables");
+
+        const auto seven = solve(7, mode);
+        require(
+            seven.stats.model.tob_h7_vars == 1 && seven.stats.model.tob_h8_vars == 0
+                && seven.stats.model.tob_peak_threshold == 2
+                && seven.stats.tob_load7 == 1 && seven.stats.tob_load8 == 0
+                && seven.stats.tob_load7_forced == 1
+                && seven.stats.tob_load8_forced == 0
+                && seven.stats.tob_peak_constant_cost == 0.5
+                && seven.stats.tob_peak_cost == 0.5 && seven.stats.max_tob_unit_load == 7,
+            "a load of exactly seven must select only H7 with peak cost 0.5");
+
+        const auto eight = solve(8, mode);
+        require(
+            eight.stats.model.tob_h7_vars == 1 && eight.stats.model.tob_h8_vars == 1
+                && eight.stats.model.tob_peak_threshold == 2
+                && eight.stats.tob_load7 == 0 && eight.stats.tob_load8 == 1
+                && eight.stats.tob_load7_forced == 0
+                && eight.stats.tob_load8_forced == 1
+                && eight.stats.tob_peak_constant_cost == 1.0
+                && eight.stats.tob_peak_cost == 1.0 && eight.stats.max_tob_unit_load == 8,
+            "a load of exactly eight must select only H8 with peak cost 1.0");
+    }
+
+    const auto anchor = tob_anchor_cob(0);
+    const auto graph = synthetic_channel_graph(
+        {{1, static_cast<int>(anchor.row), static_cast<int>(anchor.col)}},
+        {global_tob_node(0, 0)},
+        {});
+    auto selectable_nets = std::Vector<RoutingNet> {};
+    for (std::size_t net_index = 0; net_index < 2; ++net_index) {
+        auto net = RoutingNet {};
+        net.net_id = net_index;
+        net.kind = RoutingNetKind::Bnet;
+        net.sources = {bump_ref(0, 0, 4 * net_index)};
+        for (std::size_t offset = 1; offset < 4; ++offset) {
+            net.demands.push_back(RoutingDemand {
+                offset - 1, bump_ref(0, 0, 4 * net_index + offset), {0}, true});
+        }
+        selectable_nets.push_back(std::move(net));
+    }
+    for (const auto mode : {GlobalRouteCapacityMode::DenseW,
+                            GlobalRouteCapacityMode::IterativeCuts}) {
+        const auto balanced = solve_global_route_v17(
+            UnifiedGraph {}, graph, selectable_nets, 0, mode);
+        require(
+            balanced.ok
+                && balanced.stats.model.tob_h7_vars == 16
+                && balanced.stats.model.tob_h8_vars == 16
+                && balanced.stats.objective == 2
+                && balanced.stats.estimated_wirelength == 10
+                && balanced.stats.tob_load7 == 0
+                && balanced.stats.tob_load8 == 0
+                && balanced.stats.tob_peak_cost == 0.0
+                && balanced.stats.max_tob_unit_load == 4,
+            "V21 TOB peak objective must separate selectable four-bump owners instead of accepting one 8/8 unit");
+    }
+
+    auto selectable_seven = RoutingNet {};
+    selectable_seven.net_id = 10;
+    selectable_seven.kind = RoutingNetKind::Bnet;
+    selectable_seven.sources = {bump_ref(0, 0, 0)};
+    for (std::size_t index = 1; index < 7; ++index) {
+        selectable_seven.demands.push_back(RoutingDemand {
+            index - 1, bump_ref(0, 0, index), {0}, true});
+    }
+    for (const auto mode : {GlobalRouteCapacityMode::DenseW,
+                            GlobalRouteCapacityMode::IterativeCuts}) {
+        const auto selected_peak = solve_global_route_v17(
+            UnifiedGraph {}, graph, {selectable_seven}, 0, mode);
+        require(
+            selected_peak.ok
+                && selected_peak.stats.model.tob_h7_vars == 16
+                && selected_peak.stats.model.tob_h8_vars == 0
+                && selected_peak.stats.tob_load7 == 1
+                && selected_peak.stats.tob_load7_forced == 0
+                && selected_peak.stats.tob_peak_constant_cost == 0.0
+                && selected_peak.stats.tob_peak_cost == 0.5
+                && selected_peak.stats.solver_objective == 1.5
+                && selected_peak.stats.full_objective == 1.5,
+            "V21 must charge one decision-dependent H7 for a selectable seven-bump owner");
+    }
 }
 
 auto test_v17_guide_scope_unit_release() -> void {
@@ -4645,6 +4786,7 @@ auto main() -> int {
         test_v17_channel_graph_collapses_real_hardware_topology();
         test_v17_tob_halves_share_channel_capacity();
         test_v17_rejects_tob_necessary_condition_overflow();
+        test_v21_tob_peak_objective();
         test_v17_guide_scope_unit_release();
         test_v17_unit_assumption_is_traceable();
         test_v17_distance_domain_starts_at_scoped_minimum();
