@@ -495,9 +495,9 @@ auto solve_with_feedback(
                         out,
                         PostSatIlpOptions {
                             options.verbose_level,
-                            0,
                             options.highs_log_path,
-                            options.highs_time_limit_minutes});
+                            options.highs_time_limit_minutes},
+                        &problem_state);
                 }
                 else if (options.enable_post_sat_maze) {
                     out = optimize_post_sat_routes_rrr(

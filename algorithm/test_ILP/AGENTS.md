@@ -1,6 +1,6 @@
 # PR_tool / algorithm/test_ILP 工程指南
 
-本目录实现统一细粒度 SAT 路由及其优化前端。默认流程是第十四版 CaDiCaL 可行性路由；`--z3-optimize` 是第十六版 Z3 Weighted Partial MaxSAT；`--global-route-v17` 是稠密 `W` 的 HiGHS Global Routing 后接 Z3 Detailed Routing；`--global-route-v18` 将第一层改为无稠密 `W` 的容量剪切，第三层改为 CaDiCaL 纯 SAT，并已接入第十九版的 fixed-unit 初始精确容量行、maze-routing MIP start 和固定 bbox+1 Global Routing scope。方法定义以 `../../问题定义与方法/第十七版方法.md`、`第十八版方法.md` 和 `第十九版方法.md` 为准。
+本目录实现统一细粒度 SAT 路由及其优化前端。默认流程是第十四版 CaDiCaL 可行性路由；`--z3-optimize` 是第十六版 Z3 Weighted Partial MaxSAT；`--global-route-v17` 是稠密 `W` 的 HiGHS Global Routing 后接 Z3 Detailed Routing；`--global-route-v18` 将第一层改为无稠密 `W` 的容量剪切，第三层改为 CaDiCaL 纯 SAT，并已接入第十九至二十一版的 Global Routing/scope 改进。`--ilp-optimize` 的当前语义以第二十二版为准：固定 bus；每个非 bus `(net,demand,source)` pair 在自己的 final pair scope（并入其 SAT path）内建立二元有向 flow；同 net 的 pair 通过 net-level physical-node/switch OR 共享并集线长。方法定义见 `../../问题定义与方法/` 下对应版本文档。
 
 ## 当前四条入口
 
@@ -31,7 +31,7 @@
    - 每 TOB/unit load 不超过 8、每 TOB/bank/residue load 不超过 8；第二十一版额外复用同一 bump 系数项，为理论上可达 7/8 的 `(TOB,unit)` 建立互斥的 H7/H8，在线长目标上加入 `lambda_TOB*(0.5*H7 + H8)`；Global Routing HiGHS relative MIP gap 保留用户设置的 8%；
    - 2-pin SyncBus members 的 `sum X` 相等。
 5. V17 基线目标最小化非 PN owner 的 `sum X` 与 PNnet 的 `sum Z`；V18 则对预选后的每棵 physical source-tree 直接累加 `sum X`，不同 source-tree 使用同一 Channel 仍分别计长和占用资源。第二十一版把可由 unit 决策改变的 TOB H7/H8 峰值代价加入 HiGHS objective；固定 unit 等已经强制达到档位的代价作为 `fixed_peak_offset` 从原始 objective 剔除，避免稀释 relative MIP gap，但会在 `full_objective` 中加回。`GlobalRouteStats::objective` 与 `estimated_wirelength` 仍只表示原有 Channel union 线长，各峰值目标分量另行统计并校验。宏观模型不增加 MTZ/无环约束；无用 `X/Z` 由目标和双向 support 约束排除，`F` 在已选 Channel 内允许环。
-6. `apply_global_route_v17` 写入 per-pair 非矩形 Channel guide、per-source unit 和由选中宏观弧数加端点开销得到的 detailed distance cap。随后，每个 pair 在自己的 TOB 端点加入固定局部修补：非 TOB--TOB pair 使用两侧相邻 COB 的两行三列 9-Channel 模板；TOB--TOB pair 使用紧凑 7-Channel 模板。物理边界外的不存在 Channel 自动裁剪。完成 patch 后，`TrackToBumpNet`、`TrackToBumpsNet` 和 PNnet（包括 V18 预选后的 physical-source tree）的每个 pair 将当前 `Guide∪TOBPatch` 在 Channel 相邻图上做恰好一次 one-hop 外推；其它 net 不外推。`PairRoutingState` 保留各 pair 自己的初始 scope，详细 SAT scope 才取同一 net 所有 pair scope 的并集。
+6. `apply_global_route_v17` 写入 per-pair 非矩形 Channel guide、per-source unit 和由选中宏观弧数加端点开销得到的 detailed distance cap。随后，每个 pair 在自己的 TOB 端点加入固定局部修补：非 TOB--TOB pair 使用两侧相邻 COB 的两行三列 9-Channel 模板；TOB--TOB pair 使用紧凑 7-Channel 模板。物理边界外的不存在 Channel 自动裁剪。完成 patch 后，`TrackToBumpNet`、`TrackToBumpsNet` 和 PNnet（包括 V18 预选后的 physical-source tree）的每个 pair 将当前 `Guide∪TOBPatch` 在 Channel 相邻图上做恰好一次 one-hop 外推，再补齐本次已达 COB 集合所诱导的所有内部 Channel；闭包不引入新 COB，且按 pair 独立执行。其它 net 不外推。`PairRoutingState` 保留各 pair 自己的初始 scope，详细 SAT scope 才取同一 net 所有 pair scope 的并集。
    - V17 基线的 multi-sink PNnet 直接从每个 demand 的 `S/F` 恢复 source 和路径；V18 转换后的 Tnet 直接从预选物理 source 建立 guide，详细 SAT 不再开放 PN virtual-source 候选。
 7. `compute_pair_delays` 在上述初始 scope（guide、TOB patch 以及指定 net 的 one-hop 外推）的细粒度投影中求 `d_min`；TrackToBump、TrackToBumps 与其它普通 pair 的首轮 domain 均为 `{d_min}`，只有 V18 预选后的 Pose/Nege physical-source tree 使用 `{d_min,d_min+1,d_min+2}`，SyncBus 共享 `{max(member d_min)}`。`detailed distance cap` 保留为 Global Routing 诊断，不能扩大首轮详细 distance domain。
 8. Bnet 的 Global Routing unit 通过可追踪 assumption `gamma⇒Q_sat(unit)` 固定；不写不可撤销 unit clause。
@@ -41,7 +41,7 @@
    - 非 core net 的 unit 保持不变。
 10. V17 Z3 Optimal 后校验 `objective == reconstructed union wirelength`；V18 CaDiCaL SAT 后使用同一提取与物理合法性校验，仅把 `total_wirelength` 作为后验统计。
 
-第20版：仅 `--global-route-v18` 在 Global Routing apply 和 TOB repair 后、详细 SAT 前打印按 `PairKey` 重建的 raw selected guide。日志必须区分有序 source--target walk、`residual_selected_arcs`（环/分支/非唯一流）、TOB repair 增量和 final pair scope；Sync 额外打印每 member 的 raw Channel 数及 min/max。该日志的 wall time 写入 `SatRoutingResult::excluded_diagnostic_ms`，不能计入 Global Routing、SAT 或 `run_main total elapsed`。SAT 得到完整合法解后，只有 `--ilp-optimize` 才用 HiGHS 联合优化显式标记的 `TrackToBump(s)` 和 PN physical-source tree；`BumpToTrack`、`Sync`、`BumpToBump` 固定。优化固定 physical source/COBUnit，使用 SAT 树拆出的 segment、`bbox(R_ILP=0) ∩ final SAT scope` 稀疏域和 parent-level `x/y` 资源并集目标，完整 SAT 解作为 MIP start，gap 为 1.5%；冻结资源冲突、提取/硬件校验失败或 detailed wirelength 退化时必须原样回退 SAT 解。`--maze-optimize` 则按 stretch 逐个 rip-up 非 Sync 整棵树；Sync 为硬障碍，其他非 Sync 允许临时 overflow，dirty owner 按 FPIA-RRR 先全拆再逐个重布。每个 owner 限制在自己的 final SAT scope 并固定端点/source/unit；局部 RRR 不收敛、校验失败或总 detailed wirelength 不严格下降时事务式回滚。
+第20版：仅 `--global-route-v18` 在 Global Routing apply 和 TOB repair 后、详细 SAT 前打印按 `PairKey` 重建的 raw selected guide。日志必须区分有序 source--target walk、`residual_selected_arcs`（环/分支/非唯一流）、TOB repair 增量和 final pair scope；Sync 额外打印每 member 的 raw Channel 数及 min/max。该日志的 wall time 写入 `SatRoutingResult::excluded_diagnostic_ms`，不能计入 Global Routing、SAT 或 `run_main total elapsed`。第22版 `--ilp-optimize` 只固定 SyncBus；生产路径传入最终 `RoutingProblemState`，每个非 SyncBus pair 从自己的 `allowed_channels` 投影详细候选域，并并入该 pair 的 SAT path。pair 建二元有向 `F/D` 流；同 net pair 用 net-level `Y/S` OR 合并 physical node/switch 使用，允许在 pair-scope 交集共享而只对不同 net 施加资源独占。fixed bus 作为 node/switch/matching/mode 常量障碍。候选详细资源有交叠的 net 进入同一 interaction component，各 component 独立 HiGHS 求解并以 SAT pair paths 初始化 `F/D/Y/S/M`；任一 component、提取、校验或非退化检查失败均整体回退 SAT 解。`--maze-optimize` 则按 stretch 逐个 rip-up 非 Sync 整棵树；Sync 为硬障碍，其他非 Sync 允许临时 overflow，dirty owner 按 FPIA-RRR 先全拆再逐个重布。每个 owner 限制在自己的 final SAT scope 并固定端点/source/unit；局部 RRR 不收敛、校验失败或总 detailed wirelength 不严格下降时事务式回滚。
 
 第一层只编码必要条件，不能保证 TOB mux、Wilton lane、跨 COB lane 一致性或详细资源互斥可解；最终 Z3/CaDiCaL hard model 才是物理可行性证明。V17 的第一次 Optimal 只保证当前 guide/domain 内最优；V18 只返回当前 guide/domain 内的第一个可行解，两者都不声称完整硬件图上的全局线长最优。
 
@@ -63,6 +63,7 @@ SyncBus 的 Channel-count 等长是用户选定的宏观代理约束，不是细
 | `sat/z3_routing_feedback` | V17 编排、alpha/gamma core 分类和局部反馈 |
 | `sat/node_occupancy` | Track/Bump `U_v` 与 `D⇒U` |
 | `sat_allocation/` | CaDiCaL session 与 Z3 Optimize wrapper |
+| `post_sat_ilp/` | V22 固定 SyncBus、pair-local binary flow、net-level physical union、资源交互分量、SAT warm start 与独立结果校验 |
 | `test/unit_main.cc` | 合成图、MIP、scope、assumption 与原 SAT 单元验证 |
 
 ## 构建和合成测试
@@ -95,7 +96,7 @@ xmake build test_ILP_unit
 ./output/test_ILP <config_path> --global-route-v18 --maze-optimize -v -o <output_dir>
 ```
 
-`--time-limit MIN` 只限制正式 Global Routing 的 HiGHS 墙钟时间（分钟）；省略或未设置表示不限时。容量剪切多轮重求解共用同一预算。超时若已有可行 incumbent 则继续提取 guide，否则报失败。PN 预选不受该参数约束。
+`--time-limit MIN` 限制正式 Global Routing 的 HiGHS 墙钟时间（分钟）；省略或未设置表示不限时。容量剪切多轮重求解共用同一预算。启用 `--ilp-optimize` 时，当前同一数值也分别作为每个 interaction component 的 HiGHS time limit。超时若已有可行 incumbent 则可继续校验；无可行解则整体回退 SAT baseline。PN 预选不受该参数约束。
 
 `--global-route-v17/--global-route-v18` 不与 `-s/-d` 联用，因为 guide 和 distance cap 已由第一层初始化。V18 不与 `--z3-optimize` 联用。普通 `--z3-optimize` 和默认 CaDiCaL 流程仍支持原 `-s/-d`。
 
@@ -111,8 +112,9 @@ xmake build test_ILP_unit
 - 容量剪切在无拥塞 case 中保持相同 objective 且 `W=0`；9 个 fixed-unit owner 共用 Channel 时必须由首次求解前的精确容量行直接判定不可行；另外覆盖可选 unit/source 超载在加 cut 后改到可行解并收敛；
 - maze MIP start 必须分别覆盖 2-pin 和单源多-pin owner，记录提交的 commodity/变量数，且不改变原 MIP objective 和最终容量校验结果；
 - bbox+1 Global Routing scope 必须验证无关 `F/X` 变量被实际删除，以及唯一绕路在 scope 外时直接返回 Infeasible，不进行自动扩展；
-- V18 合成 case 必须完成 HiGHS guide 并由 CaDiCaL 在无 `U`/无 soft clauses 的 hard CNF 上找到可行解；TOB/scope 单测必须覆盖内部 TOB 的9/7-Channel 模板、TrackToBump(s) 和 PNnet 在 guide+patch 上恰好 one-hop 外推、BumpToTrack 等非目标 net 不外推、pair-local guide 与整网 union、首轮 singleton domain 和所有 pair 第5次反馈阈值；scoped-path 不可达时必须携带准确 `PairKey`，只扩展该 pair 所属 net；
+- V18 合成 case 必须完成 HiGHS guide 并由 CaDiCaL 在无 `U`/无 soft clauses 的 hard CNF 上找到可行解；TOB/scope 单测必须覆盖内部 TOB 的9/7-Channel 模板、TrackToBump(s) 和 PNnet 在 guide+patch 上恰好 one-hop 外推及已达 COB 的内部 Channel 闭包、BumpToTrack 等非目标 net 不外推、pair-local guide 与整网 union、首轮 singleton domain 和所有 pair 第5次反馈阈值；scoped-path 不可达时必须携带准确 `PairKey`，只扩展该 pair 所属 net；
 - V20 post-SAT maze 合成测试必须覆盖 scope 内直接缩短、Sync 硬障碍不变，以及 trigger 产生 non-Sync overflow 后 dirty owner 全拆并收敛到更短合法解；
+- V22 post-SAT ILP 必须覆盖仅 SyncBus 被排除、Bump-root 的 unit 恢复、pair-local scope 不借用同 net 另一 pair 的专有资源、pair-scope 交集的同-net共享与 union wirelength 去重、incumbent-path union warm start、scope 资源相交/不相交时 component 合并/分裂、两个非 bus net 交换 SAT 资源、共享 mode group 的 straight/swap 互斥，以及固定 bus 的 path/node/switch/mode 不变；
 - 既有 TOB/COB/SAT、路径提取、bus detailed 等长和 Z3 objective 不变量。
 
 无需用 `test/config` 真实 case 作为第十七版的基本回归。
@@ -140,7 +142,7 @@ xmake build test_ILP_unit
 - Z3 每轮：alpha/unit assumptions、soft 数、core 分类、release/guide expansion；V18 CaDiCaL 每轮记录 hard clauses、alpha/unit assumptions、`occupancy_soft_clauses=0`、core 分类与 expansion；Global Routing guide 初始化额外记录 TOB repair 的 net/TOB/Channel 数，反馈记录 net 类型、连续 distance failure、阈值和 scope expansion；
 - main 汇总：`global route` 与 summary 相同字段，SAT 规模/耗时，最终 wirelength。
 - V20 guide：`global guide` 的 source/target/unit、selected Channel/COB/arc 数、有序 walk、residual、TOB repair 增量、初始 one-hop 增量和 final scope；结尾打印 `body_log_ms`，并在 `run_main total elapsed` 中打印 raw/excluded 值。
-- V20 post-SAT ILP：目标/fixed net 数、segment bbox 资源槽、locked node/switch 数，`F/X/Y/M` 变量、九类约束、warm-start 提交规模、每目标 net 与总体 wirelength 改善、gap/耗时、校验状态或 fallback 原因。
+- V22 post-SAT ILP：non-bus/fixed-bus net 数、pair 数、pair-local node/arc slots、interaction component 数、locked node/switch 数，每分量 `F/D/Y/S/M` 变量、constraints 和 warm-start 规模，合并后 wirelength/gap/build/solve 耗时，以及独立 route validation 或整体 fallback 原因。
 - V20 post-SAT maze：non-Sync owner 数、每个 trigger 的 stretch/状态/回滚、每轮 overflow/dirty owner/线长，以及 trigger/接受/RRR 迭代/累计重布 owner/最终线长汇总。
 
 不要把 Global Routing Channel objective 记为 detailed wirelength，也不要把 Channel 数直接用作 SAT distance。

@@ -105,7 +105,7 @@ auto run_main(int argc, char** argv) -> int {
             "v18 flow enabled: HiGHS Channel/COBUnit capacity cuts (no W) -> guided CaDiCaL pure SAT");
     }
     if (cli.enable_post_sat_ilp) {
-        debug::info("V20 post-SAT ILP refinement enabled by --ilp-optimize");
+        debug::info("V22 post-SAT pair-flow ILP refinement enabled by --ilp-optimize");
     }
     else if (cli.enable_post_sat_maze) {
         debug::info("V20 post-SAT local maze/RRR refinement enabled by --maze-optimize");
@@ -155,12 +155,13 @@ auto run_main(int argc, char** argv) -> int {
         result.global_route_build_ms,
         result.global_route_solve_ms);
     debug::info_fmt(
-        "post-SAT ILP: attempted={} accepted={} status={} parents={} segments={} vars={} constraints={} wirelength={}->{} objective={:.0f} bound={:.3f} gap={:.6f} total_ms={} build_ms={} solve_ms={}",
+        "post-SAT ILP: attempted={} accepted={} status={} nets={} pairs={} components={} vars={} constraints={} wirelength={}->{} objective={:.0f} bound={:.3f} gap={:.6f} total_ms={} build_ms={} solve_ms={}",
         result.post_sat_ilp_attempted,
         result.post_sat_ilp_accepted,
         result.post_sat_ilp_attempted ? result.post_sat_ilp_status : "n/a",
         result.post_sat_ilp_parents,
         result.post_sat_ilp_segments,
+        result.post_sat_ilp_components,
         result.post_sat_ilp_variables,
         result.post_sat_ilp_constraints,
         result.post_sat_ilp_baseline_wirelength,

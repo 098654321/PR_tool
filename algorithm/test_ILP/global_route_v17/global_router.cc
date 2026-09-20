@@ -175,6 +175,25 @@ auto adjacent_cobs(
     return result;
 }
 
+auto build_channel_cob_incidence(const GlobalChannelGraph& graph)
+    -> std::Vector<std::Vector<std::pair<int, int>>> {
+    auto result = std::Vector<std::Vector<std::pair<int, int>>>(graph.channels.size());
+    for (std::size_t channel = 0; channel < graph.channels.size(); ++channel) {
+        auto cobs = std::set<std::pair<int, int>> {};
+        for (const int arc_id : graph.arc_ids_by_channel[channel]) {
+            const auto& arc = graph.arcs[static_cast<std::size_t>(arc_id)];
+            for (const int node_id : {arc.u, arc.v}) {
+                const auto& node = graph.nodes[static_cast<std::size_t>(node_id)];
+                if (node.kind == GlobalRouteNodeKind::Cob) {
+                    cobs.emplace(node.row, node.col);
+                }
+            }
+        }
+        result[channel].assign(cobs.begin(), cobs.end());
+    }
+    return result;
+}
+
 auto cob_in_bbox(const std::pair<int, int>& cob, const IlpBoundingBox& bbox) -> bool {
     return cob.first >= bbox.row_min && cob.first <= bbox.row_max
         && cob.second >= bbox.col_min && cob.second <= bbox.col_max;
@@ -2328,6 +2347,10 @@ auto expand_global_route_guides_one_hop(
     for (const auto& key : critical_pairs) {
         unique_pairs.insert(key);
     }
+    if (unique_pairs.empty()) {
+        return out;
+    }
+    const auto cobs_by_channel = build_channel_cob_incidence(graph);
     auto affected_nets = std::set<std::size_t> {};
     auto before_by_net = std::map<std::size_t, std::set<GlobalChannelCoord>> {};
     for (const auto& key : unique_pairs) {
@@ -2358,6 +2381,29 @@ auto expand_global_route_guides_one_hop(
             const auto channel = static_cast<std::size_t>(channel_it->second);
             for (const int adjacent : graph.adjacent_channel_ids[channel]) {
                 expanded.insert(graph.channels[static_cast<std::size_t>(adjacent)]);
+            }
+        }
+
+        // One adjacency hop can introduce a new COB row/column without adding
+        // the Channels between those newly reached COBs.  Close the expanded
+        // pair-local scope over physical Channels whose two COB endpoints are
+        // already present; this fills the holes without reaching another COB.
+        auto expanded_cobs = std::set<std::pair<int, int>> {};
+        for (const auto& coord : expanded) {
+            const auto channel_it = graph.channel_id_by_coord.find(coord);
+            if (channel_it == graph.channel_id_by_coord.end()) {
+                continue;
+            }
+            const auto channel = static_cast<std::size_t>(channel_it->second);
+            expanded_cobs.insert(
+                cobs_by_channel[channel].begin(), cobs_by_channel[channel].end());
+        }
+        for (std::size_t channel = 0; channel < graph.channels.size(); ++channel) {
+            const auto& cobs = cobs_by_channel[channel];
+            if (cobs.size() == 2
+                && expanded_cobs.contains(cobs[0])
+                && expanded_cobs.contains(cobs[1])) {
+                expanded.insert(graph.channels[channel]);
             }
         }
         out.pair_local_added_channels += expanded.size() - pair->allowed_channels.size();

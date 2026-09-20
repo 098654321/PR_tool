@@ -1,20 +1,16 @@
 #include "post_sat_ilp/post_sat_ilp.hh"
 
 #include "common/cob_unit_mask.hh"
-#include "common/hw_map.hh"
 #include "global_route_v17/highs_log_sink.hh"
 #include "sat/routing_path_log.hh"
-#include "scope/scope_bbox.hh"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <debug/debug.hh>
 #include <format>
-#include <limits>
 #include <map>
 #include <numeric>
-#include <optional>
 #include <queue>
 #include <set>
 #include <stdexcept>
@@ -24,1497 +20,1102 @@
 #endif
 
 namespace PR_tool {
-
 namespace {
-
 constexpr double kMipRelativeGap = 0.015;
 
-struct Segment {
-    std::size_t id{0};
-    std::size_t parent{0};
-    int source{-1};
-    int sink{-1};
-    std::Vector<int> guide_nodes;
-    std::Vector<int> guide_arcs;
-    std::Vector<int> nodes;
-    std::Vector<int> arcs;
+struct Pair {
+    std::size_t id{}, net{}, net_id{}, demand{}, source_index{};
+    int source{-1}, sink{-1}, physical_source{-1};
+    std::uint16_t unit{0xffff};
+    std::Vector<int> nodes, arcs;
+    std::set<int> incumbent;
 };
-
-struct Parent {
-    std::size_t id{0};
-    std::size_t net_id{0};
-    int root{-1};
-    std::uint16_t unit_mask{0};
-    std::Vector<int> sinks;
-    std::Vector<std::size_t> demand_ids;
-    std::Vector<std::size_t> source_indices;
-    std::Vector<std::size_t> segments;
+struct Net {
+    std::size_t id{}, net_id{};
+    std::uint16_t unit{0xffff};
+    std::Vector<std::size_t> pairs;
 };
-
-struct Prepared {
-    std::Vector<Parent> parents;
-    std::Vector<Segment> segments;
-    std::set<std::size_t> selected_net_ids;
-};
-
-struct LockedResources {
+struct Locked {
     std::Vector<bool> nodes;
     std::set<int> switches;
-    std::set<std::size_t> net_ids;
+    std::map<int, bool> modes;
+    std::map<std::pair<int, int>, int> matching;
+    std::set<std::size_t> nets;
 };
-
-struct SegmentVars {
-    std::map<int, int> f;
+struct Prepared {
+    std::Vector<Net> nets;
+    std::Vector<Pair> pairs;
+    std::set<std::size_t> selected;
+    std::Vector<std::Vector<std::size_t>> components;
 };
-
-struct ParentVars {
-    std::map<int, int> x;
-    std::map<int, int> y;
+struct PairVars {
+    std::map<int, int> f, d;
 };
-
-struct ModelStats {
-    std::size_t f_vars{0};
-    std::size_t x_vars{0};
-    std::size_t y_vars{0};
-    std::size_t mode_vars{0};
-    std::size_t flow_rows{0};
-    std::size_t flow_to_parent_rows{0};
-    std::size_t parent_support_rows{0};
-    std::size_t tree_rows{0};
-    std::size_t endpoint_rows{0};
-    std::size_t occupancy_rows{0};
-    std::size_t switch_rows{0};
-    std::size_t matching_rows{0};
-    std::size_t mode_rows{0};
-    std::size_t constraints{0};
-    std::size_t nonzeros{0};
-    std::size_t mip_start_entries{0};
-    long long build_ms{0};
-    long long solve_ms{0};
-    double objective{0.0};
-    double bound{0.0};
-    double gap{0.0};
+struct NetVars {
+    std::map<int, int> y, s;
 };
-
-struct ParentSolution {
-    std::set<int> arcs;
-    std::set<int> nodes;
+struct Stats {
+    std::size_t f{}, d{}, y{}, s{}, m{}, rows{}, nz{}, start{};
+    std::size_t f_implies_d{}, f_implies_s{}, flow_balance{},
+        source_no_incoming{}, node_incoming{}, sink_no_outgoing{},
+        endpoint_d_fixed{}, d_implies_y{}, y_support{}, s_support{},
+        node_exclusivity{}, switch_exclusivity{}, tob_matching{},
+        mode_binding{};
+    long long build{}, solve{};
+    double objective{}, bound{}, gap{};
 };
-
-struct SegmentSolution {
-    std::set<int> arcs;
+struct PairSolution {
+    std::set<int> arcs, nodes;
 };
-
-struct ModelResult {
-    bool ok{false};
+struct Result {
+    bool ok{};
     std::String status;
-    ModelStats stats;
-    std::Vector<ParentSolution> parents;
-    std::Vector<SegmentSolution> segments;
+    Stats stats;
+    std::Vector<PairSolution> pairs;
     std::map<int, bool> modes;
 };
 
-auto is_physical_node(const UnifiedGraph& graph, const int node) -> bool {
-    return node >= 0 && static_cast<std::size_t>(node) < graph.nodes.size() &&
-           graph.nodes[static_cast<std::size_t>(node)].kind !=
-               UnifiedNodeKind::VirtualSource;
-}
-
-auto is_wirelength_node(const UnifiedGraph& graph, const int node) -> bool {
-    if (!is_physical_node(graph, node)) {
-        return false;
-    }
-    const auto kind = graph.nodes[static_cast<std::size_t>(node)].kind;
-    return kind == UnifiedNodeKind::Track || kind == UnifiedNodeKind::Bump;
-}
-
-auto find_arc(const UnifiedGraph& graph, const int u, const int v) -> int {
-    if (u < 0 || static_cast<std::size_t>(u) >= graph.out_arc_ids.size()) {
-        return -1;
-    }
-    for (const int arc : graph.out_arc_ids[static_cast<std::size_t>(u)]) {
-        if (graph.arcs[static_cast<std::size_t>(arc)].v == v) {
-            return arc;
+auto log_post_sat_ilp_model_stats(const Prepared &p, const Locked &locked,
+                                  const std::Vector<std::size_t> &component,
+                                  const Stats &stats) -> void {
+    std::size_t node_slots = 0, arc_slots = 0;
+    std::size_t pairs = 0;
+    for (const auto net_id : component)
+        for (const auto pair_id : p.nets[net_id].pairs) {
+            const auto &pair = p.pairs[pair_id];
+            node_slots += pair.nodes.size();
+            arc_slots += pair.arcs.size();
+            ++pairs;
         }
-    }
+    const auto listed_rows =
+        stats.f_implies_d + stats.f_implies_s + stats.flow_balance +
+        stats.source_no_incoming + stats.node_incoming +
+        stats.sink_no_outgoing + stats.endpoint_d_fixed + stats.d_implies_y +
+        stats.y_support + stats.s_support + stats.node_exclusivity +
+        stats.switch_exclusivity + stats.tob_matching + stats.mode_binding;
+    debug::info("========== V22 post-SAT ILP component model stats (-v) ==========");
+    debug::info("Model dimensions:");
+    debug::info_fmt("  nets in this component          : {}", component.size());
+    debug::info_fmt("  non-SyncBus nets (all)          : {}", p.nets.size());
+    debug::info_fmt("  fixed SyncBus nets              : {}", locked.nets.size());
+    debug::info_fmt("  source/sink pairs               : {}", pairs);
+    debug::info_fmt("  interaction components (all)    : {}", p.components.size());
+    debug::info_fmt("  pair-local node slots           : {}", node_slots);
+    debug::info_fmt("  pair-local directed arc slots   : {}", arc_slots);
+    debug::info_fmt("  locked physical nodes           : {}",
+                    std::count(locked.nodes.begin(), locked.nodes.end(), true));
+    debug::info_fmt("  locked physical switches        : {}", locked.switches.size());
+
+    debug::info("Binary variables:");
+    debug::info_fmt("  F   (pair directed flow)        : {}", stats.f);
+    debug::info_fmt("  D   (pair node use)             : {}", stats.d);
+    debug::info_fmt("  Y   (net physical node union)   : {}", stats.y);
+    debug::info_fmt("  S   (net physical switch union) : {}", stats.s);
+    debug::info_fmt("  M   (VLine--Track mode)         : {}", stats.m);
+    debug::info_fmt("  total MIP variables             : {}",
+                    stats.f + stats.d + stats.y + stats.s + stats.m);
+    debug::info_fmt("  MIP-start entries               : {}", stats.start);
+
+    debug::info("Linear constraints by category:");
+    debug::info_fmt("  [1]  F implies endpoint D       : {}", stats.f_implies_d);
+    debug::info_fmt("  [2]  F implies net switch S    : {}", stats.f_implies_s);
+    debug::info_fmt("  [3]  pair flow balance          : {}", stats.flow_balance);
+    debug::info_fmt("  [4]  source has no incoming F  : {}", stats.source_no_incoming);
+    debug::info_fmt("  [5]  D equals incoming F        : {}", stats.node_incoming);
+    debug::info_fmt("  [6]  sink has no outgoing F    : {}", stats.sink_no_outgoing);
+    debug::info_fmt("  [7]  source/sink D fixed       : {}", stats.endpoint_d_fixed);
+    debug::info_fmt("  [8]  pair D implies net Y       : {}", stats.d_implies_y);
+    debug::info_fmt("  [9]  net Y support              : {}", stats.y_support);
+    debug::info_fmt("  [10] net S support              : {}", stats.s_support);
+    debug::info_fmt("  [11] cross-net node exclusivity : {}", stats.node_exclusivity);
+    debug::info_fmt("  [12] cross-net switch exclusive : {}", stats.switch_exclusivity);
+    debug::info_fmt("  [13] TOB partial matching       : {}", stats.tob_matching);
+    debug::info_fmt("  [14] straight/swap mode binding : {}", stats.mode_binding);
+    debug::info_fmt("  listed / total MIP constraints  : {} / {}", listed_rows,
+                    stats.rows);
+    debug::info("==========================================================");
+}
+
+auto physical(const UnifiedGraph &g, int v) -> bool {
+    return v >= 0 && static_cast<std::size_t>(v) < g.nodes.size() &&
+           g.nodes[v].kind != UnifiedNodeKind::VirtualSource;
+}
+auto length_node(const UnifiedGraph &g, int v) -> bool {
+    return physical(g, v) && (g.nodes[v].kind == UnifiedNodeKind::Track ||
+                              g.nodes[v].kind == UnifiedNodeKind::Bump);
+}
+auto find_arc(const UnifiedGraph &g, int u, int v) -> int {
+    if (u < 0 || static_cast<std::size_t>(u) >= g.out_arc_ids.size())
+        return -1;
+    for (int a : g.out_arc_ids[u])
+        if (g.arcs[a].v == v)
+            return a;
     return -1;
 }
-
-auto path_arcs(const UnifiedGraph& graph, const std::Vector<int>& nodes)
+auto path_arcs(const UnifiedGraph &g, const std::Vector<int> &path)
     -> std::Vector<int> {
     auto out = std::Vector<int>{};
-    for (std::size_t index = 1; index < nodes.size(); ++index) {
-        const int arc = find_arc(graph, nodes[index - 1], nodes[index]);
-        if (arc < 0) {
-            throw std::logic_error(
-                std::format("V20 ILP SAT guide has no graph arc {}->{}",
-                            nodes[index - 1], nodes[index]));
-        }
-        out.push_back(arc);
+    for (std::size_t i = 1; i < path.size(); ++i) {
+        const int a = find_arc(g, path[i - 1], path[i]);
+        if (a < 0)
+            throw std::logic_error("V22 path lacks graph arc");
+        out.push_back(a);
     }
     return out;
 }
-
-auto net_for(const std::Vector<RoutingNet>& nets, const std::size_t net_id)
-    -> const RoutingNet* {
-    const auto it =
-        std::find_if(nets.begin(), nets.end(), [&](const RoutingNet& net) {
-            return net.net_id == net_id;
-        });
+auto net_for(const std::Vector<RoutingNet> &nets, std::size_t id)
+    -> const RoutingNet * {
+    const auto it = std::find_if(nets.begin(), nets.end(),
+                                 [&](const auto &n) { return n.net_id == id; });
     return it == nets.end() ? nullptr : &*it;
 }
-
-auto demand_for(const RoutingNet& net, const std::size_t demand_id)
-    -> const RoutingDemand* {
-    const auto it = std::find_if(
-        net.demands.begin(), net.demands.end(),
-        [&](const auto& demand) { return demand.demand_id == demand_id; });
+auto demand_for(const RoutingNet &net, std::size_t id)
+    -> const RoutingDemand * {
+    const auto it =
+        std::find_if(net.demands.begin(), net.demands.end(),
+                     [&](const auto &d) { return d.demand_id == id; });
     return it == net.demands.end() ? nullptr : &*it;
 }
-
-auto scope_for(const std::Vector<UnifiedSatNetScope>& scopes,
-               const std::size_t net_id) -> const UnifiedSatNetScope* {
-    const auto it =
-        std::find_if(scopes.begin(), scopes.end(),
-                     [&](const auto& scope) { return scope.net_id == net_id; });
+auto scope_for(const std::Vector<UnifiedSatNetScope> &scopes, std::size_t id)
+    -> const UnifiedSatNetScope * {
+    const auto it = std::find_if(scopes.begin(), scopes.end(),
+                                 [&](const auto &s) { return s.net_id == id; });
     return it == scopes.end() ? nullptr : &*it;
 }
-
-auto paths_for(const SatRoutingResult& result, const std::size_t net_id)
-    -> std::Vector<const SourceSinkPairPath*> {
-    auto out = std::Vector<const SourceSinkPairPath*>{};
-    for (const auto& path : result.paths) {
-        if (path.net_id == net_id) {
+auto paths_for(const SatRoutingResult &result, std::size_t net_id)
+    -> std::Vector<const SourceSinkPairPath *> {
+    auto out = std::Vector<const SourceSinkPairPath *>{};
+    for (const auto &path : result.paths)
+        if (path.net_id == net_id)
             out.push_back(&path);
-        }
-    }
-    std::sort(out.begin(), out.end(), [](const auto* lhs, const auto* rhs) {
-        return lhs->demand_id < rhs->demand_id;
+    std::sort(out.begin(), out.end(), [](auto a, auto b) {
+        return std::tie(a->demand_id, a->source_index) <
+               std::tie(b->demand_id, b->source_index);
     });
     return out;
 }
-
-auto merge_node_bbox(const UnifiedGraph& graph, const int node,
-                     IlpBoundingBox& box) -> void {
-    if (!is_physical_node(graph, node)) {
-        return;
-    }
-    const auto& value = graph.nodes[static_cast<std::size_t>(node)];
-    switch (value.kind) {
-    case UnifiedNodeKind::Track:
-        merge_coord_into_bbox(
-            box, track_to_cob(hardware::TrackCoord{
-                     value.track_row, value.track_col,
-                     value.track_dir == 0 ? hardware::TrackDirection::Horizontal
-                                          : hardware::TrackDirection::Vertical,
-                     value.track_index}));
-        break;
-    case UnifiedNodeKind::Bump:
-        merge_coord_into_bbox(box, tob_anchor_cob(value.bump.TOB));
-        break;
-    case UnifiedNodeKind::HLine:
-    case UnifiedNodeKind::VLine: {
-        const auto [row, col] = tob_index_from_linear(value.tob);
-        const auto [first, second] = tob_pair_cob_coords(row, col);
-        merge_coord_into_bbox(box, first);
-        merge_coord_into_bbox(box, second);
-        break;
-    }
-    case UnifiedNodeKind::VirtualSource:
-        break;
-    }
+auto endpoints(const UnifiedGraph &g, const UnifiedArc &a)
+    -> std::Vector<std::pair<int, int>> {
+    if (a.physical_switch_id < 0)
+        return {};
+    const auto u = g.nodes[a.u].kind, v = g.nodes[a.v].kind;
+    if (u == UnifiedNodeKind::Bump && v == UnifiedNodeKind::HLine)
+        return {{0, a.u}, {1, a.v}};
+    if (u == UnifiedNodeKind::HLine && v == UnifiedNodeKind::Bump)
+        return {{0, a.v}, {1, a.u}};
+    if (u == UnifiedNodeKind::HLine && v == UnifiedNodeKind::VLine)
+        return {{2, a.u}, {3, a.v}};
+    if (u == UnifiedNodeKind::VLine && v == UnifiedNodeKind::HLine)
+        return {{2, a.v}, {3, a.u}};
+    return {};
 }
 
-auto guide_bbox(const UnifiedGraph& graph, const std::Vector<int>& guide,
-                const int padding) -> IlpBoundingBox {
-    auto box = IlpBoundingBox{std::numeric_limits<std::i64>::max(),
-                              std::numeric_limits<std::i64>::min(),
-                              std::numeric_limits<std::i64>::max(),
-                              std::numeric_limits<std::i64>::min()};
-    for (const int node : guide) {
-        merge_node_bbox(graph, node, box);
-    }
-    if (box.row_min > box.row_max) {
-        throw std::logic_error("V20 ILP segment guide has no physical bbox");
-    }
-    for (int step = 0; step < padding; ++step) {
-        box = expand_pair_bbox_one_cell(box);
-    }
-    return clamp_bbox_to_cob_array(box);
-}
-
-auto collect_locked(const UnifiedGraph& graph, const SatRoutingResult& result,
-                    const std::set<std::size_t>& selected) -> LockedResources {
-    auto out = LockedResources{};
-    out.nodes.assign(graph.nodes.size(), false);
-    for (const auto& path : result.paths) {
-        if (selected.contains(path.net_id)) {
+auto locked_resources(const UnifiedGraph &g,
+                      const std::Vector<RoutingNet> &nets,
+                      const SatRoutingResult &sat) -> Locked {
+    auto out = Locked{};
+    out.nodes.assign(g.nodes.size(), false);
+    for (const auto &path : sat.paths) {
+        const auto *net = net_for(nets, path.net_id);
+        if (net == nullptr || !net->is_sync_bus)
             continue;
-        }
-        out.net_ids.insert(path.net_id);
-        for (const int node : path.node_path) {
-            if (is_physical_node(graph, node)) {
-                out.nodes[static_cast<std::size_t>(node)] = true;
+        out.nets.insert(path.net_id);
+        for (int v : path.node_path)
+            if (physical(g, v))
+                out.nodes[v] = true;
+        for (int a : path_arcs(g, path.node_path)) {
+            const auto &e = g.arcs[a];
+            if (e.physical_switch_id >= 0) {
+                out.switches.insert(e.physical_switch_id);
+                for (auto key : endpoints(g, e))
+                    ++out.matching[key];
             }
-        }
-        for (const int arc : path_arcs(graph, path.node_path)) {
-            const int physical_switch =
-                graph.arcs[static_cast<std::size_t>(arc)].physical_switch_id;
-            if (physical_switch >= 0) {
-                out.switches.insert(physical_switch);
+            if (e.mode_group_id >= 0) {
+                const auto [it, ok] = out.modes.emplace(
+                    e.mode_group_id, e.is_vline_track_straight);
+                if (!ok && it->second != e.is_vline_track_straight)
+                    throw std::logic_error("V22 fixed bus mode conflict");
             }
         }
     }
+    for (const auto &[_, count] : out.matching)
+        if (count > 1)
+            throw std::logic_error("V22 fixed bus matching conflict");
     return out;
 }
-
-auto build_rooted_tree(const std::Vector<const SourceSinkPairPath*>& paths,
-                       const int root, const std::set<int>& sinks)
-    -> std::set<std::pair<int, int>> {
-    auto adjacency = std::map<int, std::set<int>>{};
-    for (const auto* path : paths) {
-        for (std::size_t index = 1; index < path->node_path.size(); ++index) {
-            const int u = path->node_path[index - 1];
-            const int v = path->node_path[index];
-            adjacency[u].insert(v);
-            adjacency[v].insert(u);
-        }
-    }
-    auto parent = std::map<int, int>{{root, root}};
-    auto queue = std::queue<int>{};
-    queue.push(root);
-    while (!queue.empty()) {
-        const int node = queue.front();
-        queue.pop();
-        for (const int next : adjacency[node]) {
-            if (parent.contains(next)) {
-                continue;
-            }
-            parent.emplace(next, node);
-            queue.push(next);
-        }
-    }
-    auto retained = std::set<int>{root};
-    for (const int sink : sinks) {
-        if (!parent.contains(sink)) {
-            throw std::logic_error(std::format(
-                "V20 ILP SAT tree cannot reach sink {} from root {}", sink,
-                root));
-        }
-        for (int node = sink; node != root; node = parent.at(node)) {
-            retained.insert(node);
-        }
-    }
-    auto edges = std::set<std::pair<int, int>>{};
-    for (const int node : retained) {
-        if (node != root) {
-            edges.emplace(parent.at(node), node);
-        }
-    }
-    return edges;
-}
-
-auto tree_segments(const int root, const std::set<int>& sinks,
-                   const std::set<std::pair<int, int>>& edges)
-    -> std::Vector<std::Vector<int>> {
-    auto degree = std::map<int, int>{};
-    auto children = std::map<int, std::Vector<int>>{};
-    for (const auto& [u, v] : edges) {
-        ++degree[u];
-        ++degree[v];
-        children[u].push_back(v);
-    }
-    auto critical = sinks;
-    critical.insert(root);
-    for (const auto& [node, count] : degree) {
-        if (count >= 3) {
-            critical.insert(node);
-        }
-    }
-    auto out = std::Vector<std::Vector<int>>{};
-    auto pending = std::queue<int>{};
-    pending.push(root);
-    while (!pending.empty()) {
-        const int start = pending.front();
-        pending.pop();
-        for (const int first : children[start]) {
-            auto path = std::Vector<int>{start, first};
-            int node = first;
-            while (!critical.contains(node)) {
-                if (!children.contains(node) || children[node].size() != 1) {
-                    throw std::logic_error("V20 ILP recovered tree has a "
-                                           "non-critical branch/leaf");
-                }
-                node = children[node].front();
-                path.push_back(node);
-            }
-            out.push_back(path);
-            if (children.contains(node)) {
-                pending.push(node);
-            }
-        }
-    }
-    return out;
-}
-
-auto build_segment_domain(const UnifiedGraph& graph,
-                          const UnifiedSatNetScope& sat_scope,
-                          const Parent& parent, Segment& segment,
-                          const LockedResources& locked, const int bbox_padding)
-    -> void {
-    const auto box = guide_bbox(graph, segment.guide_nodes, bbox_padding);
-    const auto guide_nodes =
-        std::set<int>(segment.guide_nodes.begin(), segment.guide_nodes.end());
-    const auto guide_arcs =
-        std::set<int>(segment.guide_arcs.begin(), segment.guide_arcs.end());
-    auto allowed = std::Vector<bool>(graph.nodes.size(), false);
-    for (const int node : sat_scope.node_ids) {
-        if (!is_physical_node(graph, node)) {
-            continue;
-        }
-        const bool forced = guide_nodes.contains(node) ||
-                            node == segment.source || node == segment.sink;
-        if (!forced && !node_in_scope(graph, node, box)) {
-            continue;
-        }
-        if (!node_unit_eligible(graph.nodes[static_cast<std::size_t>(node)],
-                                parent.unit_mask)) {
-            continue;
-        }
-        if (locked.nodes[static_cast<std::size_t>(node)]) {
-            if (forced) {
-                throw std::logic_error(std::format(
-                    "V20 ILP SAT guide node {} is occupied by a locked net",
-                    node));
-            }
-            continue;
-        }
-        allowed[static_cast<std::size_t>(node)] = true;
-    }
-    auto candidate = std::Vector<int>{};
-    auto forward = std::Vector<std::Vector<int>>(graph.nodes.size());
-    auto reverse = std::Vector<std::Vector<int>>(graph.nodes.size());
-    for (const int arc : sat_scope.arc_ids) {
-        const auto& value = graph.arcs[static_cast<std::size_t>(arc)];
-        if (!allowed[static_cast<std::size_t>(value.u)] ||
-            !allowed[static_cast<std::size_t>(value.v)] ||
-            !arc_unit_eligible(graph, value, parent.unit_mask)) {
-            continue;
-        }
-        if (value.physical_switch_id >= 0 &&
-            locked.switches.contains(value.physical_switch_id)) {
-            if (guide_arcs.contains(arc)) {
-                throw std::logic_error(std::format(
-                    "V20 ILP SAT guide switch {} is occupied by a locked net",
-                    value.physical_switch_id));
-            }
-            continue;
-        }
-        candidate.push_back(arc);
-        forward[static_cast<std::size_t>(value.u)].push_back(arc);
-        reverse[static_cast<std::size_t>(value.v)].push_back(arc);
-    }
-    auto from_source = std::Vector<bool>(graph.nodes.size(), false);
-    auto to_sink = std::Vector<bool>(graph.nodes.size(), false);
-    auto queue = std::queue<int>{};
-    from_source[static_cast<std::size_t>(segment.source)] = true;
-    queue.push(segment.source);
-    while (!queue.empty()) {
-        const int node = queue.front();
-        queue.pop();
-        for (const int arc : forward[static_cast<std::size_t>(node)]) {
-            const int next = graph.arcs[static_cast<std::size_t>(arc)].v;
-            if (!from_source[static_cast<std::size_t>(next)]) {
-                from_source[static_cast<std::size_t>(next)] = true;
-                queue.push(next);
-            }
-        }
-    }
-    to_sink[static_cast<std::size_t>(segment.sink)] = true;
-    queue.push(segment.sink);
-    while (!queue.empty()) {
-        const int node = queue.front();
-        queue.pop();
-        for (const int arc : reverse[static_cast<std::size_t>(node)]) {
-            const int previous = graph.arcs[static_cast<std::size_t>(arc)].u;
-            if (!to_sink[static_cast<std::size_t>(previous)]) {
-                to_sink[static_cast<std::size_t>(previous)] = true;
-                queue.push(previous);
-            }
-        }
-    }
-    if (!from_source[static_cast<std::size_t>(segment.sink)]) {
+auto infer_unit(const UnifiedGraph &g,
+                const std::Vector<const SourceSinkPairPath *> &paths)
+    -> std::uint16_t {
+    auto units = std::set<std::size_t>{};
+    for (const auto *path : paths)
+        for (int v : path->node_path)
+            if (physical(g, v) && g.nodes[v].kind == UnifiedNodeKind::Track)
+                units.insert(g.nodes[v].unit);
+    if (units.size() != 1)
         throw std::logic_error(
-            "V20 ILP segment domain disconnects its SAT endpoints");
-    }
-    auto nodes = std::set<int>{segment.source, segment.sink};
-    for (const int arc : candidate) {
-        const auto& value = graph.arcs[static_cast<std::size_t>(arc)];
-        if (from_source[static_cast<std::size_t>(value.u)] &&
-            to_sink[static_cast<std::size_t>(value.v)]) {
-            segment.arcs.push_back(arc);
-            nodes.insert(value.u);
-            nodes.insert(value.v);
-        }
-    }
-    segment.nodes.assign(nodes.begin(), nodes.end());
-    const auto domain_arcs =
-        std::set<int>(segment.arcs.begin(), segment.arcs.end());
-    const auto domain_nodes =
-        std::set<int>(segment.nodes.begin(), segment.nodes.end());
-    for (const int node : segment.guide_nodes) {
-        if (!domain_nodes.contains(node)) {
-            throw std::logic_error(std::format(
-                "V20 ILP segment domain dropped SAT guide node {}", node));
-        }
-    }
-    for (const int arc : segment.guide_arcs) {
-        if (!domain_arcs.contains(arc)) {
-            throw std::logic_error(std::format(
-                "V20 ILP segment domain dropped SAT guide arc {}", arc));
-        }
-    }
+            "V22 incumbent does not determine a unique COBUnit");
+    return unit_bit(*units.begin());
 }
 
-auto prepare_problem(const UnifiedGraph& graph,
-                     const std::Vector<RoutingNet>& nets,
-                     const std::Vector<UnifiedSatNetScope>& scopes,
-                     const SatRoutingResult& sat_result, const int bbox_padding)
-    -> std::pair<Prepared, LockedResources> {
-    auto prepared = Prepared{};
-    for (const auto& net : nets) {
-        if (is_post_sat_ilp_target(net)) {
-            prepared.selected_net_ids.insert(net.net_id);
+// This is deliberately a pair projection, not a reconstruction from the
+// union scope.  The final incumbent is then injected so the warm start remains
+// legal even though SAT originally encoded the net-wide union scope.
+auto make_pair_domain(const UnifiedGraph &g,
+                      const UnifiedSatNetScope &fallback_scope,
+                      const PairRoutingState *state, const Locked &locked,
+                      Pair &pair, const SourceSinkPairPath &incumbent) -> void {
+    auto allowed = std::Vector<bool>(g.nodes.size(), false);
+    if (state == nullptr) {
+        for (int v : fallback_scope.node_ids)
+            if (physical(g, v) && node_unit_eligible(g.nodes[v], pair.unit))
+                allowed[v] = true;
+    } else {
+        const auto source_tob = g.nodes[pair.source].tob,
+                   sink_tob = g.nodes[pair.sink].tob;
+        const bool source_is_tob =
+            g.nodes[pair.source].kind != UnifiedNodeKind::Track;
+        const bool sink_is_tob =
+            g.nodes[pair.sink].kind != UnifiedNodeKind::Track;
+        for (int v : fallback_scope.node_ids) {
+            const auto &node = g.nodes[v];
+            if (!physical(g, v) || !node_unit_eligible(node, pair.unit))
+                continue;
+            if (node.kind == UnifiedNodeKind::Track)
+                allowed[v] =
+                    state->allowed_channels.contains(GlobalChannelCoord{
+                        node.track_dir, node.track_row, node.track_col});
+            else
+                allowed[v] = (source_is_tob && node.tob == source_tob) ||
+                             (sink_is_tob && node.tob == sink_tob);
         }
     }
-    const auto locked =
-        collect_locked(graph, sat_result, prepared.selected_net_ids);
-    for (const auto& net : nets) {
-        if (!prepared.selected_net_ids.contains(net.net_id)) {
+    for (int v : incumbent.node_path)
+        if (physical(g, v))
+            allowed[v] = true;
+    if (!allowed[pair.source] || !allowed[pair.sink])
+        throw std::logic_error("V22 pair scope dropped endpoint");
+    auto candidates = std::set<int>{};
+    for (int a : fallback_scope.arc_ids) {
+        const auto &e = g.arcs[a];
+        if (!allowed[e.u] || !allowed[e.v] ||
+            !arc_unit_eligible(g, e, pair.unit))
             continue;
-        }
-        const auto* sat_scope = scope_for(scopes, net.net_id);
-        if (sat_scope == nullptr) {
-            throw std::logic_error(std::format(
-                "V20 ILP net {} has no final SAT scope", net.net_id));
-        }
-        const auto net_paths = paths_for(sat_result, net.net_id);
-        if (net_paths.size() != net.demands.size() || net_paths.empty()) {
-            throw std::logic_error(
-                std::format("V20 ILP net {} has {} SAT paths for {} demands",
-                            net.net_id, net_paths.size(), net.demands.size()));
-        }
-        auto parent = Parent{};
-        parent.id = prepared.parents.size();
-        parent.net_id = net.net_id;
-        parent.root = net_paths.front()->node_path.empty()
-                          ? -1
-                          : net_paths.front()->node_path.front();
-        if (parent.root < 0 ||
-            graph.nodes[static_cast<std::size_t>(parent.root)].kind !=
-                UnifiedNodeKind::Track) {
-            throw std::logic_error(
-                "V20 ILP target root is not a physical Track");
-        }
-        parent.unit_mask =
-            unit_bit(graph.nodes[static_cast<std::size_t>(parent.root)].unit);
-        auto sink_set = std::set<int>{};
-        for (const auto* path : net_paths) {
-            if (path->node_path.empty() ||
-                path->node_path.front() != parent.root) {
-                throw std::logic_error(
-                    "V20 ILP target paths do not share one fixed Track root");
-            }
-            const auto* demand = demand_for(net, path->demand_id);
-            if (demand == nullptr || path->source_index >= net.sources.size()) {
-                throw std::logic_error(
-                    "V20 ILP SAT path has invalid demand/source metadata");
-            }
-            const int sink = resolve_graph_node(graph, demand->sink);
-            if (path->node_path.back() != sink) {
-                throw std::logic_error(
-                    "V20 ILP SAT path does not end at its demand sink");
-            }
-            parent.sinks.push_back(sink);
-            parent.demand_ids.push_back(path->demand_id);
-            parent.source_indices.push_back(path->source_index);
-            sink_set.insert(sink);
-        }
-        auto guides = std::Vector<std::Vector<int>>{};
-        if (net_paths.size() == 1) {
-            guides.push_back(net_paths.front()->node_path);
-        } else {
-            const auto tree =
-                build_rooted_tree(net_paths, parent.root, sink_set);
-            guides = tree_segments(parent.root, sink_set, tree);
-        }
-        for (auto& guide : guides) {
-            auto segment = Segment{};
-            segment.id = prepared.segments.size();
-            segment.parent = parent.id;
-            segment.source = guide.front();
-            segment.sink = guide.back();
-            segment.guide_nodes = std::move(guide);
-            segment.guide_arcs = path_arcs(graph, segment.guide_nodes);
-            build_segment_domain(graph, *sat_scope, parent, segment, locked,
-                                 bbox_padding);
-            parent.segments.push_back(segment.id);
-            prepared.segments.push_back(std::move(segment));
-        }
-        prepared.parents.push_back(std::move(parent));
+        if (locked.nodes[e.u] || locked.nodes[e.v])
+            continue;
+        if (e.physical_switch_id >= 0 &&
+            locked.switches.contains(e.physical_switch_id))
+            continue;
+        if (e.mode_group_id >= 0 && locked.modes.contains(e.mode_group_id) &&
+            locked.modes.at(e.mode_group_id) != e.is_vline_track_straight)
+            continue;
+        candidates.insert(a);
     }
+    for (int a : path_arcs(g, incumbent.node_path)) {
+        const auto &e = g.arcs[a];
+        if (locked.nodes[e.u] || locked.nodes[e.v] ||
+            (e.physical_switch_id >= 0 &&
+             locked.switches.contains(e.physical_switch_id)))
+            throw std::logic_error("V22 incumbent conflicts with fixed bus");
+        candidates.insert(a);
+        pair.incumbent.insert(a);
+    }
+    auto forward = std::Vector<std::Vector<int>>(g.nodes.size()),
+         reverse = forward;
+    for (int a : candidates) {
+        forward[g.arcs[a].u].push_back(a);
+        reverse[g.arcs[a].v].push_back(a);
+    }
+    auto from = std::Vector<bool>(g.nodes.size()), to = from;
+    auto q = std::queue<int>{};
+    from[pair.source] = true;
+    q.push(pair.source);
+    while (!q.empty()) {
+        const int v = q.front();
+        q.pop();
+        for (int a : forward[v])
+            if (!from[g.arcs[a].v]) {
+                from[g.arcs[a].v] = true;
+                q.push(g.arcs[a].v);
+            }
+    }
+    if (!from[pair.sink])
+        throw std::logic_error("V22 pair-local scope disconnects sink");
+    to[pair.sink] = true;
+    q.push(pair.sink);
+    while (!q.empty()) {
+        const int v = q.front();
+        q.pop();
+        for (int a : reverse[v])
+            if (!to[g.arcs[a].u]) {
+                to[g.arcs[a].u] = true;
+                q.push(g.arcs[a].u);
+            }
+    }
+    auto nodes = std::set<int>{pair.source, pair.sink};
+    for (int a : candidates)
+        if (from[g.arcs[a].u] && to[g.arcs[a].v]) {
+            pair.arcs.push_back(a);
+            nodes.insert(g.arcs[a].u);
+            nodes.insert(g.arcs[a].v);
+        }
+    pair.nodes.assign(nodes.begin(), nodes.end());
+    const auto active = std::set<int>(pair.arcs.begin(), pair.arcs.end());
+    for (int a : pair.incumbent)
+        if (!active.contains(a))
+            throw std::logic_error("V22 pair domain dropped incumbent arc");
+}
+auto prepare(const UnifiedGraph &g, const std::Vector<RoutingNet> &routing_nets,
+             const std::Vector<UnifiedSatNetScope> &scopes,
+             const SatRoutingResult &sat, const RoutingProblemState *state)
+    -> std::pair<Prepared, Locked> {
+    auto prepared = Prepared{};
+    for (const auto &net : routing_nets)
+        if (is_post_sat_ilp_target(net))
+            prepared.selected.insert(net.net_id);
+    const auto locked = locked_resources(g, routing_nets, sat);
+    for (const auto &routing_net : routing_nets) {
+        if (!is_post_sat_ilp_target(routing_net))
+            continue;
+        const auto *scope = scope_for(scopes, routing_net.net_id);
+        const auto paths = paths_for(sat, routing_net.net_id);
+        if (scope == nullptr || paths.empty() ||
+            paths.size() != routing_net.demands.size())
+            throw std::logic_error("V22 missing final scope or incumbent path");
+        auto net = Net{};
+        net.id = prepared.nets.size();
+        net.net_id = routing_net.net_id;
+        net.unit = infer_unit(g, paths);
+        for (const auto *path : paths) {
+            const auto *demand = demand_for(routing_net, path->demand_id);
+            if (demand == nullptr ||
+                path->source_index >= routing_net.sources.size() ||
+                path->node_path.empty() ||
+                path->node_path.front() !=
+                    resolve_graph_node(
+                        g, routing_net.sources[path->source_index]) ||
+                path->node_path.back() != resolve_graph_node(g, demand->sink))
+                throw std::logic_error("V22 invalid pair endpoints");
+            auto pair = Pair{};
+            pair.id = prepared.pairs.size();
+            pair.net = net.id;
+            pair.net_id = net.net_id;
+            pair.demand = path->demand_id;
+            pair.source_index = path->source_index;
+            pair.source = path->node_path.front();
+            pair.sink = path->node_path.back();
+            pair.physical_source = path->physical_source_node;
+            pair.unit = net.unit;
+            const auto *local =
+                state == nullptr
+                    ? nullptr
+                    : find_pair_state(*state, PairKey{pair.net_id, pair.demand,
+                                                      pair.source_index});
+            if (state != nullptr && local == nullptr)
+                throw std::logic_error("V22 missing final PairRoutingState");
+            make_pair_domain(g, *scope, local, locked, pair, *path);
+            net.pairs.push_back(pair.id);
+            prepared.pairs.push_back(std::move(pair));
+        }
+        prepared.nets.push_back(std::move(net));
+    }
+    auto owner = std::map<std::tuple<int, int, int>, std::size_t>{};
+    auto adj = std::Vector<std::set<std::size_t>>(prepared.nets.size());
+    const auto record = [&](std::tuple<int, int, int> key, std::size_t net) {
+        const auto [it, inserted] = owner.emplace(key, net);
+        if (!inserted && it->second != net) {
+            adj[net].insert(it->second);
+            adj[it->second].insert(net);
+        }
+    };
+    for (const auto &pair : prepared.pairs) {
+        for (int v : pair.nodes)
+            record({0, v, 0}, pair.net);
+        for (int a : pair.arcs) {
+            const auto &e = g.arcs[a];
+            if (e.physical_switch_id >= 0)
+                record({1, e.physical_switch_id, 0}, pair.net);
+            if (e.mode_group_id >= 0)
+                record({2, e.mode_group_id, 0}, pair.net);
+            for (const auto [stage, v] : endpoints(g, e))
+                record({3, stage, v}, pair.net);
+        }
+    }
+    auto seen = std::Vector<bool>(prepared.nets.size());
+    for (std::size_t i = 0; i < prepared.nets.size(); ++i)
+        if (!seen[i]) {
+            auto component = std::Vector<std::size_t>{};
+            auto q = std::queue<std::size_t>{};
+            seen[i] = true;
+            q.push(i);
+            while (!q.empty()) {
+                const auto n = q.front();
+                q.pop();
+                component.push_back(n);
+                for (auto v : adj[n])
+                    if (!seen[v]) {
+                        seen[v] = true;
+                        q.push(v);
+                    }
+            }
+            prepared.components.push_back(std::move(component));
+        }
     return {std::move(prepared), locked};
 }
 
 #ifdef USE_HIGHS
-
-class SparseMip {
+class Mip {
   public:
-    SparseMip(const int verbose_level, const std::string_view log_path,
-              const int time_limit_minutes)
-        : log_sink_(log_path, verbose_level >= 2, true) {
-        log_sink_.attach(highs_);
-        check(highs_.setOptionValue("mip_rel_gap", kMipRelativeGap),
-              "mip_rel_gap");
-        if (time_limit_minutes > 0) {
-            check(highs_.setOptionValue(
-                      "time_limit",
-                      static_cast<double>(time_limit_minutes) * 60.0),
-                  "time_limit");
-        }
+    Mip(int verbose, std::string_view log, int minutes)
+        : log_(log, verbose >= 2, true) {
+        log_.attach(h_);
+        check(h_.setOptionValue("mip_rel_gap", kMipRelativeGap));
+        if (minutes > 0)
+            check(h_.setOptionValue("time_limit", 60. * minutes));
     }
-
-    auto add_binary(const double cost = 0.0) -> int {
-        const int column = static_cast<int>(variables_++);
-        check(highs_.addCol(cost, 0.0, 1.0, 0, nullptr, nullptr), "addCol");
-        check(highs_.changeColIntegrality(column, HighsVarType::kInteger),
-              "integrality");
-        return column;
+    auto bin(double cost = 0.) -> int {
+        const int x = vars_++;
+        check(h_.addCol(cost, 0, 1, 0, nullptr, nullptr));
+        check(h_.changeColIntegrality(x, HighsVarType::kInteger));
+        return x;
     }
-
-    auto add_row(const double lower, const double upper,
-                 const std::Vector<std::pair<int, double>>& terms) -> void {
-        auto combined = std::map<int, double>{};
-        for (const auto& [column, coefficient] : terms) {
-            combined[column] += coefficient;
-        }
-        auto indices = std::Vector<HighsInt>{};
+    auto row(double lo, double hi,
+             const std::Vector<std::pair<int, double>> &in) -> void {
+        auto sums = std::map<int, double>{};
+        for (const auto [x, v] : in)
+            sums[x] += v;
+        auto ids = std::Vector<HighsInt>{};
         auto values = std::Vector<double>{};
-        for (const auto& [column, coefficient] : combined) {
-            if (coefficient != 0.0) {
-                indices.push_back(static_cast<HighsInt>(column));
-                values.push_back(coefficient);
+        for (const auto [x, v] : sums)
+            if (v != 0) {
+                ids.push_back(x);
+                values.push_back(v);
             }
+        check(h_.addRow(lo, hi, ids.size(), ids.empty() ? nullptr : ids.data(),
+                        values.empty() ? nullptr : values.data()));
+        ++rows_;
+        nz_ += ids.size();
+    }
+    auto start(const std::map<int, double> &x) -> void {
+        auto ids = std::Vector<HighsInt>{};
+        auto values = std::Vector<double>{};
+        for (const auto [id, value] : x) {
+            ids.push_back(id);
+            values.push_back(value);
         }
-        check(highs_.addRow(lower, upper, static_cast<HighsInt>(indices.size()),
-                            indices.empty() ? nullptr : indices.data(),
-                            values.empty() ? nullptr : values.data()),
-              "addRow");
-        ++constraints_;
-        nonzeros_ += indices.size();
+        check(h_.setSolution(ids.size(), ids.data(), values.data()));
     }
-
-    auto set_start(const std::map<int, double>& values) -> void {
-        auto indices = std::Vector<HighsInt>{};
-        auto starts = std::Vector<double>{};
-        for (const auto& [column, value] : values) {
-            indices.push_back(static_cast<HighsInt>(column));
-            starts.push_back(value);
-        }
-        check(highs_.setSolution(static_cast<HighsInt>(indices.size()),
-                                 indices.data(), starts.data()),
-              "setSolution");
+    auto run() -> void { check(h_.run()); }
+    auto feasible() const -> bool {
+        return h_.getInfo().primal_solution_status == kSolutionStatusFeasible;
     }
-
-    auto solve() -> HighsModelStatus {
-        check(highs_.run(), "run");
-        return highs_.getModelStatus();
+    auto values() const -> const std::Vector<double> & {
+        return h_.getSolution().col_value;
     }
-
-    [[nodiscard]] auto feasible() const -> bool {
-        return highs_.getInfo().primal_solution_status ==
-               kSolutionStatusFeasible;
+    auto info() const -> const HighsInfo & { return h_.getInfo(); }
+    auto status() const -> std::String {
+        return h_.modelStatusToString(h_.getModelStatus());
     }
-    [[nodiscard]] auto values() const -> const std::Vector<double>& {
-        return highs_.getSolution().col_value;
-    }
-    [[nodiscard]] auto info() const -> const HighsInfo& {
-        return highs_.getInfo();
-    }
-    [[nodiscard]] auto status() const -> std::String {
-        return highs_.modelStatusToString(highs_.getModelStatus());
-    }
-    [[nodiscard]] auto variables() const -> std::size_t { return variables_; }
-    [[nodiscard]] auto constraints() const -> std::size_t {
-        return constraints_;
-    }
-    [[nodiscard]] auto nonzeros() const -> std::size_t { return nonzeros_; }
+    auto vars() const -> std::size_t { return vars_; }
+    auto rows() const -> std::size_t { return rows_; }
+    auto nz() const -> std::size_t { return nz_; }
 
   private:
-    static auto check(const HighsStatus status, const char* operation) -> void {
-        if (status == HighsStatus::kError) {
-            throw std::runtime_error(
-                std::format("V20 ILP HiGHS {} failed", operation));
-        }
+    static auto check(HighsStatus s) -> void {
+        if (s == HighsStatus::kError)
+            throw std::runtime_error("V22 HiGHS API failure");
     }
-
-    HighsLogSink log_sink_;
-    Highs highs_;
-    std::size_t variables_{0};
-    std::size_t constraints_{0};
-    std::size_t nonzeros_{0};
+    HighsLogSink log_;
+    Highs h_;
+    std::size_t vars_{}, rows_{}, nz_{};
 };
-
-auto solve_model(const UnifiedGraph& graph, const Prepared& prepared,
-                 const LockedResources& locked,
-                 const SatRoutingResult& sat_result,
-                 const PostSatIlpOptions& options) -> ModelResult {
-    const auto build_begin = std::chrono::steady_clock::now();
-    auto out = ModelResult{};
-    auto mip = SparseMip{options.verbose_level, options.highs_log_path,
-                         options.highs_time_limit_minutes};
-    auto segment_vars = std::Vector<SegmentVars>(prepared.segments.size());
-    auto parent_vars = std::Vector<ParentVars>(prepared.parents.size());
-    auto parent_arcs = std::Vector<std::set<int>>(prepared.parents.size());
-    auto parent_nodes = std::Vector<std::set<int>>(prepared.parents.size());
-
-    for (const auto& parent : prepared.parents) {
-        for (const auto segment_id : parent.segments) {
-            const auto& segment = prepared.segments[segment_id];
-            parent_arcs[parent.id].insert(segment.arcs.begin(),
-                                          segment.arcs.end());
-            parent_nodes[parent.id].insert(segment.nodes.begin(),
-                                           segment.nodes.end());
+auto solve_component(const UnifiedGraph &g, const Prepared &p,
+                     const Locked &locked, const std::Vector<std::size_t> &ids,
+                     const SatRoutingResult &sat,
+                     const PostSatIlpOptions &options) -> Result {
+    const auto begin = std::chrono::steady_clock::now();
+    auto result = Result{};
+    auto mip = Mip(options.verbose_level, options.highs_log_path,
+                   options.highs_time_limit_minutes);
+    auto pv = std::map<std::size_t, PairVars>{};
+    auto nv = std::map<std::size_t, NetVars>{};
+    for (auto net_id : ids) {
+        const auto &net = p.nets[net_id];
+        auto &v = nv[net_id];
+        auto nodes = std::set<int>{};
+        auto switches = std::set<int>{};
+        for (auto pair_id : net.pairs) {
+            const auto &pair = p.pairs[pair_id];
+            for (int a : pair.arcs) {
+                pv[pair_id].f.emplace(a, mip.bin());
+                ++result.stats.f;
+                nodes.insert(g.arcs[a].u);
+                nodes.insert(g.arcs[a].v);
+                if (g.arcs[a].physical_switch_id >= 0)
+                    switches.insert(g.arcs[a].physical_switch_id);
+            }
+            for (int node : pair.nodes) {
+                pv[pair_id].d.emplace(node, mip.bin());
+                ++result.stats.d;
+                nodes.insert(node);
+            }
         }
-        for (const int arc : parent_arcs[parent.id]) {
-            parent_vars[parent.id].x.emplace(arc, mip.add_binary());
-            ++out.stats.x_vars;
+        for (int node : nodes) {
+            v.y.emplace(node, mip.bin(length_node(g, node) ? 1. : 0.));
+            ++result.stats.y;
         }
-        for (const int node : parent_nodes[parent.id]) {
-            parent_vars[parent.id].y.emplace(
-                node,
-                mip.add_binary(is_wirelength_node(graph, node) ? 1.0 : 0.0));
-            ++out.stats.y_vars;
+        for (int sw : switches) {
+            v.s.emplace(sw, mip.bin());
+            ++result.stats.s;
         }
     }
-    for (const auto& segment : prepared.segments) {
-        for (const int arc : segment.arcs) {
-            segment_vars[segment.id].f.emplace(arc, mip.add_binary());
-            ++out.stats.f_vars;
+    for (auto net_id : ids) {
+        const auto &net = p.nets[net_id];
+        const auto &nvars = nv.at(net_id);
+        for (auto pair_id : net.pairs) {
+            const auto &pair = p.pairs[pair_id];
+            const auto &vars = pv.at(pair_id);
+            for (int a : pair.arcs) {
+                const auto &e = g.arcs[a];
+                mip.row(-kHighsInf, 0,
+                        {{vars.f.at(a), 1}, {vars.d.at(e.u), -1}});
+                ++result.stats.f_implies_d;
+                mip.row(-kHighsInf, 0,
+                        {{vars.f.at(a), 1}, {vars.d.at(e.v), -1}});
+                ++result.stats.f_implies_d;
+                if (e.physical_switch_id >= 0) {
+                    mip.row(-kHighsInf, 0,
+                            {{vars.f.at(a), 1},
+                             {nvars.s.at(e.physical_switch_id), -1}});
+                    ++result.stats.f_implies_s;
+                }
+            }
+            for (int node : pair.nodes) {
+                auto conservation = std::Vector<std::pair<int, double>>{},
+                     incoming = conservation;
+                for (int a : g.out_arc_ids[node])
+                    if (vars.f.contains(a))
+                        conservation.emplace_back(vars.f.at(a), 1);
+                for (int a : g.in_arc_ids[node])
+                    if (vars.f.contains(a)) {
+                        conservation.emplace_back(vars.f.at(a), -1);
+                        incoming.emplace_back(vars.f.at(a), 1);
+                    }
+                mip.row(node == pair.source ? 1.
+                        : node == pair.sink ? -1.
+                                            : 0.,
+                        node == pair.source ? 1.
+                        : node == pair.sink ? -1.
+                                            : 0.,
+                        conservation);
+                ++result.stats.flow_balance;
+                if (node == pair.source) {
+                    mip.row(0, 0, incoming);
+                    ++result.stats.source_no_incoming;
+                } else {
+                    incoming.emplace_back(vars.d.at(node), -1);
+                    mip.row(0, 0, incoming);
+                    ++result.stats.node_incoming;
+                }
+                if (node == pair.sink) {
+                    auto outgoing = std::Vector<std::pair<int, double>>{};
+                    for (int a : g.out_arc_ids[node])
+                        if (vars.f.contains(a))
+                            outgoing.emplace_back(vars.f.at(a), 1);
+                    mip.row(0, 0, outgoing);
+                    ++result.stats.sink_no_outgoing;
+                }
+                if (node == pair.source || node == pair.sink) {
+                    mip.row(1, 1, {{vars.d.at(node), 1}});
+                    ++result.stats.endpoint_d_fixed;
+                }
+                mip.row(-kHighsInf, 0,
+                        {{vars.d.at(node), 1}, {nvars.y.at(node), -1}});
+                ++result.stats.d_implies_y;
+            }
+        }
+        for (const auto [node, y] : nvars.y) {
+            auto support = std::Vector<std::pair<int, double>>{{y, 1}};
+            for (auto pair_id : net.pairs)
+                if (pv.at(pair_id).d.contains(node))
+                    support.emplace_back(pv.at(pair_id).d.at(node), -1);
+            mip.row(-kHighsInf, 0, support);
+            ++result.stats.y_support;
+        }
+        for (const auto [sw, s] : nvars.s) {
+            auto support = std::Vector<std::pair<int, double>>{{s, 1}};
+            for (auto pair_id : net.pairs)
+                for (int a : p.pairs[pair_id].arcs)
+                    if (g.arcs[a].physical_switch_id == sw)
+                        support.emplace_back(pv.at(pair_id).f.at(a), -1);
+            mip.row(-kHighsInf, 0, support);
+            ++result.stats.s_support;
         }
     }
-
-    for (const auto& segment : prepared.segments) {
-        const auto& sv = segment_vars[segment.id];
-        const auto& pv = parent_vars[segment.parent];
-        for (const auto& [arc, f] : sv.f) {
-            mip.add_row(-kHighsInf, 0.0, {{f, 1.0}, {pv.x.at(arc), -1.0}});
-            ++out.stats.flow_to_parent_rows;
-        }
-        for (const int node : segment.nodes) {
-            auto terms = std::Vector<std::pair<int, double>>{};
-            for (const int arc :
-                 graph.out_arc_ids[static_cast<std::size_t>(node)]) {
-                if (const auto it = sv.f.find(arc); it != sv.f.end()) {
-                    terms.emplace_back(it->second, 1.0);
-                }
-            }
-            for (const int arc :
-                 graph.in_arc_ids[static_cast<std::size_t>(node)]) {
-                if (const auto it = sv.f.find(arc); it != sv.f.end()) {
-                    terms.emplace_back(it->second, -1.0);
-                }
-            }
-            const double balance = node == segment.source ? 1.0
-                                   : node == segment.sink ? -1.0
-                                                          : 0.0;
-            mip.add_row(balance, balance, terms);
-            ++out.stats.flow_rows;
-        }
-    }
-
-    for (const auto& parent : prepared.parents) {
-        auto& pv = parent_vars[parent.id];
-        for (const auto& [arc, x] : pv.x) {
-            auto terms = std::Vector<std::pair<int, double>>{{x, 1.0}};
-            for (const auto segment_id : parent.segments) {
-                const auto& f = segment_vars[segment_id].f;
-                if (const auto it = f.find(arc); it != f.end()) {
-                    terms.emplace_back(it->second, -1.0);
-                }
-            }
-            mip.add_row(-kHighsInf, 0.0, terms);
-            ++out.stats.parent_support_rows;
-            const auto& value = graph.arcs[static_cast<std::size_t>(arc)];
-            mip.add_row(-kHighsInf, 0.0, {{x, 1.0}, {pv.y.at(value.u), -1.0}});
-            mip.add_row(-kHighsInf, 0.0, {{x, 1.0}, {pv.y.at(value.v), -1.0}});
-            out.stats.tree_rows += 2;
-        }
-        for (const int node : parent_nodes[parent.id]) {
-            auto incoming = std::Vector<std::pair<int, double>>{};
-            for (const int arc :
-                 graph.in_arc_ids[static_cast<std::size_t>(node)]) {
-                if (const auto it = pv.x.find(arc); it != pv.x.end()) {
-                    incoming.emplace_back(it->second, 1.0);
-                }
-            }
-            if (node == parent.root) {
-                mip.add_row(0.0, 0.0, incoming);
-                ++out.stats.endpoint_rows;
-            } else {
-                incoming.emplace_back(pv.y.at(node), -1.0);
-                mip.add_row(0.0, 0.0, incoming);
-                ++out.stats.tree_rows;
-            }
-        }
-        mip.add_row(1.0, 1.0, {{pv.y.at(parent.root), 1.0}});
-        ++out.stats.endpoint_rows;
-        for (const int sink : parent.sinks) {
-            mip.add_row(1.0, 1.0, {{pv.y.at(sink), 1.0}});
-            auto outgoing = std::Vector<std::pair<int, double>>{};
-            for (const int arc :
-                 graph.out_arc_ids[static_cast<std::size_t>(sink)]) {
-                if (const auto it = pv.x.find(arc); it != pv.x.end()) {
-                    outgoing.emplace_back(it->second, 1.0);
-                }
-            }
-            mip.add_row(0.0, 0.0, outgoing);
-            out.stats.endpoint_rows += 2;
-        }
-    }
-
     auto occupancy = std::map<int, std::Vector<int>>{};
-    for (const auto& pv : parent_vars) {
-        for (const auto& [node, y] : pv.y) {
+    auto switches = std::map<int, std::Vector<int>>{};
+    auto matching = std::map<std::pair<int, int>, std::set<int>>{};
+    auto modes = std::map<int, std::set<std::pair<int, bool>>>{};
+    for (auto net_id : ids) {
+        const auto &net = p.nets[net_id];
+        const auto &vars = nv.at(net_id);
+        for (const auto [node, y] : vars.y)
             occupancy[node].push_back(y);
+        for (const auto [sw, s] : vars.s) {
+            switches[sw].push_back(s);
+            for (auto pair_id : net.pairs)
+                for (int a : p.pairs[pair_id].arcs)
+                    if (g.arcs[a].physical_switch_id == sw) {
+                        for (auto key : endpoints(g, g.arcs[a]))
+                            matching[key].insert(s);
+                        if (g.arcs[a].mode_group_id >= 0)
+                            modes[g.arcs[a].mode_group_id].insert(
+                                {s, g.arcs[a].is_vline_track_straight});
+                    }
         }
     }
-    for (const auto& [node, variables] : occupancy) {
-        auto terms = std::Vector<std::pair<int, double>>{};
-        for (const int variable : variables) {
-            terms.emplace_back(variable, 1.0);
+    for (const auto &[_, xs] : occupancy)
+        if (xs.size() > 1) {
+            auto row = std::Vector<std::pair<int, double>>{};
+            for (int x : xs)
+                row.emplace_back(x, 1);
+            mip.row(-kHighsInf, 1, row);
+            ++result.stats.node_exclusivity;
         }
-        mip.add_row(-kHighsInf,
-                    locked.nodes[static_cast<std::size_t>(node)] ? 0.0 : 1.0,
-                    terms);
-        ++out.stats.occupancy_rows;
+    for (const auto &[_, xs] : switches)
+        if (xs.size() > 1) {
+            auto row = std::Vector<std::pair<int, double>>{};
+            for (int x : xs)
+                row.emplace_back(x, 1);
+            mip.row(-kHighsInf, 1, row);
+            ++result.stats.switch_exclusivity;
+        }
+    for (const auto &[key, xs] : matching) {
+        auto row = std::Vector<std::pair<int, double>>{};
+        for (int x : xs)
+            row.emplace_back(x, 1);
+        mip.row(
+            -kHighsInf,
+            1 - (locked.matching.contains(key) ? locked.matching.at(key) : 0),
+            row);
+        ++result.stats.tob_matching;
     }
-
-    struct SwitchUse {
-        int locked{0};
-        std::Vector<int> variables;
-        const UnifiedArc* exemplar{nullptr};
-    };
-    auto switches = std::map<int, SwitchUse>{};
-    for (const auto& arc : graph.arcs) {
-        if (arc.physical_switch_id >= 0) {
-            switches[arc.physical_switch_id].exemplar = &arc;
+    auto mvars = std::map<int, int>{};
+    for (const auto &[group, _] : modes)
+        if (!locked.modes.contains(group)) {
+            mvars.emplace(group, mip.bin());
+            ++result.stats.m;
+        }
+    for (const auto &[group, uses] : modes) {
+        if (!mvars.contains(group))
+            continue;
+        for (const auto [s, straight] : uses) {
+            if (straight)
+                mip.row(-kHighsInf, 0, {{s, 1}, {mvars.at(group), -1}});
+            else
+                mip.row(-kHighsInf, 1, {{s, 1}, {mvars.at(group), 1}});
+            ++result.stats.mode_binding;
         }
     }
-    for (const int physical_switch : locked.switches) {
-        switches[physical_switch].locked = 1;
-    }
-    for (const auto& pv : parent_vars) {
-        for (const auto& [arc, x] : pv.x) {
-            const int physical_switch =
-                graph.arcs[static_cast<std::size_t>(arc)].physical_switch_id;
-            if (physical_switch >= 0) {
-                switches[physical_switch].variables.push_back(x);
+    auto start = std::map<int, double>{};
+    for (int v = 0; v < static_cast<int>(mip.vars()); ++v)
+        start[v] = 0.;
+    for (auto net_id : ids)
+        for (auto pair_id : p.nets[net_id].pairs) {
+            const auto &pair = p.pairs[pair_id];
+            for (int a : pair.incumbent) {
+                start[pv.at(pair_id).f.at(a)] = 1;
+                const auto &e = g.arcs[a];
+                start[pv.at(pair_id).d.at(e.u)] =
+                    start[pv.at(pair_id).d.at(e.v)] = 1;
+                start[nv.at(net_id).y.at(e.u)] =
+                    start[nv.at(net_id).y.at(e.v)] = 1;
+                if (e.physical_switch_id >= 0)
+                    start[nv.at(net_id).s.at(e.physical_switch_id)] = 1;
             }
         }
-    }
-    for (const auto& [physical_switch, use] : switches) {
-        (void)physical_switch;
-        if (use.locked == 0 && use.variables.empty()) {
-            continue;
-        }
-        auto terms = std::Vector<std::pair<int, double>>{};
-        for (const int variable : use.variables)
-            terms.emplace_back(variable, 1.0);
-        mip.add_row(-kHighsInf, 1.0 - use.locked, terms);
-        ++out.stats.switch_rows;
-    }
-
-    auto matching = std::map<std::pair<int, int>, std::set<int>>{};
-    auto active_modes = std::set<int>{};
-    for (const auto& [physical_switch, use] : switches) {
-        if ((use.locked == 0 && use.variables.empty()) ||
-            use.exemplar == nullptr)
-            continue;
-        const auto& arc = *use.exemplar;
-        const auto u = graph.nodes[static_cast<std::size_t>(arc.u)].kind;
-        const auto v = graph.nodes[static_cast<std::size_t>(arc.v)].kind;
-        if (u == UnifiedNodeKind::Bump && v == UnifiedNodeKind::HLine) {
-            matching[{0, arc.u}].insert(physical_switch);
-            matching[{1, arc.v}].insert(physical_switch);
-        } else if (u == UnifiedNodeKind::HLine && v == UnifiedNodeKind::Bump) {
-            matching[{0, arc.v}].insert(physical_switch);
-            matching[{1, arc.u}].insert(physical_switch);
-        } else if (u == UnifiedNodeKind::HLine && v == UnifiedNodeKind::VLine) {
-            matching[{2, arc.u}].insert(physical_switch);
-            matching[{3, arc.v}].insert(physical_switch);
-        } else if (u == UnifiedNodeKind::VLine && v == UnifiedNodeKind::HLine) {
-            matching[{2, arc.v}].insert(physical_switch);
-            matching[{3, arc.u}].insert(physical_switch);
-        }
-        if (arc.physical_switch_kind == PhysicalSwitchKind::VLineTrack &&
-            arc.mode_group_id >= 0) {
-            active_modes.insert(arc.mode_group_id);
-        }
-    }
-    for (const auto& [key, switch_ids] : matching) {
-        (void)key;
-        int constant = 0;
-        auto terms = std::Vector<std::pair<int, double>>{};
-        for (const int physical_switch : switch_ids) {
-            const auto& use = switches.at(physical_switch);
-            constant += use.locked;
-            for (const int variable : use.variables)
-                terms.emplace_back(variable, 1.0);
-        }
-        mip.add_row(-kHighsInf, 1.0 - constant, terms);
-        ++out.stats.matching_rows;
-    }
-    auto mode_vars = std::map<int, int>{};
-    for (const int group : active_modes) {
-        mode_vars.emplace(group, mip.add_binary());
-        ++out.stats.mode_vars;
-    }
-    for (const auto& [physical_switch, use] : switches) {
-        (void)physical_switch;
-        if (use.exemplar == nullptr ||
-            use.exemplar->physical_switch_kind !=
-                PhysicalSwitchKind::VLineTrack ||
-            use.exemplar->mode_group_id < 0 ||
-            !mode_vars.contains(use.exemplar->mode_group_id))
-            continue;
-        auto terms = std::Vector<std::pair<int, double>>{};
-        for (const int variable : use.variables)
-            terms.emplace_back(variable, 1.0);
-        const int mode = mode_vars.at(use.exemplar->mode_group_id);
-        if (use.exemplar->is_vline_track_straight) {
-            terms.emplace_back(mode, -1.0);
-            mip.add_row(-kHighsInf, -use.locked, terms);
-            ++out.stats.mode_rows;
-        }
-        if (use.exemplar->is_vline_track_swap) {
-            terms.emplace_back(mode, 1.0);
-            mip.add_row(-kHighsInf, 1.0 - use.locked, terms);
-            ++out.stats.mode_rows;
-        }
-    }
-
-    auto start = std::map<int, double>{};
-    for (int variable = 0; variable < static_cast<int>(mip.variables());
-         ++variable) {
-        start.emplace(variable, 0.0);
-    }
-    for (const auto& segment : prepared.segments) {
-        for (const int arc : segment.guide_arcs) {
-            start[segment_vars[segment.id].f.at(arc)] = 1.0;
-            start[parent_vars[segment.parent].x.at(arc)] = 1.0;
-            const auto& value = graph.arcs[static_cast<std::size_t>(arc)];
-            start[parent_vars[segment.parent].y.at(value.u)] = 1.0;
-            start[parent_vars[segment.parent].y.at(value.v)] = 1.0;
-        }
-    }
-    for (const auto& [group, variable] : mode_vars) {
-        const auto it = sat_result.vline_mode_straight_by_group.find(
-            static_cast<std::size_t>(group));
-        start[variable] =
-            it != sat_result.vline_mode_straight_by_group.end() && it->second
-                ? 1.0
-                : 0.0;
-    }
-    mip.set_start(start);
-    out.stats.mip_start_entries = start.size();
-    out.stats.build_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             std::chrono::steady_clock::now() - build_begin)
+    for (const auto [group, m] : mvars)
+        if (sat.vline_mode_straight_by_group.contains(group))
+            start[m] = sat.vline_mode_straight_by_group.at(group);
+    mip.start(start);
+    result.stats.start = start.size();
+    result.stats.build = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - begin)
                              .count();
-    out.stats.constraints = mip.constraints();
-    out.stats.nonzeros = mip.nonzeros();
-    debug::info_fmt("V20 post-SAT ILP model built: parents={} segments={} "
-                    "vars={} constraints={} nonzeros={} F={} X={} Y={} M={} "
-                    "warm_start_entries={} build_ms={}",
-                    prepared.parents.size(), prepared.segments.size(),
-                    mip.variables(), mip.constraints(), mip.nonzeros(),
-                    out.stats.f_vars, out.stats.x_vars, out.stats.y_vars,
-                    out.stats.mode_vars, out.stats.mip_start_entries,
-                    out.stats.build_ms);
-    if (options.verbose_level >= 1) {
-        debug::info("V20 post-SAT ILP constraints by category:");
-        debug::info_fmt("  segment flow                 : {}",
-                        out.stats.flow_rows);
-        debug::info_fmt("  f implies parent x           : {}",
-                        out.stats.flow_to_parent_rows);
-        debug::info_fmt("  parent x supported by f      : {}",
-                        out.stats.parent_support_rows);
-        debug::info_fmt("  parent arborescence          : {}",
-                        out.stats.tree_rows);
-        debug::info_fmt("  root/sink endpoints          : {}",
-                        out.stats.endpoint_rows);
-        debug::info_fmt("  physical node occupancy      : {}",
-                        out.stats.occupancy_rows);
-        debug::info_fmt("  physical switch uniqueness   : {}",
-                        out.stats.switch_rows);
-        debug::info_fmt("  TOB partial matching         : {}",
-                        out.stats.matching_rows);
-        debug::info_fmt("  VLine/Track straight-swap    : {}",
-                        out.stats.mode_rows);
-    }
-
+    result.stats.rows = mip.rows();
+    result.stats.nz = mip.nz();
+    std::size_t pairs = 0;
+    for (auto net : ids)
+        pairs += p.nets[net].pairs.size();
+    if (options.verbose_level >= 1)
+        log_post_sat_ilp_model_stats(p, locked, ids, result.stats);
+    debug::info_fmt("V22 ILP component model: nets={} pairs={} vars={} "
+                    "constraints={} F={} D={} Y={} S={} M={} warm_start={}",
+                    ids.size(), pairs, mip.vars(), mip.rows(), result.stats.f,
+                    result.stats.d, result.stats.y, result.stats.s,
+                    result.stats.m, result.stats.start);
     const auto solve_begin = std::chrono::steady_clock::now();
-    (void)mip.solve();
-    out.stats.solve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+    mip.run();
+    result.stats.solve = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - solve_begin)
                              .count();
-    out.status = mip.status();
-    if (!mip.feasible()) {
-        return out;
-    }
-    const auto& values = mip.values();
-    const auto selected = [&](const int variable) {
-        return variable >= 0 &&
-               static_cast<std::size_t>(variable) < values.size() &&
-               values[static_cast<std::size_t>(variable)] > 0.5;
-    };
-    out.parents.resize(prepared.parents.size());
-    out.segments.resize(prepared.segments.size());
-    for (const auto& parent : prepared.parents) {
-        for (const auto& [arc, variable] : parent_vars[parent.id].x) {
-            if (selected(variable))
-                out.parents[parent.id].arcs.insert(arc);
+    result.status = mip.status();
+    if (!mip.feasible())
+        return result;
+    const auto &values = mip.values();
+    result.pairs.resize(p.pairs.size());
+    for (auto net_id : ids)
+        for (auto pair_id : p.nets[net_id].pairs) {
+            for (const auto [a, v] : pv.at(pair_id).f)
+                if (values[v] > .5)
+                    result.pairs[pair_id].arcs.insert(a);
+            for (const auto [node, v] : pv.at(pair_id).d)
+                if (values[v] > .5)
+                    result.pairs[pair_id].nodes.insert(node);
         }
-        for (const auto& [node, variable] : parent_vars[parent.id].y) {
-            if (selected(variable))
-                out.parents[parent.id].nodes.insert(node);
-        }
-    }
-    for (const auto& segment : prepared.segments) {
-        for (const auto& [arc, variable] : segment_vars[segment.id].f) {
-            if (selected(variable))
-                out.segments[segment.id].arcs.insert(arc);
-        }
-    }
-    for (const auto& [group, variable] : mode_vars) {
-        out.modes.emplace(group, selected(variable));
-    }
-    const auto& info = mip.info();
-    out.stats.objective = info.objective_function_value;
-    out.stats.bound = info.mip_dual_bound;
-    out.stats.gap = info.mip_gap;
-    out.ok = true;
-    return out;
+    for (const auto [group, m] : mvars)
+        result.modes[group] = values[m] > .5;
+    result.stats.objective = mip.info().objective_function_value;
+    result.stats.bound = mip.info().mip_dual_bound;
+    result.stats.gap = mip.info().mip_gap;
+    result.ok = true;
+    return result;
 }
-
 #else
-
-auto solve_model(const UnifiedGraph&, const Prepared&, const LockedResources&,
-                 const SatRoutingResult&, const PostSatIlpOptions&)
-    -> ModelResult {
-    auto out = ModelResult{};
-    out.status = "HIGHS_UNAVAILABLE";
-    return out;
+auto solve_component(const UnifiedGraph &, const Prepared &, const Locked &,
+                     const std::Vector<std::size_t> &, const SatRoutingResult &,
+                     const PostSatIlpOptions &) -> Result {
+    auto r = Result{};
+    r.status = "HIGHS_UNAVAILABLE";
+    return r;
 }
-
 #endif
 
-auto validate_model(const UnifiedGraph& graph, const Prepared& prepared,
-                    const ModelResult& model) -> std::Vector<std::String> {
-    auto errors = std::Vector<std::String>{};
-    for (const auto& segment : prepared.segments) {
-        const auto& flow = model.segments[segment.id].arcs;
-        auto balance = std::map<int, int>{};
-        for (const int arc : flow) {
-            if (!model.parents[segment.parent].arcs.contains(arc)) {
-                errors.push_back(std::format(
-                    "segment {} f arc {} has no parent x", segment.id, arc));
-            }
-            const auto& value = graph.arcs[static_cast<std::size_t>(arc)];
-            ++balance[value.u];
-            --balance[value.v];
-        }
-        for (const int node : segment.nodes) {
-            const int expected = node == segment.source ? 1
-                                 : node == segment.sink ? -1
-                                                        : 0;
-            if (balance[node] != expected) {
-                errors.push_back(std::format(
-                    "segment {} flow balance at {} is {}, expected {}",
-                    segment.id, node, balance[node], expected));
-            }
-        }
-    }
-    for (const auto& parent : prepared.parents) {
-        auto supported = std::set<int>{};
-        for (const auto segment : parent.segments) {
-            supported.insert(model.segments[segment].arcs.begin(),
-                             model.segments[segment].arcs.end());
-        }
-        for (const int arc : model.parents[parent.id].arcs) {
-            if (!supported.contains(arc)) {
-                errors.push_back(std::format(
-                    "parent {} x arc {} has no segment f", parent.id, arc));
-            }
-        }
-        auto visited = std::set<int>{parent.root};
-        auto queue = std::queue<int>{};
-        queue.push(parent.root);
-        while (!queue.empty()) {
-            const int node = queue.front();
-            queue.pop();
-            for (const int arc :
-                 graph.out_arc_ids[static_cast<std::size_t>(node)]) {
-                if (!model.parents[parent.id].arcs.contains(arc))
-                    continue;
-                const int next = graph.arcs[static_cast<std::size_t>(arc)].v;
-                if (visited.insert(next).second)
-                    queue.push(next);
-            }
-        }
-        for (const int sink : parent.sinks) {
-            if (!visited.contains(sink)) {
-                errors.push_back(std::format("parent {} cannot reach sink {}",
-                                             parent.id, sink));
-            }
-        }
-        for (const int node : model.parents[parent.id].nodes) {
-            if (!visited.contains(node)) {
-                errors.push_back(std::format(
-                    "parent {} contains disconnected selected node {}",
-                    parent.id, node));
-            }
-        }
-        for (const int arc : model.parents[parent.id].arcs) {
-            const auto& value = graph.arcs[static_cast<std::size_t>(arc)];
-            if (!visited.contains(value.u) || !visited.contains(value.v)) {
-                errors.push_back(std::format(
-                    "parent {} contains disconnected selected arc {}",
-                    parent.id, arc));
-            }
-        }
-    }
-    return errors;
-}
-
-auto extract_solution(const UnifiedGraph& graph, const Prepared& prepared,
-                      const ModelResult& model,
-                      const SatRoutingResult& sat) -> SatRoutingResult {
-    auto out = sat;
-    out.paths.erase(
-        std::remove_if(out.paths.begin(), out.paths.end(),
-                       [&](const auto& path) {
-                           return prepared.selected_net_ids.contains(
-                               path.net_id);
-                       }),
-        out.paths.end());
-    for (const auto& parent : prepared.parents) {
-        auto predecessor = std::map<int, int>{};
-        auto visited = std::set<int>{parent.root};
-        auto queue = std::queue<int>{};
-        queue.push(parent.root);
-        while (!queue.empty()) {
-            const int node = queue.front();
-            queue.pop();
-            for (const int arc :
-                 graph.out_arc_ids[static_cast<std::size_t>(node)]) {
-                if (!model.parents[parent.id].arcs.contains(arc))
-                    continue;
-                const int next = graph.arcs[static_cast<std::size_t>(arc)].v;
-                if (visited.insert(next).second) {
-                    predecessor.emplace(next, arc);
-                    queue.push(next);
-                }
-            }
-        }
-        for (std::size_t index = 0; index < parent.sinks.size(); ++index) {
-            const int sink = parent.sinks[index];
-            auto path = std::Vector<int>{sink};
-            for (int node = sink; node != parent.root;) {
-                if (!predecessor.contains(node)) {
-                    throw std::logic_error(std::format(
-                        "V20 ILP extraction cannot reach sink {}", sink));
-                }
-                const int arc = predecessor.at(node);
-                node = graph.arcs[static_cast<std::size_t>(arc)].u;
-                path.push_back(node);
-            }
-            std::reverse(path.begin(), path.end());
-            out.paths.push_back(SourceSinkPairPath{
-                parent.net_id, parent.source_indices[index],
-                parent.demand_ids[index], -1, std::move(path)});
-        }
-    }
-    for (const auto& [group, straight] : model.modes) {
-        out.vline_mode_straight_by_group[static_cast<std::size_t>(group)] =
-            straight;
-    }
-    auto switches = std::set<int>{};
-    for (const auto& path : out.paths) {
-        for (const int arc : path_arcs(graph, path.node_path)) {
-            const int physical_switch =
-                graph.arcs[static_cast<std::size_t>(arc)].physical_switch_id;
-            if (physical_switch >= 0)
-                switches.insert(physical_switch);
-        }
-    }
-    out.used_tob_switch_ids.assign(switches.begin(), switches.end());
-    out.total_wirelength = total_wirelength(graph, out);
-    return out;
-}
-
-auto route_validation_errors(const UnifiedGraph& graph,
-                             const std::Vector<RoutingNet>& nets,
-                             const std::Vector<UnifiedSatNetScope>& scopes,
-                             const SatRoutingResult& baseline,
-                             const SatRoutingResult& result,
-                             const std::set<std::size_t>& selected,
-                             const double selected_objective)
-    -> std::Vector<std::String> {
-    auto errors = std::Vector<std::String>{};
-    auto counts = std::map<std::pair<std::size_t, std::size_t>, int>{};
-    auto node_owner = std::map<int, std::pair<std::size_t, std::size_t>>{};
-    auto switch_owner = std::map<int, std::pair<std::size_t, std::size_t>>{};
-    auto switch_exemplar = std::map<int, const UnifiedArc*>{};
-    auto sync_lengths = std::map<std::size_t, std::set<std::size_t>>{};
-    for (const auto& path : result.paths) {
-        ++counts[{path.net_id, path.demand_id}];
-        const auto* net = net_for(nets, path.net_id);
-        const auto* scope = scope_for(scopes, path.net_id);
-        if (net == nullptr || scope == nullptr) {
-            errors.push_back("path has no net/scope metadata");
-            continue;
-        }
-        const auto* demand = demand_for(*net, path.demand_id);
-        if (demand == nullptr || path.source_index >= net->sources.size()) {
-            errors.push_back("path has invalid demand/source metadata");
-            continue;
-        }
-        const int source =
-            resolve_graph_node(graph, net->sources[path.source_index]);
-        const int sink = resolve_graph_node(graph, demand->sink);
-        if (path.node_path.empty() || path.node_path.front() != source ||
-            path.node_path.back() != sink) {
-            errors.push_back(
-                std::format("net {} demand {} has invalid endpoints",
-                            path.net_id, path.demand_id));
-            continue;
-        }
-        const auto owner = std::pair{
-            path.net_id, net->is_sync_bus ? path.demand_id : std::size_t{0}};
-        std::uint16_t unit_mask = 0xffff;
-        if (selected.contains(path.net_id)) {
-            unit_mask =
-                unit_bit(graph.nodes[static_cast<std::size_t>(source)].unit);
-        }
-        for (const int node : path.node_path) {
-            if (!is_physical_node(graph, node)) {
-                errors.push_back("refined path contains invalid/virtual node");
-                continue;
-            }
-            if (static_cast<std::size_t>(node) >= scope->node_offset.size() ||
-                scope->node_offset[static_cast<std::size_t>(node)] < 0) {
-                errors.push_back(std::format(
-                    "net {} leaves final SAT node scope", path.net_id));
-            }
-            if (!node_unit_eligible(graph.nodes[static_cast<std::size_t>(node)],
-                                    unit_mask)) {
-                errors.push_back(std::format("net {} leaves its fixed COBUnit",
-                                             path.net_id));
-            }
-            const auto [it, inserted] = node_owner.emplace(node, owner);
-            if (!inserted && it->second != owner) {
-                errors.push_back(
-                    std::format("physical node {} has multiple owners", node));
-            }
-        }
-        for (const int arc : path_arcs(graph, path.node_path)) {
-            if (static_cast<std::size_t>(arc) >= scope->arc_offset.size() ||
-                scope->arc_offset[static_cast<std::size_t>(arc)] < 0) {
-                errors.push_back(std::format(
-                    "net {} leaves final SAT arc scope", path.net_id));
-            }
-            const auto& value = graph.arcs[static_cast<std::size_t>(arc)];
-            if (!arc_unit_eligible(graph, value, unit_mask)) {
-                errors.push_back(std::format(
-                    "net {} uses an arc outside fixed COBUnit", path.net_id));
-            }
-            if (value.physical_switch_id >= 0) {
-                const auto [it, inserted] =
-                    switch_owner.emplace(value.physical_switch_id, owner);
-                if (!inserted && it->second != owner) {
-                    errors.push_back(
-                        std::format("physical switch {} has multiple owners",
-                                    value.physical_switch_id));
-                }
-                switch_exemplar.try_emplace(value.physical_switch_id, &value);
-            }
-            if (value.physical_switch_kind == PhysicalSwitchKind::VLineTrack &&
-                value.mode_group_id >= 0) {
-                const auto mode = result.vline_mode_straight_by_group.find(
-                    static_cast<std::size_t>(value.mode_group_id));
-                if (mode == result.vline_mode_straight_by_group.end() ||
-                    (value.is_vline_track_straight && !mode->second) ||
-                    (value.is_vline_track_swap && mode->second)) {
-                    errors.push_back(
-                        std::format("mode group {} conflicts with route",
-                                    value.mode_group_id));
-                }
-            }
-        }
-        if (net->is_sync_bus) {
-            sync_lengths[net->net_id].insert(
-                path_wirelength(graph, path.node_path));
-        }
-    }
-    for (const auto& net : nets) {
-        for (const auto& demand : net.demands) {
-            if (counts[{net.net_id, demand.demand_id}] != 1) {
-                errors.push_back(std::format(
-                    "net {} demand {} does not have exactly one path",
-                    net.net_id, demand.demand_id));
-            }
-        }
-    }
-    auto baseline_by_key =
-        std::map<std::tuple<std::size_t, std::size_t, std::size_t>,
-                 const SourceSinkPairPath*>{};
-    for (const auto& path : baseline.paths) {
-        baseline_by_key.emplace(
-            std::tuple{path.net_id, path.demand_id, path.source_index}, &path);
-    }
-    for (const auto& path : result.paths) {
-        if (selected.contains(path.net_id))
-            continue;
-        const auto key =
-            std::tuple{path.net_id, path.demand_id, path.source_index};
-        const auto it = baseline_by_key.find(key);
-        if (it == baseline_by_key.end() ||
-            it->second->physical_source_node != path.physical_source_node ||
-            it->second->node_path != path.node_path) {
-            errors.push_back(std::format(
-                "locked net {} changed during refinement", path.net_id));
-        }
-    }
-    auto matching = std::map<std::pair<int, int>, int>{};
-    for (const auto& [physical_switch, arc] : switch_exemplar) {
-        (void)physical_switch;
-        const auto u = graph.nodes[static_cast<std::size_t>(arc->u)].kind;
-        const auto v = graph.nodes[static_cast<std::size_t>(arc->v)].kind;
-        if (u == UnifiedNodeKind::Bump && v == UnifiedNodeKind::HLine) {
-            ++matching[{0, arc->u}];
-            ++matching[{1, arc->v}];
-        } else if (u == UnifiedNodeKind::HLine && v == UnifiedNodeKind::Bump) {
-            ++matching[{0, arc->v}];
-            ++matching[{1, arc->u}];
-        } else if (u == UnifiedNodeKind::HLine && v == UnifiedNodeKind::VLine) {
-            ++matching[{2, arc->u}];
-            ++matching[{3, arc->v}];
-        } else if (u == UnifiedNodeKind::VLine && v == UnifiedNodeKind::HLine) {
-            ++matching[{2, arc->v}];
-            ++matching[{3, arc->u}];
-        }
-    }
-    for (const auto& [key, count] : matching) {
-        if (count > 1)
-            errors.push_back(std::format(
-                "partial matching endpoint ({},{}) uses {} switches", key.first,
-                key.second, count));
-    }
-    for (const auto& [net_id, lengths] : sync_lengths) {
-        if (lengths.size() > 1)
-            errors.push_back(
-                std::format("Sync net {} lost equal length", net_id));
-    }
-    const auto reported_switches = std::set<int>(
-        result.used_tob_switch_ids.begin(), result.used_tob_switch_ids.end());
-    auto actual_switches = std::set<int>{};
-    for (const auto& [physical_switch, _] : switch_owner)
-        actual_switches.insert(physical_switch);
-    if (reported_switches != actual_switches)
-        errors.push_back("reported switch set is inconsistent");
-    if (total_wirelength(graph, result) != result.total_wirelength) {
-        errors.push_back("reported wirelength is inconsistent");
-    }
-    std::size_t selected_wirelength = 0;
-    for (const auto net_id : selected) {
-        selected_wirelength += net_wirelength(graph, paths_for(result, net_id));
-    }
-    if (std::abs(static_cast<double>(selected_wirelength) -
-                 selected_objective) > 0.5) {
-        errors.push_back(std::format(
-            "selected-net wirelength {} differs from ILP y objective {:.3f}",
-            selected_wirelength, selected_objective));
-    }
-    return errors;
-}
-
-auto stamp_stats(SatRoutingResult& out, const ModelStats& stats) -> void {
-    out.post_sat_ilp_build_ms = stats.build_ms;
-    out.post_sat_ilp_solve_ms = stats.solve_ms;
-    out.post_sat_ilp_variables =
-        stats.f_vars + stats.x_vars + stats.y_vars + stats.mode_vars;
-    out.post_sat_ilp_constraints = stats.constraints;
-    out.post_sat_ilp_objective = stats.objective;
-    out.post_sat_ilp_bound = stats.bound;
-    out.post_sat_ilp_gap = stats.gap;
-}
-
-} // namespace
-
-auto is_post_sat_ilp_target(const RoutingNet& net) -> bool {
-    if (!net.post_sat_ilp_target || net.is_sync_bus ||
-        net.kind != RoutingNetKind::Tnet || net.sources.empty() ||
-        net.demands.empty()) {
+auto valid(const UnifiedGraph &g, const Prepared &p, const Result &r) -> bool {
+    if (r.pairs.size() != p.pairs.size())
         return false;
-    }
-    std::optional<std::size_t> common_source;
-    for (const auto& demand : net.demands) {
-        if (demand.candidate_source_indices.size() != 1 ||
-            demand.sink.kind != GraphNodeRef::Kind::Bump) {
+    for (const auto &pair : p.pairs) {
+        const auto arcs = std::set<int>(pair.arcs.begin(), pair.arcs.end());
+        const auto nodes = std::set<int>(pair.nodes.begin(), pair.nodes.end());
+        if (!r.pairs[pair.id].nodes.contains(pair.source) ||
+            !r.pairs[pair.id].nodes.contains(pair.sink))
             return false;
+        for (int a : r.pairs[pair.id].arcs)
+            if (!arcs.contains(a) ||
+                !r.pairs[pair.id].nodes.contains(g.arcs[a].u) ||
+                !r.pairs[pair.id].nodes.contains(g.arcs[a].v))
+                return false;
+        auto seen = std::set<int>{pair.source};
+        auto q = std::queue<int>{};
+        q.push(pair.source);
+        while (!q.empty()) {
+            const int v = q.front();
+            q.pop();
+            for (int a : g.out_arc_ids[v])
+                if (r.pairs[pair.id].arcs.contains(a) &&
+                    seen.insert(g.arcs[a].v).second)
+                    q.push(g.arcs[a].v);
         }
-        const auto source = demand.candidate_source_indices.front();
-        if (source >= net.sources.size() ||
-            net.sources[source].kind != GraphNodeRef::Kind::Track) {
+        if (!seen.contains(pair.sink))
             return false;
-        }
-        if (common_source.has_value() && common_source.value() != source) {
-            return false;
-        }
-        common_source = source;
+        for (int v : r.pairs[pair.id].nodes)
+            if (!nodes.contains(v))
+                return false;
     }
     return true;
 }
+auto extract(const UnifiedGraph &g, const Prepared &p, const Result &r,
+             const SatRoutingResult &sat) -> SatRoutingResult {
+    auto out = sat;
+    out.paths.erase(std::remove_if(out.paths.begin(), out.paths.end(),
+                                   [&](const auto &path) {
+                                       return p.selected.contains(path.net_id);
+                                   }),
+                    out.paths.end());
+    for (const auto &pair : p.pairs) {
+        auto predecessor = std::map<int, int>{};
+        auto seen = std::set<int>{pair.source};
+        auto q = std::queue<int>{};
+        q.push(pair.source);
+        while (!q.empty()) {
+            const int v = q.front();
+            q.pop();
+            for (int a : g.out_arc_ids[v])
+                if (r.pairs[pair.id].arcs.contains(a) &&
+                    seen.insert(g.arcs[a].v).second) {
+                    predecessor[g.arcs[a].v] = a;
+                    q.push(g.arcs[a].v);
+                }
+        }
+        auto path = std::Vector<int>{pair.sink};
+        for (int v = pair.sink; v != pair.source;) {
+            const int a = predecessor.at(v);
+            v = g.arcs[a].u;
+            path.push_back(v);
+        }
+        std::reverse(path.begin(), path.end());
+        out.paths.push_back({pair.net_id, pair.source_index, pair.demand,
+                             pair.physical_source, std::move(path)});
+    }
+    auto switches = std::set<int>{}, used_modes = std::set<int>{};
+    for (const auto &path : out.paths)
+        for (int a : path_arcs(g, path.node_path))
+            if (const auto &e = g.arcs[a]; e.physical_switch_id >= 0) {
+                switches.insert(e.physical_switch_id);
+                if (e.mode_group_id >= 0)
+                    used_modes.insert(e.mode_group_id);
+            }
+    for (const auto [group, mode] : r.modes)
+        if (used_modes.contains(group))
+            out.vline_mode_straight_by_group[group] = mode;
+    out.used_tob_switch_ids.assign(switches.begin(), switches.end());
+    out.total_wirelength = total_wirelength(g, out);
+    return out;
+}
+auto validate_routes(const UnifiedGraph &g, const std::Vector<RoutingNet> &nets,
+                     const Prepared &p, const SatRoutingResult &baseline,
+                     const SatRoutingResult &result, double objective)
+    -> std::Vector<std::String> {
+    auto errors = std::Vector<std::String>{};
+    auto by_key = std::map<std::tuple<std::size_t, std::size_t, std::size_t>,
+                           const Pair *>{};
+    for (const auto &pair : p.pairs)
+        by_key[{pair.net_id, pair.demand, pair.source_index}] = &pair;
+    using ResourceOwner = std::tuple<bool, std::size_t, std::size_t>;
+    auto node_owner = std::map<int, ResourceOwner>{};
+    auto switch_owner = std::map<int, ResourceOwner>{};
+    auto exemplar = std::map<int, const UnifiedArc *>{};
+    for (const auto &path : result.paths) {
+        const auto *net = net_for(nets, path.net_id);
+        if (net == nullptr) {
+            errors.push_back("unknown net");
+            continue;
+        }
+        const auto key =
+            std::tuple{path.net_id, path.demand_id, path.source_index};
+        const auto *pair = by_key.contains(key) ? by_key.at(key) : nullptr;
+        if (pair != nullptr) {
+            for (int v : path.node_path)
+                if (std::ranges::find(pair->nodes, v) == pair->nodes.end())
+                    errors.push_back("pair path leaves local node scope");
+            for (int a : path_arcs(g, path.node_path))
+                if (std::ranges::find(pair->arcs, a) == pair->arcs.end())
+                    errors.push_back("pair path leaves local arc scope");
+        }
+        const auto owner =
+            net->is_sync_bus ? ResourceOwner{true, path.net_id, path.demand_id}
+                             : ResourceOwner{false, path.net_id, 0};
+        for (int v : path.node_path)
+            if (physical(g, v)) {
+                const auto [it, ok] = node_owner.emplace(v, owner);
+                if (!ok && it->second != owner)
+                    errors.push_back("physical node multiple net owners");
+            }
+        for (int a : path_arcs(g, path.node_path)) {
+            const auto &e = g.arcs[a];
+            if (e.physical_switch_id >= 0) {
+                const auto sw = e.physical_switch_id;
+                const auto [it, ok] = switch_owner.emplace(sw, owner);
+                if (!ok && it->second != owner)
+                    errors.push_back("physical switch multiple net owners");
+                exemplar.try_emplace(sw, &e);
+            }
+            if (e.mode_group_id >= 0) {
+                const auto mode =
+                    result.vline_mode_straight_by_group.find(e.mode_group_id);
+                if (mode == result.vline_mode_straight_by_group.end() ||
+                    mode->second != e.is_vline_track_straight)
+                    errors.push_back("straight/swap mode conflict");
+            }
+        }
+    }
+    auto matching = std::map<std::pair<int, int>, int>{};
+    for (const auto &[_, arc] : exemplar)
+        for (auto key : endpoints(g, *arc))
+            ++matching[key];
+    for (const auto &[_, count] : matching)
+        if (count > 1)
+            errors.push_back("partial matching conflict");
+    for (const auto &net : nets)
+        for (const auto &d : net.demands) {
+            auto count = 0;
+            for (const auto &path : result.paths)
+                if (path.net_id == net.net_id && path.demand_id == d.demand_id)
+                    ++count;
+            if (count != 1)
+                errors.push_back("missing/duplicate demand path");
+        }
+    for (const auto &path : baseline.paths) {
+        const auto *net = net_for(nets, path.net_id);
+        const auto it =
+            std::find_if(result.paths.begin(), result.paths.end(),
+                         [&](const auto &candidate) {
+                             return candidate.net_id == path.net_id &&
+                                    candidate.demand_id == path.demand_id &&
+                                    candidate.source_index == path.source_index;
+                         });
+        if (it == result.paths.end()) {
+            errors.push_back("baseline pair missing");
+            continue;
+        }
+        if ((net != nullptr && net->is_sync_bus &&
+             it->node_path != path.node_path) ||
+            it->physical_source_node != path.physical_source_node)
+            errors.push_back("fixed path/source changed");
+    }
+    std::size_t union_wl = 0;
+    for (const auto &net : p.nets)
+        union_wl += net_wirelength(g, paths_for(result, net.net_id));
+    if (std::abs(static_cast<double>(union_wl) - objective) > .5)
+        errors.push_back("whole-net union objective mismatch");
+    return errors;
+}
+auto stamp(SatRoutingResult &r, const Stats &s) -> void {
+    r.post_sat_ilp_build_ms = s.build;
+    r.post_sat_ilp_solve_ms = s.solve;
+    r.post_sat_ilp_variables = s.f + s.d + s.y + s.s + s.m;
+    r.post_sat_ilp_constraints = s.rows;
+    r.post_sat_ilp_objective = s.objective;
+    r.post_sat_ilp_bound = s.bound;
+    r.post_sat_ilp_gap = s.gap;
+}
+} // namespace
 
-auto optimize_post_sat_routes(const UnifiedGraph& graph,
-                              const std::Vector<RoutingNet>& nets,
-                              const std::Vector<UnifiedSatNetScope>& scopes,
-                              const SatRoutingResult& sat_result,
-                              const PostSatIlpOptions& options)
+auto is_post_sat_ilp_target(const RoutingNet &net) -> bool {
+    return !net.is_sync_bus;
+}
+auto optimize_post_sat_routes(const UnifiedGraph &g,
+                              const std::Vector<RoutingNet> &nets,
+                              const std::Vector<UnifiedSatNetScope> &scopes,
+                              const SatRoutingResult &sat,
+                              const PostSatIlpOptions &options,
+                              const RoutingProblemState *state)
     -> SatRoutingResult {
-    auto fallback = sat_result;
+    auto fallback = sat;
     fallback.post_sat_ilp_attempted = true;
-    fallback.post_sat_ilp_baseline_wirelength = sat_result.total_wirelength;
-    fallback.post_sat_ilp_wirelength = sat_result.total_wirelength;
-    const auto total_begin = std::chrono::steady_clock::now();
-    const auto finish = [&](SatRoutingResult& result) {
-        result.post_sat_ilp_total_ms =
+    fallback.post_sat_ilp_baseline_wirelength = sat.total_wirelength;
+    fallback.post_sat_ilp_wirelength = sat.total_wirelength;
+    const auto begin = std::chrono::steady_clock::now();
+    const auto finish = [&](SatRoutingResult &r) {
+        r.post_sat_ilp_total_ms =
             std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - total_begin)
+                std::chrono::steady_clock::now() - begin)
                 .count();
     };
-    debug::info("========== V20 post-SAT HiGHS ILP refinement ==========");
     try {
-        auto [prepared, locked] = prepare_problem(
-            graph, nets, scopes, sat_result, options.segment_bbox_pad);
-        fallback.post_sat_ilp_parents = prepared.parents.size();
-        fallback.post_sat_ilp_segments = prepared.segments.size();
-        if (prepared.parents.empty()) {
-            fallback.post_sat_ilp_status = "SKIPPED_NO_TARGETS";
+        auto [p, locked] = prepare(g, nets, scopes, sat, state);
+        fallback.post_sat_ilp_parents = p.nets.size();
+        fallback.post_sat_ilp_segments = p.pairs.size();
+        fallback.post_sat_ilp_components = p.components.size();
+        if (p.nets.empty()) {
+            fallback.post_sat_ilp_status = "SKIPPED_NO_NONBUS_NETS";
             finish(fallback);
-            debug::info(
-                "V20 post-SAT ILP skipped: no fixed Track-to-Bump target nets");
             return fallback;
+        }
+        std::size_t node_slots = 0, arc_slots = 0;
+        for (const auto &pair : p.pairs) {
+            node_slots += pair.nodes.size();
+            arc_slots += pair.arcs.size();
         }
         debug::info_fmt(
-            "V20 post-SAT ILP prepare: selected_nets={} parents={} segments={} "
-            "segment_node_slots={} segment_arc_slots={} fixed_nets={} "
-            "locked_nodes={} locked_switches={} bbox_pad={}",
-            prepared.selected_net_ids.size(), prepared.parents.size(),
-            prepared.segments.size(),
-            std::accumulate(prepared.segments.begin(), prepared.segments.end(),
-                            std::size_t{0},
-                            [](const std::size_t sum, const Segment& segment) {
-                                return sum + segment.nodes.size();
-                            }),
-            std::accumulate(prepared.segments.begin(), prepared.segments.end(),
-                            std::size_t{0},
-                            [](const std::size_t sum, const Segment& segment) {
-                                return sum + segment.arcs.size();
-                            }),
-            locked.net_ids.size(),
+            "V22 post-SAT ILP prepare: nonbus_nets={} pairs={} components={} "
+            "fixed_bus_nets={} pair_local_node_slots={} "
+            "pair_local_arc_slots={} "
+            "locked_nodes={} locked_switches={}",
+            p.nets.size(), p.pairs.size(), p.components.size(),
+            locked.nets.size(), node_slots, arc_slots,
             std::count(locked.nodes.begin(), locked.nodes.end(), true),
-            locked.switches.size(), options.segment_bbox_pad);
-        const auto model =
-            solve_model(graph, prepared, locked, sat_result, options);
-        stamp_stats(fallback, model.stats);
-        if (!model.ok) {
-            fallback.post_sat_ilp_status = model.status;
-            finish(fallback);
-            debug::warning_fmt(
-                "V20 post-SAT ILP fallback: status={} feasible_incumbent=false",
-                model.status);
-            return fallback;
+            locked.switches.size());
+        auto all = Result{};
+        all.pairs.resize(p.pairs.size());
+        for (std::size_t i = 0; i < p.components.size(); ++i) {
+            const auto &r =
+                solve_component(g, p, locked, p.components[i], sat, options);
+            all.stats.f += r.stats.f;
+            all.stats.d += r.stats.d;
+            all.stats.y += r.stats.y;
+            all.stats.s += r.stats.s;
+            all.stats.m += r.stats.m;
+            all.stats.rows += r.stats.rows;
+            all.stats.nz += r.stats.nz;
+            all.stats.start += r.stats.start;
+            all.stats.f_implies_d += r.stats.f_implies_d;
+            all.stats.f_implies_s += r.stats.f_implies_s;
+            all.stats.flow_balance += r.stats.flow_balance;
+            all.stats.source_no_incoming += r.stats.source_no_incoming;
+            all.stats.node_incoming += r.stats.node_incoming;
+            all.stats.sink_no_outgoing += r.stats.sink_no_outgoing;
+            all.stats.endpoint_d_fixed += r.stats.endpoint_d_fixed;
+            all.stats.d_implies_y += r.stats.d_implies_y;
+            all.stats.y_support += r.stats.y_support;
+            all.stats.s_support += r.stats.s_support;
+            all.stats.node_exclusivity += r.stats.node_exclusivity;
+            all.stats.switch_exclusivity += r.stats.switch_exclusivity;
+            all.stats.tob_matching += r.stats.tob_matching;
+            all.stats.mode_binding += r.stats.mode_binding;
+            all.stats.build += r.stats.build;
+            all.stats.solve += r.stats.solve;
+            all.stats.objective += r.stats.objective;
+            all.stats.bound += r.stats.bound;
+            all.stats.gap = std::max(all.stats.gap, r.stats.gap);
+            if (!r.ok) {
+                fallback.post_sat_ilp_status =
+                    std::format("COMPONENT_{}_{}", i, r.status);
+                stamp(fallback, all.stats);
+                finish(fallback);
+                return fallback;
+            }
+            for (const auto &pair : p.pairs)
+                if (std::ranges::find(p.components[i], pair.net) !=
+                    p.components[i].end())
+                    all.pairs[pair.id] = r.pairs[pair.id];
+            all.modes.insert(r.modes.begin(), r.modes.end());
+            all.status = r.status;
         }
-        auto model_errors = validate_model(graph, prepared, model);
-        if (!model_errors.empty()) {
+        if (!valid(g, p, all)) {
             fallback.post_sat_ilp_status = "MODEL_VALIDATION_FAILED";
+            stamp(fallback, all.stats);
             finish(fallback);
-            for (const auto& error : model_errors)
-                debug::warning_fmt("  V20 model validation: {}", error);
             return fallback;
         }
-        auto candidate = extract_solution(graph, prepared, model, sat_result);
-        auto route_errors = route_validation_errors(
-            graph, nets, scopes, sat_result, candidate,
-            prepared.selected_net_ids, model.stats.objective);
-        if (!route_errors.empty()) {
+        auto candidate = extract(g, p, all, sat);
+        const auto errors =
+            validate_routes(g, nets, p, sat, candidate, all.stats.objective);
+        if (!errors.empty()) {
             fallback.post_sat_ilp_status = "ROUTE_VALIDATION_FAILED";
+            stamp(fallback, all.stats);
             finish(fallback);
-            for (const auto& error : route_errors)
-                debug::warning_fmt("  V20 route validation: {}", error);
+            for (const auto &e : errors)
+                debug::warning_fmt("  V22 route validation: {}", e);
             return fallback;
         }
-        if (candidate.total_wirelength > sat_result.total_wirelength) {
+        if (candidate.total_wirelength > sat.total_wirelength) {
             fallback.post_sat_ilp_status = "DEGRADED_INCUMBENT_REJECTED";
+            stamp(fallback, all.stats);
             finish(fallback);
-            debug::warning_fmt(
-                "V20 post-SAT ILP fallback: detailed wirelength {} -> {}",
-                sat_result.total_wirelength, candidate.total_wirelength);
             return fallback;
         }
         candidate.post_sat_ilp_attempted = true;
         candidate.post_sat_ilp_accepted = true;
-        candidate.post_sat_ilp_status = model.status;
-        candidate.post_sat_ilp_baseline_wirelength =
-            sat_result.total_wirelength;
+        candidate.post_sat_ilp_status = all.status;
+        candidate.post_sat_ilp_baseline_wirelength = sat.total_wirelength;
         candidate.post_sat_ilp_wirelength = candidate.total_wirelength;
-        candidate.post_sat_ilp_parents = prepared.parents.size();
-        candidate.post_sat_ilp_segments = prepared.segments.size();
-        stamp_stats(candidate, model.stats);
+        candidate.post_sat_ilp_parents = p.nets.size();
+        candidate.post_sat_ilp_segments = p.pairs.size();
+        candidate.post_sat_ilp_components = p.components.size();
+        stamp(candidate, all.stats);
         finish(candidate);
-        for (const auto& parent : prepared.parents) {
-            const auto before =
-                net_wirelength(graph, paths_for(sat_result, parent.net_id));
-            const auto after =
-                net_wirelength(graph, paths_for(candidate, parent.net_id));
-            debug::info_fmt(
-                "V20 post-SAT ILP net: net={} wirelength={}->{} improvement={}",
-                parent.net_id, before, after,
-                static_cast<long long>(before) - static_cast<long long>(after));
-        }
-        debug::info_fmt(
-            "V20 post-SAT ILP accepted: status={} wirelength={} -> {} "
-            "improvement={} objective={:.0f} bound={:.3f} gap={:.6f} "
-            "build_ms={} "
-            "solve_ms={} total_ms={}",
-            model.status, sat_result.total_wirelength,
-            candidate.total_wirelength,
-            sat_result.total_wirelength - candidate.total_wirelength,
-            model.stats.objective, model.stats.bound, model.stats.gap,
-            candidate.post_sat_ilp_build_ms, candidate.post_sat_ilp_solve_ms,
-            candidate.post_sat_ilp_total_ms);
+        debug::info_fmt("V22 post-SAT ILP accepted: components={} pairs={} "
+                        "wirelength={} -> {} build_ms={} solve_ms={}",
+                        p.components.size(), p.pairs.size(),
+                        sat.total_wirelength, candidate.total_wirelength,
+                        candidate.post_sat_ilp_build_ms,
+                        candidate.post_sat_ilp_solve_ms);
         return candidate;
-    } catch (const std::exception& error) {
-        fallback.post_sat_ilp_status =
-            std::format("EXCEPTION: {}", error.what());
+    } catch (const std::exception &e) {
+        fallback.post_sat_ilp_status = std::format("EXCEPTION: {}", e.what());
         finish(fallback);
-        debug::warning_fmt(
-            "V20 post-SAT ILP exception: {} fallback_to_SAT=true",
-            error.what());
+        debug::warning_fmt("V22 ILP fallback: {}", e.what());
         return fallback;
     }
 }
-
 } // namespace PR_tool

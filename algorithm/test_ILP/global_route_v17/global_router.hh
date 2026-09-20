@@ -209,8 +209,9 @@ auto apply_global_route_v17(
 ) -> void;
 
 // Guided detailed routing uses the channel graph to add the fixed local TOB
-// repair template, then one-hop expands TrackToBump(s)/PN pair scopes before
-// projecting pair-local scopes into a net-level scope.
+// repair template, then one-hop expands TrackToBump(s)/PN pair scopes and
+// closes Channels induced by the reached COBs before projecting pair-local
+// scopes into a net-level scope.
 auto apply_global_route_v17(
     const GlobalRouteResult& route,
     const GlobalChannelGraph& channel_graph,
@@ -224,8 +225,9 @@ auto global_route_distance_failures_before_scope_expand(const RoutingNet& net) -
 
 // Extends each critical pair's exact-distance domain by one.  Once that same
 // pair has reached four distance-only failures, expands only its
-// local guide by one Channel adjacency hop.  The detailed net scope is the
-// union of these pair-local guides.
+// local guide by one Channel adjacency hop and closes internal Channels whose
+// two COB endpoints were reached.  The detailed net scope is the union of
+// these pair-local guides.
 auto apply_global_route_feedback_step(
     const GlobalChannelGraph& graph,
     RoutingProblemState& state,

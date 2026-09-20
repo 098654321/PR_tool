@@ -70,8 +70,9 @@ struct RoutingNet {
     bool is_sync_bus{false};
     // V18 fixed-source tree transformed from a Pose/Nege PNnet.
     bool pn_source_tree{false};
-    // V20: eligible for the fixed-source post-SAT ILP refinement. Set only for
-    // TrackToBump(s) and PN source trees; normalized BumpToTrack stays frozen.
+    // Legacy V20 marker retained for initial scope expansion of TrackToBump(s)
+    // and PN source trees. V22 post-SAT ILP selects all non-SyncBus nets and
+    // does not use this field as an optimization target filter.
     bool post_sat_ilp_target{false};
     // V17 only: non-rectangular Channel guide shared by this normalized net.
     bool has_global_route_guide{false};
@@ -141,7 +142,7 @@ struct SatRoutingResult {
     long long global_route_total_ms{0};
     // Diagnostic work deliberately excluded from all routing wall-clock summaries.
     long long excluded_diagnostic_ms{0};
-    // V20 post-SAT ILP refinement summary. A failed refinement preserves SAT paths.
+    // V22 post-SAT pair-flow ILP summary. A failed refinement preserves SAT paths.
     bool post_sat_ilp_attempted{false};
     bool post_sat_ilp_accepted{false};
     std::String post_sat_ilp_status;
@@ -150,8 +151,11 @@ struct SatRoutingResult {
     long long post_sat_ilp_solve_ms{0};
     std::size_t post_sat_ilp_baseline_wirelength{0};
     std::size_t post_sat_ilp_wirelength{0};
+    // Legacy field name; V22 stores the number of optimized non-bus nets.
     std::size_t post_sat_ilp_parents{0};
+    // Legacy field name; V22 stores the number of optimized pairs here.
     std::size_t post_sat_ilp_segments{0};
+    std::size_t post_sat_ilp_components{0};
     std::size_t post_sat_ilp_variables{0};
     std::size_t post_sat_ilp_constraints{0};
     double post_sat_ilp_objective{0.0};

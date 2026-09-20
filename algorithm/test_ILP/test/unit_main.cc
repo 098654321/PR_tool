@@ -1,29 +1,29 @@
 #include "common/cob_unit_mask.hh"
 #include "common/hw_map.hh"
 #include "delay/pair_delay_precompute.hh"
-#include "global_route_v17/pn_source_preselection.hh"
 #include "global_route_v17/global_guide_log.hh"
 #include "global_route_v17/global_router.hh"
+#include "global_route_v17/pn_source_preselection.hh"
 #include "graph/unified_routing_graph.hh"
 #include "post_sat_ilp/post_sat_ilp.hh"
 #include "post_sat_rrr/post_sat_rrr.hh"
 #include "sat/ideal_shortest_wirelength.hh"
 #include "sat/node_occupancy.hh"
-#include "sat_allocation/z3_optimize_solver.hh"
-#include "sat/routing_path_log.hh"
 #include "sat/routing_feedback.hh"
+#include "sat/routing_path_log.hh"
 #include "sat/routing_round_diagnostics.hh"
 #include "sat/routing_solution_validate.hh"
 #include "sat/sat_constraint_kits.hh"
 #include "sat/sat_encoding_stats.hh"
 #include "sat/sat_solution_extract.hh"
+#include "sat/solve_unified_sat.hh"
 #include "sat/unified_sat_encoder.hh"
 #include "sat/unified_sat_scope.hh"
 #include "sat_allocation/cadical_solver.hh"
+#include "sat_allocation/z3_optimize_solver.hh"
 #include "scope/build_routing_nets.hh"
 #include "scope/pair_routing_state.hh"
 #include "scope/scope_bbox.hh"
-#include "sat/solve_unified_sat.hh"
 #include "test_ilp_cli.hh"
 
 #include <algo/netbuilder/netbuilder.hh>
@@ -38,10 +38,10 @@
 #include <parse/reader/module.hh>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <fstream>
 #include <iostream>
-#include <bit>
 #include <limits>
 #include <map>
 #include <memory>
@@ -154,7 +154,8 @@ auto test_unified_graph_fixed_hardware_inventory() -> void {
     const auto graph = build_unified_graph(nullptr, {});
     require(
         graph.directed_arc_set.empty(),
-        "construction-only directed-arc dedup storage must be released before returning the graph");
+        "construction-only directed-arc dedup storage must be released "
+            "before returning the graph");
     require(
         graph.rows == static_cast<int>(hardware::Interposer::COB_ARRAY_HEIGHT)
             && graph.cols == static_cast<int>(hardware::Interposer::COB_ARRAY_WIDTH),
@@ -164,7 +165,8 @@ auto test_unified_graph_fixed_hardware_inventory() -> void {
            + static_cast<std::size_t>(graph.rows) * static_cast<std::size_t>(graph.cols + 1));
     require(
         graph.track_node_count == expected_track_nodes,
-        "unified graph track-node count must match the configured hardware dimensions");
+        "unified graph track-node count must match the configured hardware "
+            "dimensions");
     require(graph.tob_node_count == 6144, "unified graph must contain exactly 6,144 TOB nodes");
     require(
         graph.nodes.size() == expected_track_nodes + graph.tob_node_count,
@@ -348,11 +350,13 @@ auto test_unified_graph_straight_swap_groups() -> void {
         const auto* reverse = find_arc(graph, arc.v, arc.u);
         require(
             reverse != nullptr && reverse->physical_switch_id == switch_id,
-            "every bidirectional physical connection must share its switch ID with its reverse arc");
+            "every bidirectional physical connection must share its switch "
+                "ID with its reverse arc");
     }
     for (const auto& [switch_id, arc_count] : physical_arc_count) {
         (void)switch_id;
-        require(arc_count == 2, "each physical switch ID must identify exactly one reverse arc pair");
+        require(arc_count == 2, "each physical switch ID must identify exactly "
+                                "one reverse arc pair");
     }
     require(
         physical_arc_count.size() == 36864,
@@ -552,7 +556,8 @@ auto test_sync_pairing_and_normalization() -> void {
         require(demand.fixed_pair, "SyncNet member pairings must remain fixed");
         require(
             demand.candidate_source_indices == std::Vector<std::size_t> {i},
-            "SyncNet fixed pair must reference its own normalized track source");
+            "SyncNet fixed pair must reference its own normalized track "
+                "source");
         require(demand.sink.kind == GraphNodeRef::Kind::Bump, "BumpToTrack must normalize to bump sink");
     }
 
@@ -626,7 +631,8 @@ auto test_cadical_session_large_clause_sampling() -> void {
     session.add_clause({x});
     require(
         session.encoding_memory_sample_count() == 2,
-        "global encoding operations must sample at the 4096-operation boundary");
+        "global encoding operations must sample at the 4096-operation "
+            "boundary");
 
     const auto clause = std::Vector<int>(4097, x);
     session.add_clause(clause);
@@ -681,7 +687,8 @@ auto test_cadical_session_memory_limit() -> void {
     const auto result = solve_session.solve_once();
     require(
         !result.ok && result.memory_limit_exceeded && result.message == "MEMORY_LIMIT",
-        "solve-time memory rejection must be distinguishable from ordinary UNKNOWN");
+        "solve-time memory rejection must be distinguishable from ordinary "
+            "UNKNOWN");
 }
 
 auto synthetic_graph(std::size_t node_count, const std::Vector<std::pair<int, int>>& edges) -> UnifiedGraph {
@@ -703,6 +710,28 @@ auto synthetic_graph(std::size_t node_count, const std::Vector<std::pair<int, in
         graph.in_arc_ids[static_cast<std::size_t>(v)].push_back(arc_id);
     }
     return graph;
+}
+
+auto synthetic_track_ref(UnifiedGraph &graph, int node_id, std::size_t unit,
+                         int row, int col, std::size_t track_index = 0)
+    -> GraphNodeRef {
+    auto &node = graph.nodes.at(static_cast<std::size_t>(node_id));
+    graph.bump_node_by_key.erase(node.bump);
+    node.kind = UnifiedNodeKind::Track;
+    node.unit = unit;
+    node.track_dir = static_cast<int>(hardware::TrackDirection::Horizontal);
+    node.track_row = row;
+    node.track_col = col;
+    node.track_index = track_index;
+    graph.track_node_by_key.emplace(
+        std::tuple{unit, node.track_dir, row, col, track_index}, node_id);
+
+    auto ref = GraphNodeRef{};
+    ref.kind = GraphNodeRef::Kind::Track;
+    ref.track_coord = hardware::TrackCoord{
+        row, col, hardware::TrackDirection::Horizontal, track_index};
+    ref.track_index = track_index;
+    return ref;
 }
 
 auto synthetic_ref(std::size_t node) -> GraphNodeRef {
@@ -746,6 +775,26 @@ auto synthetic_scope(const UnifiedGraph& graph, std::size_t net_id) -> UnifiedSa
     for (std::size_t i = 0; i < graph.arcs.size(); ++i) {
         scope.arc_offset[i] = static_cast<int>(scope.arc_ids.size());
         scope.arc_ids.push_back(static_cast<int>(i));
+    }
+    return scope;
+}
+
+auto synthetic_scope(const UnifiedGraph &graph, std::size_t net_id,
+                     const std::Vector<int> &node_ids,
+                     const std::Vector<int> &arc_ids) -> UnifiedSatNetScope {
+    auto scope = UnifiedSatNetScope{};
+    scope.net_id = net_id;
+    scope.node_offset.assign(graph.nodes.size(), -1);
+    scope.arc_offset.assign(graph.arcs.size(), -1);
+    for (const int node_id : node_ids) {
+        scope.node_offset.at(static_cast<std::size_t>(node_id)) =
+            static_cast<int>(scope.node_ids.size());
+        scope.node_ids.push_back(node_id);
+    }
+    for (const int arc_id : arc_ids) {
+        scope.arc_offset.at(static_cast<std::size_t>(arc_id)) =
+            static_cast<int>(scope.arc_ids.size());
+        scope.arc_ids.push_back(arc_id);
     }
     return scope;
 }
@@ -940,7 +989,8 @@ auto test_v18_pn_preselection_reserves_fixed_tnet_unit_load() -> void {
             && selected.stats.alpha > 0.0
             && selected.stats.lambda_a
                 == static_cast<double>(hardware::Interposer::COB_ARRAY_WIDTH - 2),
-        "V18 PN preselection must report fixed Tnet load and sparse RUDY variables");
+        "V18 PN preselection must report fixed Tnet load and sparse RUDY "
+        "variables");
     require(
         selected.nets.size() == 9
             && std::ranges::none_of(
@@ -979,7 +1029,8 @@ auto test_v18_pn_preselection_uses_unit_aware_rudy() -> void {
             && selected.nets.size() == 2
             && selected.nets.back().kind == RoutingNetKind::Tnet
             && map_track(selected.nets.back().sources.front().track_index) == 1,
-        "unit-aware RUDY must prefer the equally distant unit without fixed Tnet demand");
+        "unit-aware RUDY must prefer the equally distant unit without "
+            "fixed Tnet demand");
 }
 
 auto test_v18_pn_preselection_scales_lambda_a_by_k_hat() -> void {
@@ -1000,7 +1051,8 @@ auto test_v18_pn_preselection_scales_lambda_a_by_k_hat() -> void {
             && selected.stats.k_hat == 2.0
             && selected.stats.lambda_a_base > 0.0
             && selected.stats.lambda_a == selected.stats.lambda_a_base * selected.stats.k_hat,
-        "V18 PN lambda_A must use all PN bumps and deduplicate physical ports across PNnets");
+        "V18 PN lambda_A must use all PN bumps and deduplicate physical "
+            "ports across PNnets");
 }
 
 auto test_v18_pn_preselection_reserves_fixed_tnet_bank_residue_load() -> void {
@@ -1045,7 +1097,8 @@ auto test_v18_pn_preselection_reserves_fixed_tnet_bank_residue_load() -> void {
     }
     require(
         unit1_bumps >= 1 && unit8_bumps <= 7 && unit1_bumps + unit8_bumps == 8,
-        "fixed unit-0 load must leave at most seven same-bank residue-0 slots for unit 8");
+        "fixed unit-0 load must leave at most seven same-bank residue-0 "
+            "slots for unit 8");
 }
 
 auto test_v17_global_route_two_pin_and_fixed_unit() -> void {
@@ -1097,7 +1150,8 @@ auto test_v17_global_route_two_pin_and_fixed_unit() -> void {
             && cut_route.stats.objective == bump_route.stats.objective
             && cut_route.stats.variables < bump_route.stats.variables
             && cut_route.stats.constraints < bump_route.stats.constraints,
-        "capacity-cut mode must remove dense W without changing an uncongested optimum");
+        "capacity-cut mode must remove dense W without changing an "
+            "uncongested optimum");
 
     auto state = init_routing_problem_state({bump_net});
     auto bump_nets = std::Vector<RoutingNet> {bump_net};
@@ -1105,7 +1159,8 @@ auto test_v17_global_route_two_pin_and_fixed_unit() -> void {
     require(
         state.pairs[0].global_route_distance_cap == 8
             && bump_nets[0].global_unit_by_source.contains(0),
-        "V17 interface must preserve the detailed distance cap and source unit");
+        "V17 interface must preserve the detailed distance cap and source "
+            "unit");
 
     const auto fixed_source = track_ref(
         0, 0, hardware::TrackDirection::Horizontal, 69);
@@ -1128,7 +1183,8 @@ auto test_v17_global_route_two_pin_and_fixed_unit() -> void {
         fixed_route.ok
             && fixed_route.unit_by_owner.at(GlobalUnitOwnerKey {5, 0}) == map_track(69)
             && fixed_route.stats.model.f_vars == 4,
-        "V17 must preserve a fixed COBUnit and omit another port's private F arcs");
+        "V17 must preserve a fixed COBUnit and omit another port's private "
+            "F arcs");
 }
 
 auto test_v17_estimated_wirelength_deduplicates_multi_terminal_channels() -> void {
@@ -1155,7 +1211,8 @@ auto test_v17_estimated_wirelength_deduplicates_multi_terminal_channels() -> voi
         route.ok
             && route.stats.objective == 3
             && route.stats.estimated_wirelength == 6,
-        "estimated wirelength must count the three-Channel owner union and three unique bumps");
+        "estimated wirelength must count the three-Channel owner union and "
+            "three unique bumps");
 
     const auto warm_route = solve_global_route_v17(
         UnifiedGraph {}, graph, {net}, 0, GlobalRouteCapacityMode::IterativeCuts);
@@ -1167,7 +1224,8 @@ auto test_v17_estimated_wirelength_deduplicates_multi_terminal_channels() -> voi
             && warm_route.stats.mip_start_commodities == 2
             && warm_route.stats.mip_start_skipped_owners == 0
             && warm_route.stats.mip_start_entries > 0,
-        "V19 maze MIP start must build one shared single-source multi-pin tree");
+        "V19 maze MIP start must build one shared single-source multi-pin "
+            "tree");
 }
 
 auto test_v19_bbox_plus_one_global_route_scope() -> void {
@@ -1207,7 +1265,8 @@ auto test_v19_bbox_plus_one_global_route_scope() -> void {
             && scoped.stats.model.x_dense_slots == 4
             && scoped.stats.model.f_vars == 6
             && scoped.stats.model.f_dense_slots == 8,
-        "V19 bbox+1 scope must retain the required +1 ring and omit unrelated X/F variables");
+        "V19 bbox+1 scope must retain the required +1 ring and omit "
+            "unrelated X/F variables");
 
     const auto detour_graph = synthetic_channel_graph(
         {channels[0], channels[1], channels[3]},
@@ -1231,7 +1290,8 @@ auto test_v19_bbox_plus_one_global_route_scope() -> void {
         GlobalRouteScopeMode::BboxPlusOne);
     require(
         full.ok && !clipped.ok && clipped.message == "Infeasible",
-        "V19 bbox+1 experiment must report failure directly when the only detour is outside scope");
+        "V19 bbox+1 experiment must report failure directly when the only "
+            "detour is outside scope");
 
     const auto a8 = tob_anchor_cob(8);
     const auto a3 = tob_anchor_cob(3);
@@ -1266,7 +1326,8 @@ auto test_v19_bbox_plus_one_global_route_scope() -> void {
             && fanout_scoped.stats.model.x_dense_slots == 4
             && fanout_scoped.stats.model.f_vars == 12
             && fanout_scoped.stats.model.f_dense_slots == 16,
-        "V19 multi-sink scope must keep the expanded child-bbox union, not its rectangular hull");
+        "V19 multi-sink scope must keep the expanded child-bbox union, not "
+            "its rectangular hull");
 }
 
 auto test_v17_channel_graph_collapses_real_hardware_topology() -> void {
@@ -1289,7 +1350,8 @@ auto test_v17_channel_graph_collapses_real_hardware_topology() -> void {
         * (channel_count + hardware::Interposer::TOB_SIZE);
     require(
         !global.channels.empty() && !global.arcs.empty(),
-        "V17 must derive a non-empty Channel adjacency graph from the hardware graph");
+        "V17 must derive a non-empty Channel adjacency graph from the "
+            "hardware graph");
     require(
         detailed.track_node_count == global.channels.size() * 128
             && global.channels.size() == channel_count
@@ -1299,7 +1361,8 @@ auto test_v17_channel_graph_collapses_real_hardware_topology() -> void {
             && global.port_terminal_node_count == 0
             && global.nodes.size() == node_count
             && global.arcs.size() == arc_count,
-        "V17 hardware graph must use COB/terminal nodes and physical Channels as edges");
+        "V17 hardware graph must use COB/terminal nodes and physical "
+            "Channels as edges");
     for (const auto& arc : global.arcs) {
         require(
             arc.u >= 0 && arc.v >= 0 && arc.u != arc.v
@@ -1307,7 +1370,8 @@ auto test_v17_channel_graph_collapses_real_hardware_topology() -> void {
                 && static_cast<std::size_t>(arc.v) < global.nodes.size()
                 && arc.channel >= 0
                 && static_cast<std::size_t>(arc.channel) < global.channels.size(),
-            "every V17 traversal arc must identify valid nodes and one Channel resource");
+            "every V17 traversal arc must identify valid nodes and one "
+                "Channel resource");
     }
     for (std::size_t tob = 0; tob < hardware::Interposer::TOB_SIZE; ++tob) {
         const int node = global.tob_node_by_tob.at(tob);
@@ -1327,7 +1391,8 @@ auto test_v17_channel_graph_collapses_real_hardware_topology() -> void {
         require(
             endpoints == std::set<std::pair<int, int>> {
                 {cob0, node}, {node, cob0}, {cob1, node}, {node, cob1}},
-            "a TOB Channel must connect only its midpoint and two adjacent COBs");
+            "a TOB Channel must connect only its midpoint and two adjacent "
+                "COBs");
     }
 
     const auto boundary_port = track_ref(
@@ -1347,7 +1412,8 @@ auto test_v17_channel_graph_collapses_real_hardware_topology() -> void {
                 [&](const GlobalChannelArc& arc) {
                     return arc.restricted_port_node == port_node;
                 }) == 2,
-        "a real boundary port must coexist with V_B and add only two private arcs");
+        "a real boundary port must coexist with V_B and add only two "
+            "private arcs");
 }
 
 auto test_v17_tob_halves_share_channel_capacity() -> void {
@@ -1400,7 +1466,8 @@ auto test_v17_tob_halves_share_channel_capacity() -> void {
     const auto route = solve_global_route_v17(UnifiedGraph {}, graph, nets, 0);
     require(
         !route.ok && route.message == "Infeasible",
-        "nine same-unit routes on opposite TOB halves must overflow one shared Channel");
+        "nine same-unit routes on opposite TOB halves must overflow one "
+            "shared Channel");
 
     const auto cut_route = solve_global_route_v17(
         UnifiedGraph {},
@@ -1418,7 +1485,8 @@ auto test_v17_tob_halves_share_channel_capacity() -> void {
                 == cut_route.stats.initial_fixed_unit_capacity_rows
             && cut_route.stats.capacity_cut_rounds == 0
             && cut_route.stats.capacity_cuts == 0,
-        "fixed-unit capacity rows must reject a known overload in the first solve");
+        "fixed-unit capacity rows must reject a known overload in the "
+            "first solve");
 
     auto bypass_channels = channels;
     bypass_channels.push_back(GlobalChannelCoord {0, 3, 0});
@@ -1446,7 +1514,8 @@ auto test_v17_tob_halves_share_channel_capacity() -> void {
             && bypass_route.stats.mip_start_skipped_owners == 0
             && bypass_route.stats.capacity_cut_rounds == 0
             && bypass_route.stats.capacity_cuts == 0,
-        "the ninth fixed-unit maze route must avoid a full Channel by using its bypass");
+        "the ninth fixed-unit maze route must avoid a full Channel by "
+            "using its bypass");
 }
 
 auto test_v18_capacity_cuts_repair_overloaded_incumbent() -> void {
@@ -1522,7 +1591,8 @@ auto test_v18_capacity_cuts_repair_overloaded_incumbent() -> void {
             && route.stats.capacity_cuts >= 1
             && route.selected_source_index_by_pair.at(PairKey {8, 0, 0}) == 1
             && route.selected_unit_by_pair.at(PairKey {8, 0, 0}) == map_track(1),
-        "capacity cuts must assign the PN demand to a non-overloaded unit and converge");
+        "capacity cuts must assign the PN demand to a non-overloaded unit "
+            "and converge");
 }
 
 auto test_v17_global_route_bus_and_pn_source() -> void {
@@ -1583,7 +1653,8 @@ auto test_v17_global_route_bus_and_pn_source() -> void {
     require(
         pn_nets.front().global_selected_pn_source_indices
             == std::set<std::size_t> {1},
-        "V17 PN source choice must be propagated into the detailed-routing scope");
+        "V17 PN source choice must be propagated into the detailed-routing "
+            "scope");
 }
 
 auto test_v17_pn_net_z_deduplicates_per_demand_channels() -> void {
@@ -1653,7 +1724,8 @@ auto test_v17_pn_z_deduplicates_across_units() -> void {
             && route.stats.model.z_vars == 2
             && route.stats.objective == 2
             && route.stats.estimated_wirelength == 4,
-        "one PNnet must count a shared Channel once even when demands select different units");
+        "one PNnet must count a shared Channel once even when demands select "
+        "different units");
 }
 
 auto test_v17_pn_z_does_not_relax_per_demand_capacity() -> void {
@@ -1679,7 +1751,8 @@ auto test_v17_pn_z_does_not_relax_per_demand_capacity() -> void {
         UnifiedGraph {}, synthetic_channel_graph(channels, nodes, segments), {pn}, 0);
     require(
         !route.ok && route.stats.model.z_vars == channels.size(),
-        "PNnet Z must not merge nine per-demand uses of one Channel for capacity");
+        "PNnet Z must not merge nine per-demand uses of one Channel for "
+            "capacity");
 }
 
 auto test_v17_rejects_tob_necessary_condition_overflow() -> void {
@@ -1733,7 +1806,8 @@ auto test_v17_rejects_tob_necessary_condition_overflow() -> void {
         UnifiedGraph {}, graph, make_fixed_nets(true, false), 0);
     require(
         !residue_overflow.ok,
-        "V17 must reject more than eight same-bank bumps in one unit residue pair");
+        "V17 must reject more than eight same-bank "
+                                  "bumps in one unit residue pair");
 }
 
 auto test_v21_tob_peak_objective() -> void {
@@ -1767,7 +1841,8 @@ auto test_v21_tob_peak_objective() -> void {
         require(
             route.stats.objective == 2
                 && route.stats.estimated_wirelength == route.stats.objective + bump_count,
-            "V21 must count a shared multi-sink Channel union once while keeping every TOB bump in estimated wirelength");
+            "V21 must count a shared multi-sink Channel union once while "
+                "keeping every TOB bump in estimated wirelength");
         require(
             std::abs(route.stats.full_objective
                      - (static_cast<double>(route.stats.objective) + route.stats.tob_peak_cost))
@@ -1776,11 +1851,13 @@ auto test_v21_tob_peak_objective() -> void {
                             - (route.stats.full_objective
                                - route.stats.tob_peak_constant_cost))
                     < 1e-6,
-            "V21 full objective must include all TOB peaks while the HiGHS objective excludes unavoidable fixed offsets");
+            "V21 full objective must include all TOB peaks while the HiGHS "
+                "objective excludes unavoidable fixed offsets");
         require(
             route.stats.model.total_variables() == route.stats.variables
                 && route.stats.model.total_constraints() == route.stats.constraints,
-            "V21 TOB peak variables and rows must reconcile with the full model totals");
+            "V21 TOB peak variables and rows must reconcile with the full "
+                "model totals");
         return route;
     };
 
@@ -1791,7 +1868,8 @@ auto test_v21_tob_peak_objective() -> void {
             below.stats.model.tob_h7_vars == 0 && below.stats.model.tob_h8_vars == 0
                 && below.stats.tob_load7 == 0 && below.stats.tob_load8 == 0
                 && below.stats.tob_peak_cost == 0.0 && below.stats.max_tob_unit_load == 6,
-            "a TOB-unit whose possible load is below seven must not create or select H variables");
+            "a TOB-unit whose possible load is below seven must not create "
+                "or select H variables");
 
         const auto seven = solve(7, mode);
         require(
@@ -1847,7 +1925,8 @@ auto test_v21_tob_peak_objective() -> void {
                 && balanced.stats.tob_load8 == 0
                 && balanced.stats.tob_peak_cost == 0.0
                 && balanced.stats.max_tob_unit_load == 4,
-            "V21 TOB peak objective must separate selectable four-bump owners instead of accepting one 8/8 unit");
+            "V21 TOB peak objective must separate selectable four-bump "
+                "owners instead of accepting one 8/8 unit");
     }
 
     auto selectable_seven = RoutingNet {};
@@ -1872,7 +1951,8 @@ auto test_v21_tob_peak_objective() -> void {
                 && selected_peak.stats.tob_peak_cost == 0.5
                 && selected_peak.stats.solver_objective == 1.5
                 && selected_peak.stats.full_objective == 1.5,
-            "V21 must charge one decision-dependent H7 for a selectable seven-bump owner");
+            "V21 must charge one decision-dependent H7 for a selectable "
+                "seven-bump owner");
     }
 }
 
@@ -1913,7 +1993,8 @@ auto test_v17_unit_assumption_is_traceable() -> void {
     require(
         model.unit_assumption_vars.size() == 1
             && model.unit_assumption_vars[0].unit == 3,
-        "V17 must emit one traceable gamma assumption for a fixed Bnet source unit");
+        "V17 must emit one traceable gamma assumption for a fixed Bnet "
+            "source unit");
     const auto& source = model.sources[0];
     session.add_clause({-source.unit_selector_var_by_unit[3]});
     session.assume(model.alpha_vars[0].alpha_lit);
@@ -1925,7 +2006,8 @@ auto test_v17_unit_assumption_is_traceable() -> void {
                    result.failed_assumption_literals,
                    model.unit_assumption_vars[0].assumption_lit)
                 != result.failed_assumption_literals.end(),
-        "a unit conflict must identify only the releasable gamma assumption in the core");
+        "a unit conflict must identify only the releasable gamma "
+            "assumption in the core");
 }
 
 auto test_v17_distance_domain_starts_at_scoped_minimum() -> void {
@@ -1937,7 +2019,8 @@ auto test_v17_distance_domain_starts_at_scoped_minimum() -> void {
     const auto delays = compute_pair_delays(graph, nets, scopes, &state);
     require(
         delays.pairs[0].delays == std::Vector<int>({2}),
-        "V17 initial global-guide distance domain must contain only scoped d_min");
+        "V17 initial global-guide distance domain must contain only scoped "
+            "d_min");
 }
 
 auto test_v20_track_targets_start_at_scoped_minimum() -> void {
@@ -1957,7 +2040,8 @@ auto test_v20_track_targets_start_at_scoped_minimum() -> void {
             && delays.pairs[0].delays == std::Vector<int>({2})
             && delays.pairs[1].delays == std::Vector<int>({3})
             && delays.pairs[2].delays == std::Vector<int>({4}),
-        "TrackToBump and every TrackToBumps demand must start with only scoped d_min");
+        "TrackToBump and every TrackToBumps demand must start with only "
+            "scoped d_min");
 }
 
 auto test_v17_bus_distance_domain_starts_at_shared_minimum() -> void {
@@ -2031,10 +2115,12 @@ auto test_v19_tob_repair_template_and_shared_guide() -> void {
         state.pairs[0].allowed_channels == repair
             && state.pairs[1].allowed_channels == second_pair_expected
             && nets[0].global_route_channels == expected,
-        "V19 multi-pin repair must preserve pair-local guides and expose their union to SAT");
+        "V19 multi-pin repair must preserve pair-local guides and expose "
+            "their union to SAT");
     require(
         !expected.contains(GlobalChannelCoord {1, 1, 3}),
-        "the repair template must include only its upper boundary Channel, not an extra outer COB side");
+        "the repair template must include only its upper boundary Channel, "
+            "not an extra outer COB side");
 
     auto tob_to_tob = two_pin_net(
         32, RoutingNetKind::Bnet, bump_ref(tob, 0, 0), bump_ref(tob, 0, 1));
@@ -2053,7 +2139,8 @@ auto test_v19_tob_repair_template_and_shared_guide() -> void {
             && compact_repair.size() == 7
             && !compact_repair.contains(GlobalChannelCoord {1, 3, 2})
             && !compact_repair.contains(GlobalChannelCoord {1, 3, 4}),
-        "V19 TOB-TOB pair must receive the compact seven-Channel TOB repair template");
+        "V19 TOB-TOB pair must receive the compact seven-Channel TOB "
+            "repair template");
 
     auto boundary = RoutingNet {};
     boundary.net_id = 33;
@@ -2072,7 +2159,8 @@ auto test_v19_tob_repair_template_and_shared_guide() -> void {
         {0, 0, 1}, {0, 1, 0}, {0, 1, 1}, {1, 1, 1}};
     require(
         boundary_state.pairs[0].allowed_channels == boundary_expected,
-        "V19 boundary TOB repair must retain boundary Channels and clip the nonexistent outer side");
+        "V19 boundary TOB repair must retain boundary Channels and clip "
+            "the nonexistent outer side");
 
     auto tob_bus = RoutingNet {};
     tob_bus.net_id = 34;
@@ -2095,7 +2183,8 @@ auto test_v19_tob_repair_template_and_shared_guide() -> void {
             && bus_state.pairs[0].allowed_channels.contains(central)
             && bus_state.pairs[1].allowed_channels.contains(branch)
             && bus_nets[0].global_route_channels.size() > 2,
-        "all-TOB SyncBus must compact-repair each pair locally before exposing their union to SAT");
+        "all-TOB SyncBus must compact-repair each pair locally before "
+            "exposing their union to SAT");
 }
 
 auto test_v20_target_scopes_expand_guide_and_tob_patch_one_hop() -> void {
@@ -2123,17 +2212,47 @@ auto test_v20_target_scopes_expand_guide_and_tob_patch_one_hop() -> void {
             expected.insert(graph.channels[static_cast<std::size_t>(adjacent)]);
         }
     }
+    auto reached_cobs = std::set<std::pair<int, int>>{};
+    const auto channel_cobs = [&](const std::size_t channel) {
+        auto cobs = std::set<std::pair<int, int>>{};
+        for (const int arc_id : graph.arc_ids_by_channel[channel]) {
+            const auto &arc = graph.arcs[static_cast<std::size_t>(arc_id)];
+            for (const int node_id : {arc.u, arc.v}) {
+                const auto &node =
+                    graph.nodes[static_cast<std::size_t>(node_id)];
+                if (node.kind == GlobalRouteNodeKind::Cob) {
+                    cobs.emplace(node.row, node.col);
+                }
+            }
+        }
+        return cobs;
+    };
+    for (const auto &channel : expected) {
+        const auto cobs = channel_cobs(
+            static_cast<std::size_t>(graph.channel_id_by_coord.at(channel)));
+        reached_cobs.insert(cobs.begin(), cobs.end());
+    }
+    for (std::size_t channel = 0; channel < graph.channels.size(); ++channel) {
+        const auto cobs = channel_cobs(channel);
+        if (cobs.size() == 2 && std::ranges::all_of(cobs, [&](const auto &cob) {
+                return reached_cobs.contains(cob);
+            })) {
+            expected.insert(graph.channels[channel]);
+        }
+    }
     const auto track_target = apply(36, RoutingNetKind::Tnet, true);
     const auto pn_target = apply(37, RoutingNetKind::PNnet, false);
     require(
         !track_target.initial_expanded_channels.empty()
             && track_target.allowed_channels == expected
             && pn_target.allowed_channels == expected,
-        "TrackToBump(s) targets and PNnet must expand guide plus TOB patch by one hop");
+        "TrackToBump(s) targets and PNnet must expand guide plus TOB patch "
+            "by one hop");
     require(
         control.initial_expanded_channels.empty()
             && control.allowed_channels != expected,
-        "non-target Tnet such as normalized BumpToTrack must keep guide plus TOB patch");
+        "non-target Tnet such as normalized BumpToTrack must keep guide "
+            "plus TOB patch");
 }
 
 auto test_v19_global_guide_feedback_thresholds_and_union() -> void {
@@ -2195,7 +2314,8 @@ auto test_v19_global_guide_feedback_thresholds_and_union() -> void {
             && state.global_route_feedback_failure_count_by_pair[state.pairs[1].key] == 2
             && state.pairs[2].allowed_channels == std::set<GlobalChannelCoord> {c2}
             && state.pairs[2].delays == std::Vector<int> {5},
-        "the fifth failure of one pair must expand only its guide and expose the net union");
+        "the fifth failure of one pair must expand only its guide and expose "
+        "the net union");
 
     auto overlap_state = init_routing_problem_state({net});
     overlap_state.pairs[0].allowed_channels = {c0};
@@ -2216,7 +2336,34 @@ auto test_v19_global_guide_feedback_thresholds_and_union() -> void {
             && overlap_second.added_channels == 1
             && overlap_state.pairs[0].allowed_channels
                 == std::set<GlobalChannelCoord>({c0, c1, c2}),
-        "pair-local growth must continue when its first new Channel already exists in the net union");
+        "pair-local growth must continue when its first new Channel "
+            "already exists in the net union");
+
+    const auto bottom = GlobalChannelCoord{0, 1, 1};
+    const auto left = GlobalChannelCoord{1, 1, 0};
+    const auto right = GlobalChannelCoord{1, 1, 1};
+    const auto top = GlobalChannelCoord{0, 0, 1};
+    const auto closure_graph =
+        synthetic_channel_graph({bottom, left, right, top},
+                                {global_cob_node(0, 0), global_cob_node(0, 1),
+                                 global_cob_node(1, 0), global_cob_node(1, 1)},
+                                {{2, 3, 0}, {0, 2, 1}, {1, 3, 2}, {0, 1, 3}});
+    require(std::ranges::find(closure_graph.adjacent_channel_ids[0], 3) ==
+                closure_graph.adjacent_channel_ids[0].end(),
+            "the opposite Channel must not be reachable by the raw one-hop "
+            "adjacency");
+    auto closure_net = two_pin_net(44, RoutingNetKind::Tnet, track_ref(0, 0),
+                                   bump_ref(0, 0, 0));
+    auto closure_state = init_routing_problem_state({closure_net});
+    closure_state.pairs[0].allowed_channels = {bottom};
+    const auto closure_stats = expand_global_route_guides_one_hop(
+        closure_graph, closure_state, {closure_state.pairs[0].key});
+    require(closure_stats.pair_local_added_channels == 3 &&
+                closure_stats.added_channels == 3 &&
+                closure_state.pairs[0].allowed_channels ==
+                    std::set<GlobalChannelCoord>({bottom, left, right, top}),
+            "one-hop expansion must close Channels induced by the newly "
+            "reached COBs");
 
     auto tob_to_tob = two_pin_net(
         42, RoutingNetKind::Bnet, bump_ref(0, 0, 0), bump_ref(1, 0, 0));
@@ -2234,7 +2381,8 @@ auto test_v19_global_guide_feedback_thresholds_and_union() -> void {
     require(
         tob_stats.expanded_nets == std::set<std::size_t> {42}
             && tob_state.pairs[0].delays == std::Vector<int>({3, 4, 5, 6, 7, 8}),
-        "the fifth TOB-TOB failure must expand scope after preserving its fifth distance extension");
+        "the fifth TOB-TOB failure must expand scope after preserving its "
+            "fifth distance extension");
 }
 
 auto test_v20_global_guide_logger_handles_walk_and_residual() -> void {
@@ -2265,20 +2413,19 @@ auto test_v20_global_guide_logger_handles_walk_and_residual() -> void {
         "arc");
 }
 
-auto test_v20_post_sat_ilp_target_filter() -> void {
+auto test_v22_post_sat_ilp_target_filter() -> void {
     auto target = RoutingNet{};
     target.kind = RoutingNetKind::Tnet;
     target.post_sat_ilp_target = true;
     target.sources = {track_ref(0, 0, hardware::TrackDirection::Horizontal, 0)};
     target.demands = {RoutingDemand{0, bump_ref(0, 0, 0), {0}, true}};
     require(is_post_sat_ilp_target(target),
-            "explicit Track-to-Bump target must be selected");
+            "non-Sync Track-to-Bump must be selected");
 
     auto normalized_bump_to_track = target;
     normalized_bump_to_track.post_sat_ilp_target = false;
-    require(!is_post_sat_ilp_target(normalized_bump_to_track),
-            "structurally normalized BumpToTrack must remain frozen without an "
-            "explicit target tag");
+    require(is_post_sat_ilp_target(normalized_bump_to_track),
+            "normalized BumpToTrack must be selected without a legacy target tag");
 
     auto sync = target;
     sync.is_sync_bus = true;
@@ -2332,6 +2479,355 @@ auto test_v20_post_sat_ilp_improves_fixed_source_path() -> void {
     require(refined.total_wirelength == 2 && refined.paths.size() == 1 &&
                 refined.paths.front().node_path == std::Vector<int>({0, 3}),
             "post-SAT ILP must choose the shorter fixed-source path");
+}
+
+auto test_v22_post_sat_ilp_supports_bump_root() -> void {
+    auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
+    (void)synthetic_track_ref(graph, 1, 5, 0, 1);
+
+    auto net = RoutingNet{};
+    net.net_id = 0;
+    net.name = "BumpToBump_synthetic";
+    net.kind = RoutingNetKind::Bnet;
+    net.sources = {synthetic_ref(0)};
+    net.demands = {RoutingDemand{0, synthetic_ref(2), {0}, true}};
+
+    auto baseline = SatRoutingResult{};
+    baseline.ok = true;
+    baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2}}};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
+    const auto refined =
+        optimize_post_sat_routes(graph, {net}, {synthetic_scope(graph, 0)},
+                                 baseline, PostSatIlpOptions{});
+
+    require(refined.post_sat_ilp_accepted,
+            "V22 must optimize a Bump-root BumpToBump net");
+    require(refined.paths.size() == 1 &&
+                refined.paths.front().node_path == std::Vector<int>({0, 1, 2}),
+            "V22 must preserve Bump-root endpoint orientation");
+}
+
+auto test_v22_post_sat_ilp_moves_multiterminal_branch() -> void {
+    auto graph = synthetic_graph(
+        6, {{0, 1}, {1, 3}, {0, 2}, {2, 4}, {0, 5}, {5, 3}, {5, 4}});
+    graph.arcs[4].physical_switch_id = 42;
+    graph.arcs[4].physical_switch_kind = PhysicalSwitchKind::BumpH;
+    const auto source = synthetic_track_ref(graph, 0, 0, 0, 0);
+    (void)synthetic_track_ref(graph, 1, 0, 0, 1);
+    (void)synthetic_track_ref(graph, 2, 0, 0, 2);
+    (void)synthetic_track_ref(graph, 5, 0, 0, 5);
+
+    auto net = RoutingNet{};
+    net.net_id = 0;
+    net.name = "TrackToBumps_synthetic";
+    net.kind = RoutingNetKind::Tnet;
+    net.sources = {source};
+    net.demands = {RoutingDemand{0, synthetic_ref(3), {0}, true},
+                   RoutingDemand{1, synthetic_ref(4), {0}, true}};
+
+    auto baseline = SatRoutingResult{};
+    baseline.ok = true;
+    baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 3}},
+                      SourceSinkPairPath{0, 0, 1, -1, {0, 2, 4}}};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
+    const auto refined =
+        optimize_post_sat_routes(graph, {net}, {synthetic_scope(graph, 0)},
+                                 baseline, PostSatIlpOptions{});
+
+    require(refined.post_sat_ilp_accepted && refined.total_wirelength == 4,
+            "pair flows with net-level union must reduce physical wirelength");
+    require(refined.paths.size() == 2 &&
+                refined.paths[0].node_path == std::Vector<int>({0, 5, 3}) &&
+                refined.paths[1].node_path == std::Vector<int>({0, 5, 4}),
+            "pair flows must share a better trunk in their scope intersection");
+    require(refined.used_tob_switch_ids == std::Vector<int>({42}),
+            "same-net pairs must share one physical-switch union variable");
+}
+
+auto test_v22_post_sat_ilp_uses_pair_local_scope_and_union_warm_start()
+    -> void {
+    auto graph = synthetic_graph(
+        6, {{0, 1}, {1, 3}, {0, 2}, {2, 4}, {0, 5}, {5, 3}, {5, 4}});
+    const auto source = synthetic_track_ref(graph, 0, 0, 0, 0);
+    for (const int node : {1, 2, 5})
+        (void)synthetic_track_ref(graph, node, 0, 0, node);
+    auto net = RoutingNet{};
+    net.net_id = 31;
+    net.kind = RoutingNetKind::Tnet;
+    net.sources = {source};
+    net.demands = {RoutingDemand{0, synthetic_ref(3), {0}, true},
+                   RoutingDemand{1, synthetic_ref(4), {0}, true}};
+    auto baseline = SatRoutingResult{};
+    baseline.ok = true;
+    baseline.paths = {SourceSinkPairPath{31, 0, 0, -1, {0, 1, 3}},
+                      SourceSinkPairPath{31, 0, 1, -1, {0, 2, 4}}};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
+    auto state = init_routing_problem_state({net});
+    state.pairs[0].allowed_channels = {GlobalChannelCoord{0, 0, 0},
+                                       GlobalChannelCoord{0, 0, 1},
+                                       GlobalChannelCoord{0, 0, 3}};
+    state.pairs[1].allowed_channels = {GlobalChannelCoord{0, 0, 0},
+                                       GlobalChannelCoord{0, 0, 2},
+                                       GlobalChannelCoord{0, 0, 4}};
+    const auto refined =
+        optimize_post_sat_routes(graph, {net}, {synthetic_scope(graph, 31)},
+                                 baseline, PostSatIlpOptions{}, &state);
+    require(
+        refined.post_sat_ilp_accepted && refined.total_wirelength == 5,
+        "pair-local domains must not borrow another pair's route-only node");
+    require(std::ranges::none_of(refined.paths,
+                                 [](const auto &path) {
+                                     return std::ranges::find(path.node_path,
+                                                              5) !=
+                                            path.node_path.end();
+                                 }),
+            "pair-local post-SAT ILP must exclude a net-union-only shortcut");
+}
+
+auto test_v22_post_sat_ilp_exact_components_follow_scope_overlap() -> void {
+    auto graph = synthetic_graph(
+        7, {{0, 1}, {1, 2}, {3, 4}, {4, 5}, {0, 6}, {6, 2}, {3, 6}, {6, 5}});
+    const auto source0 = synthetic_track_ref(graph, 0, 0, 0, 0);
+    (void)synthetic_track_ref(graph, 1, 0, 0, 1);
+    const auto source1 = synthetic_track_ref(graph, 3, 0, 0, 3);
+    (void)synthetic_track_ref(graph, 4, 0, 0, 4);
+    (void)synthetic_track_ref(graph, 6, 0, 0, 6);
+
+    auto net0 = RoutingNet{};
+    net0.net_id = 0;
+    net0.kind = RoutingNetKind::Tnet;
+    net0.sources = {source0};
+    net0.demands = {RoutingDemand{0, synthetic_ref(2), {0}, true}};
+    auto net1 = RoutingNet{};
+    net1.net_id = 1;
+    net1.kind = RoutingNetKind::Tnet;
+    net1.sources = {source1};
+    net1.demands = {RoutingDemand{0, synthetic_ref(5), {0}, true}};
+
+    auto baseline = SatRoutingResult{};
+    baseline.ok = true;
+    baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2}},
+                      SourceSinkPairPath{1, 0, 0, -1, {3, 4, 5}}};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
+
+    const auto split =
+        optimize_post_sat_routes(graph, {net0, net1},
+                                 {synthetic_scope(graph, 0, {0, 1, 2}, {0, 1}),
+                                  synthetic_scope(graph, 1, {3, 4, 5}, {2, 3})},
+                                 baseline, PostSatIlpOptions{});
+    require(split.post_sat_ilp_accepted && split.post_sat_ilp_components == 2,
+            "resource-disjoint scopes must form two exact components");
+
+    const auto merged = optimize_post_sat_routes(
+        graph, {net0, net1},
+        {synthetic_scope(graph, 0), synthetic_scope(graph, 1)}, baseline,
+        PostSatIlpOptions{});
+    require(
+        merged.post_sat_ilp_accepted && merged.post_sat_ilp_components == 1,
+        "scopes sharing a candidate physical node must share one component");
+}
+
+auto test_v22_post_sat_ilp_jointly_exchanges_nonbus_resources() -> void {
+    auto graph = synthetic_graph(8, {{0, 1},
+                                     {1, 7},
+                                     {7, 2},
+                                     {3, 4},
+                                     {4, 5},
+                                     {0, 4},
+                                     {4, 2},
+                                     {3, 6},
+                                     {6, 5}});
+    const auto source0 = synthetic_track_ref(graph, 0, 0, 0, 0);
+    (void)synthetic_track_ref(graph, 1, 0, 0, 1);
+    const auto source1 = synthetic_track_ref(graph, 3, 0, 0, 3);
+    (void)synthetic_track_ref(graph, 4, 0, 0, 4);
+    (void)synthetic_track_ref(graph, 6, 0, 0, 6);
+    (void)synthetic_track_ref(graph, 7, 0, 0, 7);
+
+    auto net0 = RoutingNet{};
+    net0.net_id = 0;
+    net0.kind = RoutingNetKind::Tnet;
+    net0.sources = {source0};
+    net0.demands = {RoutingDemand{0, synthetic_ref(2), {0}, true}};
+    auto net1 = RoutingNet{};
+    net1.net_id = 1;
+    net1.kind = RoutingNetKind::Tnet;
+    net1.sources = {source1};
+    net1.demands = {RoutingDemand{0, synthetic_ref(5), {0}, true}};
+
+    auto baseline = SatRoutingResult{};
+    baseline.ok = true;
+    baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 7, 2}},
+                      SourceSinkPairPath{1, 0, 0, -1, {3, 4, 5}}};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
+    const auto refined = optimize_post_sat_routes(
+        graph, {net0, net1},
+        {synthetic_scope(graph, 0), synthetic_scope(graph, 1)}, baseline,
+        PostSatIlpOptions{});
+
+    require(refined.post_sat_ilp_accepted && refined.total_wirelength == 6,
+            "all non-bus nets must be optimized jointly rather than locked");
+    require(refined.paths.size() == 2 &&
+                refined.paths[0].node_path == std::Vector<int>({0, 4, 2}) &&
+                refined.paths[1].node_path == std::Vector<int>({3, 6, 5}),
+            "one non-bus net must be able to take another net's SAT resource "
+            "after that net moves");
+}
+
+auto test_v22_post_sat_ilp_enforces_shared_mode_group() -> void {
+    auto graph = synthetic_graph(11, {{0, 1},
+                                      {1, 2},
+                                      {0, 7},
+                                      {7, 8},
+                                      {8, 2},
+                                      {3, 4},
+                                      {4, 5},
+                                      {3, 9},
+                                      {9, 10},
+                                      {10, 5}});
+    const auto source0 = synthetic_track_ref(graph, 0, 0, 0, 0);
+    const auto source1 = synthetic_track_ref(graph, 3, 0, 0, 3);
+    for (const int node : {7, 8, 9, 10})
+        (void)synthetic_track_ref(graph, node, 0, 0, node);
+    for (const int node : {1, 4}) {
+        graph.bump_node_by_key.erase(
+            graph.nodes[static_cast<std::size_t>(node)].bump);
+        graph.nodes[static_cast<std::size_t>(node)].kind =
+            UnifiedNodeKind::VLine;
+        graph.nodes[static_cast<std::size_t>(node)].line_index = 0;
+    }
+    graph.arcs[0].physical_switch_id = 10;
+    graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
+    graph.arcs[0].mode_group_id = 7;
+    graph.arcs[0].is_vline_track_straight = true;
+    graph.arcs[5].physical_switch_id = 11;
+    graph.arcs[5].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
+    graph.arcs[5].mode_group_id = 7;
+    graph.arcs[5].is_vline_track_swap = true;
+
+    auto net0 = RoutingNet{};
+    net0.net_id = 0;
+    net0.kind = RoutingNetKind::Tnet;
+    net0.sources = {source0};
+    net0.demands = {RoutingDemand{0, synthetic_ref(2), {0}, true}};
+    auto net1 = RoutingNet{};
+    net1.net_id = 1;
+    net1.kind = RoutingNetKind::Tnet;
+    net1.sources = {source1};
+    net1.demands = {RoutingDemand{0, synthetic_ref(5), {0}, true}};
+
+    auto baseline = SatRoutingResult{};
+    baseline.ok = true;
+    baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2}},
+                      SourceSinkPairPath{1, 0, 0, -1, {3, 9, 10, 5}}};
+    baseline.vline_mode_straight_by_group[7] = true;
+    baseline.used_tob_switch_ids = {10};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
+    const auto refined = optimize_post_sat_routes(
+        graph, {net0, net1},
+        {synthetic_scope(graph, 0), synthetic_scope(graph, 1)}, baseline,
+        PostSatIlpOptions{});
+
+    const auto switches = std::set<int>(refined.used_tob_switch_ids.begin(),
+                                        refined.used_tob_switch_ids.end());
+    require(refined.post_sat_ilp_accepted && refined.total_wirelength == 6,
+            "shared straight/swap mode must keep the legal SAT objective");
+    require(
+        switches.contains(10) != switches.contains(11),
+        "one mode group must not select straight and swap switches together");
+    require(refined.vline_mode_straight_by_group.at(7) == switches.contains(10),
+            "reported mode must agree with the selected VLineTrack switch");
+}
+
+auto test_v22_post_sat_ilp_fixes_complete_sync_bus() -> void {
+    auto graph = synthetic_graph(6, {{0, 1}, {1, 2}, {3, 4}, {4, 5}, {3, 5}});
+    const auto bus_source = synthetic_track_ref(graph, 0, 0, 0, 0);
+    graph.bump_node_by_key.erase(graph.nodes[1].bump);
+    graph.nodes[1].kind = UnifiedNodeKind::VLine;
+    graph.nodes[1].line_index = 0;
+    const auto data_source = synthetic_track_ref(graph, 3, 0, 0, 3);
+    (void)synthetic_track_ref(graph, 4, 0, 0, 4);
+    graph.arcs[0].physical_switch_id = 10;
+    graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
+    graph.arcs[0].mode_group_id = 7;
+    graph.arcs[0].is_vline_track_straight = true;
+
+    auto bus = RoutingNet{};
+    bus.net_id = 0;
+    bus.kind = RoutingNetKind::Tnet;
+    bus.is_sync_bus = true;
+    bus.sources = {bus_source};
+    bus.demands = {RoutingDemand{0, synthetic_ref(2), {0}, true}};
+    auto data = RoutingNet{};
+    data.net_id = 1;
+    data.kind = RoutingNetKind::Tnet;
+    data.sources = {data_source};
+    data.demands = {RoutingDemand{0, synthetic_ref(5), {0}, true}};
+
+    auto baseline = SatRoutingResult{};
+    baseline.ok = true;
+    baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2}},
+                      SourceSinkPairPath{1, 0, 0, -1, {3, 4, 5}}};
+    baseline.vline_mode_straight_by_group[7] = true;
+    baseline.used_tob_switch_ids = {10};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
+    const auto refined = optimize_post_sat_routes(
+        graph, {bus, data},
+        {synthetic_scope(graph, 0), synthetic_scope(graph, 1)}, baseline,
+        PostSatIlpOptions{});
+
+    require(refined.post_sat_ilp_accepted && refined.total_wirelength == 4,
+            "V22 must optimize the non-bus net around a fixed bus");
+    require(refined.paths.size() == 2 &&
+                refined.paths[0].node_path == std::Vector<int>({0, 1, 2}) &&
+                refined.paths[1].node_path == std::Vector<int>({3, 5}),
+            "V22 must preserve the complete bus path while rerouting non-bus");
+    require(refined.vline_mode_straight_by_group.at(7) &&
+                refined.used_tob_switch_ids == std::Vector<int>({10}),
+            "V22 must preserve bus mode and physical-switch configuration");
+}
+
+auto test_v22_post_sat_ilp_excludes_fixed_bus_nodes() -> void {
+    auto graph = synthetic_graph(
+        7, {{0, 1}, {1, 2}, {3, 4}, {4, 6}, {6, 5}, {3, 1}, {1, 5}});
+    const auto bus_source = synthetic_track_ref(graph, 0, 0, 0, 0);
+    (void)synthetic_track_ref(graph, 1, 0, 0, 1);
+    const auto data_source = synthetic_track_ref(graph, 3, 0, 0, 3);
+    (void)synthetic_track_ref(graph, 4, 0, 0, 4);
+    (void)synthetic_track_ref(graph, 6, 0, 0, 6);
+
+    auto bus = RoutingNet{};
+    bus.net_id = 0;
+    bus.kind = RoutingNetKind::Tnet;
+    bus.is_sync_bus = true;
+    bus.sources = {bus_source};
+    bus.demands = {RoutingDemand{0, synthetic_ref(2), {0}, true}};
+
+    auto data = RoutingNet{};
+    data.net_id = 1;
+    data.kind = RoutingNetKind::Tnet;
+    data.sources = {data_source};
+    data.demands = {RoutingDemand{0, synthetic_ref(5), {0}, true}};
+
+    auto baseline = SatRoutingResult{};
+    baseline.ok = true;
+    baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2}},
+                      SourceSinkPairPath{1, 0, 0, -1, {3, 4, 6, 5}}};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
+
+    const auto refined = optimize_post_sat_routes(
+        graph, {bus, data},
+        {synthetic_scope(graph, 0), synthetic_scope(graph, 1)}, baseline,
+        PostSatIlpOptions{});
+    const auto data_path = std::ranges::find_if(
+        refined.paths, [](const auto &path) { return path.net_id == 1; });
+    require(refined.post_sat_ilp_accepted,
+            "a fixed bus node must be filtered before solving, not rejected "
+            "only by post-validation");
+    require(data_path != refined.paths.end() &&
+                data_path->node_path == std::Vector<int>({3, 4, 6, 5}),
+            "non-bus pair flow must not take a shorter path through a fixed "
+            "SyncBus node");
 }
 
 auto test_v20_post_sat_rrr_improves_within_final_scope() -> void {
@@ -2463,7 +2959,8 @@ auto test_v17_pn_scope_retains_selected_union_only() -> void {
     }
     require(
         selected0_arc_in_scope && selected2_arc_in_scope && !rejected_arc_in_scope,
-        "V17 multi-sink PN scope must retain the selected-source union and mask an unselected same-Channel/unit virtual arc");
+        "V17 multi-sink PN scope must retain the selected-source union and "
+            "mask an unselected same-Channel/unit virtual arc");
 }
 
 auto test_v18_guided_cadical_smoke() -> void {
@@ -2485,7 +2982,8 @@ auto test_v18_guided_cadical_smoke() -> void {
             && result.occupancy_implication_clauses == 0
             && result.occupancy_soft_clauses == 0
             && result.total_wirelength > 0,
-        "V18 must route through HiGHS and guided CaDiCaL without occupancy objective support");
+        "V18 must route through HiGHS and guided CaDiCaL without occupancy "
+            "objective support");
 }
 
 auto build_v14_model(
@@ -2587,7 +3085,8 @@ auto test_binary_successor_truth_table() -> void {
                     const auto solved = session.solve_once();
                     require(
                         solved.ok == expected,
-                        "shared successor must match conditional non-overflowing increment");
+                        "shared successor must match conditional "
+                            "non-overflowing increment");
                     if (solved.ok) {
                         const auto modular_successor = (input_value + 1) % value_count;
                         for (std::size_t bit = 0; bit < width; ++bit) {
@@ -2596,12 +3095,14 @@ auto test_binary_successor_truth_table() -> void {
                                     == ((modular_successor
                                          & (std::size_t {1} << bit))
                                         != 0),
-                                "unconditional successor bits must equal input+1 modulo 2^w");
+                                "unconditional successor bits must equal "
+                                    "input+1 modulo 2^w");
                         }
                         require(
                             session.value(successor.overflow)
                                 == (input_value + 1 == value_count),
-                            "successor overflow literal must identify the maximum input");
+                            "successor overflow literal must identify the "
+                                "maximum input");
                     }
                 }
             }
@@ -2699,7 +3200,8 @@ auto test_z3_optimize_cli_option() -> void {
     const auto v17 = parse_test_ilp_cli({"case", "--global-route-v17"});
     require(
         v17.enable_global_route_v17 && v17.enable_z3_optimize,
-        "--global-route-v17 must enable global routing and the existing Z3 backend");
+        "--global-route-v17 must enable global routing and the existing Z3 "
+            "backend");
 
     const auto v18 = parse_test_ilp_cli({"case", "--global-route-v18"});
     require(
@@ -2902,7 +3404,8 @@ auto test_alpha_skips_unreachable_delay_for_sat() -> void {
     session.assume(model.alpha_vars.front().alpha_lit);
     require(
         session.solve().ok,
-        "SAT must choose the reachable delay when another allowed delay is unreachable");
+        "SAT must choose the reachable delay when "
+                                "another allowed delay is unreachable");
 }
 
 auto test_alpha_empty_exact_delay_reports_core() -> void {
@@ -2999,7 +3502,8 @@ auto test_feedback_rebuilds_after_reaching_full_bbox() -> void {
         apply_feedback_expansion(state, nets, {state.pairs[0].key});
     require(
         status_second == FeedbackExpansionStatus::Expanded,
-        "reaching full-chip bbox must rebuild and solve once before exhaustion");
+        "reaching full-chip bbox must rebuild and solve once before "
+            "exhaustion");
     require(
         is_full_chip_bbox(state.pairs[0].pair_bbox),
         "second even feedback failure must expand critical bbox to full chip");
@@ -3259,14 +3763,16 @@ auto test_v14_source_unit_masks() -> void {
         require(
             delays.sources[0].source_unit_mask
                 == ((std::uint16_t {1} << 2) | (std::uint16_t {1} << 10)),
-            "PNnet virtual source must expose the union of candidate track units");
+            "PNnet virtual source must expose the union of candidate track "
+                "units");
         auto session = CadicalSession {};
         const auto model =
             build_unified_sat_model(session, graph, nets, scopes, delays);
         require(
             d_lit_at(model, 0, 0, 1) > 0
                 && d_lit_at(model, 0, 1, 1) > 0,
-            "PNnet active mask must retain every useful candidate source track");
+            "PNnet active mask must retain every useful candidate source "
+                "track");
     }
 
     {
@@ -3401,7 +3907,8 @@ auto test_v14_bnet_unit_selectors_only() -> void {
         require(
             stats.clause_counts[static_cast<std::size_t>(
                 SatClauseCategory::SourceUnitSelection)] > 0,
-            "Bnet ExactlyOne and A-to-Q clauses need a separate statistics category");
+            "Bnet ExactlyOne and A-to-Q clauses need a separate statistics "
+                "category");
     }
 
     {
@@ -3475,7 +3982,8 @@ auto test_v14_bnet_unit_selector_rejects_two_units() -> void {
     session.add_clause({a_lit_at(model, 4, 2)});
     require(
         !session.solve_once().ok,
-        "forcing one Bnet source through two different track units must be UNSAT");
+        "forcing one Bnet source through two "
+                                      "different track units must be UNSAT");
 }
 
 auto test_v14_pure_track_chain_sat() -> void {
@@ -3800,7 +4308,8 @@ auto test_sequential_at_most_one_truth_table_and_scaling() -> void {
         const auto solved = session.solve_once();
         require(
             solved.ok == (std::popcount(static_cast<unsigned>(mask)) <= 1),
-            "sequential AMO truth table must allow exactly zero/one true literal");
+            "sequential AMO truth table must allow exactly zero/one true "
+                "literal");
     }
 
     auto forced_two = CadicalSession {};
@@ -3840,7 +4349,8 @@ auto test_numeric_fixed_path_and_extraction() -> void {
         "extraction must follow the unique D distance chain");
     require(
         total_wirelength(graph, result) == 3,
-        "extracted path wirelength must count bump hops only in synthetic graph");
+        "extracted path wirelength must count bump hops only in synthetic "
+            "graph");
 
     const auto disconnected = synthetic_graph(3, {});
     auto disconnected_session = CadicalSession {};
@@ -4016,7 +4526,8 @@ auto test_y_aggregation_and_partial_matching() -> void {
         session, graph, {synthetic_net(0, {3}, {{1, {0}}, {2, {0}}})});
     require(
         model.switch_var_by_id.size() == 2,
-        "reverse arcs and all pair uses must aggregate to one Y per physical switch");
+        "reverse arcs and all pair uses must aggregate to one Y per "
+            "physical switch");
     session.add_clause({model.switch_var_by_id.at(5)});
     session.add_clause({model.switch_var_by_id.at(6)});
     require(!session.solve_once().ok, "two bump-to-h switches at one bump must violate matching");
@@ -4144,7 +4655,8 @@ auto test_forward_and_reverse_switch_use_extract_same_y() -> void {
         const auto result = extract_sat_solution(graph, nets, model, session, solved);
         require(
             result.ok && result.used_tob_switch_ids == std::Vector<int>({42}),
-            "numeric extraction must return exactly the used physical switch ID");
+            "numeric extraction must return exactly the used physical "
+                "switch ID");
     };
 
     check_direction(0, 1, 0);
@@ -4190,7 +4702,8 @@ auto test_extraction_selects_one_valid_predecessor() -> void {
     const auto result = extract_sat_solution(graph, nets, model, session, solved);
     require(
         result.ok && result.paths.size() == 1,
-        "extraction must select one valid predecessor when the D tree branches");
+        "extraction must select one valid predecessor when the D tree "
+            "branches");
     const auto& path = result.paths[0].node_path;
     require(
         path == std::Vector<int>({0, 1, 3})
@@ -4366,7 +4879,8 @@ auto test_path_wirelength_counts_bump_and_track_only() -> void {
     result.paths.push_back(SourceSinkPairPath {1, 0, 0, -1, std::Vector<int> {4}});
     require(
         total_wirelength(graph, result) == 3,
-        "total wirelength must sum deduplicated bump and track resources per net");
+        "total wirelength must sum deduplicated bump and track resources "
+            "per net");
 
     result.paths.clear();
     result.paths.push_back(SourceSinkPairPath {0, 0, 0, -1, std::Vector<int> {0, 1, 2}});
@@ -4382,7 +4896,8 @@ auto test_path_wirelength_counts_bump_and_track_only() -> void {
         &result.paths[1]};
     require(
         net_wirelength(graph, fanout_paths) == 3,
-        "net wirelength must deduplicate shared track nodes across fanout paths");
+        "net wirelength must deduplicate shared track nodes across fanout "
+            "paths");
     require(
         total_wirelength(graph, result) == 3,
         "total wirelength must use net-level deduplication");
@@ -4545,7 +5060,8 @@ auto test_validate_uses_encoded_guide_scope_instead_of_legacy_bbox() -> void {
     const auto validation = validate_routing_solution(graph, nets, model, session, result);
     require(
         validation.pass,
-        "a path inside the encoded guide scope must not be rejected by the legacy bbox");
+        "a path inside the encoded guide scope must not "
+                             "be rejected by the legacy bbox");
 }
 
 auto test_validate_detects_node_outside_encoded_scope() -> void {
@@ -4637,7 +5153,8 @@ auto test_ideal_two_pin_wirelength_matches_shortest_path() -> void {
     const auto expected = unified_path_wirelength(graph, path);
     require(
         ideal_net_wirelength(nullptr, graph, net, delays) == expected,
-        "two-pin ideal wirelength must match bump+track count on shortest path");
+        "two-pin ideal wirelength must match bump+track count on shortest "
+            "path");
 }
 
 auto test_ideal_sync_bus_wirelength_scales_by_members() -> void {
@@ -4797,8 +5314,16 @@ auto main() -> int {
         test_v20_target_scopes_expand_guide_and_tob_patch_one_hop();
         test_v19_global_guide_feedback_thresholds_and_union();
         test_v20_global_guide_logger_handles_walk_and_residual();
-        test_v20_post_sat_ilp_target_filter();
+        test_v22_post_sat_ilp_target_filter();
         test_v20_post_sat_ilp_improves_fixed_source_path();
+        test_v22_post_sat_ilp_supports_bump_root();
+        test_v22_post_sat_ilp_moves_multiterminal_branch();
+        test_v22_post_sat_ilp_uses_pair_local_scope_and_union_warm_start();
+        test_v22_post_sat_ilp_exact_components_follow_scope_overlap();
+        test_v22_post_sat_ilp_jointly_exchanges_nonbus_resources();
+        test_v22_post_sat_ilp_enforces_shared_mode_group();
+        test_v22_post_sat_ilp_fixes_complete_sync_bus();
+        test_v22_post_sat_ilp_excludes_fixed_bus_nodes();
         test_v20_post_sat_rrr_improves_within_final_scope();
         test_v20_post_sat_rrr_keeps_sync_as_hard_obstacle();
         test_v20_post_sat_rrr_repairs_non_sync_overflow_cascade();
