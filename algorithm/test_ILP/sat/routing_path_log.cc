@@ -174,6 +174,49 @@ auto log_scope_summary(const ScopeSummary& scope, std::string_view indent) -> vo
                     scope.left, scope.right);
 }
 
+auto format_scope_channels(const std::set<GlobalChannelCoord>& channels) -> std::String {
+    auto text = std::String{"{"};
+    bool first = true;
+    for (const auto& channel : channels) {
+        if (!first) {
+            text += ", ";
+        }
+        first = false;
+        text += channel_text(channel);
+    }
+    return text + "}";
+}
+
+auto format_scope_cobs(const GlobalChannelGraph& graph,
+                       const std::set<GlobalChannelCoord>& channels) -> std::String {
+    auto cobs = std::set<std::pair<int, int>>{};
+    for (const auto& channel : channels) {
+        const auto channel_it = graph.channel_id_by_coord.find(channel);
+        if (channel_it == graph.channel_id_by_coord.end()) {
+            continue;
+        }
+        for (const int arc_id : graph.arc_ids_by_channel[channel_it->second]) {
+            const auto& arc = graph.arcs[arc_id];
+            for (const int node_id : {arc.u, arc.v}) {
+                const auto& node = graph.nodes[node_id];
+                if (node.kind == GlobalRouteNodeKind::Cob) {
+                    cobs.emplace(node.row, node.col);
+                }
+            }
+        }
+    }
+    auto text = std::String{"{"};
+    bool first = true;
+    for (const auto [row, col] : cobs) {
+        if (!first) {
+            text += ", ";
+        }
+        first = false;
+        text += std::format("COB({},{})", row, col);
+    }
+    return text + "}";
+}
+
 } // namespace
 
 auto is_wirelength_resource_node(const UnifiedGraph& graph, int node_id) -> bool {
@@ -496,6 +539,13 @@ auto log_final_sat_scopes(
                                     format_graph_node_ref(demand.sink));
                 }
                 log_scope_summary(scope, "    ");
+            }
+            if (pair != nullptr) {
+                const auto indent = display_kind == NetDisplayKind::TwoPin ? "  " : "    ";
+                debug::info_fmt("{}scope_channels_detail={}", indent,
+                                format_scope_channels(pair->allowed_channels));
+                debug::info_fmt("{}scope_cobs_detail={}", indent,
+                                format_scope_cobs(channel_graph, pair->allowed_channels));
             }
         }
     }

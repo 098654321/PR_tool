@@ -84,24 +84,25 @@ auto format_channels(const GlobalChannelGraph& graph, const std::set<int>& ids)
 auto log_global_route_guides(const GlobalRouteResult& route,
                              const GlobalChannelGraph& graph,
                              const RoutingProblemState& state,
-                             const std::Vector<RoutingNet>& nets) -> long long {
+                             const std::Vector<RoutingNet>& nets,
+                             const std::string_view stage) -> long long {
     const auto begin = std::chrono::steady_clock::now();
-    debug::info("========== V20 Global Routing raw guide paths (diagnostic; "
-                "timing excluded) ==========");
+    debug::info_fmt(
+        "========== {} raw guide paths (diagnostic; timing excluded) ==========", stage);
     for (const auto& [key, raw_arc_ids] : route.selected_arc_ids_by_pair) {
         const auto* net = net_for(nets, key.net_id);
         if (net == nullptr || key.source_index >= net->sources.size()) {
             debug::warning_fmt(
-                "global guide pair net={} demand={} source={} cannot "
+                "{} guide pair net={} demand={} source={} cannot "
                 "resolve endpoints",
-                key.net_id, key.demand_id, key.source_index);
+                stage, key.net_id, key.demand_id, key.source_index);
             continue;
         }
         const auto* demand = demand_for(*net, key.demand_id);
         if (demand == nullptr) {
             debug::warning_fmt(
-                "global guide pair net={} demand={} cannot resolve sink",
-                key.net_id, key.demand_id);
+                "{} guide pair net={} demand={} cannot resolve sink",
+                stage, key.net_id, key.demand_id);
             continue;
         }
         auto source_node = -1;
@@ -223,8 +224,8 @@ auto log_global_route_guides(const GlobalRouteResult& route,
             unit = std::to_string(it->second);
         }
         debug::info_fmt(
-            "global guide net=\"{}\" id={} pair=(demand={},source={}) unit={}",
-            net->name, key.net_id, key.demand_id, key.source_index, unit);
+            "{} guide net=\"{}\" id={} pair=(demand={},source={}) unit={}",
+            stage, net->name, key.net_id, key.demand_id, key.source_index, unit);
         debug::info_fmt("  source: {}", endpoint_text(source));
         debug::info_fmt("  target: {}", endpoint_text(sink));
         auto text = source_node >= 0 ? node_text(graph, source_node)
@@ -296,9 +297,9 @@ auto log_global_route_guides(const GlobalRouteResult& route,
         for (const auto index : pairs->second)
             joined.insert(state.pairs[index].allowed_channels.begin(),
                           state.pairs[index].allowed_channels.end());
-        debug::info_fmt("global guide owner union net=\"{}\" id={} pairs={} "
+        debug::info_fmt("{} guide owner union net=\"{}\" id={} pairs={} "
                         "final_scope_channels={}",
-                        net.name, net.net_id, pairs->second.size(),
+                        stage, net.name, net.net_id, pairs->second.size(),
                         joined.size());
         if (net.is_sync_bus) {
             auto min_count = std::numeric_limits<std::size_t>::max();
@@ -326,9 +327,9 @@ auto log_global_route_guides(const GlobalRouteResult& route,
     const auto body_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - begin)
                              .count();
-    debug::info_fmt("V20 Global Routing guide paths complete: body_log_ms={} "
+    debug::info_fmt("{} guide paths complete: body_log_ms={} "
                     "(full diagnostic time excluded from routing timing)",
-                    body_ms);
+                    stage, body_ms);
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now() - begin)
         .count();

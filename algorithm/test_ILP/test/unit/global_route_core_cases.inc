@@ -270,6 +270,52 @@ auto test_v17_estimated_wirelength_deduplicates_multi_terminal_channels() -> voi
             "tree");
 }
 
+auto test_v22_global_route_reserves_sync_channel_unit_capacity() -> void {
+    const auto a0 = tob_anchor_cob(0);
+    const auto a1 = tob_anchor_cob(1);
+    const auto graph = synthetic_channel_graph(
+        {{1, static_cast<int>(a0.row), static_cast<int>(a0.col)},
+         {1, static_cast<int>(a1.row), static_cast<int>(a1.col)}},
+        {global_tob_node(0, 0), global_cob_node(), global_tob_node(1, 1)},
+        {{0, 1, 0}, {1, 2, 1}});
+    auto bnet = two_pin_net(
+        22, RoutingNetKind::Bnet, bump_ref(0, 0, 0), bump_ref(1, 0, 0));
+    bnet.global_unit_by_source.emplace(0, 3);
+    const auto fixed = solve_global_route_v17(
+        UnifiedGraph{}, graph, {bnet}, 0, GlobalRouteCapacityMode::IterativeCuts);
+    require(fixed.ok
+                && fixed.unit_by_owner.at(GlobalUnitOwnerKey{22, 0}) == 3,
+            "V22 post guide Global Routing must retain a Bnet SAT COBUnit");
+
+    auto peak_net = bnet;
+    for (std::size_t index = 1; index < 7; ++index) {
+        peak_net.demands.push_back(RoutingDemand {
+            index, bump_ref(1, 0, index), {0}, true});
+    }
+    auto no_reservations = GlobalRouteChannelReservations{};
+    const auto post_route = solve_global_route_v17(
+        UnifiedGraph{}, graph, {peak_net}, 0,
+        GlobalRouteCapacityMode::IterativeCuts,
+        {}, false, GlobalRouteScopeMode::FullGraph, 0, &no_reservations, false);
+    require(post_route.ok
+                && post_route.stats.model.tob_h7_vars == 0
+                && post_route.stats.model.tob_h8_vars == 0
+                && post_route.stats.model.tob_peak_threshold == 0
+                && post_route.stats.tob_peak_cost == 0.0,
+            "V22 fixed-unit post guide must omit constant TOB peak variables");
+
+    auto reservations = GlobalRouteChannelReservations{};
+    reservations.load_by_channel_unit.resize(graph.channels.size());
+    for (auto& load : reservations.load_by_channel_unit) {
+        load[3] = 8;
+    }
+    const auto blocked = solve_global_route_v17(
+        UnifiedGraph{}, graph, {bnet}, 0, GlobalRouteCapacityMode::IterativeCuts,
+        {}, false, GlobalRouteScopeMode::FullGraph, 0, &reservations);
+    require(!blocked.ok,
+            "fixed Sync (Channel,unit) reservations must reduce post-guide capacity");
+}
+
 auto test_v19_bbox_plus_one_global_route_scope() -> void {
     const auto a0 = tob_anchor_cob(0);
     const auto a1 = tob_anchor_cob(1);

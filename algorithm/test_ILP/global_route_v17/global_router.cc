@@ -258,7 +258,15 @@ auto prepare_problem(
                     owner.allowed_units[owner.fixed_unit.value()] = true;
                 }
                 else if (net.kind == RoutingNetKind::Bnet) {
-                    owner.allowed_units.fill(true);
+                    if (const auto fixed = net.global_unit_by_source.find(source_index);
+                        fixed != net.global_unit_by_source.end()
+                        && !net.released_global_unit_sources.contains(source_index)) {
+                        owner.fixed_unit = fixed->second;
+                        owner.allowed_units[fixed->second] = true;
+                    }
+                    else {
+                        owner.allowed_units.fill(true);
+                    }
                     add_bump_if_present(owner.bumps, net.sources.at(source_index));
                 }
                 problem.owners.push_back(std::move(owner));
@@ -294,6 +302,13 @@ auto prepare_problem(
             }
             if (commodity.source_options.empty()) {
                 throw std::invalid_argument("V17 Global Routing commodity has no source option");
+            }
+            // A post-SAT PN owner supplies exactly the selected physical
+            // source.  Mark its sole resulting unit as fixed so the initial
+            // exact-capacity rows (rather than only later cuts) see it.
+            if (net.kind == RoutingNetKind::PNnet
+                && commodity.source_options.size() == 1) {
+                owner.fixed_unit = commodity.source_options.front().unit;
             }
             const auto commodity_index = problem.commodities.size();
             problem.commodities.push_back(std::move(commodity));
@@ -442,6 +457,14 @@ public:
 
     [[nodiscard]] auto objective_value() const -> double {
         return highs_.getInfo().objective_function_value;
+    }
+
+    [[nodiscard]] auto objective_bound() const -> double {
+        return highs_.getInfo().mip_dual_bound;
+    }
+
+    [[nodiscard]] auto relative_gap() const -> double {
+        return highs_.getInfo().mip_gap;
     }
 
     [[nodiscard]] auto status_string() const -> std::String {
@@ -624,11 +647,15 @@ auto build_maze_mip_start(
     const GlobalChannelGraph& graph,
     const PreparedProblem& problem,
     const ModelVars& vars,
-    GlobalRouteStats& stats
+    GlobalRouteStats& stats,
+    const GlobalRouteChannelReservations* reservations
 ) -> std::map<int, double> {
     const auto begin = std::chrono::steady_clock::now();
     auto entries = std::map<int, double> {};
     auto fixed_load = std::Vector<std::array<std::size_t, 16>>(graph.channels.size());
+    if (reservations != nullptr && !reservations->load_by_channel_unit.empty()) {
+        fixed_load = reservations->load_by_channel_unit;
+    }
     for (std::size_t owner_index = 0; owner_index < problem.owners.size(); ++owner_index) {
         const auto& owner = problem.owners[owner_index];
         const bool is_multi_pin = owner.commodity_indices.size() > 1;
@@ -884,6 +911,8 @@ auto build_and_solve(
     const std::string_view highs_log_path,
     const bool highs_log_append,
     const int highs_time_limit_minutes,
+    const GlobalRouteChannelReservations* reservations,
+    const bool enable_tob_peak_cost,
     GlobalRouteResult& out
 ) -> void {
     const auto build_begin = std::chrono::steady_clock::now();
@@ -892,6 +921,23 @@ auto build_and_solve(
     const auto owner_count = problem.owners.size();
     const auto channel_count = graph.channels.size();
     const auto arc_count = graph.arcs.size();
+    const auto reserved_load = [&](const std::size_t channel, const std::size_t unit) {
+        if (reservations == nullptr || reservations->load_by_channel_unit.empty()) {
+            return std::size_t {0};
+        }
+        return reservations->load_by_channel_unit.at(channel)[unit];
+    };
+    if (reservations != nullptr && !reservations->load_by_channel_unit.empty()
+        && reservations->load_by_channel_unit.size() != channel_count) {
+        throw std::invalid_argument("Global Routing reservation Channel count mismatch");
+    }
+    for (std::size_t channel = 0; channel < channel_count; ++channel) {
+        for (std::size_t unit = 0; unit < 16; ++unit) {
+            if (reserved_load(channel, unit) > 8) {
+                throw std::invalid_argument("Global Routing reservation exceeds Channel capacity");
+            }
+        }
+    }
     const bool use_capacity_cuts = capacity_mode == GlobalRouteCapacityMode::IterativeCuts;
     const auto scopes = build_global_route_scopes(graph, nets, problem, scope_mode);
     auto& model_stats = out.stats.model;
@@ -1203,11 +1249,12 @@ auto build_and_solve(
                         terms.emplace_back(x, 1.0);
                     }
                 }
-                // With at most eight eligible fixed-unit owners the <= 8 row is tautological.
-                if (terms.size() <= 8) {
+                const auto capacity = 8 - reserved_load(channel, unit);
+                // With at most the remaining eligible fixed-unit owners the row is tautological.
+                if (terms.size() <= capacity) {
                     continue;
                 }
-                mip.add_row(-kHighsInf, 8.0, terms);
+                mip.add_row(-kHighsInf, static_cast<double>(capacity), terms);
                 ++model_stats.channel_unit_capacity;
                 ++out.stats.initial_fixed_unit_capacity_rows;
             }
@@ -1240,7 +1287,10 @@ auto build_and_solve(
                     }
                 }
                 if (!terms.empty()) {
-                    mip.add_row(-kHighsInf, 8.0, terms);
+                    mip.add_row(
+                        -kHighsInf,
+                        static_cast<double>(8 - reserved_load(channel, unit)),
+                        terms);
                     ++model_stats.channel_unit_capacity;
                 }
             }
@@ -1276,7 +1326,7 @@ auto build_and_solve(
             }
             int h7 = -1;
             int h8 = -1;
-            if (maximum_possible_load >= 7) {
+            if (enable_tob_peak_cost && maximum_possible_load >= 7) {
                 const bool forced = minimum_forced_load == 7
                     && maximum_possible_load == 7;
                 h7 = mip.add_binary(forced ? 0.0 : kTobLoad7Weight * lambda_TOB);
@@ -1287,7 +1337,7 @@ auto build_and_solve(
                     out.stats.tob_peak_constant_cost += kTobLoad7Weight * lambda_TOB;
                 }
             }
-            if (maximum_possible_load >= 8) {
+            if (enable_tob_peak_cost && maximum_possible_load >= 8) {
                 const bool forced = minimum_forced_load >= 8;
                 h8 = mip.add_binary(forced ? 0.0 : kTobLoad8Weight * lambda_TOB);
                 vars.tob_h8[tob][unit] = h8;
@@ -1363,7 +1413,8 @@ auto build_and_solve(
     }
 
     if (use_capacity_cuts) {
-        const auto mip_start = build_maze_mip_start(graph, problem, vars, out.stats);
+        const auto mip_start = build_maze_mip_start(
+            graph, problem, vars, out.stats, reservations);
         if (!mip_start.empty()) {
             mip.set_mip_start(mip_start);
         }
@@ -1401,7 +1452,7 @@ auto build_and_solve(
         model_stats.f_vars,
         model_stats.f_dense_slots);
     debug::info_fmt(
-        "V21 Global Routing model built: vars={} constraints={} build_ms={} owners={} demands={} capacity_mode={} mip_gap={} TOB_filters=necessary(unit<=8,bank-residue<=8) TOB_peak(lambda={} weights=7:{}/8:{} H7={} H8={} forced_H7={} forced_H8={} constant_cost={} constraints={})",
+        "V21 Global Routing model built: vars={} constraints={} build_ms={} owners={} demands={} capacity_mode={} mip_gap={} TOB_filters=necessary(unit<=8,bank-residue<=8) TOB_peak(enabled={} lambda={} weights=7:{}/8:{} H7={} H8={} forced_H7={} forced_H8={} constant_cost={} constraints={})",
         out.stats.variables,
         out.stats.constraints,
         out.stats.build_ms,
@@ -1409,6 +1460,7 @@ auto build_and_solve(
         problem.commodities.size(),
         use_capacity_cuts ? "iterative-cuts(no-W)" : "dense-W",
         kGlobalRoutingMipRelativeGap,
+        enable_tob_peak_cost,
         lambda_TOB,
         kTobLoad7Weight,
         kTobLoad8Weight,
@@ -1496,23 +1548,26 @@ auto build_and_solve(
                         loaded_owners.push_back(owner_index);
                     }
                 }
-                if (loaded_owners.size() <= 8) {
+                const auto capacity = 8 - reserved_load(channel, unit);
+                if (loaded_owners.size() <= capacity) {
                     continue;
                 }
                 ++overloaded_resources;
+                const auto subset_size = capacity + 1;
                 auto subset = std::array<std::size_t, 9> {};
-                std::copy_n(loaded_owners.begin(), subset.size(), subset.begin());
+                std::copy_n(loaded_owners.begin(), subset_size, subset.begin());
                 if (!added_cut_keys.emplace(channel, unit, subset).second) {
                     throw std::logic_error(
                         "V18 capacity separator rediscovered an active violated cut");
                 }
                 auto terms = std::Vector<std::pair<int, double>> {};
-                terms.reserve(2 * subset.size());
-                for (const auto owner_index : subset) {
+                terms.reserve(2 * subset_size);
+                for (std::size_t index = 0; index < subset_size; ++index) {
+                    const auto owner_index = subset[index];
                     terms.emplace_back(vars.x[owner_index][channel], 1.0);
                     terms.emplace_back(vars.q[owner_index][unit], 1.0);
                 }
-                mip.add_row(-kHighsInf, 17.0, terms);
+                mip.add_row(-kHighsInf, static_cast<double>(2 * subset_size - 1), terms);
                 ++model_stats.channel_unit_capacity;
                 ++cuts_added;
             }
@@ -1734,8 +1789,9 @@ auto build_and_solve(
                     ++load;
                 }
             }
-            max_channel_unit_load = std::max(max_channel_unit_load, load);
-            if (load > 8) {
+            const auto total_load = load + reserved_load(channel, unit);
+            max_channel_unit_load = std::max(max_channel_unit_load, total_load);
+            if (total_load > 8) {
                 throw std::runtime_error("V17 Global Routing capacity validation failed");
             }
         }
@@ -1765,10 +1821,11 @@ auto build_and_solve(
             const bool expected_h8 = load == 8;
             const int h7 = vars.tob_h7[tob][unit];
             const int h8 = vars.tob_h8[tob][unit];
-            if ((h7 >= 0 && selected(h7) != expected_h7)
-                || (h7 < 0 && expected_h7)
-                || (h8 >= 0 && selected(h8) != expected_h8)
-                || (h8 < 0 && expected_h8)) {
+            if (enable_tob_peak_cost
+                && ((h7 >= 0 && selected(h7) != expected_h7)
+                    || (h7 < 0 && expected_h7)
+                    || (h8 >= 0 && selected(h8) != expected_h8)
+                    || (h8 < 0 && expected_h8))) {
                 throw std::runtime_error("V21 TOB H7/H8 extraction validation failed");
             }
             out.stats.tob_load7 += expected_h7 ? 1 : 0;
@@ -1780,12 +1837,16 @@ auto build_and_solve(
             }
         }
     }
-    out.stats.tob_load7_cost =
-        kTobLoad7Weight * lambda_TOB * static_cast<double>(out.stats.tob_load7);
-    out.stats.tob_load8_cost =
-        kTobLoad8Weight * lambda_TOB * static_cast<double>(out.stats.tob_load8);
+    out.stats.tob_load7_cost = enable_tob_peak_cost
+        ? kTobLoad7Weight * lambda_TOB * static_cast<double>(out.stats.tob_load7)
+        : 0.0;
+    out.stats.tob_load8_cost = enable_tob_peak_cost
+        ? kTobLoad8Weight * lambda_TOB * static_cast<double>(out.stats.tob_load8)
+        : 0.0;
     out.stats.tob_peak_cost = out.stats.tob_load7_cost + out.stats.tob_load8_cost;
     out.stats.solver_objective = mip.objective_value();
+    out.stats.solver_bound = mip.objective_bound();
+    out.stats.solver_gap = mip.relative_gap();
     out.stats.full_objective =
         static_cast<double>(out.stats.objective) + out.stats.tob_peak_cost;
     const double reconstructed_solver_objective =
@@ -2014,7 +2075,9 @@ auto solve_global_route_v17(
     const std::string_view highs_log_path,
     const bool highs_log_append,
     const GlobalRouteScopeMode scope_mode,
-    const int highs_time_limit_minutes
+    const int highs_time_limit_minutes,
+    const GlobalRouteChannelReservations* reservations,
+    const bool enable_tob_peak_cost
 ) -> GlobalRouteResult {
     (void)graph;
     const auto total_begin = std::chrono::steady_clock::now();
@@ -2038,6 +2101,21 @@ auto solve_global_route_v17(
             out.stats.commodities,
             problem.pn_owner_indices_by_net.size(),
             problem.bus_owner_indices_by_net.size());
+        if (reservations != nullptr && !reservations->load_by_channel_unit.empty()) {
+            std::size_t slots = 0;
+            std::size_t usage = 0;
+            for (const auto& channel_load : reservations->load_by_channel_unit) {
+                for (const auto load : channel_load) {
+                    if (load != 0) {
+                        ++slots;
+                        usage += load;
+                    }
+                }
+            }
+            debug::info_fmt(
+                "V22 fixed Sync Channel reservations: occupied_channel_units={} owner_deduplicated_load={}",
+                slots, usage);
+        }
 #ifdef USE_HIGHS
         build_and_solve(
             channel_graph,
@@ -2049,6 +2127,8 @@ auto solve_global_route_v17(
             highs_log_path,
             highs_log_append,
             highs_time_limit_minutes,
+            reservations,
+            enable_tob_peak_cost,
             out);
 #else
         (void)verbose_level;
@@ -2069,13 +2149,15 @@ auto solve_global_route_v17(
     out.stats.total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         total_end - total_begin).count();
     debug::info_fmt(
-        "V21 Global Routing summary: status={} vars={} constraints={} objective={} estimated_wirelength={} solver_objective={} full_objective={} tob_load_eq7_cost={} tob_load_eq8_cost={} tob_peak_cost={} fixed_peak_offset={} tob_load_eq7={} tob_load_eq8={} max_tob_unit_load={} total_ms={} build_ms={} solve_ms={}",
+        "V21 Global Routing summary: status={} vars={} constraints={} objective={} estimated_wirelength={} solver_objective={} solver_bound={} solver_gap={} full_objective={} tob_load_eq7_cost={} tob_load_eq8_cost={} tob_peak_cost={} fixed_peak_offset={} tob_load_eq7={} tob_load_eq8={} max_tob_unit_load={} total_ms={} build_ms={} solve_ms={}",
         out.message,
         out.stats.variables,
         out.stats.constraints,
         out.stats.objective,
         out.stats.estimated_wirelength,
         out.stats.solver_objective,
+        out.stats.solver_bound,
+        out.stats.solver_gap,
         out.stats.full_objective,
         out.stats.tob_load7_cost,
         out.stats.tob_load8_cost,
@@ -2273,7 +2355,8 @@ auto apply_global_route_v17_impl(
     const GlobalRouteResult& route,
     const GlobalChannelGraph* channel_graph,
     RoutingProblemState& state,
-    std::Vector<RoutingNet>& nets
+    std::Vector<RoutingNet>& nets,
+    const bool initial_expand
 ) -> void {
     if (!route.ok) {
         throw std::invalid_argument("cannot apply failed V17 Global Routing result");
@@ -2313,7 +2396,9 @@ auto apply_global_route_v17_impl(
     }
     if (channel_graph != nullptr) {
         apply_tob_repair_templates(*channel_graph, state, nets);
-        expand_initial_target_scopes_one_hop(*channel_graph, state, nets);
+        if (initial_expand) {
+            expand_initial_target_scopes_one_hop(*channel_graph, state, nets);
+        }
     }
     apply_state_to_nets(state, nets);
 }
@@ -2325,7 +2410,7 @@ auto apply_global_route_v17(
     RoutingProblemState& state,
     std::Vector<RoutingNet>& nets
 ) -> void {
-    apply_global_route_v17_impl(route, nullptr, state, nets);
+    apply_global_route_v17_impl(route, nullptr, state, nets, false);
 }
 
 auto apply_global_route_v17(
@@ -2334,7 +2419,16 @@ auto apply_global_route_v17(
     RoutingProblemState& state,
     std::Vector<RoutingNet>& nets
 ) -> void {
-    apply_global_route_v17_impl(route, &channel_graph, state, nets);
+    apply_global_route_v17_impl(route, &channel_graph, state, nets, true);
+}
+
+auto apply_global_route_v17_compact(
+    const GlobalRouteResult& route,
+    const GlobalChannelGraph& channel_graph,
+    RoutingProblemState& state,
+    std::Vector<RoutingNet>& nets
+) -> void {
+    apply_global_route_v17_impl(route, &channel_graph, state, nets, false);
 }
 
 auto expand_global_route_guides_one_hop(

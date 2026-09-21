@@ -22,7 +22,7 @@
 | `--z3-optimize` | 使用相同 hard CNF，通过 Track/Bump occupancy soft clauses 最小化物理并集线长 |
 | `--global-route-v17` | HiGHS Global Routing 选择 Channel guide/COBUnit，随后用 Z3 Weighted Partial MaxSAT 详细布线 |
 | `--global-route-v18` | PN source/unit 预选 + 容量剪切版 HiGHS Global Routing + CaDiCaL 纯 SAT 详细布线 |
-| `--global-route-v18 --ilp-optimize` | 在 SAT 成功后固定 SyncBus，对所有非 bus net 执行 V22 pair-flow ILP |
+| `--global-route-v18 --ilp-optimize` | 在 SAT 成功后固定 SyncBus 和非 Sync net 的 unit/PN source，在完整详细图上生成少量候选整树，再用 HiGHS 联合选择无资源冲突的最短组合 |
 | `--global-route-v18 --maze-optimize` | 在 SAT 成功后固定 SyncBus，并保留所有非 Sync net 的 SAT physical source、COBUnit 和最终 scope，执行 V20 局部 Maze/RRR |
 
 `--ilp-optimize` 与 `--maze-optimize` 互斥，且都要求 `--global-route-v18`。Global Routing 模式不能再使用 `-s/-d`，因为其 scope 和 distance 由 guide 初始化。
@@ -36,7 +36,7 @@
 - 第十七版：Channel/COBUnit 粒度的 HiGHS MCF Global Routing；
 - 第十八版：PN source/unit 预选、无稠密 `W` 的容量剪切和 CaDiCaL 纯 SAT；
 - 第十九至二十一版：fixed-unit 精确容量、maze MIP start、bbox/guide/scope 策略、TOB 峰值代价和 scope 闭包；
-- 第二十二版：固定 SyncBus 的 post-SAT 无向 pair-flow ILP、全局 physical-edge union 与 scope-overlap 精确分解。
+- 第二十二版：固定 SyncBus/unit/PN source 的 full-space 候选路径生成，以及按整棵路由树建立的选择型 ILP。
 
 文档位于 `../../../问题定义与方法/`。旧 `problem_formulation/` 文件用于历史对照，不能代替当前代码语义。
 
@@ -65,7 +65,7 @@
 | `sat/routing_solution_validate.*` | 独立检查端点、scope、COBUnit、节点/开关互斥、TOB matching/mode 和 bus 等长 |
 | `sat/routing_path_log.*` | 路径、final pair scope 和线长日志 |
 | `sat_allocation/` | CaDiCaL session 与 Z3 Optimize wrapper |
-| `post_sat_ilp/` | V22 无向物理图、pair-local `F/D`、全局 physical-edge `Y`、pairwise exclusivity、interaction component、HiGHS warm start、提取与回退 |
+| `post_sat_ilp/` | V22 完整 fixed-unit 图上的端点 Track 枚举、2-pin 最短/+1/次短候选、multi-terminal forced-access Prim 整树候选、HiGHS 选择模型、验证与回退 |
 | `post_sat_rrr/` | V20 在最终 SAT scope 内的局部 rip-up-and-reroute |
 | `test/` | 合成单测、配置 smoke/golden 回归与单一测试入口 |
 
@@ -73,8 +73,8 @@
 
 - `RoutingNet` 是归一化 net；`RoutingDemand` 描述 sink 及候选 source；`SourceSinkPairPath` 是最终细粒度路径。
 - `PairKey=(net_id,demand_id,source_index)` 是 guide、distance、scope 和 UNSAT 反馈的基本索引。
-- `RoutingProblemState` 必须保留 pair-local `allowed_channels`；SAT 编码可使用同 net pair scope 的并集，但 post-SAT ILP 必须回到 pair-local scope。
-- `UnifiedGraph` 中 Track/Bump/HLine/VLine 是物理资源顶点；SAT 使用有向弧，V22 post-SAT ILP 则把相同端点的正反向弧折叠成一条无向物理边，并保留 switch/matching/mode 属性。
+- `RoutingProblemState` 必须保留 pair-local `allowed_channels`，供首次 Global Routing 和 SAT 反馈使用；V22 `--ilp-optimize` 不使用 SAT final scope。
+- `UnifiedGraph` 中 Track/Bump/HLine/VLine 是物理资源顶点；SAT、Maze/RRR 和 V22 候选生成都使用真实 arc。V22 master ILP 只为已生成的整树候选和未固定 mode 建变量。
 - Global Routing 的 `estimated_wirelength` 以 Channel 为单位；Detailed Routing 的 `total_wirelength` 是每个 net 去重后的 Track+Bump 数，两者不能混用。
 - V18 Global Routing 只编码 TOB/COBUnit 的必要条件；最终 CaDiCaL/Z3 hard model 和独立 validator 才证明详细硬件合法。
 - SyncBus 的 Global Routing Channel-count 等长是宏观代理，SAT 阶段仍必须检查 exact detailed distance 等长。
@@ -100,13 +100,11 @@
 
 ### SAT 后优化
 
-- V22 ILP 只固定 SyncBus。每个非 bus pair 在自己的 final pair scope 并入 incumbent path 后，对无向物理边/节点建立 `F/D`；端点度为 1，内部节点度为 2 或 0。
-- 每条 component 候选物理边只建一个全局 `Y`，用 `min sum(Y)` 且边代价全为 1；Track+Bump `total_wirelength` 在求解后独立重算。
-- `pairs_by_edge`/`pairs_by_node` 倒排索引只为 scope 实际重叠的不同-net pair 建立论文公式（9）/（10）的 pairwise 边/节点互斥；同 net pair 允许共享主干。
-- TOB matching 和 straight/swap `M` 仍是硬约束；不额外建立环路消除约束。
-- 候选真实节点/边/matching/mode 资源有交集的 net 归入同一 interaction component，分量分别用 SAT path warm start 求解。
-- 任一分量求解、提取、物理验证失败，或线长退化，都整体回退 SAT baseline。
-- V20 Maze/RRR 以 SyncBus 为硬障碍，按 owner 整棵树 rip-up；其他非 Sync net 可临时 overflow，未收敛或不严格变短则回滚。每个 owner 始终限制在自己的 final SAT scope，并固定 SAT 已确定的端点、physical source 和 COBUnit；V18 PN 预选生成的 `pn_source_tree` 同样保留预选 source/unit。
+- V22 固定 SyncBus 完整物理解，固定非 Sync net 的 SAT COBUnit 和 PN physical source，但不使用 final SAT scope。
+- Bump 端点先枚举固定 unit 内可到达的下方 Channel Track。2-pin 的每个端口组合保留最短候选，并通过最短路节点上的单绕行搜索优先再保留一条 Track+Bump 并集长度为 `Lmin+1` 的候选；找不到时使用真正的严格次短路径，不按等长最短路数量截断。
+- multi-terminal net 使用 base + 逐一强制 `(terminal,access-track)` 的 generalized Prim 生成完整候选树，避免端口选项笛卡尔积。SAT 原整树始终是保底候选和 MIP start。
+- master ILP 每个 net 选一棵整树，用 Track/Bump/HLine/VLine 节点容量 1 和 TOB mode 变量协调候选，目标是所选 net 的 Track+Bump 并集线长之和。
+- 任一候选生成、HiGHS 求解、物理验证失败，或线长不严格改善，都整体回退 SAT baseline。普通 V20 `--maze-optimize` 仍在 final SAT scope 内做局部 sweep，语义不变。
 
 ## 构建与运行
 
@@ -131,7 +129,7 @@ xmake build test_ILP_unit
 ./output/test_ILP <config_path> --global-route-v18 --maze-optimize -v -o <output_dir>
 ```
 
-`-o` 目录中的 `debug.log` 是主日志，`highs.log` 是 PN 预选、Global Routing 和 post-SAT ILP 的 HiGHS 日志。`-v/-vv/-vvv` 逐级增加模型统计、HiGHS 回显和 scope 诊断。`--time-limit MIN` 限制正式 Global Routing 的共享容量剪切时间；启用 post-SAT ILP 时，同一数值也作为每个 interaction component 的时限。
+`-o` 目录中的 `debug.log` 是主日志，`highs.log` 是 PN 预选、Global Routing 和 post-SAT ILP 的 HiGHS 日志。`-v/-vv/-vvv` 逐级增加模型统计、HiGHS 回显和 scope 诊断。`--time-limit MIN` 限制正式 Global Routing 的容量剪切求解；V22 中候选生成和候选选择 master ILP 共享该预算。
 
 ## 测试方法与分布
 
@@ -143,7 +141,7 @@ xmake build test_ILP_unit
 | `test/unit/common_graph_cases.inc` | 共享 synthetic fixture、net 归一化、bbox/geometry、统一图和 CaDiCaL session |
 | `test/unit/global_route_core_cases.inc` | PN 预选、V17/V18/V19 Global Routing 变量/容量/目标与 Channel 拓扑 |
 | `test/unit/global_route_scope_cases.inc` | V21 TOB peak、guide apply/repair、distance 初始化、pair scope 扩展和 guide 日志 |
-| `test/unit/post_sat_cases.inc` | V22 无向 pair-flow ILP、scope-overlap/pairwise exclusivity、固定 bus/mode、固定 source/unit/scope 的 V20 Maze/RRR、V18 guided smoke 与底层 SAT fixture builder |
+| `test/unit/post_sat_cases.inc` | V22 full-space 候选 ILP 的 scope 解除、节点冲突选择和 multi-terminal 整树，V20 固定 source/unit/scope 的 Maze/RRR，以及 guided smoke |
 | `test/unit/sat_feedback_cases.inc` | 约束工具、distance state、assumption/core feedback、reachable-layer 和 COBUnit mask |
 | `test/unit/sat_encoding_cases.inc` | `D/A/Q/Y/M`、bus equality、CLI、initial padding、TOB switch 聚合和 encoding stats |
 | `test/unit/extract_validate_cases.inc` | 解提取、path/scope 日志、物理 validator、ideal wirelength、PN virtual source 和 golden 回归 |
@@ -157,13 +155,15 @@ xmake build test_ILP_unit
 
 新测试应放入职责最接近的分类文件，不要再把大段测试体写回 `unit_main.cc`。每个测试文件保持在 1000 行以内；若某分类接近上限，按算法责任继续拆分，不要仅按行数平均切割。基本建模错误必须用小型 synthetic graph 复现，不依赖大型真实 case。
 
+测试时有一个常见的问题，就是source/hardware/interposer.hh当中给出的COB_ARRAY_WIDTH不一定和当前测试case使用的WIDTH一致，因为有些case用的是13，有些case用的是12。如果遇到类似“invalid external port coord: { row: 7, col: 12, H, index: 63 }”这样的问题，说明是WIDTH不一致导致的错误。你可以在认为其余测试已经足够的情况下直接忽略这个报错的测试，也可以回到source/hardware/interposer.hh，把WIDTH调整为12后重新构建并测试。
+
 ## 日志和统计约定
 
 - Global Routing 统计必须区分 COB/terminal 图节点、physical Channel 资源和 directed traversal arc。
 - HiGHS model stats 必须输出各类变量/约束及总数；V18 还需输出 scope 槽位裁剪率、MIP start 和 capacity-cut 轮数。
 - Global guide 日志必须区分有序 source-target walk、residual selected arcs、TOB patch、initial expansion 和 final pair scope。
 - Detailed SAT 每轮记录 vars/clauses、alpha/gamma assumptions、core 分类和 distance/scope 扩展。
-- V22 post-SAT ILP 记录 non-bus/fixed-bus net、pair-local node/undirected-edge slots、interaction components、`F/D/Y/M`、pairwise edge/node conflict rows、warm start、physical-edge objective、Track+Bump 线长、GAP/耗时和 fallback 原因。
+- V22 post-SAT ILP 记录 fixed Sync 资源、fixed unit/source、端点 `selectable_tracks`、2-pin 最短/+1/次短生成数、multi-terminal base/forced 生成数、去重整树数、candidate/mode 变量、net-choice/node-capacity/mode 约束、Track+Bump 线长、耗时和 fallback 原因。
 - 路径打印、final scope 打印等诊断耗时必须写入 `excluded_diagnostic_ms`，不计入 Global Routing/SAT/total routing time。
 - 不要把 Global Routing Channel objective 记为 detailed wirelength，也不要把 Channel 数直接当作 SAT distance。
 
@@ -173,4 +173,4 @@ xmake build test_ILP_unit
 - 关键约束必须有合成单测；不要依赖大 case 才暴露基本建模错误。
 - 单文件保持紧凑，避免无关重构；新增关键步骤保留日志和规模/耗时统计。
 - 对算法做工程实现的时候，需要注意一下写出来的代码的运行速度，在不影响算法正确实现的前提下尽可能使速度更快
-- 代码文件的单次修改超过 200 行时，在实现完成后进行分离审查：如果实现过程是启动子agent实现的，那么可以由原主agent自己审查；如果实现是由主agent自己实现的，那么需要启动一个子agent审查。如果单词修改不超过200行，可以由实现的agent自己审查。如果审查之后有问题需要修正，但是修正之后不需要再进行单独的审查工作。
+- 代码文件的单次修改超过 200 行时，在实现完成后进行分离审查：如果实现过程是启动子agent实现的，那么可以由原主agent自己审查；如果实现是由主agent自己实现的，那么需要启动一个子agent审查。如果单次修改不超过200行，可以由实现的agent自己审查。如果审查之后有问题需要修正，但是修正之后不需要再进行单独的审查工作。

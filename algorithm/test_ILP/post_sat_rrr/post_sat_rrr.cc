@@ -495,10 +495,12 @@ auto reroute_owner(
                              congestion_height, usage, result);
 }
 
-auto rebuild_metadata(const UnifiedGraph &graph, SatRoutingResult &result)
+auto rebuild_metadata(const UnifiedGraph &graph, SatRoutingResult &result,
+                      const bool reset_modes = false)
     -> void {
   auto switches = std::set<int>{};
-  auto modes = result.vline_mode_straight_by_group;
+  auto modes = reset_modes ? std::map<std::size_t, bool>{}
+                           : result.vline_mode_straight_by_group;
   for (const auto &path : result.paths) {
     for (std::size_t index = 1; index < path.node_path.size(); ++index) {
       const int arc_id =
@@ -669,6 +671,120 @@ auto update_history(std::map<ConflictKey, double> &history,
 }
 
 } // namespace
+
+auto rebuild_all_non_sync_routes_rrr(
+    const UnifiedGraph &graph, const std::Vector<RoutingNet> &nets,
+    const std::Vector<UnifiedSatNetScope> &scopes,
+    const SatRoutingResult &sat_result, const PostSatRrrOptions &options)
+    -> std::optional<SatRoutingResult> {
+  if (!sat_result.ok) {
+    return std::nullopt;
+  }
+  const auto specs = build_specs(graph, nets, sat_result);
+  if (specs.empty()) {
+    return sat_result;
+  }
+  // A post-SAT rebuild must never turn an ambiguous BumpToBump owner into an
+  // all-unit search.  Track/PN sources have the same check for consistency.
+  for (const auto &[owner, owner_specs] : specs) {
+    for (const auto &spec : owner_specs) {
+      if (spec.unit_mask == 0 || (spec.unit_mask & (spec.unit_mask - 1)) != 0) {
+        debug::warning_fmt(
+            "V22 full maze rebuild rejected: owner={} demand={} has non-unique SAT COBUnit mask={}",
+            owner, spec.demand_id, spec.unit_mask);
+        return std::nullopt;
+      }
+    }
+  }
+
+  auto candidate = sat_result;
+  for (const auto &[owner, _] : specs) {
+    erase_owner_paths(candidate, owner);
+  }
+  auto owners = std::Vector<Owner>{};
+  owners.reserve(specs.size());
+  for (const auto &[owner, _] : specs) {
+    owners.push_back(owner);
+  }
+  std::sort(owners.begin(), owners.end());
+  auto history = std::map<ConflictKey, double>{};
+  int congestion_height = 4;
+  auto usage = Usage{graph, nets, candidate};
+  for (const Owner owner : owners) {
+    if (!append_owner_routes(graph, scopes, specs, owner, history,
+                             congestion_height, usage, candidate)) {
+      debug::info_fmt("V22 full maze rebuild: owner={} status=UNROUTABLE", owner);
+      return std::nullopt;
+    }
+  }
+  rebuild_metadata(graph, candidate, true);
+  debug::info_fmt(
+      "V22 full maze rebuild initial: non_sync_owners={} overflow={} wirelength={}",
+      owners.size(), Usage{graph, nets, candidate}.report().overflow,
+      candidate.total_wirelength);
+
+  auto best_overflow = std::numeric_limits<int>::max();
+  auto best_wirelength = std::numeric_limits<std::size_t>::max();
+  int stagnant = 0;
+  for (int iteration = 0; iteration <= options.max_iterations; ++iteration) {
+    const auto current = Usage{graph, nets, candidate}.report();
+    rebuild_metadata(graph, candidate, true);
+    if (options.verbose_level >= 1) {
+      debug::info_fmt(
+          "V22 full maze RRR: iter={} overflow={} dirty_owners={} wirelength={}",
+          iteration, current.overflow, current.owners.size(),
+          candidate.total_wirelength);
+    }
+    if (current.overflow == 0) {
+      if (!validate_candidate(graph, nets, scopes, specs, sat_result, candidate)) {
+        debug::warning("V22 full maze rebuild: physical validation failed");
+        return std::nullopt;
+      }
+      return candidate;
+    }
+    if (iteration == options.max_iterations || current.owners.empty()) {
+      break;
+    }
+    const auto score = std::pair{current.overflow, candidate.total_wirelength};
+    const auto best = std::pair{best_overflow, best_wirelength};
+    if (score < best) {
+      best_overflow = current.overflow;
+      best_wirelength = candidate.total_wirelength;
+      stagnant = 0;
+    } else if (++stagnant >= options.stagnation_limit) {
+      break;
+    }
+    if (stagnant > 0 && stagnant % 4 == 0) {
+      congestion_height = std::min(congestion_height + 4, 16);
+    }
+    update_history(history, current);
+    auto dirty = std::Vector<Owner>(current.owners.begin(), current.owners.end());
+    std::sort(dirty.begin(), dirty.end(), [&](const Owner lhs, const Owner rhs) {
+      const int lhs_exposure = current.exposure.contains(lhs)
+          ? current.exposure.at(lhs) : 0;
+      const int rhs_exposure = current.exposure.contains(rhs)
+          ? current.exposure.at(rhs) : 0;
+      return std::tie(rhs_exposure, lhs) < std::tie(lhs_exposure, rhs);
+    });
+    for (const Owner owner : dirty) {
+      erase_owner_paths(candidate, owner);
+    }
+    auto reroute_usage = Usage{graph, nets, candidate};
+    bool routed = true;
+    for (const Owner owner : dirty) {
+      if (!append_owner_routes(graph, scopes, specs, owner, history,
+                               congestion_height, reroute_usage, candidate)) {
+        routed = false;
+        break;
+      }
+    }
+    if (!routed) {
+      break;
+    }
+  }
+  debug::info("V22 full maze rebuild: RRR_NOT_CONVERGED");
+  return std::nullopt;
+}
 
 auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
                                   const std::Vector<RoutingNet> &nets,

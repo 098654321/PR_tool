@@ -4,6 +4,7 @@
 #include "graph/unified_routing_graph.hh"
 #include "scope/pair_routing_state.hh"
 
+#include <array>
 #include <cstddef>
 #include <std/collection.hh>
 #include <std/string.hh>
@@ -126,6 +127,8 @@ struct GlobalRouteStats {
     // Raw HiGHS objective excludes unavoidable fixed-unit TOB peak constants
     // so the relative MIP gap remains meaningful. full_objective adds them back.
     double solver_objective{0.0};
+    double solver_bound{0.0};
+    double solver_gap{0.0};
     double full_objective{0.0};
     double tob_peak_cost{0.0};
     double tob_peak_constant_cost{0.0};
@@ -164,6 +167,14 @@ enum class GlobalRouteScopeMode {
     BboxPlusOne
 };
 
+// Optional owner-deduplicated occupancy already consumed by fixed routes
+// (currently SyncBus during post-SAT guide regeneration).  The vector is
+// indexed by physical Channel and every entry by COBUnit.  An empty vector
+// has exactly the legacy no-reservation meaning.
+struct GlobalRouteChannelReservations {
+    std::Vector<std::array<std::size_t, 16>> load_by_channel_unit;
+};
+
 struct GlobalRouteResult {
     bool ok{false};
     std::String message;
@@ -199,11 +210,23 @@ auto solve_global_route_v17(
     std::string_view highs_log_path = {},
     bool highs_log_append = false,
     GlobalRouteScopeMode scope_mode = GlobalRouteScopeMode::FullGraph,
-    int highs_time_limit_minutes = 0
+    int highs_time_limit_minutes = 0,
+    const GlobalRouteChannelReservations* reservations = nullptr,
+    bool enable_tob_peak_cost = true
 ) -> GlobalRouteResult;
 
 auto apply_global_route_v17(
     const GlobalRouteResult& route,
+    RoutingProblemState& state,
+    std::Vector<RoutingNet>& nets
+) -> void;
+
+// Uses only the compact TOB repair template after applying the guide.  The
+// guided overload below additionally performs the legacy initial one-hop
+// expansion for TrackToBump(s)/PN source trees.
+auto apply_global_route_v17_compact(
+    const GlobalRouteResult& route,
+    const GlobalChannelGraph& channel_graph,
     RoutingProblemState& state,
     std::Vector<RoutingNet>& nets
 ) -> void;

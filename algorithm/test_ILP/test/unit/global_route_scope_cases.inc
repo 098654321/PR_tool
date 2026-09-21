@@ -382,7 +382,7 @@ auto test_v20_target_scopes_expand_guide_and_tob_patch_one_hop() -> void {
     const auto detailed = build_unified_graph(nullptr, {});
     const auto graph = build_global_channel_graph(detailed, {});
     const auto apply = [&](const std::size_t id, const RoutingNetKind kind,
-                           const bool target) {
+                           const bool target, const bool compact = false) {
         auto net = two_pin_net(
             id, kind, track_ref(0, 0), bump_ref(0, 0, 0));
         net.post_sat_ilp_target = target;
@@ -392,7 +392,12 @@ auto test_v20_target_scopes_expand_guide_and_tob_patch_one_hop() -> void {
         route.ok = true;
         route.pair_channels.emplace(
             state.pairs[0].key, std::set {GlobalChannelCoord {1, 1, 0}});
-        apply_global_route_v17(route, graph, state, nets);
+        if (compact) {
+            apply_global_route_v17_compact(route, graph, state, nets);
+        }
+        else {
+            apply_global_route_v17(route, graph, state, nets);
+        }
         return state.pairs[0];
     };
     const auto control = apply(35, RoutingNetKind::Tnet, false);
@@ -433,6 +438,7 @@ auto test_v20_target_scopes_expand_guide_and_tob_patch_one_hop() -> void {
     }
     const auto track_target = apply(36, RoutingNetKind::Tnet, true);
     const auto pn_target = apply(37, RoutingNetKind::PNnet, false);
+    const auto compact_target = apply(38, RoutingNetKind::Tnet, true, true);
     require(
         !track_target.initial_expanded_channels.empty()
             && track_target.allowed_channels == expected
@@ -444,6 +450,11 @@ auto test_v20_target_scopes_expand_guide_and_tob_patch_one_hop() -> void {
             && control.allowed_channels != expected,
         "non-target Tnet such as normalized BumpToTrack must keep guide "
             "plus TOB patch");
+    require(
+        compact_target.initial_expanded_channels.empty()
+            && compact_target.allowed_channels == control.allowed_channels,
+        "V22 compact post-SAT guide must add TOB patch without the legacy "
+            "TrackToBump one-hop expansion");
 }
 
 auto test_v19_global_guide_feedback_thresholds_and_union() -> void {

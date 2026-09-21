@@ -1,412 +1,138 @@
-// V22 post-SAT pair-flow ILP, V20 post-SAT Maze/RRR, guided V18 smoke tests,
-// and shared builders used by the lower-level SAT suites.
+// V22 whole-route candidate ILP, V20 post-SAT Maze/RRR, guided V18 smoke
+// tests, and shared builders used by the lower-level SAT suites.
 
-auto test_v22_post_sat_ilp_target_filter() -> void {
-  auto target = RoutingNet{};
-  target.kind = RoutingNetKind::Tnet;
-  target.post_sat_ilp_target = true;
-  target.sources = {track_ref(0, 0, hardware::TrackDirection::Horizontal, 0)};
-  target.demands = {RoutingDemand{0, bump_ref(0, 0, 0), {0}, true}};
-  require(is_post_sat_ilp_target(target),
-          "non-Sync Track-to-Bump must be selected");
-
-  auto normalized_bump_to_track = target;
-  normalized_bump_to_track.post_sat_ilp_target = false;
-  require(
-      is_post_sat_ilp_target(normalized_bump_to_track),
-      "normalized BumpToTrack must be selected without a legacy target tag");
-
-  auto sync = target;
-  sync.is_sync_bus = true;
-  require(!is_post_sat_ilp_target(sync),
-          "Sync must remain frozen even if accidentally tagged");
+auto make_bidirectional_edges(
+    std::initializer_list<std::pair<int, int>> edges)
+    -> std::Vector<std::pair<int, int>> {
+  auto out = std::Vector<std::pair<int, int>>{};
+  for (const auto [u, v] : edges) {
+    out.emplace_back(u, v);
+    out.emplace_back(v, u);
+  }
+  return out;
 }
 
-auto test_v20_post_sat_ilp_improves_fixed_source_path() -> void {
-  auto graph = synthetic_graph(4, {{0, 1}, {1, 2}, {2, 3}, {0, 3}});
-  graph.bump_node_by_key.erase(graph.nodes[0].bump);
-  graph.nodes[0].kind = UnifiedNodeKind::Track;
-  graph.nodes[0].unit = map_track(0);
-  graph.nodes[0].track_dir = 0;
-  graph.nodes[0].track_row = 0;
-  graph.nodes[0].track_col = 0;
-  graph.nodes[0].track_index = 0;
-  graph.track_node_by_key.emplace(
-      std::tuple{map_track(0), 0, 0, 0, std::size_t{0}}, 0);
-  for (int node : {1, 2}) {
-    graph.bump_node_by_key.erase(
-        graph.nodes[static_cast<std::size_t>(node)].bump);
-    graph.nodes[static_cast<std::size_t>(node)].kind = UnifiedNodeKind::Track;
-    graph.nodes[static_cast<std::size_t>(node)].unit = map_track(0);
-    graph.nodes[static_cast<std::size_t>(node)].track_dir = 0;
-    graph.nodes[static_cast<std::size_t>(node)].track_row = 0;
-    graph.nodes[static_cast<std::size_t>(node)].track_col = node;
-    graph.nodes[static_cast<std::size_t>(node)].track_index = 0;
+auto make_all_track_graph(
+    const std::size_t node_count,
+    std::initializer_list<std::pair<int, int>> edges) -> UnifiedGraph {
+  auto graph = synthetic_graph(node_count, make_bidirectional_edges(edges));
+  for (std::size_t node = 0; node < node_count; ++node) {
+    (void)synthetic_track_ref(
+        graph, static_cast<int>(node), 0, 0, static_cast<int>(node), node);
   }
+  return graph;
+}
 
-  auto net = RoutingNet{};
-  net.net_id = 0;
-  net.name = "TrackToBumpNet_synthetic";
-  net.kind = RoutingNetKind::Tnet;
-  net.post_sat_ilp_target = true;
-  net.sources = {track_ref(0, 0, hardware::TrackDirection::Horizontal, 0)};
-  net.demands = {RoutingDemand{0, synthetic_ref(3), {0}, true}};
-  const auto nets = std::Vector<RoutingNet>{net};
-  const auto scopes =
-      std::Vector<UnifiedSatNetScope>{synthetic_scope(graph, 0)};
+auto test_v22_candidate_ilp_ignores_final_sat_scope() -> void {
+  auto graph = make_all_track_graph(
+      4, {{0, 1}, {1, 2}, {2, 3}, {0, 3}});
+  const auto nets = std::Vector<RoutingNet>{
+      synthetic_net(0, {0}, {{3, {0}}})};
   auto baseline = SatRoutingResult{};
   baseline.ok = true;
   baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2, 3}}};
   baseline.total_wirelength = total_wirelength(graph, baseline);
+  auto deliberately_small_scope = synthetic_scope(graph, 0, {0, 1, 2, 3}, {});
 
-  const auto refined = optimize_post_sat_routes(graph, nets, scopes, baseline,
-                                                PostSatIlpOptions{});
-  require(refined.ok, "post-SAT ILP must preserve a successful SAT result");
-  require(refined.post_sat_ilp_accepted,
-          "synthetic shorter incumbent must be accepted");
-  require(refined.total_wirelength == 2 && refined.paths.size() == 1 &&
-              refined.paths.front().node_path == std::Vector<int>({0, 3}),
-          "post-SAT ILP must choose the shorter fixed-source path");
-}
-
-auto test_v22_post_sat_ilp_supports_bump_root() -> void {
-  auto graph = synthetic_graph(3, {{0, 1}, {1, 2}});
-  (void)synthetic_track_ref(graph, 1, 5, 0, 1);
-
-  auto net = RoutingNet{};
-  net.net_id = 0;
-  net.name = "BumpToBump_synthetic";
-  net.kind = RoutingNetKind::Bnet;
-  net.sources = {synthetic_ref(2)};
-  net.demands = {RoutingDemand{0, synthetic_ref(0), {0}, true}};
-
-  auto baseline = SatRoutingResult{};
-  baseline.ok = true;
-  // The synthetic graph stores only 0->1 and 1->2.  Routing 2->0
-  // verifies that V22 collapses the resource graph to undirected edges.
-  baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {2, 1, 0}}};
-  baseline.total_wirelength = total_wirelength(graph, baseline);
   const auto refined = optimize_post_sat_routes(
-      graph, {net}, {synthetic_scope(graph, 0)}, baseline, PostSatIlpOptions{});
-
-  require(refined.post_sat_ilp_accepted,
-          "V22 must optimize a Bump-root net on undirected resources");
-  require(refined.paths.size() == 1 &&
-              refined.paths.front().node_path == std::Vector<int>({2, 1, 0}),
-          "V22 must preserve endpoints while traversing stored arcs in "
-          "reverse");
+      graph, nets, {deliberately_small_scope}, baseline, {});
+  require(refined.post_sat_ilp_attempted && refined.post_sat_ilp_accepted
+              && refined.total_wirelength == 2
+              && refined.paths.front().node_path == std::Vector<int>({0, 3}),
+          "V22 candidate ILP must search the complete fixed-unit graph rather "
+          "than the final SAT scope");
 }
 
-auto test_v22_post_sat_ilp_moves_multiterminal_branch() -> void {
-  auto graph = synthetic_graph(
-      6, {{0, 1}, {1, 3}, {0, 2}, {2, 4}, {0, 5}, {5, 3}, {5, 4}});
-  graph.arcs[4].physical_switch_id = 42;
-  graph.arcs[4].physical_switch_kind = PhysicalSwitchKind::BumpH;
-  const auto source = synthetic_track_ref(graph, 0, 0, 0, 0);
-  (void)synthetic_track_ref(graph, 1, 0, 0, 1);
-  (void)synthetic_track_ref(graph, 2, 0, 0, 2);
-  (void)synthetic_track_ref(graph, 5, 0, 0, 5);
+auto test_v22_two_pin_second_candidate_length_policy() -> void {
+  {
+    auto graph = make_all_track_graph(
+        8, {{0, 1}, {1, 3}, {0, 2}, {2, 4}, {4, 3},
+            {0, 5}, {5, 6}, {6, 7}, {7, 3}});
+    const auto nets = std::Vector<RoutingNet>{
+        synthetic_net(0, {0}, {{3, {0}}})};
+    auto baseline = SatRoutingResult{};
+    baseline.ok = true;
+    baseline.paths = {
+        SourceSinkPairPath{0, 0, 0, -1, {0, 5, 6, 7, 3}}};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
 
-  auto net = RoutingNet{};
-  net.net_id = 0;
-  net.name = "TrackToBumps_synthetic";
-  net.kind = RoutingNetKind::Tnet;
-  net.sources = {source};
-  net.demands = {RoutingDemand{0, synthetic_ref(3), {0}, true},
-                 RoutingDemand{1, synthetic_ref(4), {0}, true}};
-
-  auto baseline = SatRoutingResult{};
-  baseline.ok = true;
-  baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 3}},
-                    SourceSinkPairPath{0, 0, 1, -1, {0, 2, 4}}};
-  baseline.total_wirelength = total_wirelength(graph, baseline);
-  const auto refined = optimize_post_sat_routes(
-      graph, {net}, {synthetic_scope(graph, 0)}, baseline, PostSatIlpOptions{});
-
-  require(refined.post_sat_ilp_accepted && refined.total_wirelength == 4,
-          "pair flows with a global edge union must reduce physical "
-          "wirelength");
-  require(refined.paths.size() == 2 &&
-              refined.paths[0].node_path == std::Vector<int>({0, 5, 3}) &&
-              refined.paths[1].node_path == std::Vector<int>({0, 5, 4}),
-          "pair flows must share a better trunk in their scope intersection");
-  require(refined.used_tob_switch_ids == std::Vector<int>({42}),
-          "same-net pairs must share one physical-edge Y variable");
-}
-
-auto test_v22_post_sat_ilp_uses_pair_local_scope_and_union_warm_start()
-    -> void {
-  auto graph = synthetic_graph(
-      6, {{0, 1}, {1, 3}, {0, 2}, {2, 4}, {0, 5}, {5, 3}, {5, 4}});
-  const auto source = synthetic_track_ref(graph, 0, 0, 0, 0);
-  for (const int node : {1, 2, 5})
-    (void)synthetic_track_ref(graph, node, 0, 0, node);
-  auto net = RoutingNet{};
-  net.net_id = 31;
-  net.kind = RoutingNetKind::Tnet;
-  net.sources = {source};
-  net.demands = {RoutingDemand{0, synthetic_ref(3), {0}, true},
-                 RoutingDemand{1, synthetic_ref(4), {0}, true}};
-  auto baseline = SatRoutingResult{};
-  baseline.ok = true;
-  baseline.paths = {SourceSinkPairPath{31, 0, 0, -1, {0, 1, 3}},
-                    SourceSinkPairPath{31, 0, 1, -1, {0, 2, 4}}};
-  baseline.total_wirelength = total_wirelength(graph, baseline);
-  auto state = init_routing_problem_state({net});
-  state.pairs[0].allowed_channels = {GlobalChannelCoord{0, 0, 0},
-                                     GlobalChannelCoord{0, 0, 1},
-                                     GlobalChannelCoord{0, 0, 3}};
-  state.pairs[1].allowed_channels = {GlobalChannelCoord{0, 0, 0},
-                                     GlobalChannelCoord{0, 0, 2},
-                                     GlobalChannelCoord{0, 0, 4}};
-  const auto refined =
-      optimize_post_sat_routes(graph, {net}, {synthetic_scope(graph, 31)},
-                               baseline, PostSatIlpOptions{}, &state);
-  require(refined.post_sat_ilp_accepted && refined.total_wirelength == 5,
-          "pair-local domains must not borrow another pair's route-only node");
-  require(std::ranges::none_of(refined.paths,
-                               [](const auto &path) {
-                                 return std::ranges::find(path.node_path, 5) !=
-                                        path.node_path.end();
-                               }),
-          "pair-local post-SAT ILP must exclude a net-union-only shortcut");
-}
-
-auto test_v22_post_sat_ilp_exact_components_follow_scope_overlap() -> void {
-  auto graph = synthetic_graph(
-      7, {{0, 1}, {1, 2}, {3, 4}, {4, 5}, {0, 6}, {6, 2}, {3, 6}, {6, 5}});
-  const auto source0 = synthetic_track_ref(graph, 0, 0, 0, 0);
-  (void)synthetic_track_ref(graph, 1, 0, 0, 1);
-  const auto source1 = synthetic_track_ref(graph, 3, 0, 0, 3);
-  (void)synthetic_track_ref(graph, 4, 0, 0, 4);
-  (void)synthetic_track_ref(graph, 6, 0, 0, 6);
-
-  auto net0 = RoutingNet{};
-  net0.net_id = 0;
-  net0.kind = RoutingNetKind::Tnet;
-  net0.sources = {source0};
-  net0.demands = {RoutingDemand{0, synthetic_ref(2), {0}, true}};
-  auto net1 = RoutingNet{};
-  net1.net_id = 1;
-  net1.kind = RoutingNetKind::Tnet;
-  net1.sources = {source1};
-  net1.demands = {RoutingDemand{0, synthetic_ref(5), {0}, true}};
-
-  auto baseline = SatRoutingResult{};
-  baseline.ok = true;
-  baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2}},
-                    SourceSinkPairPath{1, 0, 0, -1, {3, 4, 5}}};
-  baseline.total_wirelength = total_wirelength(graph, baseline);
-
-  const auto split =
-      optimize_post_sat_routes(graph, {net0, net1},
-                               {synthetic_scope(graph, 0, {0, 1, 2}, {0, 1}),
-                                synthetic_scope(graph, 1, {3, 4, 5}, {2, 3})},
-                               baseline, PostSatIlpOptions{});
-  require(split.post_sat_ilp_accepted && split.post_sat_ilp_components == 2,
-          "resource-disjoint scopes must form two exact components");
-
-  const auto merged = optimize_post_sat_routes(
-      graph, {net0, net1},
-      {synthetic_scope(graph, 0), synthetic_scope(graph, 1)}, baseline,
-      PostSatIlpOptions{});
-  require(merged.post_sat_ilp_accepted && merged.post_sat_ilp_components == 1,
-          "scopes sharing a candidate physical node must share one component");
-}
-
-auto test_v22_post_sat_ilp_jointly_exchanges_nonbus_resources() -> void {
-  auto graph = synthetic_graph(
-      8,
-      {{0, 1}, {1, 7}, {7, 2}, {3, 4}, {4, 5}, {0, 4}, {4, 2}, {3, 6}, {6, 5}});
-  const auto source0 = synthetic_track_ref(graph, 0, 0, 0, 0);
-  (void)synthetic_track_ref(graph, 1, 0, 0, 1);
-  const auto source1 = synthetic_track_ref(graph, 3, 0, 0, 3);
-  (void)synthetic_track_ref(graph, 4, 0, 0, 4);
-  (void)synthetic_track_ref(graph, 6, 0, 0, 6);
-  (void)synthetic_track_ref(graph, 7, 0, 0, 7);
-
-  auto net0 = RoutingNet{};
-  net0.net_id = 0;
-  net0.kind = RoutingNetKind::Tnet;
-  net0.sources = {source0};
-  net0.demands = {RoutingDemand{0, synthetic_ref(2), {0}, true}};
-  auto net1 = RoutingNet{};
-  net1.net_id = 1;
-  net1.kind = RoutingNetKind::Tnet;
-  net1.sources = {source1};
-  net1.demands = {RoutingDemand{0, synthetic_ref(5), {0}, true}};
-
-  auto baseline = SatRoutingResult{};
-  baseline.ok = true;
-  baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 7, 2}},
-                    SourceSinkPairPath{1, 0, 0, -1, {3, 4, 5}}};
-  baseline.total_wirelength = total_wirelength(graph, baseline);
-  const auto refined = optimize_post_sat_routes(
-      graph, {net0, net1},
-      {synthetic_scope(graph, 0), synthetic_scope(graph, 1)}, baseline,
-      PostSatIlpOptions{});
-
-  require(refined.post_sat_ilp_accepted && refined.total_wirelength == 6,
-          "all non-bus nets must be optimized jointly rather than locked");
-  require(refined.paths.size() == 2 &&
-              refined.paths[0].node_path == std::Vector<int>({0, 4, 2}) &&
-              refined.paths[1].node_path == std::Vector<int>({3, 6, 5}),
-          "one non-bus net must be able to take another net's SAT resource "
-          "after that net moves");
-}
-
-auto test_v22_post_sat_ilp_enforces_shared_mode_group() -> void {
-  auto graph = synthetic_graph(11, {{0, 1},
-                                    {1, 2},
-                                    {0, 7},
-                                    {7, 8},
-                                    {8, 2},
-                                    {3, 4},
-                                    {4, 5},
-                                    {3, 9},
-                                    {9, 10},
-                                    {10, 5}});
-  const auto source0 = synthetic_track_ref(graph, 0, 0, 0, 0);
-  const auto source1 = synthetic_track_ref(graph, 3, 0, 0, 3);
-  for (const int node : {7, 8, 9, 10})
-    (void)synthetic_track_ref(graph, node, 0, 0, node);
-  for (const int node : {1, 4}) {
-    graph.bump_node_by_key.erase(
-        graph.nodes[static_cast<std::size_t>(node)].bump);
-    graph.nodes[static_cast<std::size_t>(node)].kind = UnifiedNodeKind::VLine;
-    graph.nodes[static_cast<std::size_t>(node)].line_index = 0;
+    const auto refined = optimize_post_sat_routes(graph, nets, {}, baseline, {});
+    require(refined.post_sat_ilp_accepted
+                && refined.post_sat_ilp_segments == 3
+                && refined.paths.front().node_path
+                    == std::Vector<int>({0, 1, 3}),
+            "V22 two-pin generation must retain a physical-wirelength "
+            "Lmin+1 route in addition to the shortest and SAT candidates");
   }
-  graph.arcs[0].physical_switch_id = 10;
-  graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
-  graph.arcs[0].mode_group_id = 7;
-  graph.arcs[0].is_vline_track_straight = true;
-  graph.arcs[5].physical_switch_id = 11;
-  graph.arcs[5].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
-  graph.arcs[5].mode_group_id = 7;
-  graph.arcs[5].is_vline_track_swap = true;
+  {
+    auto graph = make_all_track_graph(
+        7, {{0, 1}, {0, 2}, {2, 3}, {3, 1},
+            {0, 4}, {4, 5}, {5, 6}, {6, 1}});
+    const auto nets = std::Vector<RoutingNet>{
+        synthetic_net(0, {0}, {{1, {0}}})};
+    auto baseline = SatRoutingResult{};
+    baseline.ok = true;
+    baseline.paths = {
+        SourceSinkPairPath{0, 0, 0, -1, {0, 4, 5, 6, 1}}};
+    baseline.total_wirelength = total_wirelength(graph, baseline);
 
-  auto net0 = RoutingNet{};
-  net0.net_id = 0;
-  net0.kind = RoutingNetKind::Tnet;
-  net0.sources = {source0};
-  net0.demands = {RoutingDemand{0, synthetic_ref(2), {0}, true}};
-  auto net1 = RoutingNet{};
-  net1.net_id = 1;
-  net1.kind = RoutingNetKind::Tnet;
-  net1.sources = {source1};
-  net1.demands = {RoutingDemand{0, synthetic_ref(5), {0}, true}};
-
-  auto baseline = SatRoutingResult{};
-  baseline.ok = true;
-  baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2}},
-                    SourceSinkPairPath{1, 0, 0, -1, {3, 9, 10, 5}}};
-  baseline.vline_mode_straight_by_group[7] = true;
-  baseline.used_tob_switch_ids = {10};
-  baseline.total_wirelength = total_wirelength(graph, baseline);
-  const auto refined = optimize_post_sat_routes(
-      graph, {net0, net1},
-      {synthetic_scope(graph, 0), synthetic_scope(graph, 1)}, baseline,
-      PostSatIlpOptions{});
-
-  const auto switches = std::set<int>(refined.used_tob_switch_ids.begin(),
-                                      refined.used_tob_switch_ids.end());
-  require(refined.post_sat_ilp_accepted && refined.total_wirelength == 6,
-          "shared straight/swap mode must keep the legal SAT objective");
-  require(switches.contains(10) != switches.contains(11),
-          "one mode group must not select straight and swap switches together");
-  require(refined.vline_mode_straight_by_group.at(7) == switches.contains(10),
-          "reported mode must agree with the selected VLineTrack switch");
+    const auto refined = optimize_post_sat_routes(graph, nets, {}, baseline, {});
+    require(refined.post_sat_ilp_accepted
+                && refined.post_sat_ilp_segments == 3
+                && refined.paths.front().node_path == std::Vector<int>({0, 1}),
+            "V22 two-pin generation must use the true next-shortest route "
+            "when no Lmin+1 route exists");
+  }
 }
 
-auto test_v22_post_sat_ilp_fixes_complete_sync_bus() -> void {
-  auto graph = synthetic_graph(6, {{0, 1}, {1, 2}, {3, 4}, {4, 5}, {3, 5}});
-  const auto bus_source = synthetic_track_ref(graph, 0, 0, 0, 0);
-  graph.bump_node_by_key.erase(graph.nodes[1].bump);
-  graph.nodes[1].kind = UnifiedNodeKind::VLine;
-  graph.nodes[1].line_index = 0;
-  const auto data_source = synthetic_track_ref(graph, 3, 0, 0, 3);
-  (void)synthetic_track_ref(graph, 4, 0, 0, 4);
-  graph.arcs[0].physical_switch_id = 10;
-  graph.arcs[0].physical_switch_kind = PhysicalSwitchKind::VLineTrack;
-  graph.arcs[0].mode_group_id = 7;
-  graph.arcs[0].is_vline_track_straight = true;
-
-  auto bus = RoutingNet{};
-  bus.net_id = 0;
-  bus.kind = RoutingNetKind::Tnet;
-  bus.is_sync_bus = true;
-  bus.sources = {bus_source};
-  bus.demands = {RoutingDemand{0, synthetic_ref(2), {0}, true}};
-  auto data = RoutingNet{};
-  data.net_id = 1;
-  data.kind = RoutingNetKind::Tnet;
-  data.sources = {data_source};
-  data.demands = {RoutingDemand{0, synthetic_ref(5), {0}, true}};
-
+auto test_v22_candidate_ilp_selects_nonconflicting_routes() -> void {
+  auto graph = make_all_track_graph(
+      11, {{0, 1}, {1, 3}, {0, 4}, {4, 5}, {5, 10}, {10, 3},
+           {6, 1}, {1, 7}, {6, 8}, {8, 9}, {9, 7}});
+  const auto nets = std::Vector<RoutingNet>{
+      synthetic_net(0, {0}, {{3, {0}}}),
+      synthetic_net(1, {6}, {{7, {0}}})};
   auto baseline = SatRoutingResult{};
   baseline.ok = true;
-  baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2}},
-                    SourceSinkPairPath{1, 0, 0, -1, {3, 4, 5}}};
-  baseline.vline_mode_straight_by_group[7] = true;
-  baseline.used_tob_switch_ids = {10};
+  baseline.paths = {
+      SourceSinkPairPath{0, 0, 0, -1, {0, 4, 5, 10, 3}},
+      SourceSinkPairPath{1, 0, 0, -1, {6, 8, 9, 7}}};
   baseline.total_wirelength = total_wirelength(graph, baseline);
-  const auto refined = optimize_post_sat_routes(
-      graph, {bus, data},
-      {synthetic_scope(graph, 0), synthetic_scope(graph, 1)}, baseline,
-      PostSatIlpOptions{});
 
-  require(refined.post_sat_ilp_accepted && refined.total_wirelength == 4,
-          "V22 must optimize the non-bus net around a fixed bus");
-  require(refined.paths.size() == 2 &&
-              refined.paths[0].node_path == std::Vector<int>({0, 1, 2}) &&
-              refined.paths[1].node_path == std::Vector<int>({3, 5}),
-          "V22 must preserve the complete bus path while rerouting non-bus");
-  require(refined.vline_mode_straight_by_group.at(7) &&
-              refined.used_tob_switch_ids == std::Vector<int>({10}),
-          "V22 must preserve bus mode and physical-switch configuration");
+  const auto refined = optimize_post_sat_routes(graph, nets, {}, baseline, {});
+  require(refined.post_sat_ilp_accepted
+              && refined.total_wirelength < baseline.total_wirelength,
+          "V22 candidate ILP must choose a shorter combination without sharing "
+          "the common shortest-path node");
+  auto owners = std::map<int, std::set<std::size_t>>{};
+  for (const auto& path : refined.paths) {
+    for (const int node : path.node_path) {
+      owners[node].insert(path.net_id);
+    }
+  }
+  require(std::ranges::none_of(owners, [](const auto& entry) {
+            return entry.second.size() > 1;
+          }),
+          "V22 selected candidates must obey physical node capacity one");
 }
 
-auto test_v22_post_sat_ilp_excludes_fixed_bus_nodes() -> void {
-  auto graph = synthetic_graph(
-      7, {{0, 1}, {1, 2}, {3, 4}, {4, 6}, {6, 5}, {3, 1}, {1, 5}});
-  const auto bus_source = synthetic_track_ref(graph, 0, 0, 0, 0);
-  (void)synthetic_track_ref(graph, 1, 0, 0, 1);
-  const auto data_source = synthetic_track_ref(graph, 3, 0, 0, 3);
-  (void)synthetic_track_ref(graph, 4, 0, 0, 4);
-  (void)synthetic_track_ref(graph, 6, 0, 0, 6);
-
-  auto bus = RoutingNet{};
-  bus.net_id = 0;
-  bus.kind = RoutingNetKind::Tnet;
-  bus.is_sync_bus = true;
-  bus.sources = {bus_source};
-  bus.demands = {RoutingDemand{0, synthetic_ref(2), {0}, true}};
-
-  auto data = RoutingNet{};
-  data.net_id = 1;
-  data.kind = RoutingNetKind::Tnet;
-  data.sources = {data_source};
-  data.demands = {RoutingDemand{0, synthetic_ref(5), {0}, true}};
-
+auto test_v22_multi_terminal_candidate_is_a_whole_tree() -> void {
+  auto graph = make_all_track_graph(
+      7, {{0, 1}, {1, 2}, {2, 3}, {2, 4}, {0, 5}, {5, 6}, {6, 4}});
+  const auto nets = std::Vector<RoutingNet>{
+      synthetic_net(0, {0}, {{3, {0}}, {4, {0}}})};
   auto baseline = SatRoutingResult{};
   baseline.ok = true;
-  baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2}},
-                    SourceSinkPairPath{1, 0, 0, -1, {3, 4, 6, 5}}};
+  baseline.paths = {
+      SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2, 3}},
+      SourceSinkPairPath{0, 0, 1, -1, {0, 5, 6, 4}}};
   baseline.total_wirelength = total_wirelength(graph, baseline);
 
-  const auto refined = optimize_post_sat_routes(
-      graph, {bus, data},
-      {synthetic_scope(graph, 0), synthetic_scope(graph, 1)}, baseline,
-      PostSatIlpOptions{});
-  const auto data_path = std::ranges::find_if(
-      refined.paths, [](const auto &path) { return path.net_id == 1; });
-  require(refined.post_sat_ilp_accepted,
-          "a fixed bus node must be filtered before solving, not rejected "
-          "only by post-validation");
-  require(data_path != refined.paths.end() &&
-              data_path->node_path == std::Vector<int>({3, 4, 6, 5}),
-          "non-bus pair flow must not take a shorter path through a fixed "
-          "SyncBus node");
+  const auto refined = optimize_post_sat_routes(graph, nets, {}, baseline, {});
+  require(refined.post_sat_ilp_accepted && refined.paths.size() == 2
+              && refined.total_wirelength == 5,
+          "V22 multi-terminal candidate must select one complete shared tree "
+          "and charge its Track+Bump union once");
 }
 
 auto test_v20_post_sat_rrr_improves_within_final_scope() -> void {
@@ -501,6 +227,64 @@ auto test_v20_post_sat_rrr_repairs_non_sync_overflow_cascade() -> void {
   require(refined.post_sat_maze_rrr_iterations >= 1 &&
               refined.post_sat_maze_rerouted_owners >= 2,
           "overflow repair must rip the full dirty set before rerouting");
+}
+
+auto test_v22_full_post_guide_maze_rebuilds_all_non_sync() -> void {
+  auto graph = synthetic_graph(
+      8, {{0, 1}, {1, 2}, {2, 3}, {0, 3},
+          {4, 5}, {5, 6}, {6, 7}, {4, 7}});
+  const auto source0 = synthetic_track_ref(graph, 0, 0, 0, 0);
+  const auto source1 = synthetic_track_ref(graph, 4, 0, 0, 4);
+  for (const int node : {1, 2, 3, 5, 6, 7}) {
+    (void)synthetic_track_ref(graph, node, 0, 0, node);
+  }
+  auto net0 = RoutingNet{};
+  net0.net_id = 0;
+  net0.kind = RoutingNetKind::Tnet;
+  net0.sources = {source0};
+  net0.demands = {RoutingDemand{0, synthetic_ref(3), {0}, true}};
+  auto net1 = RoutingNet{};
+  net1.net_id = 1;
+  net1.kind = RoutingNetKind::Tnet;
+  net1.sources = {source1};
+  net1.demands = {RoutingDemand{0, synthetic_ref(7), {0}, true}};
+  auto baseline = SatRoutingResult{};
+  baseline.ok = true;
+  baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2, 3}},
+                    SourceSinkPairPath{1, 0, 0, -1, {4, 5, 6, 7}}};
+  baseline.total_wirelength = total_wirelength(graph, baseline);
+  const auto rebuilt = rebuild_all_non_sync_routes_rrr(
+      graph, {net0, net1}, {synthetic_scope(graph, 0), synthetic_scope(graph, 1)},
+      baseline, PostSatRrrOptions{.max_iterations = 8, .stagnation_limit = 4});
+  require(rebuilt.has_value() && rebuilt->total_wirelength == 4,
+          "V22 full maze must rebuild every non-Sync owner from the Sync-only state");
+  require(rebuilt->paths.size() == 2
+              && rebuilt->paths[0].node_path == std::Vector<int>({0, 3})
+              && rebuilt->paths[1].node_path == std::Vector<int>({4, 7}),
+          "V22 full maze must not retain an old non-Sync SAT path outside the guide");
+}
+
+auto test_v22_full_post_guide_maze_preserves_pn_physical_source() -> void {
+  auto graph = synthetic_graph(3, {{0, 1}, {1, 2}, {0, 2}});
+  const auto source0 = synthetic_track_ref(graph, 0, 2, 0, 0);
+  const auto source1 = synthetic_track_ref(graph, 1, 2, 0, 1);
+  (void)synthetic_track_ref(graph, 2, 2, 0, 2);
+  auto pn = RoutingNet{};
+  pn.net_id = 9;
+  pn.kind = RoutingNetKind::PNnet;
+  pn.sources = {source0, source1};
+  pn.demands = {RoutingDemand{0, synthetic_ref(2), {0, 1}, false}};
+  auto baseline = SatRoutingResult{};
+  baseline.ok = true;
+  baseline.paths = {SourceSinkPairPath{9, 0, 0, 0, {0, 1, 2}}};
+  baseline.total_wirelength = total_wirelength(graph, baseline);
+  const auto rebuilt = rebuild_all_non_sync_routes_rrr(
+      graph, {pn}, {synthetic_scope(graph, 9)}, baseline,
+      PostSatRrrOptions{.max_iterations = 8, .stagnation_limit = 4});
+  require(rebuilt.has_value() && rebuilt->paths.size() == 1
+              && rebuilt->paths.front().physical_source_node == 0
+              && rebuilt->paths.front().node_path == std::Vector<int>({0, 2}),
+          "V22 full maze must retain the SAT-selected PN physical source");
 }
 
 auto test_v17_pn_scope_retains_selected_union_only() -> void {

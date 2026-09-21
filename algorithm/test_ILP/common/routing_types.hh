@@ -142,7 +142,8 @@ struct SatRoutingResult {
     long long global_route_total_ms{0};
     // Diagnostic work deliberately excluded from all routing wall-clock summaries.
     long long excluded_diagnostic_ms{0};
-    // V22 post-SAT pair-flow ILP summary. A failed refinement preserves SAT paths.
+    // V22 post-SAT whole-route-candidate selection ILP summary. A failed
+    // refinement preserves the complete SAT routing.
     bool post_sat_ilp_attempted{false};
     bool post_sat_ilp_accepted{false};
     std::String post_sat_ilp_status;
@@ -151,9 +152,9 @@ struct SatRoutingResult {
     long long post_sat_ilp_solve_ms{0};
     std::size_t post_sat_ilp_baseline_wirelength{0};
     std::size_t post_sat_ilp_wirelength{0};
-    // Legacy field name; V22 stores the number of optimized non-bus nets.
+    // Legacy field name; V22 stores the number of optimized non-Sync nets.
     std::size_t post_sat_ilp_parents{0};
-    // Legacy field name; V22 stores the number of optimized pairs here.
+    // Legacy field name; V22 stores the number of route-tree candidates here.
     std::size_t post_sat_ilp_segments{0};
     std::size_t post_sat_ilp_components{0};
     std::size_t post_sat_ilp_variables{0};
