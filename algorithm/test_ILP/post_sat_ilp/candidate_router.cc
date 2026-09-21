@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <debug/debug.hh>
 #include <format>
 #include <limits>
@@ -405,9 +406,16 @@ auto shortest_path(const FabricGraph& graph, const int source, const int sink,
     return out;
 }
 
-struct PathLongerResult {
-    std::Vector<int> path;
+constexpr std::size_t kMaxStructuralPathsPerClass = 32;
+constexpr std::size_t kMaxMultiStructuralCandidates =
+    1U + 2U * kMaxStructuralPathsPerClass;
+
+struct StructuralPathPool {
+    std::Vector<std::Vector<int>> shortest;
+    std::Vector<std::Vector<int>> longer;
     bool exact_plus_one{false};
+    std::size_t zero_excess_detours{0};
+    std::size_t positive_excess_detours{0};
 };
 
 using CandidateDeadline =
@@ -420,26 +428,27 @@ auto check_candidate_deadline(const CandidateDeadline& deadline) -> void {
     }
 }
 
-// Every simple alternative to a shortest path can be decomposed into detours
-// whose internal vertices are outside that path.  Because each detour has
-// nonnegative excess length, a shortest strictly-longer alternative needs only
-// one positive-excess detour; zero-excess detours can be replaced by the
-// original path.  One BFS per path vertex therefore finds Lmin+1 exactly when
-// it exists, and otherwise the true next strictly-longer length, without
-// enumerating a potentially exponential number of equal shortest paths.
-auto shortest_and_longer(const FabricGraph& graph, const int source,
-                         const int sink,
-                         const CandidateDeadline& deadline)
-    -> std::pair<std::Vector<int>, PathLongerResult> {
-    auto first = shortest_path(graph, source, sink);
+// Build a bounded pool by replacing one contiguous segment of a base shortest
+// path.  Zero-excess replacements expose equal-length L/Z-like alternatives;
+// the minimum positive-excess replacements expose Lmin+1, or the true next
+// strictly-longer length when no +1 path exists.  The pool is intentionally
+// bounded because the number of equal shortest paths may be exponential.
+auto structural_path_pool_from_base(const FabricGraph& graph,
+                                    const std::Vector<int>& first,
+                                    const CandidateDeadline& deadline)
+    -> StructuralPathPool {
     if (first.empty()) {
         return {};
     }
+    auto out = StructuralPathPool{};
+    auto shortest_seen = std::set<std::Vector<int>>{first};
+    auto longer_seen = std::set<std::Vector<int>>{};
+    out.shortest.push_back(first);
+    std::size_t best_longer_size = std::numeric_limits<std::size_t>::max();
     auto path_position = std::map<int, std::size_t>{};
     for (std::size_t index = 0; index < first.size(); ++index) {
         path_position.emplace(first[index], index);
     }
-    auto best = std::Vector<int>{};
     for (std::size_t start_index = 0;
          start_index + 1 < first.size(); ++start_index) {
         check_candidate_deadline(deadline);
@@ -476,17 +485,29 @@ auto shortest_and_longer(const FabricGraph& graph, const int source,
                     candidate.insert(candidate.end(),
                                      first.begin() + end_index + 1,
                                      first.end());
-                    if (candidate.size() <= first.size()) {
-                        continue;
-                    }
-                    if (candidate.size() == first.size() + 1) {
-                        return {std::move(first),
-                                {std::move(candidate), true}};
-                    }
-                    if (best.empty() || candidate.size() < best.size()
-                        || (candidate.size() == best.size()
-                            && candidate < best)) {
-                        best = std::move(candidate);
+                    if (candidate.size() == first.size()) {
+                        if (shortest_seen.insert(candidate).second) {
+                            ++out.zero_excess_detours;
+                            if (out.shortest.size()
+                                < kMaxStructuralPathsPerClass) {
+                                out.shortest.push_back(std::move(candidate));
+                            }
+                        }
+                    } else if (candidate.size() > first.size()) {
+                        if (candidate.size() < best_longer_size) {
+                            best_longer_size = candidate.size();
+                            longer_seen.clear();
+                            out.longer.clear();
+                            out.positive_excess_detours = 0;
+                        }
+                        if (candidate.size() == best_longer_size
+                            && longer_seen.insert(candidate).second) {
+                            ++out.positive_excess_detours;
+                            if (out.longer.size()
+                                < kMaxStructuralPathsPerClass) {
+                                out.longer.push_back(std::move(candidate));
+                            }
+                        }
                     }
                     continue;
                 }
@@ -499,7 +520,16 @@ auto shortest_and_longer(const FabricGraph& graph, const int source,
             }
         }
     }
-    return {std::move(first), {std::move(best), false}};
+    out.exact_plus_one = best_longer_size == first.size() + 1;
+    return out;
+}
+
+auto structural_path_pool(const FabricGraph& graph, const int source,
+                          const int sink,
+                          const CandidateDeadline& deadline)
+    -> StructuralPathPool {
+    return structural_path_pool_from_base(
+        graph, shortest_path(graph, source, sink), deadline);
 }
 
 auto combine_two_pin(const PairSpec& spec,
@@ -523,6 +553,145 @@ struct RouteCandidate {
     RouteResources resources;
     bool incumbent{false};
 };
+
+using CongestionKey =
+    std::tuple<int, int, int, std::size_t>; // dir, row, col, unit
+using CongestionMap = std::map<CongestionKey, double>;
+
+auto track_channel_load(const UnifiedGraph& graph,
+                        const std::set<int>& nodes)
+    -> CongestionMap {
+    auto demand = CongestionMap{};
+    for (const int node_id : nodes) {
+        const auto& node = graph.nodes[static_cast<std::size_t>(node_id)];
+        if (node.kind == UnifiedNodeKind::Track) {
+            demand[{node.track_dir, node.track_row, node.track_col, node.unit}]
+                += 1.0;
+        }
+    }
+    return demand;
+}
+
+auto candidate_channel_demand(const UnifiedGraph& graph,
+                              const RouteCandidate& candidate)
+    -> CongestionMap {
+    return track_channel_load(graph, candidate.resources.nodes);
+}
+
+auto add_scaled_load(CongestionMap& target, const CongestionMap& contribution,
+                     const double scale) -> void {
+    constexpr double epsilon = 1e-9;
+    for (const auto& [key, value] : contribution) {
+        const double updated = target[key] + scale * value;
+        if (std::abs(updated) < epsilon) {
+            target.erase(key);
+        } else {
+            target[key] = updated;
+        }
+    }
+}
+
+auto peak_load(const CongestionMap& load) -> double {
+    double peak = 0.0;
+    for (const auto& [_, value] : load) {
+        peak = std::max(peak, value);
+    }
+    return peak;
+}
+
+struct CongestionScore {
+    std::size_t overflow_groups{0};
+    double overflow_total{0.0};
+    double min_residual{std::numeric_limits<double>::infinity()};
+    double total_residual{0.0};
+    std::uint64_t tie_break{0};
+};
+
+auto stable_candidate_hash(const RouteCandidate& candidate,
+                           const std::uint64_t salt) -> std::uint64_t {
+    auto hash = std::uint64_t{1469598103934665603ULL} ^ salt;
+    const auto mix = [&](const std::uint64_t value) {
+        hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6U) + (hash >> 2U);
+    };
+    for (const int node : candidate.resources.nodes) {
+        mix(static_cast<std::uint64_t>(static_cast<std::uint32_t>(node)));
+    }
+    for (const auto [u, v] : candidate.resources.edges) {
+        mix(static_cast<std::uint64_t>(static_cast<std::uint32_t>(u)) << 32U
+            | static_cast<std::uint32_t>(v));
+    }
+    return hash;
+}
+
+auto congestion_score(const UnifiedGraph& graph,
+                      const RouteCandidate& candidate,
+                      const CongestionMap& load,
+                      const std::uint64_t salt) -> CongestionScore {
+    auto score = CongestionScore{};
+    const auto demand = candidate_channel_demand(graph, candidate);
+    for (const auto& [key, amount] : demand) {
+        const auto found = load.find(key);
+        const double occupied = found == load.end() ? 0.0 : found->second;
+        const double residual = 8.0 - occupied - amount;
+        score.min_residual = std::min(score.min_residual, residual);
+        score.total_residual += residual;
+        if (residual < 0.0) {
+            ++score.overflow_groups;
+            score.overflow_total -= residual;
+        }
+    }
+    score.tie_break = stable_candidate_hash(candidate, salt);
+    return score;
+}
+
+auto better_congestion_score(const CongestionScore& lhs,
+                             const CongestionScore& rhs) -> bool {
+    constexpr double epsilon = 1e-9;
+    if (lhs.overflow_groups != rhs.overflow_groups) {
+        return lhs.overflow_groups < rhs.overflow_groups;
+    }
+    if (std::abs(lhs.overflow_total - rhs.overflow_total) > epsilon) {
+        return lhs.overflow_total < rhs.overflow_total;
+    }
+    if (std::abs(lhs.min_residual - rhs.min_residual) > epsilon) {
+        return lhs.min_residual > rhs.min_residual;
+    }
+    if (std::abs(lhs.total_residual - rhs.total_residual) > epsilon) {
+        return lhs.total_residual > rhs.total_residual;
+    }
+    return lhs.tie_break < rhs.tie_break;
+}
+
+auto best_candidate_index(const UnifiedGraph& graph,
+                          const std::Vector<RouteCandidate>& candidates,
+                          const CongestionMap& load,
+                          const std::uint64_t salt,
+                          const bool compare_wirelength = false)
+    -> std::optional<std::size_t> {
+    auto best = std::optional<std::size_t>{};
+    auto best_score = CongestionScore{};
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+        if (best.has_value() && compare_wirelength
+            && candidates[index].resources.wire_nodes.size()
+                != candidates[*best].resources.wire_nodes.size()) {
+            if (candidates[index].resources.wire_nodes.size()
+                < candidates[*best].resources.wire_nodes.size()) {
+                best = index;
+                best_score = congestion_score(
+                    graph, candidates[index], load, salt);
+            }
+            continue;
+        }
+        const auto score = congestion_score(
+            graph, candidates[index], load, salt);
+        if (!best.has_value()
+            || better_congestion_score(score, best_score)) {
+            best = index;
+            best_score = score;
+        }
+    }
+    return best;
+}
 
 auto analyze_candidate(const UnifiedGraph& graph, const FixedUsage& fixed,
                        const NetSpec& spec,
@@ -608,20 +777,112 @@ struct CandidateStats {
     std::size_t two_pin_shortest{0};
     std::size_t two_pin_plus_one{0};
     std::size_t two_pin_second_shortest{0};
+    std::size_t zero_excess_detours{0};
+    std::size_t positive_excess_detours{0};
+    std::size_t c1_selected{0};
+    std::size_t c2_selected{0};
     std::size_t multi_base_runs{0};
     std::size_t multi_forced_runs{0};
+    std::size_t multi_segment_variants{0};
     std::size_t multi_failed_runs{0};
     std::size_t incumbent_candidates{0};
 };
+
+struct GeneratedCandidates {
+    std::Vector<RouteCandidate> candidates;
+    std::Vector<RouteCandidate> c1_representative_pool;
+    std::optional<RouteCandidate> c1_short_representative;
+    std::optional<RouteCandidate> c1_long_representative;
+};
+
+auto finalize_c1_representatives(const UnifiedGraph& graph,
+                                 const NetSpec& spec,
+                                 const CongestionMap& c1_without_net,
+                                 GeneratedCandidates& generated) -> void {
+    auto unique = std::Vector<RouteCandidate>{};
+    auto seen = std::set<std::tuple<std::set<int>, std::set<Edge>,
+                                    std::map<int, bool>>>{};
+    for (auto& candidate : generated.c1_representative_pool) {
+        const auto signature = candidate_signature(candidate);
+        if (seen.insert(signature).second) {
+            unique.push_back(std::move(candidate));
+        }
+    }
+    generated.c1_representative_pool.clear();
+    if (unique.empty()) {
+        return;
+    }
+    std::size_t shortest_length = std::numeric_limits<std::size_t>::max();
+    std::size_t longer_length = std::numeric_limits<std::size_t>::max();
+    for (const auto& candidate : unique) {
+        const std::size_t length = candidate.resources.wire_nodes.size();
+        if (length < shortest_length) {
+            longer_length = shortest_length;
+            shortest_length = length;
+        } else if (length > shortest_length && length < longer_length) {
+            longer_length = length;
+        }
+    }
+    auto shortest = std::Vector<RouteCandidate>{};
+    auto longer = std::Vector<RouteCandidate>{};
+    for (const auto& candidate : unique) {
+        const std::size_t length = candidate.resources.wire_nodes.size();
+        if (length == shortest_length) {
+            shortest.push_back(candidate);
+        } else if (length == longer_length) {
+            longer.push_back(candidate);
+        }
+    }
+    const auto salt =
+        (static_cast<std::uint64_t>(spec.net->net_id) << 32U)
+        ^ 0xc1c1c1c1ULL;
+    if (const auto best = best_candidate_index(
+            graph, shortest, c1_without_net, salt)) {
+        generated.c1_short_representative = shortest[*best];
+    }
+    if (const auto best = best_candidate_index(
+            graph, longer, c1_without_net, salt + 1U)) {
+        generated.c1_long_representative = longer[*best];
+    }
+}
+
+auto select_from_length_class(
+    const UnifiedGraph& graph,
+    const std::Vector<RouteCandidate>& pool,
+    const CongestionMap& load,
+    const std::uint64_t salt,
+    std::Vector<RouteCandidate>& out,
+    std::set<std::tuple<std::set<int>, std::set<Edge>,
+                        std::map<int, bool>>>& seen,
+    CandidateStats& stats,
+    const bool from_c1,
+    std::Vector<RouteCandidate>* representative_pool) -> void {
+    const auto best = best_candidate_index(graph, pool, load, salt);
+    if (!best.has_value()) {
+        return;
+    }
+    const auto selected = pool[*best];
+    if (from_c1) {
+        ++stats.c1_selected;
+        if (representative_pool != nullptr) {
+            representative_pool->push_back(selected);
+        }
+    } else {
+        ++stats.c2_selected;
+    }
+    add_candidate_deduplicated(out, seen, selected);
+}
 
 auto generate_two_pin_candidates(const UnifiedGraph& graph,
                                  const FixedUsage& fixed,
                                  const NetSpec& spec,
                                  const FabricGraph& fabric,
+                                 const CongestionMap& c1_without_net,
+                                 const CongestionMap& c2,
                                  CandidateStats& stats,
                                  const CandidateDeadline& deadline)
-    -> std::Vector<RouteCandidate> {
-    auto out = std::Vector<RouteCandidate>{};
+    -> GeneratedCandidates {
+    auto generated = GeneratedCandidates{};
     auto seen = std::set<std::tuple<std::set<int>, std::set<Edge>,
                                     std::map<int, bool>>>{};
     const auto& pair = spec.pairs.front();
@@ -636,40 +897,66 @@ auto generate_two_pin_candidates(const UnifiedGraph& graph,
     for (const auto& source : sources) {
         for (const auto& sink : sinks) {
             check_candidate_deadline(deadline);
-            ++stats.two_pin_combinations;
-            const auto [shortest, longer] = shortest_and_longer(
+            const std::size_t combination = stats.two_pin_combinations++;
+            const auto structural = structural_path_pool(
                 fabric, source.track, sink.track, deadline);
-            if (shortest.empty()) {
+            stats.zero_excess_detours += structural.zero_excess_detours;
+            stats.positive_excess_detours +=
+                structural.positive_excess_detours;
+            if (structural.shortest.empty()) {
                 continue;
             }
-            auto shortest_path_candidate = combine_two_pin(
-                pair, source, shortest, sink);
-            if (auto candidate = analyze_candidate(
-                    graph, fixed, spec, {std::move(shortest_path_candidate)}, false)) {
-                ++stats.two_pin_shortest;
-                add_candidate_deduplicated(out, seen, std::move(*candidate));
-            }
-            if (!longer.path.empty()) {
-                auto longer_path_candidate = combine_two_pin(
-                    pair, source, longer.path, sink);
+            auto shortest_pool = std::Vector<RouteCandidate>{};
+            auto longer_pool = std::Vector<RouteCandidate>{};
+            for (const auto& path : structural.shortest) {
+                auto pair_path = combine_two_pin(pair, source, path, sink);
                 if (auto candidate = analyze_candidate(
-                        graph, fixed, spec, {std::move(longer_path_candidate)}, false)) {
-                    if (longer.exact_plus_one) {
-                        ++stats.two_pin_plus_one;
-                    } else {
-                        ++stats.two_pin_second_shortest;
-                    }
-                    add_candidate_deduplicated(out, seen, std::move(*candidate));
+                        graph, fixed, spec, {std::move(pair_path)}, false)) {
+                    shortest_pool.push_back(std::move(*candidate));
+                }
+            }
+            for (const auto& path : structural.longer) {
+                auto pair_path = combine_two_pin(pair, source, path, sink);
+                if (auto candidate = analyze_candidate(
+                        graph, fixed, spec, {std::move(pair_path)}, false)) {
+                    longer_pool.push_back(std::move(*candidate));
+                }
+            }
+            const auto salt_base =
+                (static_cast<std::uint64_t>(spec.net->net_id) << 32U)
+                ^ static_cast<std::uint64_t>(combination * 4U);
+            select_from_length_class(
+                graph, shortest_pool, c2, salt_base,
+                generated.candidates, seen, stats, false, nullptr);
+            select_from_length_class(
+                graph, longer_pool, c2, salt_base + 1U,
+                generated.candidates, seen, stats, false, nullptr);
+            select_from_length_class(
+                graph, shortest_pool, c1_without_net, salt_base + 2U,
+                generated.candidates, seen, stats, true,
+                &generated.c1_representative_pool);
+            select_from_length_class(
+                graph, longer_pool, c1_without_net, salt_base + 3U,
+                generated.candidates, seen, stats, true,
+                &generated.c1_representative_pool);
+            stats.two_pin_shortest += shortest_pool.empty() ? 0U : 1U;
+            if (!longer_pool.empty()) {
+                if (structural.exact_plus_one) {
+                    ++stats.two_pin_plus_one;
+                } else {
+                    ++stats.two_pin_second_shortest;
                 }
             }
         }
     }
+    finalize_c1_representatives(graph, spec, c1_without_net, generated);
     if (auto incumbent = analyze_candidate(
             graph, fixed, spec, spec.incumbent_paths, true)) {
         ++stats.incumbent_candidates;
-        add_candidate_deduplicated(out, seen, std::move(*incumbent));
+        add_candidate_deduplicated(
+            generated.candidates, seen, std::move(*incumbent));
     }
-    return out;
+    return generated;
 }
 
 struct TerminalGroup {
@@ -839,13 +1126,273 @@ auto generate_multi_tree(const UnifiedGraph& graph,
     return analyze_candidate(graph, fixed, spec, std::move(paths), false);
 }
 
+auto terminal_accesses_from_tree(
+    const UnifiedGraph& graph, const NetSpec& spec,
+    const RouteCandidate& candidate)
+    -> std::optional<std::map<int, AccessOption>> {
+    auto accesses = std::map<int, AccessOption>{};
+    const auto record = [&](const int endpoint,
+                            std::Vector<int> endpoint_to_track) -> bool {
+        if (endpoint_to_track.empty()) {
+            return false;
+        }
+        const int track = endpoint_to_track.back();
+        if (graph.nodes[static_cast<std::size_t>(track)].kind
+            != UnifiedNodeKind::Track) {
+            return false;
+        }
+        const auto found = accesses.find(endpoint);
+        if (found != accesses.end()) {
+            return found->second.endpoint_to_track == endpoint_to_track;
+        }
+        accesses.emplace(
+            endpoint, AccessOption{track, std::move(endpoint_to_track)});
+        return true;
+    };
+    for (std::size_t index = 0; index < candidate.paths.size(); ++index) {
+        const auto& nodes = candidate.paths[index].node_path;
+        const auto& pair = spec.pairs[index];
+        const auto first_track = std::find_if(
+            nodes.begin(), nodes.end(), [&](const int node) {
+                return graph.nodes[static_cast<std::size_t>(node)].kind
+                    == UnifiedNodeKind::Track;
+            });
+        const auto last_track_reverse = std::find_if(
+            nodes.rbegin(), nodes.rend(), [&](const int node) {
+                return graph.nodes[static_cast<std::size_t>(node)].kind
+                    == UnifiedNodeKind::Track;
+            });
+        if (first_track == nodes.end() || last_track_reverse == nodes.rend()) {
+            return std::nullopt;
+        }
+        auto source_access = std::Vector<int>(
+            nodes.begin(), std::next(first_track));
+        auto sink_access = std::Vector<int>(
+            nodes.rbegin(), std::next(last_track_reverse));
+        if (!record(pair.source, std::move(source_access))
+            || !record(pair.sink, std::move(sink_access))) {
+            return std::nullopt;
+        }
+    }
+    return accesses;
+}
+
+auto track_tree_adjacency(const UnifiedGraph& graph,
+                          const RouteCandidate& candidate)
+    -> std::map<int, std::set<int>> {
+    auto adjacency = std::map<int, std::set<int>>{};
+    for (const auto& path : candidate.paths) {
+        for (std::size_t index = 1; index < path.node_path.size(); ++index) {
+            const int u = path.node_path[index - 1];
+            const int v = path.node_path[index];
+            if (graph.nodes[static_cast<std::size_t>(u)].kind
+                    == UnifiedNodeKind::Track
+                && graph.nodes[static_cast<std::size_t>(v)].kind
+                    == UnifiedNodeKind::Track) {
+                adjacency[u].insert(v);
+                adjacency[v].insert(u);
+            }
+        }
+    }
+    return adjacency;
+}
+
+auto tree_segments(const std::map<int, std::set<int>>& adjacency,
+                   const std::map<int, AccessOption>& accesses)
+    -> std::Vector<std::Vector<int>> {
+    auto key_nodes = std::set<int>{};
+    for (const auto& [_, access] : accesses) {
+        key_nodes.insert(access.track);
+    }
+    for (const auto& [node, neighbors] : adjacency) {
+        if (neighbors.size() != 2U) {
+            key_nodes.insert(node);
+        }
+    }
+    auto seen = std::set<Edge>{};
+    auto segments = std::Vector<std::Vector<int>>{};
+    for (const int start : key_nodes) {
+        const auto found = adjacency.find(start);
+        if (found == adjacency.end()) {
+            continue;
+        }
+        for (const int next : found->second) {
+            if (seen.contains(edge_key(start, next))) {
+                continue;
+            }
+            auto segment = std::Vector<int>{start, next};
+            seen.insert(edge_key(start, next));
+            int previous = start;
+            int current = next;
+            while (!key_nodes.contains(current)) {
+                const auto& neighbors = adjacency.at(current);
+                if (neighbors.size() != 2U) {
+                    break;
+                }
+                const int following = *std::find_if(
+                    neighbors.begin(), neighbors.end(),
+                    [&](const int node) { return node != previous; });
+                seen.insert(edge_key(current, following));
+                segment.push_back(following);
+                previous = current;
+                current = following;
+            }
+            segments.push_back(std::move(segment));
+        }
+    }
+    return segments;
+}
+
+auto rebuild_tree_candidate(
+    const UnifiedGraph& graph, const FixedUsage& fixed,
+    const NetSpec& spec, const std::map<int, AccessOption>& accesses,
+    const std::map<int, std::set<int>>& adjacency)
+    -> std::optional<RouteCandidate> {
+    auto paths = std::Vector<SourceSinkPairPath>{};
+    paths.reserve(spec.pairs.size());
+    for (const auto& pair : spec.pairs) {
+        const auto source = accesses.find(pair.source);
+        const auto sink = accesses.find(pair.sink);
+        if (source == accesses.end() || sink == accesses.end()) {
+            return std::nullopt;
+        }
+        const auto fabric = build_union_path(
+            adjacency, source->second.track, sink->second.track);
+        if (fabric.empty()) {
+            return std::nullopt;
+        }
+        auto nodes = source->second.endpoint_to_track;
+        nodes.insert(nodes.end(), std::next(fabric.begin()), fabric.end());
+        if (sink->second.endpoint_to_track.size() > 1U) {
+            nodes.insert(
+                nodes.end(),
+                std::next(sink->second.endpoint_to_track.rbegin()),
+                sink->second.endpoint_to_track.rend());
+        }
+        paths.push_back(SourceSinkPairPath{
+            spec.net->net_id, pair.source_index, pair.demand_id,
+            pair.physical_source_node, std::move(nodes)});
+    }
+    return analyze_candidate(graph, fixed, spec, std::move(paths), false);
+}
+
+auto multi_tree_structural_pool(
+    const UnifiedGraph& graph, const FixedUsage& fixed,
+    const NetSpec& spec, const FabricGraph& fabric,
+    RouteCandidate base, CandidateStats& stats,
+    const CandidateDeadline& deadline) -> std::Vector<RouteCandidate> {
+    auto out = std::Vector<RouteCandidate>{};
+    auto seen = std::set<std::tuple<std::set<int>, std::set<Edge>,
+                                    std::map<int, bool>>>{};
+    add_candidate_deduplicated(out, seen, base);
+    const auto accesses = terminal_accesses_from_tree(graph, spec, base);
+    if (!accesses.has_value()) {
+        return out;
+    }
+    const auto adjacency = track_tree_adjacency(graph, base);
+    for (const auto& segment : tree_segments(adjacency, *accesses)) {
+        if (out.size() >= kMaxMultiStructuralCandidates) {
+            break;
+        }
+        check_candidate_deadline(deadline);
+        if (segment.size() < 2U) {
+            continue;
+        }
+        const auto alternatives = structural_path_pool_from_base(
+            fabric, segment, deadline);
+        stats.zero_excess_detours += alternatives.zero_excess_detours;
+        stats.positive_excess_detours +=
+            alternatives.positive_excess_detours;
+        auto remaining_nodes = std::set<int>{};
+        for (const auto& [node, _] : adjacency) {
+            remaining_nodes.insert(node);
+        }
+        for (std::size_t index = 1; index + 1 < segment.size(); ++index) {
+            remaining_nodes.erase(segment[index]);
+        }
+        const auto try_alternative = [&](const std::Vector<int>& alternative) {
+            if (out.size() >= kMaxMultiStructuralCandidates
+                || alternative == segment
+                || std::ranges::any_of(
+                    std::next(alternative.begin()),
+                    std::prev(alternative.end()),
+                    [&](const int node) { return remaining_nodes.contains(node); })) {
+                return;
+            }
+            auto replaced = adjacency;
+            for (std::size_t index = 1; index < segment.size(); ++index) {
+                replaced[segment[index - 1]].erase(segment[index]);
+                replaced[segment[index]].erase(segment[index - 1]);
+            }
+            for (std::size_t index = 1; index < alternative.size(); ++index) {
+                replaced[alternative[index - 1]].insert(alternative[index]);
+                replaced[alternative[index]].insert(alternative[index - 1]);
+            }
+            for (auto it = replaced.begin(); it != replaced.end();) {
+                if (it->second.empty()) {
+                    it = replaced.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (auto candidate = rebuild_tree_candidate(
+                    graph, fixed, spec, *accesses, replaced)) {
+                const std::size_t before = out.size();
+                add_candidate_deduplicated(
+                    out, seen, std::move(*candidate));
+                if (out.size() != before) {
+                    ++stats.multi_segment_variants;
+                }
+            }
+        };
+        for (const auto& alternative : alternatives.shortest) {
+            try_alternative(alternative);
+        }
+        for (const auto& alternative : alternatives.longer) {
+            try_alternative(alternative);
+        }
+    }
+    return out;
+}
+
+auto split_tree_length_classes(const std::Vector<RouteCandidate>& pool)
+    -> std::pair<std::Vector<RouteCandidate>, std::Vector<RouteCandidate>> {
+    auto shortest = std::Vector<RouteCandidate>{};
+    auto longer = std::Vector<RouteCandidate>{};
+    if (pool.empty()) {
+        return {shortest, longer};
+    }
+    std::size_t shortest_length = std::numeric_limits<std::size_t>::max();
+    std::size_t longer_length = std::numeric_limits<std::size_t>::max();
+    for (const auto& candidate : pool) {
+        const std::size_t length = candidate.resources.wire_nodes.size();
+        if (length < shortest_length) {
+            longer_length = shortest_length;
+            shortest_length = length;
+        } else if (length > shortest_length && length < longer_length) {
+            longer_length = length;
+        }
+    }
+    for (const auto& candidate : pool) {
+        const std::size_t length = candidate.resources.wire_nodes.size();
+        if (length == shortest_length) {
+            shortest.push_back(candidate);
+        } else if (length == longer_length) {
+            longer.push_back(candidate);
+        }
+    }
+    return {std::move(shortest), std::move(longer)};
+}
+
 auto generate_multi_candidates(const UnifiedGraph& graph,
                                const FixedUsage& fixed,
                                const NetSpec& spec,
                                const FabricGraph& fabric,
+                               const CongestionMap& c1_without_net,
+                               const CongestionMap& c2,
                                CandidateStats& stats,
                                const CandidateDeadline& deadline)
-    -> std::Vector<RouteCandidate> {
+    -> GeneratedCandidates {
     auto endpoint_set = std::set<int>{};
     auto endpoints = std::Vector<int>{};
     for (const auto& pair : spec.pairs) {
@@ -868,14 +1415,38 @@ auto generate_multi_candidates(const UnifiedGraph& graph,
         }
         groups.push_back({endpoint, std::move(access)});
     }
-    auto out = std::Vector<RouteCandidate>{};
+    auto generated = GeneratedCandidates{};
     auto seen = std::set<std::tuple<std::set<int>, std::set<Edge>,
                                     std::map<int, bool>>>{};
+    std::size_t seed_index = 0;
+    const auto consume_seed = [&](RouteCandidate base) {
+        const auto structural = multi_tree_structural_pool(
+            graph, fixed, spec, fabric, std::move(base), stats, deadline);
+        const auto [shortest_pool, longer_pool] =
+            split_tree_length_classes(structural);
+        const auto salt_base =
+            (static_cast<std::uint64_t>(spec.net->net_id) << 32U)
+            ^ static_cast<std::uint64_t>(seed_index++ * 4U);
+        select_from_length_class(
+            graph, shortest_pool, c2, salt_base,
+            generated.candidates, seen, stats, false, nullptr);
+        select_from_length_class(
+            graph, longer_pool, c2, salt_base + 1U,
+            generated.candidates, seen, stats, false, nullptr);
+        select_from_length_class(
+            graph, shortest_pool, c1_without_net, salt_base + 2U,
+            generated.candidates, seen, stats, true,
+            &generated.c1_representative_pool);
+        select_from_length_class(
+            graph, longer_pool, c1_without_net, salt_base + 3U,
+            generated.candidates, seen, stats, true,
+            &generated.c1_representative_pool);
+    };
     if (!groups.empty()) {
         ++stats.multi_base_runs;
         if (auto base = generate_multi_tree(
                 graph, fixed, spec, fabric, groups, -1, 0, deadline)) {
-            add_candidate_deduplicated(out, seen, std::move(*base));
+            consume_seed(std::move(*base));
         } else {
             ++stats.multi_failed_runs;
         }
@@ -887,20 +1458,21 @@ auto generate_multi_candidates(const UnifiedGraph& graph,
                 if (auto candidate = generate_multi_tree(
                         graph, fixed, spec, fabric, groups,
                         static_cast<int>(group), option, deadline)) {
-                    add_candidate_deduplicated(
-                        out, seen, std::move(*candidate));
+                    consume_seed(std::move(*candidate));
                 } else {
                     ++stats.multi_failed_runs;
                 }
             }
         }
     }
+    finalize_c1_representatives(graph, spec, c1_without_net, generated);
     if (auto incumbent = analyze_candidate(
             graph, fixed, spec, spec.incumbent_paths, true)) {
         ++stats.incumbent_candidates;
-        add_candidate_deduplicated(out, seen, std::move(*incumbent));
+        add_candidate_deduplicated(
+            generated.candidates, seen, std::move(*incumbent));
     }
-    return out;
+    return generated;
 }
 
 struct CandidateProblem {
@@ -922,6 +1494,22 @@ auto build_candidate_problem(const UnifiedGraph& graph,
     auto out = CandidateProblem{};
     out.specs = *specs;
     out.candidates.resize(out.specs.size());
+    const auto c2 = track_channel_load(graph, fixed.nodes);
+    auto c1 = c2;
+    auto contributions = std::Vector<CongestionMap>(out.specs.size());
+    for (std::size_t index = 0; index < out.specs.size(); ++index) {
+        const auto incumbent = analyze_candidate(
+            graph, fixed, out.specs[index],
+            out.specs[index].incumbent_paths, true);
+        if (!incumbent.has_value()) {
+            return std::nullopt;
+        }
+        contributions[index] = candidate_channel_demand(graph, *incumbent);
+        add_scaled_load(c1, contributions[index], 1.0);
+    }
+    debug::info_fmt(
+        "V22 congestion maps initialized: C1_channel_units={} C1_peak={:.3f} C2_sync_channel_units={} C2_peak={:.3f} sequential_update=yes short_weight=0.9 long_weight=0.1",
+        c1.size(), peak_load(c1), c2.size(), peak_load(c2));
     auto fabric_by_unit = std::array<std::optional<FabricGraph>, 16>{};
     for (std::size_t index = 0; index < out.specs.size(); ++index) {
         check_candidate_deadline(deadline);
@@ -934,11 +1522,39 @@ auto build_candidate_problem(const UnifiedGraph& graph,
             fabric_slot = build_fabric_graph(graph, fixed, spec.unit);
         }
         const auto& fabric = *fabric_slot;
-        out.candidates[index] = spec.pairs.size() == 1
+        auto c1_without_net = c1;
+        add_scaled_load(c1_without_net, contributions[index], -1.0);
+        auto generated = spec.pairs.size() == 1
             ? generate_two_pin_candidates(
-                graph, fixed, spec, fabric, out.stats, deadline)
+                graph, fixed, spec, fabric, c1_without_net, c2,
+                out.stats, deadline)
             : generate_multi_candidates(
-                graph, fixed, spec, fabric, out.stats, deadline);
+                graph, fixed, spec, fabric, c1_without_net, c2,
+                out.stats, deadline);
+        auto replacement = CongestionMap{};
+        if (generated.c1_short_representative.has_value()) {
+            const auto short_demand = candidate_channel_demand(
+                graph, *generated.c1_short_representative);
+            if (generated.c1_long_representative.has_value()
+                && candidate_signature(*generated.c1_short_representative)
+                    != candidate_signature(*generated.c1_long_representative)) {
+                add_scaled_load(replacement, short_demand, 0.9);
+                add_scaled_load(
+                    replacement,
+                    candidate_channel_demand(
+                        graph, *generated.c1_long_representative),
+                    0.1);
+            } else {
+                add_scaled_load(replacement, short_demand, 1.0);
+            }
+        } else {
+            replacement = contributions[index];
+        }
+        const double peak_before = peak_load(c1);
+        c1 = std::move(c1_without_net);
+        add_scaled_load(c1, replacement, 1.0);
+        contributions[index] = std::move(replacement);
+        out.candidates[index] = std::move(generated.candidates);
         if (out.candidates[index].empty()
             || std::ranges::none_of(out.candidates[index],
                                     [](const auto& candidate) {
@@ -947,9 +1563,17 @@ auto build_candidate_problem(const UnifiedGraph& graph,
             return std::nullopt;
         }
         debug::info_fmt(
-            "V22 candidate net: name=\"{}\" id={} pairs={} unit={} candidates={}",
-            spec.net->name, spec.net->net_id, spec.pairs.size(), spec.unit,
-            out.candidates[index].size());
+            "V22 candidate net: name=\"{}\" id={} order={} pairs={} unit={} candidates={} C1_peak={:.3f}->{:.3f} representative_short={} representative_long={}",
+            spec.net->name, spec.net->net_id, index, spec.pairs.size(),
+            spec.unit, out.candidates[index].size(), peak_before, peak_load(c1),
+            generated.c1_short_representative.has_value()
+                ? static_cast<long long>(generated.c1_short_representative
+                      ->resources.wire_nodes.size())
+                : -1LL,
+            generated.c1_long_representative.has_value()
+                ? static_cast<long long>(generated.c1_long_representative
+                      ->resources.wire_nodes.size())
+                : -1LL);
     }
     return out;
 }
@@ -1375,7 +1999,7 @@ auto optimize_post_sat_candidate_routes(
         fallback.post_sat_ilp_segments = candidate_count;
         fallback.post_sat_ilp_components = problem->specs.empty() ? 0 : 1;
         debug::info_fmt(
-            "V22 candidate generation: nets={} two_pin_nets={} multi_terminal_nets={} pn_source_trees={} candidates={} two_pin_combinations={} shortest={} plus_one={} second_shortest={} multi_base={} multi_forced={} multi_failed={} incumbents={} generation_ms={}",
+            "V22 candidate generation: nets={} two_pin_nets={} multi_terminal_nets={} pn_source_trees={} candidates={} two_pin_combinations={} shortest={} plus_one={} second_shortest={} zero_excess_detours={} positive_excess_detours={} C1_selected={} C2_selected={} multi_base={} multi_forced={} multi_segment_variants={} multi_failed={} incumbents={} generation_ms={}",
             problem->specs.size(), two_pin_nets,
             problem->specs.size() - two_pin_nets, pn_source_trees,
             candidate_count,
@@ -1383,8 +2007,13 @@ auto optimize_post_sat_candidate_routes(
             problem->stats.two_pin_shortest,
             problem->stats.two_pin_plus_one,
             problem->stats.two_pin_second_shortest,
+            problem->stats.zero_excess_detours,
+            problem->stats.positive_excess_detours,
+            problem->stats.c1_selected,
+            problem->stats.c2_selected,
             problem->stats.multi_base_runs,
             problem->stats.multi_forced_runs,
+            problem->stats.multi_segment_variants,
             problem->stats.multi_failed_runs,
             problem->stats.incumbent_candidates, generation_ms);
 #ifndef USE_HIGHS

@@ -158,7 +158,10 @@ auto main() -> int {
         test_v22_candidate_ilp_uses_full_fixed_unit_graph();
         test_v22_two_pin_second_candidate_length_policy();
         test_v22_candidate_ilp_selects_nonconflicting_routes();
+        test_v22_candidate_ilp_keeps_sync_only_congestion_fixed();
+        test_v22_congestion_pool_keeps_equal_length_segment_detour();
         test_v22_multi_terminal_candidate_is_a_whole_tree();
+        test_v22_multi_terminal_moves_a_whole_tree_segment();
         test_v22_ilp_optimize_chains_maze_then_full_space_ilp();
         test_v22_full_post_guide_maze_rebuilds_all_non_sync();
         test_v22_full_post_guide_maze_preserves_pn_physical_source();

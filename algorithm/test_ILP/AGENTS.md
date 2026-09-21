@@ -65,7 +65,7 @@
 | `sat/routing_solution_validate.*` | 独立检查端点、scope、COBUnit、节点/开关互斥、TOB matching/mode 和 bus 等长 |
 | `sat/routing_path_log.*` | 路径、final pair scope 和线长日志 |
 | `sat_allocation/` | CaDiCaL session 与 Z3 Optimize wrapper |
-| `post_sat_ilp/` | V22 完整 fixed-unit 图上的端点 Track 枚举、2-pin 最短/+1/次短候选、multi-terminal forced-access Prim 整树候选、HiGHS 选择模型、验证与回退 |
+| `post_sat_ilp/` | V22 完整 fixed-unit 图上的端点 Track 枚举、C1/C2 拥塞驱动的 segment-detour 候选、multi-terminal forced-access Prim 整树候选、HiGHS 选择模型、验证与回退 |
 | `post_sat_rrr/` | V20 在最终 SAT scope 内的局部 rip-up-and-reroute |
 | `test/` | 合成单测、配置 smoke/golden 回归与单一测试入口 |
 
@@ -101,8 +101,8 @@
 ### SAT 后优化
 
 - V22 `--ilp-optimize` 先运行普通 V20 Maze/RRR；该阶段固定 SyncBus、unit、PN source 并使用 final SAT scope。随后候选 ILP 固定 Maze 结果的 unit/PN source、丢弃 scope，并把 Maze 整树作为 incumbent/MIP start。
-- Bump 端点先枚举固定 unit 内可到达的下方 Channel Track。2-pin 的每个端口组合保留最短候选，并通过最短路节点上的单绕行搜索优先再保留一条 Track+Bump 并集长度为 `Lmin+1` 的候选；找不到时使用真正的严格次短路径，不按等长最短路数量截断。
-- multi-terminal net 使用 base + 逐一强制 `(terminal,access-track)` 的 generalized Prim 生成完整候选树，避免端口选项笛卡尔积。Maze 输出整树始终是保底候选和 MIP start。
+- Bump 端点先枚举固定 unit 内可到达的下方 Channel Track。候选生成维护 Sync-only `C2` 和按 net 顺序在线更新的浮点预测拥塞图 `C1`；每个 2-pin 端口 Track 组合先用 zero-/positive-excess segment detour 建立有界的等长最短/`Lmin+1`/严格次短池，再由 C1、C2 各选最短和次短候选。一个 net 完成后，要跨该 net 全部 Track 组合或 multi-terminal seed 重新选全局最短和严格次短代表，再用 0.9/0.1 Track 占用立即更新 C1，供下一个 net 使用。
+- multi-terminal net 使用 base + 逐一强制 `(terminal,access-track)` 的 generalized Prim 避免端口选项笛卡尔积，并对关键节点之间的 tree segment 做同类 detour；候选和拥塞需求均按整棵树物理并集计算。Maze 输出整树始终是保底候选和 MIP start。
 - master ILP 每个 net 选一棵整树，用 Track/Bump/HLine/VLine 节点容量 1 和 TOB mode 变量协调候选，目标是所选 net 的 Track+Bump 并集线长之和。
 - 任一候选生成、HiGHS 求解、物理验证失败，或线长不严格改善，都保留 Maze 结果；Maze 自身失败或不改善时保留 SAT 输入，因此最终线长不劣于 SAT。单独的 V20 `--maze-optimize` 仍只在 final SAT scope 内做局部 sweep。
 
@@ -163,7 +163,7 @@ xmake build test_ILP_unit
 - HiGHS model stats 必须输出各类变量/约束及总数；V18 还需输出 scope 槽位裁剪率、MIP start 和 capacity-cut 轮数。
 - Global guide 日志必须区分有序 source-target walk、residual selected arcs、TOB patch、initial expansion 和 final pair scope。
 - Detailed SAT 每轮记录 vars/clauses、alpha/gamma assumptions、core 分类和 distance/scope 扩展。
-- V22 先记录 Maze/RRR 统计和 `SAT -> Maze -> full-space ILP` handoff，再记录 fixed Sync 资源、fixed unit/source、端点 `selectable_tracks`、2-pin 最短/+1/次短、multi-terminal base/forced、候选/mode 模型、`Maze -> ILP` 线长、耗时和 fallback 原因。
+- V22 先记录 Maze/RRR 统计和 `SAT -> Maze -> full-space ILP` handoff，再记录 fixed Sync 资源、C1/C2 初始化与逐 net 峰值、fixed unit/source、端点 `selectable_tracks`、zero-/positive-excess detour、C1/C2 选择、multi-terminal base/forced/segment 变体、候选/mode 模型、`Maze -> ILP` 线长、耗时和 fallback 原因。
 - 路径打印、final scope 打印等诊断耗时必须写入 `excluded_diagnostic_ms`，不计入 Global Routing/SAT/total routing time。
 - 不要把 Global Routing Channel objective 记为 detailed wirelength，也不要把 Channel 数直接当作 SAT distance。
 

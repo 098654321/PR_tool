@@ -117,6 +117,65 @@ auto test_v22_candidate_ilp_selects_nonconflicting_routes() -> void {
           "V22 selected candidates must obey physical node capacity one");
 }
 
+auto test_v22_candidate_ilp_keeps_sync_only_congestion_fixed() -> void {
+  auto graph = make_all_track_graph(
+      10, {{0, 1}, {1, 2}, {2, 7}, {7, 3},
+           {0, 4}, {4, 3}, {0, 8}, {8, 9}, {9, 3},
+           {5, 4}, {4, 6}});
+  auto ordinary = synthetic_net(0, {0}, {{3, {0}}});
+  auto sync = synthetic_net(1, {5}, {{6, {0}}});
+  sync.is_sync_bus = true;
+  const auto nets = std::Vector<RoutingNet>{ordinary, sync};
+  auto baseline = SatRoutingResult{};
+  baseline.ok = true;
+  baseline.paths = {
+      SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2, 7, 3}},
+      SourceSinkPairPath{1, 0, 0, -1, {5, 4, 6}}};
+  baseline.total_wirelength = total_wirelength(graph, baseline);
+
+  const auto refined = optimize_post_sat_candidate_routes(
+      graph, nets, baseline, {});
+  const auto ordinary_path = std::find_if(
+      refined.paths.begin(), refined.paths.end(),
+      [](const auto& path) { return path.net_id == 0; });
+  const auto sync_path = std::find_if(
+      refined.paths.begin(), refined.paths.end(),
+      [](const auto& path) { return path.net_id == 1; });
+  require(refined.post_sat_ilp_accepted
+              && ordinary_path != refined.paths.end()
+              && ordinary_path->node_path == std::Vector<int>({0, 8, 9, 3})
+              && sync_path != refined.paths.end()
+              && sync_path->node_path == std::Vector<int>({5, 4, 6}),
+          "V22 C2/fixed resources must retain the Sync route exactly and "
+          "exclude its Track nodes from every ordinary-net candidate");
+}
+
+auto test_v22_congestion_pool_keeps_equal_length_segment_detour() -> void {
+  auto graph = make_all_track_graph(
+      7, {{0, 1}, {1, 3}, {0, 2}, {2, 3},
+          {0, 4}, {4, 5}, {5, 3}, {1, 6}});
+  const auto nets = std::Vector<RoutingNet>{
+      synthetic_net(0, {0}, {{3, {0}}}),
+      synthetic_net(1, {1}, {{6, {0}}})};
+  auto baseline = SatRoutingResult{};
+  baseline.ok = true;
+  baseline.paths = {
+      SourceSinkPairPath{0, 0, 0, -1, {0, 4, 5, 3}},
+      SourceSinkPairPath{1, 0, 0, -1, {1, 6}}};
+  baseline.total_wirelength = total_wirelength(graph, baseline);
+
+  const auto refined = optimize_post_sat_candidate_routes(
+      graph, nets, baseline, {});
+  const auto net0 = std::find_if(
+      refined.paths.begin(), refined.paths.end(),
+      [](const auto& path) { return path.net_id == 0; });
+  require(refined.post_sat_ilp_accepted && net0 != refined.paths.end()
+              && net0->node_path == std::Vector<int>({0, 2, 3}),
+          "V22 congestion-aware structural pool must retain an equal-length "
+          "segment detour when the deterministic base shortest path conflicts "
+          "with another net");
+}
+
 auto test_v22_multi_terminal_candidate_is_a_whole_tree() -> void {
   auto graph = make_all_track_graph(
       7, {{0, 1}, {1, 2}, {2, 3}, {2, 4}, {0, 5}, {5, 6}, {6, 4}});
@@ -135,6 +194,41 @@ auto test_v22_multi_terminal_candidate_is_a_whole_tree() -> void {
               && refined.total_wirelength == 5,
           "V22 multi-terminal candidate must select one complete shared tree "
           "and charge its Track+Bump union once");
+}
+
+auto test_v22_multi_terminal_moves_a_whole_tree_segment() -> void {
+  auto graph = make_all_track_graph(
+      11, {{0, 1}, {1, 2}, {0, 5}, {5, 2},
+           {0, 6}, {6, 7}, {7, 2}, {2, 3}, {2, 4}, {1, 10}});
+  const auto nets = std::Vector<RoutingNet>{
+      synthetic_net(0, {0}, {{3, {0}}, {4, {0}}}),
+      synthetic_net(1, {1}, {{10, {0}}})};
+  auto baseline = SatRoutingResult{};
+  baseline.ok = true;
+  baseline.paths = {
+      SourceSinkPairPath{0, 0, 0, -1, {0, 6, 7, 2, 3}},
+      SourceSinkPairPath{0, 0, 1, -1, {0, 6, 7, 2, 4}},
+      SourceSinkPairPath{1, 0, 0, -1, {1, 10}}};
+  baseline.total_wirelength = total_wirelength(graph, baseline);
+
+  const auto refined = optimize_post_sat_candidate_routes(
+      graph, nets, baseline, {});
+  bool all_net0_paths_use_moved_segment = true;
+  std::size_t net0_path_count = 0;
+  for (const auto& path : refined.paths) {
+    if (path.net_id != 0) {
+      continue;
+    }
+    ++net0_path_count;
+    all_net0_paths_use_moved_segment =
+        all_net0_paths_use_moved_segment
+        && std::ranges::find(path.node_path, 5) != path.node_path.end()
+        && std::ranges::find(path.node_path, 1) == path.node_path.end();
+  }
+  require(refined.post_sat_ilp_accepted && refined.total_wirelength == 7
+              && net0_path_count == 2 && all_net0_paths_use_moved_segment,
+          "V22 multi-terminal congestion pool must move a shared whole-tree "
+          "segment instead of independently selecting pair detours");
 }
 
 auto test_v22_ilp_optimize_chains_maze_then_full_space_ilp() -> void {
