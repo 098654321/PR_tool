@@ -22,10 +22,10 @@
 | `--z3-optimize` | 使用相同 hard CNF，通过 Track/Bump occupancy soft clauses 最小化物理并集线长 |
 | `--global-route-v17` | HiGHS Global Routing 选择 Channel guide/COBUnit，随后用 Z3 Weighted Partial MaxSAT 详细布线 |
 | `--global-route-v18` | PN source/unit 预选 + 容量剪切版 HiGHS Global Routing + CaDiCaL 纯 SAT 详细布线 |
-| `--global-route-v18 --ilp-optimize` | 在 SAT 成功后固定 SyncBus 和非 Sync net 的 unit/PN source，在完整详细图上生成少量候选整树，再用 HiGHS 联合选择无资源冲突的最短组合 |
+| `--global-route-v18 --ilp-optimize` | SAT 后先在 final scope 内执行 Maze/RRR，再固定其 unit/PN source、放弃 scope，在完整详细图上生成候选整树并用 HiGHS 联合选择 |
 | `--global-route-v18 --maze-optimize` | 在 SAT 成功后固定 SyncBus，并保留所有非 Sync net 的 SAT physical source、COBUnit 和最终 scope，执行 V20 局部 Maze/RRR |
 
-`--ilp-optimize` 与 `--maze-optimize` 互斥，且都要求 `--global-route-v18`。Global Routing 模式不能再使用 `-s/-d`，因为其 scope 和 distance 由 guide 初始化。
+`--ilp-optimize` 已内含 Maze/RRR 前置阶段，因此仍与独立的 `--maze-optimize` 参数互斥；两者都要求 `--global-route-v18`。Global Routing 模式不能再使用 `-s/-d`，因为其 scope 和 distance 由 guide 初始化。
 
 ### 方法版本来源
 
@@ -100,11 +100,11 @@
 
 ### SAT 后优化
 
-- V22 固定 SyncBus 完整物理解，固定非 Sync net 的 SAT COBUnit 和 PN physical source，但不使用 final SAT scope。
+- V22 `--ilp-optimize` 先运行普通 V20 Maze/RRR；该阶段固定 SyncBus、unit、PN source 并使用 final SAT scope。随后候选 ILP 固定 Maze 结果的 unit/PN source、丢弃 scope，并把 Maze 整树作为 incumbent/MIP start。
 - Bump 端点先枚举固定 unit 内可到达的下方 Channel Track。2-pin 的每个端口组合保留最短候选，并通过最短路节点上的单绕行搜索优先再保留一条 Track+Bump 并集长度为 `Lmin+1` 的候选；找不到时使用真正的严格次短路径，不按等长最短路数量截断。
-- multi-terminal net 使用 base + 逐一强制 `(terminal,access-track)` 的 generalized Prim 生成完整候选树，避免端口选项笛卡尔积。SAT 原整树始终是保底候选和 MIP start。
+- multi-terminal net 使用 base + 逐一强制 `(terminal,access-track)` 的 generalized Prim 生成完整候选树，避免端口选项笛卡尔积。Maze 输出整树始终是保底候选和 MIP start。
 - master ILP 每个 net 选一棵整树，用 Track/Bump/HLine/VLine 节点容量 1 和 TOB mode 变量协调候选，目标是所选 net 的 Track+Bump 并集线长之和。
-- 任一候选生成、HiGHS 求解、物理验证失败，或线长不严格改善，都整体回退 SAT baseline。普通 V20 `--maze-optimize` 仍在 final SAT scope 内做局部 sweep，语义不变。
+- 任一候选生成、HiGHS 求解、物理验证失败，或线长不严格改善，都保留 Maze 结果；Maze 自身失败或不改善时保留 SAT 输入，因此最终线长不劣于 SAT。单独的 V20 `--maze-optimize` 仍只在 final SAT scope 内做局部 sweep。
 
 ## 构建与运行
 
@@ -141,7 +141,7 @@ xmake build test_ILP_unit
 | `test/unit/common_graph_cases.inc` | 共享 synthetic fixture、net 归一化、bbox/geometry、统一图和 CaDiCaL session |
 | `test/unit/global_route_core_cases.inc` | PN 预选、V17/V18/V19 Global Routing 变量/容量/目标与 Channel 拓扑 |
 | `test/unit/global_route_scope_cases.inc` | V21 TOB peak、guide apply/repair、distance 初始化、pair scope 扩展和 guide 日志 |
-| `test/unit/post_sat_cases.inc` | V22 full-space 候选 ILP 的 scope 解除、节点冲突选择和 multi-terminal 整树，V20 固定 source/unit/scope 的 Maze/RRR，以及 guided smoke |
+| `test/unit/post_sat_cases.inc` | V22 `SAT -> Maze -> full-space ILP` 串行交接、候选 ILP 的 scope 解除/冲突/整树，V20 固定 source/unit/scope 的 Maze/RRR，以及 guided smoke |
 | `test/unit/sat_feedback_cases.inc` | 约束工具、distance state、assumption/core feedback、reachable-layer 和 COBUnit mask |
 | `test/unit/sat_encoding_cases.inc` | `D/A/Q/Y/M`、bus equality、CLI、initial padding、TOB switch 聚合和 encoding stats |
 | `test/unit/extract_validate_cases.inc` | 解提取、path/scope 日志、物理 validator、ideal wirelength、PN virtual source 和 golden 回归 |
@@ -163,7 +163,7 @@ xmake build test_ILP_unit
 - HiGHS model stats 必须输出各类变量/约束及总数；V18 还需输出 scope 槽位裁剪率、MIP start 和 capacity-cut 轮数。
 - Global guide 日志必须区分有序 source-target walk、residual selected arcs、TOB patch、initial expansion 和 final pair scope。
 - Detailed SAT 每轮记录 vars/clauses、alpha/gamma assumptions、core 分类和 distance/scope 扩展。
-- V22 post-SAT ILP 记录 fixed Sync 资源、fixed unit/source、端点 `selectable_tracks`、2-pin 最短/+1/次短生成数、multi-terminal base/forced 生成数、去重整树数、candidate/mode 变量、net-choice/node-capacity/mode 约束、Track+Bump 线长、耗时和 fallback 原因。
+- V22 先记录 Maze/RRR 统计和 `SAT -> Maze -> full-space ILP` handoff，再记录 fixed Sync 资源、fixed unit/source、端点 `selectable_tracks`、2-pin 最短/+1/次短、multi-terminal base/forced、候选/mode 模型、`Maze -> ILP` 线长、耗时和 fallback 原因。
 - 路径打印、final scope 打印等诊断耗时必须写入 `excluded_diagnostic_ms`，不计入 Global Routing/SAT/total routing time。
 - 不要把 Global Routing Channel objective 记为 detailed wirelength，也不要把 Channel 数直接当作 SAT distance。
 

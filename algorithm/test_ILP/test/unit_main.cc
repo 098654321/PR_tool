@@ -5,6 +5,7 @@
 #include "global_route_v17/global_router.hh"
 #include "global_route_v17/pn_source_preselection.hh"
 #include "graph/unified_routing_graph.hh"
+#include "post_sat_ilp/candidate_router.hh"
 #include "post_sat_ilp/post_sat_ilp.hh"
 #include "post_sat_rrr/post_sat_rrr.hh"
 #include "sat/ideal_shortest_wirelength.hh"
@@ -154,10 +155,11 @@ auto main() -> int {
         test_v20_target_scopes_expand_guide_and_tob_patch_one_hop();
         test_v19_global_guide_feedback_thresholds_and_union();
         test_v20_global_guide_logger_handles_walk_and_residual();
-        test_v22_candidate_ilp_ignores_final_sat_scope();
+        test_v22_candidate_ilp_uses_full_fixed_unit_graph();
         test_v22_two_pin_second_candidate_length_policy();
         test_v22_candidate_ilp_selects_nonconflicting_routes();
         test_v22_multi_terminal_candidate_is_a_whole_tree();
+        test_v22_ilp_optimize_chains_maze_then_full_space_ilp();
         test_v22_full_post_guide_maze_rebuilds_all_non_sync();
         test_v22_full_post_guide_maze_preserves_pn_physical_source();
         test_v20_post_sat_rrr_improves_within_final_scope();

@@ -14,9 +14,9 @@ struct PostSatIlpOptions {
     int highs_time_limit_minutes{0};
 };
 
-// Generates full-space, fixed-unit/source route-tree candidates and selects one
-// whole candidate per non-Sync net with a resource-conflict ILP. Any generation,
-// solve, validation or non-improvement failure returns the original SAT routing.
+// First applies the final-scope V20 Maze/RRR refinement, then discards scope and
+// generates full-space, fixed-unit/source route-tree candidates. The Maze route
+// trees are ILP incumbent candidates and the fallback for any non-improvement.
 auto optimize_post_sat_routes(
     const UnifiedGraph &graph, const std::Vector<RoutingNet> &nets,
     const std::Vector<UnifiedSatNetScope> &scopes,

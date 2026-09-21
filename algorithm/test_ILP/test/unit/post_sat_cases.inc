@@ -23,7 +23,7 @@ auto make_all_track_graph(
   return graph;
 }
 
-auto test_v22_candidate_ilp_ignores_final_sat_scope() -> void {
+auto test_v22_candidate_ilp_uses_full_fixed_unit_graph() -> void {
   auto graph = make_all_track_graph(
       4, {{0, 1}, {1, 2}, {2, 3}, {0, 3}});
   const auto nets = std::Vector<RoutingNet>{
@@ -32,10 +32,8 @@ auto test_v22_candidate_ilp_ignores_final_sat_scope() -> void {
   baseline.ok = true;
   baseline.paths = {SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2, 3}}};
   baseline.total_wirelength = total_wirelength(graph, baseline);
-  auto deliberately_small_scope = synthetic_scope(graph, 0, {0, 1, 2, 3}, {});
-
-  const auto refined = optimize_post_sat_routes(
-      graph, nets, {deliberately_small_scope}, baseline, {});
+  const auto refined = optimize_post_sat_candidate_routes(
+      graph, nets, baseline, {});
   require(refined.post_sat_ilp_attempted && refined.post_sat_ilp_accepted
               && refined.total_wirelength == 2
               && refined.paths.front().node_path == std::Vector<int>({0, 3}),
@@ -56,7 +54,8 @@ auto test_v22_two_pin_second_candidate_length_policy() -> void {
         SourceSinkPairPath{0, 0, 0, -1, {0, 5, 6, 7, 3}}};
     baseline.total_wirelength = total_wirelength(graph, baseline);
 
-    const auto refined = optimize_post_sat_routes(graph, nets, {}, baseline, {});
+    const auto refined = optimize_post_sat_candidate_routes(
+        graph, nets, baseline, {});
     require(refined.post_sat_ilp_accepted
                 && refined.post_sat_ilp_segments == 3
                 && refined.paths.front().node_path
@@ -76,7 +75,8 @@ auto test_v22_two_pin_second_candidate_length_policy() -> void {
         SourceSinkPairPath{0, 0, 0, -1, {0, 4, 5, 6, 1}}};
     baseline.total_wirelength = total_wirelength(graph, baseline);
 
-    const auto refined = optimize_post_sat_routes(graph, nets, {}, baseline, {});
+    const auto refined = optimize_post_sat_candidate_routes(
+        graph, nets, baseline, {});
     require(refined.post_sat_ilp_accepted
                 && refined.post_sat_ilp_segments == 3
                 && refined.paths.front().node_path == std::Vector<int>({0, 1}),
@@ -99,7 +99,8 @@ auto test_v22_candidate_ilp_selects_nonconflicting_routes() -> void {
       SourceSinkPairPath{1, 0, 0, -1, {6, 8, 9, 7}}};
   baseline.total_wirelength = total_wirelength(graph, baseline);
 
-  const auto refined = optimize_post_sat_routes(graph, nets, {}, baseline, {});
+  const auto refined = optimize_post_sat_candidate_routes(
+      graph, nets, baseline, {});
   require(refined.post_sat_ilp_accepted
               && refined.total_wirelength < baseline.total_wirelength,
           "V22 candidate ILP must choose a shorter combination without sharing "
@@ -128,11 +129,53 @@ auto test_v22_multi_terminal_candidate_is_a_whole_tree() -> void {
       SourceSinkPairPath{0, 0, 1, -1, {0, 5, 6, 4}}};
   baseline.total_wirelength = total_wirelength(graph, baseline);
 
-  const auto refined = optimize_post_sat_routes(graph, nets, {}, baseline, {});
+  const auto refined = optimize_post_sat_candidate_routes(
+      graph, nets, baseline, {});
   require(refined.post_sat_ilp_accepted && refined.paths.size() == 2
               && refined.total_wirelength == 5,
           "V22 multi-terminal candidate must select one complete shared tree "
           "and charge its Track+Bump union once");
+}
+
+auto test_v22_ilp_optimize_chains_maze_then_full_space_ilp() -> void {
+  auto graph = make_all_track_graph(
+      7, {{0, 1}, {1, 2}, {2, 6}, {6, 3},
+          {0, 4}, {4, 5}, {5, 3}, {0, 3}});
+  const auto nets = std::Vector<RoutingNet>{
+      synthetic_net(0, {0}, {{3, {0}}})};
+  auto baseline = SatRoutingResult{};
+  baseline.ok = true;
+  baseline.paths = {
+      SourceSinkPairPath{0, 0, 0, -1, {0, 1, 2, 6, 3}}};
+  baseline.total_wirelength = total_wirelength(graph, baseline);
+
+  auto scope_nodes = std::Vector<int>{0, 1, 2, 3, 4, 5, 6};
+  auto scope_arcs = std::Vector<int>{};
+  for (std::size_t arc_id = 0; arc_id < graph.arcs.size(); ++arc_id) {
+    const auto& arc = graph.arcs[arc_id];
+    if (!((arc.u == 0 && arc.v == 3)
+          || (arc.u == 3 && arc.v == 0))) {
+      scope_arcs.push_back(static_cast<int>(arc_id));
+    }
+  }
+  const auto scope = synthetic_scope(graph, 0, scope_nodes, scope_arcs);
+  const auto refined = optimize_post_sat_routes(
+      graph, nets, {scope}, baseline,
+      PostSatIlpOptions{.verbose_level = 0});
+
+  require(refined.post_sat_maze_attempted
+              && refined.post_sat_maze_accepted
+              && refined.post_sat_maze_baseline_wirelength == 5
+              && refined.post_sat_maze_wirelength == 4,
+          "--ilp-optimize must first retain the shorter route found inside "
+          "the final SAT scope by Maze/RRR");
+  require(refined.post_sat_ilp_attempted
+              && refined.post_sat_ilp_accepted
+              && refined.post_sat_ilp_baseline_wirelength == 4
+              && refined.post_sat_ilp_wirelength == 2
+              && refined.paths.front().node_path == std::Vector<int>({0, 3}),
+          "candidate ILP must use the Maze route as incumbent, discard scope, "
+          "and accept a further full-space improvement");
 }
 
 auto test_v20_post_sat_rrr_improves_within_final_scope() -> void {

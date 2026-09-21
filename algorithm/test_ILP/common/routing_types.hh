@@ -142,8 +142,8 @@ struct SatRoutingResult {
     long long global_route_total_ms{0};
     // Diagnostic work deliberately excluded from all routing wall-clock summaries.
     long long excluded_diagnostic_ms{0};
-    // V22 post-SAT whole-route-candidate selection ILP summary. A failed
-    // refinement preserves the complete SAT routing.
+    // V22 post-Maze whole-route-candidate selection ILP summary. A failed
+    // refinement preserves the complete Maze result (or its SAT fallback).
     bool post_sat_ilp_attempted{false};
     bool post_sat_ilp_accepted{false};
     std::String post_sat_ilp_status;

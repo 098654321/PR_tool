@@ -77,7 +77,7 @@ auto run_main(int argc, char** argv) -> int {
     options.highs_time_limit_minutes = cli.highs_time_limit_minutes;
     if (cli.highs_time_limit_minutes != 0) {
         debug::info_fmt(
-            "HiGHS per-stage time limit: {} min",
+            "solver-stage time budget: {} min (V22 candidate generation and master ILP share one budget)",
             cli.highs_time_limit_minutes);
     }
     if (cli.enable_sat_log) {
@@ -105,7 +105,8 @@ auto run_main(int argc, char** argv) -> int {
             "v18 flow enabled: HiGHS Channel/COBUnit capacity cuts (no W) -> guided CaDiCaL pure SAT");
     }
     if (cli.enable_post_sat_ilp) {
-        debug::info("V22 post-SAT whole-route candidate ILP refinement enabled by --ilp-optimize");
+        debug::info(
+            "V22 post-SAT Maze/RRR -> full-space whole-route candidate ILP refinement enabled by --ilp-optimize");
     }
     else if (cli.enable_post_sat_maze) {
         debug::info("V20 post-SAT local maze/RRR refinement enabled by --maze-optimize");
