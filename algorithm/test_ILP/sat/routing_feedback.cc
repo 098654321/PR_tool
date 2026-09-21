@@ -487,6 +487,10 @@ auto solve_with_feedback(
                     round);
                 stamp_sat_timing(out);
                 log_feedback_round_end(round, FeedbackRoundStatus::SatSuccess);
+                if (options.enable_global_route_v18) {
+                    log_final_sat_scopes(
+                        graph, global_channel_graph, problem_state, nets, out);
+                }
                 if (options.enable_post_sat_ilp) {
                     out = optimize_post_sat_routes(
                         graph,

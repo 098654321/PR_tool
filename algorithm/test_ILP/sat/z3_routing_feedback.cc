@@ -369,6 +369,9 @@ auto solve_with_z3_optimize_feedback(
                     log_feedback_round_end(round, FeedbackRoundStatus::SolverError);
                     return out;
                 }
+                if (options.enable_global_route_v17) {
+                    log_final_sat_scopes(graph, global_channel_graph, state, nets, out);
+                }
                 log_non_shortest_nets(interposer, graph, nets, delays, out);
                 stamp_timing(out);
                 debug::info_fmt(

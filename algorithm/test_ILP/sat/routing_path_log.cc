@@ -1,6 +1,8 @@
 #include "sat/routing_path_log.hh"
 
 #include "common/hw_map.hh"
+#include "global_route_v17/global_router.hh"
+#include "scope/pair_routing_state.hh"
 #include "scope/scope_bbox.hh"
 
 #include <algorithm>
@@ -58,6 +60,25 @@ auto source_ref_for_demand(const RoutingNet& net, const RoutingDemand& demand) -
     return net.sources[source_index];
 }
 
+auto selected_source_ref(const UnifiedGraph& graph, const RoutingNet& net,
+                         const RoutingDemand& demand,
+                         const SourceSinkPairPath& path) -> GraphNodeRef {
+    if (path.physical_source_node >= 0
+        && path.physical_source_node < static_cast<int>(graph.nodes.size())
+        && graph.nodes[static_cast<std::size_t>(path.physical_source_node)].kind
+            == UnifiedNodeKind::Track) {
+        auto source = GraphNodeRef{};
+        source.kind = GraphNodeRef::Kind::Track;
+        source.track_coord =
+            track_coord_from_node(graph.nodes[static_cast<std::size_t>(path.physical_source_node)]);
+        source.track_index = source.track_coord.index;
+        return source;
+    }
+    if (path.source_index < net.sources.size())
+        return net.sources[path.source_index];
+    return source_ref_for_demand(net, demand);
+}
+
 auto paths_for_net(
     const SatRoutingResult& result,
     std::size_t net_id
@@ -75,6 +96,82 @@ auto paths_for_net(
         return lhs->source_index < rhs->source_index;
     });
     return out;
+}
+
+struct ScopeEndpoint {
+    int row_x2{0};
+    int col_x2{0};
+    std::String text;
+};
+
+struct ScopeSummary {
+    std::size_t channels{0};
+    std::size_t cobs{0};
+    std::String top{"n/a"};
+    std::String bottom{"n/a"};
+    std::String left{"n/a"};
+    std::String right{"n/a"};
+};
+
+auto channel_text(const GlobalChannelCoord& channel) -> std::String {
+    return std::format("Channel({},{},{})", channel.dir == 0 ? 'H' : 'V',
+                       channel.row, channel.col);
+}
+
+auto summarize_scope(const GlobalChannelGraph& graph,
+                     const std::set<GlobalChannelCoord>& channels)
+    -> ScopeSummary {
+    auto summary = ScopeSummary{};
+    summary.channels = channels.size();
+    auto points = std::Vector<ScopeEndpoint>{};
+    auto cobs = std::set<std::pair<int, int>>{};
+    for (const auto& channel : channels) {
+        points.push_back({channel.dir == 0 ? 2 * channel.row
+                                           : 2 * channel.row - 1,
+                          channel.dir == 0 ? 2 * channel.col - 1
+                                           : 2 * channel.col,
+                          channel_text(channel)});
+        const auto channel_it = graph.channel_id_by_coord.find(channel);
+        if (channel_it == graph.channel_id_by_coord.end())
+            continue;
+        for (const int arc_id : graph.arc_ids_by_channel[channel_it->second]) {
+            const auto& arc = graph.arcs[arc_id];
+            for (const int node_id : {arc.u, arc.v}) {
+                const auto& node = graph.nodes[node_id];
+                if (node.kind == GlobalRouteNodeKind::Cob)
+                    cobs.emplace(node.row, node.col);
+            }
+        }
+    }
+    for (const auto [row, col] : cobs)
+        points.push_back({2 * row, 2 * col, std::format("COB({},{})", row, col)});
+    summary.cobs = cobs.size();
+    if (points.empty())
+        return summary;
+    const auto top = std::min_element(
+        points.begin(), points.end(),
+        [](const auto& lhs, const auto& rhs) { return lhs.row_x2 < rhs.row_x2; });
+    const auto bottom = std::max_element(
+        points.begin(), points.end(),
+        [](const auto& lhs, const auto& rhs) { return lhs.row_x2 < rhs.row_x2; });
+    const auto left = std::min_element(
+        points.begin(), points.end(),
+        [](const auto& lhs, const auto& rhs) { return lhs.col_x2 < rhs.col_x2; });
+    const auto right = std::max_element(
+        points.begin(), points.end(),
+        [](const auto& lhs, const auto& rhs) { return lhs.col_x2 < rhs.col_x2; });
+    summary.top = top->text;
+    summary.bottom = bottom->text;
+    summary.left = left->text;
+    summary.right = right->text;
+    return summary;
+}
+
+auto log_scope_summary(const ScopeSummary& scope, std::string_view indent) -> void {
+    debug::info_fmt("{}scope_channels={} scope_cobs={} bounds: top={} bottom={} "
+                    "left={} right={}",
+                    indent, scope.channels, scope.cobs, scope.top, scope.bottom,
+                    scope.left, scope.right);
 }
 
 } // namespace
@@ -350,6 +447,59 @@ auto log_routing_paths(
         }
         debug::info_fmt("  net_wirelength={}", net_wirelength(graph, net_paths));
     }
+}
+
+auto log_final_sat_scopes(
+    const UnifiedGraph& graph,
+    const GlobalChannelGraph& channel_graph,
+    const RoutingProblemState& state,
+    const std::Vector<RoutingNet>& nets,
+    const SatRoutingResult& result
+) -> void {
+    if (!result.ok)
+        return;
+    debug::info("========== Final SAT pair scopes ==========");
+    for (const auto& net : nets) {
+        const auto net_paths = paths_for_net(result, net.net_id);
+        if (net_paths.empty())
+            continue;
+        const auto display_kind = infer_net_display_kind(net);
+        debug::info_fmt("final scope net=\"{}\" id={} kind={} display={} demands={}",
+                        net.name, net.net_id, format_routing_kind(net.kind),
+                        net_display_kind_name(display_kind), net.demands.size());
+        for (const auto* path : net_paths) {
+            if (path->demand_id >= net.demands.size())
+                continue;
+            const auto& demand = net.demands[path->demand_id];
+            const auto* pair = find_pair_state(
+                state, PairKey{path->net_id, path->demand_id, path->source_index});
+            const auto scope = pair == nullptr
+                ? ScopeSummary{}
+                : summarize_scope(channel_graph, pair->allowed_channels);
+            if (display_kind == NetDisplayKind::TwoPin) {
+                debug::info_fmt("  src={} snk={}",
+                                format_graph_node_ref(source_ref_for_demand(net, demand)),
+                                format_graph_node_ref(demand.sink));
+                log_scope_summary(scope, "  ");
+            }
+            else {
+                const auto source = selected_source_ref(graph, net, demand, *path);
+                if (display_kind == NetDisplayKind::TracksToBumps) {
+                    debug::info_fmt("  demand={} selected_source={} src={} snk={}",
+                                    path->demand_id, format_graph_node_ref(source),
+                                    format_graph_node_ref(source),
+                                    format_graph_node_ref(demand.sink));
+                }
+                else {
+                    debug::info_fmt("  member demand={} src={} snk={}",
+                                    path->demand_id, format_graph_node_ref(source),
+                                    format_graph_node_ref(demand.sink));
+                }
+                log_scope_summary(scope, "    ");
+            }
+        }
+    }
+    debug::info("===========================================");
 }
 
 } // namespace PR_tool

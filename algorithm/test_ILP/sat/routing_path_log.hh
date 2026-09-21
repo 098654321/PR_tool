@@ -10,6 +10,9 @@
 
 namespace PR_tool {
 
+struct GlobalChannelGraph;
+struct RoutingProblemState;
+
 enum class NetDisplayKind {
     TwoPin,
     SyncBus,
@@ -46,6 +49,14 @@ auto log_scope_bboxes(const std::Vector<RoutingNet>& nets, int verbose_level) ->
 
 auto log_routing_paths(
     const UnifiedGraph& graph,
+    const std::Vector<RoutingNet>& nets,
+    const SatRoutingResult& result
+) -> void;
+
+auto log_final_sat_scopes(
+    const UnifiedGraph& graph,
+    const GlobalChannelGraph& channel_graph,
+    const RoutingProblemState& state,
     const std::Vector<RoutingNet>& nets,
     const SatRoutingResult& result
 ) -> void;
