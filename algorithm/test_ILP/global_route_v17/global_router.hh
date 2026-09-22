@@ -143,6 +143,8 @@ struct GlobalRouteStats {
     std::size_t bbox_scope_padding{0};
     bool capacity_cuts_enabled{false};
     std::size_t initial_fixed_unit_capacity_rows{0};
+    // Legacy field names: iterative mode now counts exact sparse-W promotion
+    // rounds and promoted (Channel,unit) resources rather than subset cuts.
     std::size_t capacity_cut_rounds{0};
     std::size_t capacity_cuts{0};
     std::size_t mip_start_owners{0};

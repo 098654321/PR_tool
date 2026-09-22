@@ -136,7 +136,7 @@ auto main() -> int {
         test_v17_estimated_wirelength_deduplicates_multi_terminal_channels();
         test_v22_global_route_reserves_sync_channel_unit_capacity();
         test_v19_bbox_plus_one_global_route_scope();
-        test_v18_capacity_cuts_repair_overloaded_incumbent();
+        test_v18_dynamic_sparse_capacity_repairs_overloaded_incumbent();
         test_v17_global_route_bus_and_pn_source();
         test_v17_pn_net_z_deduplicates_per_demand_channels();
         test_v17_pn_z_deduplicates_across_units();

@@ -102,7 +102,7 @@ auto run_main(int argc, char** argv) -> int {
     }
     if (cli.enable_global_route_v18) {
         debug::info(
-            "v18 flow enabled: HiGHS Channel/COBUnit capacity cuts (no W) -> guided CaDiCaL pure SAT");
+            "v18 flow enabled: HiGHS dynamic exact sparse-W capacity -> guided CaDiCaL pure SAT");
     }
     if (cli.enable_post_sat_ilp) {
         debug::info(

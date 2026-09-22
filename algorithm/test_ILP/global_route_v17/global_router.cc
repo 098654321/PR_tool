@@ -1458,7 +1458,7 @@ auto build_and_solve(
         out.stats.build_ms,
         owner_count,
         problem.commodities.size(),
-        use_capacity_cuts ? "iterative-cuts(no-W)" : "dense-W",
+        use_capacity_cuts ? "iterative-sparse-W(no-prebuild)" : "dense-W",
         kGlobalRoutingMipRelativeGap,
         enable_tob_peak_cost,
         lambda_TOB,
@@ -1480,8 +1480,53 @@ auto build_and_solve(
             out.stats.constraints);
     }
 
-    auto added_cut_keys = std::set<
-        std::tuple<std::size_t, std::size_t, std::array<std::size_t, 9>>> {};
+    auto sparse_capacity_built = std::Vector<std::array<bool, 16>>(channel_count);
+    const auto promote_sparse_capacity = [&](const std::size_t channel,
+                                             const std::size_t unit) {
+        if (sparse_capacity_built[channel][unit]) {
+            return false;
+        }
+        auto terms = std::Vector<std::pair<int, double>> {};
+        auto variable_owners = std::Vector<std::size_t> {};
+        for (std::size_t owner_index = 0; owner_index < owner_count; ++owner_index) {
+            const auto& owner = problem.owners[owner_index];
+            const int x = vars.x[owner_index][channel];
+            if (x < 0) {
+                continue;
+            }
+            if (owner.fixed_unit.has_value()) {
+                if (owner.fixed_unit.value() == unit) {
+                    terms.emplace_back(x, 1.0);
+                }
+                continue;
+            }
+            if (owner.allowed_units[unit]) {
+                variable_owners.push_back(owner_index);
+            }
+        }
+        const auto capacity = 8 - reserved_load(channel, unit);
+        if (variable_owners.empty() || terms.size() + variable_owners.size() <= capacity) {
+            return false;
+        }
+        for (const std::size_t owner_index : variable_owners) {
+            const int x = vars.x[owner_index][channel];
+            const int q = vars.q[owner_index][unit];
+            int& w = vars.w[owner_index][channel][unit];
+            if (w < 0) {
+                w = mip.add_binary();
+                ++model_stats.w_vars;
+                mip.add_row(-kHighsInf, 0.0, {{w, 1.0}, {x, -1.0}});
+                mip.add_row(-kHighsInf, 0.0, {{w, 1.0}, {q, -1.0}});
+                mip.add_row(-1.0, kHighsInf, {{w, 1.0}, {x, -1.0}, {q, -1.0}});
+                model_stats.w_linearization += 3;
+            }
+            terms.emplace_back(w, 1.0);
+        }
+        mip.add_row(-kHighsInf, static_cast<double>(capacity), terms);
+        ++model_stats.channel_unit_capacity;
+        sparse_capacity_built[channel][unit] = true;
+        return true;
+    };
     const double time_budget_s = highs_time_limit_minutes > 0
         ? static_cast<double>(highs_time_limit_minutes) * 60.0
         : 0.0;
@@ -1537,62 +1582,61 @@ auto build_and_solve(
                 && static_cast<std::size_t>(variable) < incumbent.size()
                 && incumbent[static_cast<std::size_t>(variable)] > 0.5;
         };
-        std::size_t cuts_added = 0;
+        std::size_t promotions_added = 0;
         std::size_t overloaded_resources = 0;
         for (std::size_t channel = 0; channel < channel_count; ++channel) {
             for (std::size_t unit = 0; unit < 16; ++unit) {
-                auto loaded_owners = std::Vector<std::size_t> {};
+                std::size_t loaded_owner_count = 0;
                 for (std::size_t owner_index = 0; owner_index < owner_count; ++owner_index) {
                     if (incumbent_selected(vars.x[owner_index][channel])
                         && incumbent_selected(vars.q[owner_index][unit])) {
-                        loaded_owners.push_back(owner_index);
+                        ++loaded_owner_count;
                     }
                 }
                 const auto capacity = 8 - reserved_load(channel, unit);
-                if (loaded_owners.size() <= capacity) {
+                if (loaded_owner_count <= capacity) {
                     continue;
                 }
                 ++overloaded_resources;
-                const auto subset_size = capacity + 1;
-                auto subset = std::array<std::size_t, 9> {};
-                std::copy_n(loaded_owners.begin(), subset_size, subset.begin());
-                if (!added_cut_keys.emplace(channel, unit, subset).second) {
+                if (sparse_capacity_built[channel][unit]) {
                     throw std::logic_error(
-                        "V18 capacity separator rediscovered an active violated cut");
+                        "V18 exact sparse capacity resource remained overloaded");
                 }
-                auto terms = std::Vector<std::pair<int, double>> {};
-                terms.reserve(2 * subset_size);
-                for (std::size_t index = 0; index < subset_size; ++index) {
-                    const auto owner_index = subset[index];
-                    terms.emplace_back(vars.x[owner_index][channel], 1.0);
-                    terms.emplace_back(vars.q[owner_index][unit], 1.0);
+                if (!promote_sparse_capacity(channel, unit)) {
+                    throw std::logic_error(
+                        "V18 overloaded resource could not be promoted to exact sparse capacity");
                 }
-                mip.add_row(-kHighsInf, static_cast<double>(2 * subset_size - 1), terms);
-                ++model_stats.channel_unit_capacity;
-                ++cuts_added;
+                ++promotions_added;
             }
         }
-        if (cuts_added == 0) {
+        if (promotions_added == 0) {
             debug::info_fmt(
-                "V18 capacity cuts converged: rounds={} cuts={} final_constraints={} solve_ms={}",
+                "V18 sparse capacity converged: rounds={} promoted={} sparse_W_vars={} capacity_rows={} final_constraints={} solve_ms={}",
                 out.stats.capacity_cut_rounds,
                 out.stats.capacity_cuts,
+                model_stats.w_vars,
+                model_stats.channel_unit_capacity,
                 mip.constraints(),
                 out.stats.solve_ms);
             break;
         }
         ++out.stats.capacity_cut_rounds;
-        out.stats.capacity_cuts += cuts_added;
+        out.stats.capacity_cuts += promotions_added;
+        out.stats.variables = mip.variables();
         out.stats.constraints = mip.constraints();
         debug::info_fmt(
-            "V18 capacity cut round: round={} overloaded_channel_units={} cuts_added={} cumulative_cuts={} constraints={} cumulative_solve_ms={}",
+            "V18 sparse capacity promotion round: round={} overloaded_channel_units={} promoted={} cumulative_promoted={} sparse_W_vars={} capacity_rows={} vars={} constraints={} cumulative_solve_ms={}",
             out.stats.capacity_cut_rounds,
             overloaded_resources,
-            cuts_added,
+            promotions_added,
             out.stats.capacity_cuts,
+            model_stats.w_vars,
+            model_stats.channel_unit_capacity,
+            out.stats.variables,
             out.stats.constraints,
             out.stats.solve_ms);
     }
+    out.stats.variables = mip.variables();
     out.stats.constraints = mip.constraints();
     if (model_stats.total_variables() != mip.variables()
         || model_stats.total_constraints() != mip.constraints()) {
@@ -1645,7 +1689,7 @@ auto build_and_solve(
         if (owner.fixed_unit.has_value() && owner.fixed_unit.value() != chosen_unit) {
             throw std::runtime_error("V17 fixed-unit extraction validation failed");
         }
-        if (!owner.fixed_unit.has_value() && !use_capacity_cuts) {
+        if (!owner.fixed_unit.has_value()) {
             for (std::size_t channel = 0; channel < channel_count; ++channel) {
                 for (std::size_t unit = 0; unit < 16; ++unit) {
                     const int w = vars.w[owner_index][channel][unit];

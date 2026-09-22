@@ -34,7 +34,7 @@
 - 第十四版：统一图、exact-distance `D/A`、TOB/bus hard constraints 与 core-guided expansion；
 - 第十六版：Z3 Weighted Partial MaxSAT 的 Track/Bump occupancy 并集线长；
 - 第十七版：Channel/COBUnit 粒度的 HiGHS MCF Global Routing；
-- 第十八版：PN source/unit 预选、无稠密 `W` 的容量剪切和 CaDiCaL 纯 SAT；
+- 第十八版：PN source/unit 预选、超载资源动态晋升的精确 sparse-`W` 容量和 CaDiCaL 纯 SAT；
 - 第十九至二十一版：fixed-unit 精确容量、maze MIP start、bbox/guide/scope 策略、TOB 峰值代价和 scope 闭包；
 - 第二十二版：固定 SyncBus/unit/PN source 的 full-space 候选路径生成，以及按整棵路由树建立的选择型 ILP。
 
@@ -86,7 +86,7 @@
 1. PN 预选先固定 physical source/unit，并把非空 `(PNnet,source)` 组转为 Tnet。
 2. 每个 owner 用 `Q` 选 unit，用 `X` 表示 Channel 并集，每个 pair 用 `F` 表示 Channel 图有向流。
 3. 正式 MIP 仅为 pair bbox+1 并集内的资源建变量，并在首次求解前加 fixed-unit 精确容量行和 maze-routing MIP start。
-4. 无稠密 `W` 模式通过 incumbent 超载检查逐轮增加 Channel-unit cut。
+4. 不预建 variable-unit `W`；incumbent 首次暴露 `(Channel,unit)` 超载后，该资源一次性晋升为精确 sparse-`W` 容量行并重求解。
 5. TOB 负载必须满足 unit<=8 和 bank-residue<=8；V21 的 `H7/H8` 代价用于降低 TOB 下方 Channel 峰值占用。
 6. guide 应用后加 TOB patch；TrackToBump(s) 和 PN source-tree 再执行一次 one-hop 外推及已达 COB 集合的内部 Channel 闭包。
 
@@ -160,7 +160,7 @@ xmake build test_ILP_unit
 ## 日志和统计约定
 
 - Global Routing 统计必须区分 COB/terminal 图节点、physical Channel 资源和 directed traversal arc。
-- HiGHS model stats 必须输出各类变量/约束及总数；V18 还需输出 scope 槽位裁剪率、MIP start 和 capacity-cut 轮数。
+- HiGHS model stats 必须输出各类变量/约束及总数；V18 还需输出 scope 槽位裁剪率、MIP start 和动态 sparse-`W` 晋升轮数。
 - Global guide 日志必须区分有序 source-target walk、residual selected arcs、TOB patch、initial expansion 和 final pair scope。
 - Detailed SAT 每轮记录 vars/clauses、alpha/gamma assumptions、core 分类和 distance/scope 扩展。
 - V22 先记录 Maze/RRR 统计和 `SAT -> Maze -> full-space ILP` handoff，再记录 fixed Sync 资源、C1/C2 初始化与逐 net 峰值、fixed unit/source、端点 `selectable_tracks`、zero-/positive-excess detour、C1/C2 选择、multi-terminal base/forced/segment 变体、候选/mode 模型、`Maze -> ILP` 线长、耗时和 fallback 原因。

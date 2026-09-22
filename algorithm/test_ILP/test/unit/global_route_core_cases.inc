@@ -606,7 +606,7 @@ auto test_v17_tob_halves_share_channel_capacity() -> void {
             "using its bypass");
 }
 
-auto test_v18_capacity_cuts_repair_overloaded_incumbent() -> void {
+auto test_v18_dynamic_sparse_capacity_repairs_overloaded_incumbent() -> void {
     auto channels = std::Vector<GlobalChannelCoord> {};
     for (int index = 0; index < 8; ++index) {
         channels.push_back(GlobalChannelCoord {0, 0, index});
@@ -653,7 +653,7 @@ auto test_v18_capacity_cuts_repair_overloaded_incumbent() -> void {
     const auto graph = synthetic_channel_graph(channels, nodes, segments);
 
     auto nets = std::Vector<RoutingNet> {};
-    for (std::size_t index = 0; index < 8; ++index) {
+    for (std::size_t index = 0; index < 7; ++index) {
         nets.push_back(two_pin_net(
             index,
             RoutingNetKind::Tnet,
@@ -667,20 +667,31 @@ auto test_v18_capacity_cuts_repair_overloaded_incumbent() -> void {
     pn.demands = {RoutingDemand {0, bump_ref(0, 0, 0), {0, 1}, false}};
     nets.push_back(std::move(pn));
 
+    auto reservations = GlobalRouteChannelReservations {};
+    reservations.load_by_channel_unit.resize(graph.channels.size());
+    reservations.load_by_channel_unit[16][map_track(0)] = 1;
+
     const auto route = solve_global_route_v17(
         UnifiedGraph {},
         graph,
         nets,
         0,
-        GlobalRouteCapacityMode::IterativeCuts);
+        GlobalRouteCapacityMode::IterativeCuts,
+        {}, false, GlobalRouteScopeMode::FullGraph, 0, &reservations);
     require(
         route.ok
+            && route.stats.initial_fixed_unit_capacity_rows == 0
             && route.stats.capacity_cut_rounds >= 1
             && route.stats.capacity_cuts >= 1
+            && route.stats.model.w_vars >= 1
+            && route.stats.model.w_linearization == 3 * route.stats.model.w_vars
+            && route.stats.model.channel_unit_capacity
+                == route.stats.initial_fixed_unit_capacity_rows
+                    + route.stats.capacity_cuts
             && route.selected_source_index_by_pair.at(PairKey {8, 0, 0}) == 1
             && route.selected_unit_by_pair.at(PairKey {8, 0, 0}) == map_track(1),
-        "capacity cuts must assign the PN demand to a non-overloaded unit "
-            "and converge");
+        "dynamic exact sparse-W capacity must assign the PN demand to a "
+            "non-overloaded unit and converge without hotspot prebuilding");
 }
 
 auto test_v17_global_route_bus_and_pn_source() -> void {
