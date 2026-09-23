@@ -76,8 +76,6 @@ auto add_demand(
 auto make_routing_net(const circuit::Net& net, RoutingNetKind kind) -> RoutingNet {
     RoutingNet routing_net {};
     routing_net.name = net.name();
-    routing_net.origin_key = net.name();
-    routing_net.origin_uid = net.uid();
     routing_net.kind = kind;
     return routing_net;
 }
@@ -176,7 +174,6 @@ auto build_routing_nets(const std::Vector<std::Rc<circuit::Net>>& nets) -> std::
         if (const auto* ttbn = dynamic_cast<const circuit::TrackToBumpsNet*>(net.get())) {
             const auto begin_track = ttbn->begin_track()->coord();
             auto routing_net = make_routing_net(*net, RoutingNetKind::Tnet);
-            routing_net.post_sat_ilp_target = true;
             const auto source_index = add_unique_source(
                 routing_net,
                 make_track_ref(begin_track, begin_track.index));
@@ -272,7 +269,6 @@ auto build_routing_nets(const std::Vector<std::Rc<circuit::Net>>& nets) -> std::
         if (const auto* tb_net = dynamic_cast<const circuit::TrackToBumpNet*>(net.get())) {
             const auto begin_track = tb_net->begin_track()->coord();
             auto routing_net = make_routing_net(*net, RoutingNetKind::Tnet);
-            routing_net.post_sat_ilp_target = true;
             const auto source_index = add_unique_source(
                 routing_net,
                 make_track_ref(begin_track, begin_track.index));

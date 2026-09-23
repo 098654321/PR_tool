@@ -21,7 +21,7 @@ auto net_wirelength(const UnifiedGraph& graph,
     return used.size();
 }
 
-auto total_wirelength(const UnifiedGraph& graph, const SatRoutingResult& result)
+auto total_wirelength(const UnifiedGraph& graph, const RoutingResult& result)
     -> std::size_t {
     auto used = std::map<std::size_t, std::set<int>>{};
     for (const auto& path : result.paths) {

@@ -1,4 +1,4 @@
-#include "post_sat_rrr/post_sat_rrr.hh"
+#include "rrr/rrr.hh"
 
 #include "common/cob_unit_mask.hh"
 #include "common/route_metrics.hh"
@@ -10,7 +10,6 @@
 #include <format>
 #include <limits>
 #include <map>
-#include <optional>
 #include <queue>
 #include <set>
 #include <tuple>
@@ -90,7 +89,7 @@ auto switch_stage(const PhysicalSwitchKind kind) -> int {
 class Usage {
 public:
   Usage(const UnifiedGraph &graph, const std::Vector<RoutingNet> &nets,
-        const SatRoutingResult &result)
+        const RoutingResult &result)
       : graph_(graph) {
     for (const auto &net : nets) {
       if (net.is_sync_bus) {
@@ -334,7 +333,7 @@ auto infer_unit_mask(const UnifiedGraph &graph, const std::Vector<int> &path)
 }
 
 auto build_specs(const UnifiedGraph &graph, const std::Vector<RoutingNet> &nets,
-                 const SatRoutingResult &baseline)
+                 const RoutingResult &baseline)
     -> std::map<Owner, std::Vector<RouteSpec>> {
   auto out = std::map<Owner, std::Vector<RouteSpec>>{};
   for (const auto &path : baseline.paths) {
@@ -450,7 +449,7 @@ auto route_one(const UnifiedGraph &graph, const RoutingScope &scope,
   return path;
 }
 
-auto erase_owner_paths(SatRoutingResult &result, const Owner owner) -> void {
+auto erase_owner_paths(RoutingResult &result, const Owner owner) -> void {
   result.paths.erase(
       std::remove_if(result.paths.begin(), result.paths.end(),
                      [&](const auto &path) { return path.net_id == owner; }),
@@ -461,7 +460,7 @@ auto append_owner_routes(
     const UnifiedGraph &graph, const std::Vector<RoutingScope> &scopes,
     const std::map<Owner, std::Vector<RouteSpec>> &specs_by_owner,
     const Owner owner, const std::map<ConflictKey, double> &history,
-    const int congestion_height, Usage &usage, SatRoutingResult &result)
+    const int congestion_height, Usage &usage, RoutingResult &result)
     -> bool {
   const auto specs_it = specs_by_owner.find(owner);
   const auto *scope = scope_for(scopes, owner);
@@ -488,19 +487,16 @@ auto reroute_owner(
     const std::Vector<RoutingScope> &scopes,
     const std::map<Owner, std::Vector<RouteSpec>> &specs_by_owner,
     const Owner owner, const std::map<ConflictKey, double> &history,
-    const int congestion_height, SatRoutingResult &result) -> bool {
+    const int congestion_height, RoutingResult &result) -> bool {
   erase_owner_paths(result, owner);
   auto usage = Usage{graph, nets, result};
   return append_owner_routes(graph, scopes, specs_by_owner, owner, history,
                              congestion_height, usage, result);
 }
 
-auto rebuild_metadata(const UnifiedGraph &graph, SatRoutingResult &result,
-                      const bool reset_modes = false)
-    -> void {
+auto rebuild_metadata(const UnifiedGraph &graph, RoutingResult &result) -> void {
   auto switches = std::set<int>{};
-  auto modes = reset_modes ? std::map<std::size_t, bool>{}
-                           : result.vline_mode_straight_by_group;
+  auto modes = result.vline_mode_straight_by_group;
   for (const auto &path : result.paths) {
     for (std::size_t index = 1; index < path.node_path.size(); ++index) {
       const int arc_id =
@@ -527,8 +523,8 @@ auto validate_candidate(const UnifiedGraph &graph,
                         const std::Vector<RoutingNet> &nets,
                         const std::Vector<RoutingScope> &scopes,
                         const std::map<Owner, std::Vector<RouteSpec>> &specs,
-                        const SatRoutingResult &baseline,
-                        const SatRoutingResult &candidate) -> bool {
+                        const RoutingResult &baseline,
+                        const RoutingResult &candidate) -> bool {
   if (Usage{graph, nets, candidate}.report().overflow != 0) {
     return false;
   }
@@ -609,7 +605,7 @@ auto validate_candidate(const UnifiedGraph &graph,
 auto shortest_wirelength(const UnifiedGraph &graph,
                          const RoutingScope &scope, const RouteSpec &spec)
     -> std::size_t {
-  auto empty_result = SatRoutingResult{};
+  auto empty_result = RoutingResult{};
   auto empty_nets = std::Vector<RoutingNet>{};
   const auto usage = Usage{graph, empty_nets, empty_result};
   const auto path = route_one(graph, scope, usage, spec, {}, 0);
@@ -626,7 +622,7 @@ struct Trigger {
 auto trigger_order(const UnifiedGraph &graph,
                    const std::Vector<RoutingScope> &scopes,
                    const std::map<Owner, std::Vector<RouteSpec>> &specs,
-                   const SatRoutingResult &result) -> std::Vector<Trigger> {
+                   const RoutingResult &result) -> std::Vector<Trigger> {
   auto out = std::Vector<Trigger>{};
   for (const auto &[owner, owner_specs] : specs) {
     const auto *scope = scope_for(scopes, owner);
@@ -672,136 +668,22 @@ auto update_history(std::map<ConflictKey, double> &history,
 
 } // namespace
 
-auto rebuild_all_non_sync_routes_rrr(
-    const UnifiedGraph &graph, const std::Vector<RoutingNet> &nets,
-    const std::Vector<RoutingScope> &scopes,
-    const SatRoutingResult &sat_result, const PostSatRrrOptions &options)
-    -> std::optional<SatRoutingResult> {
-  if (!sat_result.ok) {
-    return std::nullopt;
-  }
-  const auto specs = build_specs(graph, nets, sat_result);
-  if (specs.empty()) {
-    return sat_result;
-  }
-  // A post-SAT rebuild must never turn an ambiguous BumpToBump owner into an
-  // all-unit search.  Track/PN sources have the same check for consistency.
-  for (const auto &[owner, owner_specs] : specs) {
-    for (const auto &spec : owner_specs) {
-      if (spec.unit_mask == 0 || (spec.unit_mask & (spec.unit_mask - 1)) != 0) {
-        debug::warning_fmt(
-            "V22 full maze rebuild rejected: owner={} demand={} has non-unique SAT COBUnit mask={}",
-            owner, spec.demand_id, spec.unit_mask);
-        return std::nullopt;
-      }
-    }
-  }
-
-  auto candidate = sat_result;
-  for (const auto &[owner, _] : specs) {
-    erase_owner_paths(candidate, owner);
-  }
-  auto owners = std::Vector<Owner>{};
-  owners.reserve(specs.size());
-  for (const auto &[owner, _] : specs) {
-    owners.push_back(owner);
-  }
-  std::sort(owners.begin(), owners.end());
-  auto history = std::map<ConflictKey, double>{};
-  int congestion_height = 4;
-  auto usage = Usage{graph, nets, candidate};
-  for (const Owner owner : owners) {
-    if (!append_owner_routes(graph, scopes, specs, owner, history,
-                             congestion_height, usage, candidate)) {
-      debug::info_fmt("V22 full maze rebuild: owner={} status=UNROUTABLE", owner);
-      return std::nullopt;
-    }
-  }
-  rebuild_metadata(graph, candidate, true);
-  debug::info_fmt(
-      "V22 full maze rebuild initial: non_sync_owners={} overflow={} wirelength={}",
-      owners.size(), Usage{graph, nets, candidate}.report().overflow,
-      candidate.total_wirelength);
-
-  auto best_overflow = std::numeric_limits<int>::max();
-  auto best_wirelength = std::numeric_limits<std::size_t>::max();
-  int stagnant = 0;
-  for (int iteration = 0; iteration <= options.max_iterations; ++iteration) {
-    const auto current = Usage{graph, nets, candidate}.report();
-    rebuild_metadata(graph, candidate, true);
-    if (options.verbose_level >= 1) {
-      debug::info_fmt(
-          "V22 full maze RRR: iter={} overflow={} dirty_owners={} wirelength={}",
-          iteration, current.overflow, current.owners.size(),
-          candidate.total_wirelength);
-    }
-    if (current.overflow == 0) {
-      if (!validate_candidate(graph, nets, scopes, specs, sat_result, candidate)) {
-        debug::warning("V22 full maze rebuild: physical validation failed");
-        return std::nullopt;
-      }
-      return candidate;
-    }
-    if (iteration == options.max_iterations || current.owners.empty()) {
-      break;
-    }
-    const auto score = std::pair{current.overflow, candidate.total_wirelength};
-    const auto best = std::pair{best_overflow, best_wirelength};
-    if (score < best) {
-      best_overflow = current.overflow;
-      best_wirelength = candidate.total_wirelength;
-      stagnant = 0;
-    } else if (++stagnant >= options.stagnation_limit) {
-      break;
-    }
-    if (stagnant > 0 && stagnant % 4 == 0) {
-      congestion_height = std::min(congestion_height + 4, 16);
-    }
-    update_history(history, current);
-    auto dirty = std::Vector<Owner>(current.owners.begin(), current.owners.end());
-    std::sort(dirty.begin(), dirty.end(), [&](const Owner lhs, const Owner rhs) {
-      const int lhs_exposure = current.exposure.contains(lhs)
-          ? current.exposure.at(lhs) : 0;
-      const int rhs_exposure = current.exposure.contains(rhs)
-          ? current.exposure.at(rhs) : 0;
-      return std::tie(rhs_exposure, lhs) < std::tie(lhs_exposure, rhs);
-    });
-    for (const Owner owner : dirty) {
-      erase_owner_paths(candidate, owner);
-    }
-    auto reroute_usage = Usage{graph, nets, candidate};
-    bool routed = true;
-    for (const Owner owner : dirty) {
-      if (!append_owner_routes(graph, scopes, specs, owner, history,
-                               congestion_height, reroute_usage, candidate)) {
-        routed = false;
-        break;
-      }
-    }
-    if (!routed) {
-      break;
-    }
-  }
-  debug::info("V22 full maze rebuild: RRR_NOT_CONVERGED");
-  return std::nullopt;
-}
-
-auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
-                                  const std::Vector<RoutingNet> &nets,
-                                  const std::Vector<RoutingScope> &scopes,
-                                  const SatRoutingResult &sat_result,
-                                  const PostSatRrrOptions &options)
-    -> SatRoutingResult {
+auto optimize_routes_rrr(const UnifiedGraph &graph,
+                         const std::Vector<RoutingNet> &nets,
+                         const std::Vector<RoutingScope> &scopes,
+                         const RoutingResult &baseline,
+                         const RrrOptions &options)
+    -> RoutingResult {
   const auto begin = std::chrono::steady_clock::now();
-  auto incumbent = sat_result;
-  incumbent.post_sat_maze_attempted = true;
-  incumbent.post_sat_maze_baseline_wirelength = sat_result.total_wirelength;
-  incumbent.post_sat_maze_wirelength = sat_result.total_wirelength;
-  const auto finish = [&](SatRoutingResult result,
-                          const std::String &status) -> SatRoutingResult {
-    result.post_sat_maze_status = status;
-    result.post_sat_maze_wirelength = result.total_wirelength;
-    result.post_sat_maze_total_ms =
+  auto incumbent = baseline;
+  incumbent.rrr_attempted = true;
+  incumbent.rrr_baseline_wirelength = baseline.total_wirelength;
+  incumbent.rrr_wirelength = baseline.total_wirelength;
+  const auto finish = [&](RoutingResult result,
+                          const std::String &status) -> RoutingResult {
+    result.rrr_status = status;
+    result.rrr_wirelength = result.total_wirelength;
+    result.rrr_total_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - begin)
             .count();
@@ -809,33 +691,33 @@ auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
         "direct RRR summary: status={} accepted={} triggers={} "
         "accepted_triggers={} rrr_iterations={} rerouted_owners={} "
         "wirelength={}->{} total_ms={}",
-        result.post_sat_maze_status, result.post_sat_maze_accepted,
-        result.post_sat_maze_triggers, result.post_sat_maze_accepted_triggers,
-        result.post_sat_maze_rrr_iterations,
-        result.post_sat_maze_rerouted_owners,
-        result.post_sat_maze_baseline_wirelength,
-        result.post_sat_maze_wirelength, result.post_sat_maze_total_ms);
+        result.rrr_status, result.rrr_accepted,
+        result.rrr_triggers, result.rrr_accepted_triggers,
+        result.rrr_iterations,
+        result.rrr_rerouted_owners,
+        result.rrr_baseline_wirelength,
+        result.rrr_wirelength, result.rrr_total_ms);
     return result;
   };
 
-  if (!sat_result.ok) {
+  if (!baseline.ok) {
     return finish(std::move(incumbent), "SKIPPED_NO_ILP_SOLUTION");
   }
-  const auto specs = build_specs(graph, nets, sat_result);
+  const auto specs = build_specs(graph, nets, baseline);
   if (specs.empty()) {
     return finish(std::move(incumbent), "SKIPPED_NO_NON_SYNC_NETS");
   }
   debug::info_fmt("direct RRR start: non_sync_owners={} "
                   "baseline_wirelength={} max_sweeps={} max_rrr_iterations={} "
                   "stagnation_limit={} sync_policy=hard-obstacle",
-                  specs.size(), sat_result.total_wirelength, options.max_sweeps,
+                  specs.size(), baseline.total_wirelength, options.max_sweeps,
                   options.max_iterations, options.stagnation_limit);
 
   for (int sweep = 0; sweep < options.max_sweeps; ++sweep) {
     bool sweep_improved = false;
     const auto triggers = trigger_order(graph, scopes, specs, incumbent);
     for (const auto &trigger : triggers) {
-      ++incumbent.post_sat_maze_triggers;
+      ++incumbent.rrr_triggers;
       auto transaction = incumbent;
       auto history = std::map<ConflictKey, double>{};
       int congestion_height = 4;
@@ -846,7 +728,7 @@ auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
                         sweep, trigger.owner, trigger.stretch);
         continue;
       }
-      ++incumbent.post_sat_maze_rerouted_owners;
+      ++incumbent.rrr_rerouted_owners;
 
       auto best_overflow = std::numeric_limits<int>::max();
       auto best_wirelength = std::numeric_limits<std::size_t>::max();
@@ -864,7 +746,7 @@ auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
                           report.owners.size(), transaction.total_wirelength);
         }
         if (report.overflow == 0) {
-          converged = validate_candidate(graph, nets, scopes, specs, sat_result,
+          converged = validate_candidate(graph, nets, scopes, specs, baseline,
                                          transaction);
           break;
         }
@@ -907,9 +789,9 @@ auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
             routed = false;
             break;
           }
-          ++incumbent.post_sat_maze_rerouted_owners;
+          ++incumbent.rrr_rerouted_owners;
         }
-        ++incumbent.post_sat_maze_rrr_iterations;
+        ++incumbent.rrr_iterations;
         if (!routed) {
           break;
         }
@@ -919,20 +801,20 @@ auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
           transaction.total_wirelength < incumbent.total_wirelength) {
         const auto before = incumbent.total_wirelength;
         const auto persistent =
-            std::tuple{incumbent.post_sat_maze_triggers,
-                       incumbent.post_sat_maze_accepted_triggers,
-                       incumbent.post_sat_maze_rrr_iterations,
-                       incumbent.post_sat_maze_rerouted_owners};
+            std::tuple{incumbent.rrr_triggers,
+                       incumbent.rrr_accepted_triggers,
+                       incumbent.rrr_iterations,
+                       incumbent.rrr_rerouted_owners};
         incumbent = std::move(transaction);
-        incumbent.post_sat_maze_attempted = true;
-        incumbent.post_sat_maze_accepted = true;
-        incumbent.post_sat_maze_baseline_wirelength =
-            sat_result.total_wirelength;
-        std::tie(incumbent.post_sat_maze_triggers,
-                 incumbent.post_sat_maze_accepted_triggers,
-                 incumbent.post_sat_maze_rrr_iterations,
-                 incumbent.post_sat_maze_rerouted_owners) = persistent;
-        ++incumbent.post_sat_maze_accepted_triggers;
+        incumbent.rrr_attempted = true;
+        incumbent.rrr_accepted = true;
+        incumbent.rrr_baseline_wirelength =
+            baseline.total_wirelength;
+        std::tie(incumbent.rrr_triggers,
+                 incumbent.rrr_accepted_triggers,
+                 incumbent.rrr_iterations,
+                 incumbent.rrr_rerouted_owners) = persistent;
+        ++incumbent.rrr_accepted_triggers;
         sweep_improved = true;
         debug::info_fmt("direct RRR trigger: sweep={} owner={} "
                         "stretch={} status=ACCEPT wirelength={}->{}",
@@ -951,7 +833,7 @@ auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
       break;
     }
   }
-  const auto status = incumbent.post_sat_maze_accepted
+  const auto status = incumbent.rrr_accepted
                           ? std::String{"IMPROVED"}
                           : std::String{"NO_IMPROVEMENT"};
   return finish(std::move(incumbent), status);

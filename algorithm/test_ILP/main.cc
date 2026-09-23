@@ -1,7 +1,7 @@
 #include "direct_ilp/direct_router.hh"
 #include "direct_ilp/direct_scope.hh"
 #include "direct_ilp/direct_validate.hh"
-#include "post_sat_rrr/post_sat_rrr.hh"
+#include "rrr/rrr.hh"
 #include "scope/build_routing_nets.hh"
 #include "test_ilp_cli.hh"
 
@@ -49,16 +49,16 @@ auto run_main(int argc, char** argv) -> int {
                              solved.route.message);
             return 1;
         }
-        auto final = optimize_post_sat_routes_rrr(
+        auto final = optimize_routes_rrr(
             graph, nets, scopes, solved.route,
-            PostSatRrrOptions{.verbose_level = cli.verbose_level});
+            RrrOptions{.verbose_level = cli.verbose_level});
         if (!validate_direct_route(graph, nets, scopes, final)) {
             debug::error("RRR produced an invalid route");
             return 1;
         }
         debug::info_fmt("ILP -> RRR: wirelength={}->{} status={} accepted={}",
             solved.route.total_wirelength, final.total_wirelength,
-            final.post_sat_maze_status, final.post_sat_maze_accepted);
+            final.rrr_status, final.rrr_accepted);
         for (const auto& path : final.paths) {
             auto description = std::String{};
             for (int node : path.node_path) {

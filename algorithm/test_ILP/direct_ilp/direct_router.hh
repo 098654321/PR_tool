@@ -31,7 +31,7 @@ struct DirectIlpStats {
 };
 
 struct DirectIlpResult {
-    SatRoutingResult route;
+    RoutingResult route;
     DirectIlpStats stats;
 };
 

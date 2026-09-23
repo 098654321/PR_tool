@@ -1,0 +1,20 @@
+{
+  "status": "PASS",
+  "cob_width": 13,
+  "cob_height": 9,
+  "tob_count": 16,
+  "graph_nodes": 38912,
+  "undirected_edges": 126720,
+  "track_nodes": 32768,
+  "track_components": 16,
+  "components_by_unit": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+  "tracks_by_unit": [2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048],
+  "bumps": 2048,
+  "bump_access_units_min": 16,
+  "bump_access_units_max": 16,
+  "bump_access_chains_min": 128,
+  "bump_access_chains_max": 128,
+  "raw_cross_unit_vline_paths": 2048,
+  "checked_tob_track_starts": 2048,
+  "feasible_tob_track_to_track_paths": 0
+}

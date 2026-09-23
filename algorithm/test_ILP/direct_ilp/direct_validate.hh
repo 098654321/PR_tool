@@ -7,6 +7,6 @@ namespace PR_tool {
 auto validate_direct_route(const UnifiedGraph& graph,
                            const std::Vector<RoutingNet>& nets,
                            const std::Vector<RoutingScope>& scopes,
-                           const SatRoutingResult& route) -> bool;
+                           const RoutingResult& route) -> bool;
 
 } // namespace PR_tool

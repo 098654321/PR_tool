@@ -1,7 +1,7 @@
 #include "direct_ilp/direct_router.hh"
 #include "direct_ilp/direct_validate.hh"
 #include "common/hw_map.hh"
-#include "post_sat_rrr/post_sat_rrr.hh"
+#include "rrr/rrr.hh"
 #include "scope/scope_bbox.hh"
 #include "test_ilp_cli.hh"
 
@@ -16,19 +16,19 @@ auto require(bool condition, const char* message) -> void {
     if (!condition) throw std::runtime_error(message);
 }
 
-auto add_track(UnifiedGraph& graph, int col) -> int {
+auto add_track(UnifiedGraph& graph, int col, int row = 0) -> int {
     const int id = static_cast<int>(graph.nodes.size());
     auto node = UnifiedNode{};
     node.kind = UnifiedNodeKind::Track;
     node.unit = 0;
     node.track_dir = 0;
-    node.track_row = 0;
+    node.track_row = row;
     node.track_col = col;
     node.track_index = 0;
     graph.nodes.push_back(node);
     graph.in_arc_ids.emplace_back();
     graph.out_arc_ids.emplace_back();
-    graph.track_node_by_key[{0, 0, 0, col, 0}] = id;
+    graph.track_node_by_key[{0, 0, row, col, 0}] = id;
     return id;
 }
 
@@ -160,9 +160,9 @@ auto simple_path_case() -> void {
     try { (void)build_direct_graph(mismatched_reverse); }
     catch (const std::logic_error&) { rejected = true; }
     require(rejected, "mismatched reverse arc was accepted");
-    const auto rerouted = optimize_post_sat_routes_rrr(
+    const auto rerouted = optimize_routes_rrr(
         graph, {net}, {full_scope(graph)}, result.route,
-        PostSatRrrOptions{.max_iterations = 1, .max_sweeps = 1});
+        RrrOptions{.max_iterations = 1, .max_sweeps = 1});
     require(validate_direct_route(graph, {net}, {full_scope(graph)}, rerouted),
             "invalid RRR route");
     require(rerouted.total_wirelength <= result.route.total_wirelength,
@@ -292,6 +292,36 @@ auto bump_to_tracks_bbox_case() -> void {
             "BumpToTracks bbox omitted track sink");
 }
 
+auto original_bbox_scope_case() -> void {
+    auto graph = UnifiedGraph{};
+    graph.rows = 9;
+    graph.cols = 13;
+    const int inside = add_track(graph, 0, 1);
+    const int patch_track = add_track(graph, 1, 0);
+    const int outside = add_track(graph, 2, 0);
+    const int source = add_bump(graph, 0);
+    const int sink = add_bump(graph, 1);
+    auto net = RoutingNet{};
+    net.kind = RoutingNetKind::Bnet;
+    net.sources = {bump_ref(0)};
+    net.demands.push_back(RoutingDemand{0, bump_ref(1), {0}, true});
+    const auto box = compute_scope_bbox_for_net(net);
+    require(box.row_min == 1 && box.row_max == 1
+                && box.col_min == 0 && box.col_max == 0,
+            "unexpected original Bnet bbox");
+    const auto scopes = build_direct_scopes(graph, {net}, 0);
+    const auto& scope = scopes.front();
+    require(scope.node_offset[static_cast<std::size_t>(inside)] >= 0,
+            "original bbox omitted an inside Track");
+    require(scope.node_offset[static_cast<std::size_t>(patch_track)] < 0,
+            "direct scope added a TOB patch Track");
+    require(scope.node_offset[static_cast<std::size_t>(outside)] < 0,
+            "direct scope expanded the bbox");
+    require(scope.node_offset[static_cast<std::size_t>(source)] >= 0
+                && scope.node_offset[static_cast<std::size_t>(sink)] >= 0,
+            "direct scope omitted a Bump endpoint");
+}
+
 auto tob_matching_case() -> void {
     auto graph = UnifiedGraph{};
     const int b0 = add_bump(graph, 0), b1 = add_bump(graph, 1);
@@ -374,6 +404,7 @@ auto main() -> int {
     PR_tool::owner_capacity_case();
     PR_tool::shared_owner_case();
     PR_tool::bump_to_tracks_bbox_case();
+    PR_tool::original_bbox_scope_case();
     PR_tool::tob_matching_case();
     PR_tool::tob_second_stage_matching_case();
     PR_tool::tob_mode_case();

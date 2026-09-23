@@ -9,9 +9,7 @@
 
 namespace PR_tool {
 
-// Appends HiGHS solver logs to a file and optionally echoes them to stdout.
-// Native log_file always truncates, so two Highs instances (PN preselection
-// then Global Routing) share one highs.log through this callback instead.
+// Writes HiGHS solver logs to a file and optionally echoes them to stdout.
 class HighsLogSink {
 public:
     HighsLogSink(const std::string_view path, const bool echo_console, const bool append)

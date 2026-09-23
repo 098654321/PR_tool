@@ -28,7 +28,7 @@ auto arc_between(const UnifiedGraph& graph, int u, int v) -> int {
 auto validate_direct_route(const UnifiedGraph& graph,
                            const std::Vector<RoutingNet>& nets,
                            const std::Vector<RoutingScope>& scopes,
-                           const SatRoutingResult& route) -> bool {
+                           const RoutingResult& route) -> bool {
     auto fail = [](const std::String& reason) {
         debug::error_fmt("direct route validation: FAIL {}", reason);
         return false;

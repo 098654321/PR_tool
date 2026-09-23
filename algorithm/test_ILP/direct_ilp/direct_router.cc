@@ -19,7 +19,7 @@
 #include <utility>
 
 #ifdef USE_HIGHS
-#include "global_route_v17/highs_log_sink.hh"
+#include "common/highs_log_sink.hh"
 #include <Highs.h>
 #endif
 
@@ -138,7 +138,7 @@ auto prepare(const UnifiedGraph& graph, const DirectGraph& direct,
                 }
             }
             if (!reached[static_cast<std::size_t>(c.sink)])
-                throw std::runtime_error(std::format("net {} demand {} disconnected in bbox+1+TOB patch",
+                throw std::runtime_error(std::format("net {} demand {} disconnected in bbox",
                                                      net.net_id, demand.demand_id));
             auto node_set = std::set<int>{c.source, c.sink};
             for (int edge_id : scope_edges) {
@@ -222,6 +222,12 @@ struct CommodityVars {
     std::unordered_map<int, int> node;
 };
 
+struct OwnerVarCounts {
+    std::size_t edge{};
+    std::size_t node{};
+    std::size_t owner_node{};
+};
+
 auto matching_keys(const UnifiedGraph& graph, const DirectEdge& edge)
     -> std::Vector<std::pair<int, int>> {
     if (edge.switch_kind == PhysicalSwitchKind::BumpH) {
@@ -260,11 +266,14 @@ auto solve_direct_ilp(const UnifiedGraph& graph, const DirectGraph& direct,
         out.stats.owners = prepared.owners;
         auto mip = Mip(options);
         auto vars = std::Vector<CommodityVars>(prepared.commodities.size());
+        auto owner_counts = std::Vector<OwnerVarCounts>(prepared.owners);
+        auto owner_commodities = std::Vector<std::Vector<std::size_t>>(prepared.owners);
         auto edge_uses = std::Vector<std::Vector<int>>(direct.edges.size());
         auto owner_node_uses = std::unordered_map<std::uint64_t, std::Vector<int>>{};
         auto node_owners = std::unordered_map<int, std::Vector<int>>{};
         for (std::size_t ci = 0; ci < prepared.commodities.size(); ++ci) {
             const auto& c = prepared.commodities[ci];
+            owner_commodities[c.owner].push_back(ci);
             auto& v = vars[ci];
             v.edge.reserve(c.edges.size());
             v.node.reserve(c.nodes.size());
@@ -273,6 +282,7 @@ auto solve_direct_ilp(const UnifiedGraph& graph, const DirectGraph& direct,
                 v.edge.emplace(edge_id, column);
                 edge_uses[static_cast<std::size_t>(edge_id)].push_back(column);
                 ++out.stats.edge_vars;
+                ++owner_counts[c.owner].edge;
             }
             for (int node : c.nodes) {
                 if (node == c.source && nets[c.net_index].kind == RoutingNetKind::PNnet)
@@ -281,6 +291,7 @@ auto solve_direct_ilp(const UnifiedGraph& graph, const DirectGraph& direct,
                 v.node.emplace(node, column);
                 owner_node_uses[pair_key(c.owner, node)].push_back(column);
                 ++out.stats.node_vars;
+                ++owner_counts[c.owner].node;
             }
         }
         auto owner_node_vars = std::unordered_map<std::uint64_t, int>{};
@@ -291,6 +302,7 @@ auto solve_direct_ilp(const UnifiedGraph& graph, const DirectGraph& direct,
             owner_node_vars.emplace(key, column);
             node_owners[node].push_back(column);
             ++out.stats.owner_vars;
+            ++owner_counts[static_cast<std::size_t>(key >> 32U)].owner_node;
             auto upper = std::Vector<std::pair<int, double>>{{column, 1}};
             upper.reserve(uses.size() + 1);
             for (int d : uses) {
@@ -397,11 +409,40 @@ auto solve_direct_ilp(const UnifiedGraph& graph, const DirectGraph& direct,
         out.stats.nonzeros = mip.nonzeros();
         out.stats.build_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - begin).count();
-        debug::info_fmt("direct ILP model: commodities={} owners={} vars={} rows={} nz={} F={} D={} Y={} switch={} mode={} build_ms={}",
-            out.stats.commodities, out.stats.owners, out.stats.variables,
-            out.stats.rows, out.stats.nonzeros, out.stats.edge_vars,
-            out.stats.node_vars, out.stats.owner_vars, out.stats.switch_vars,
-            out.stats.mode_vars, out.stats.build_ms);
+        if (out.stats.variables != out.stats.edge_vars + out.stats.node_vars
+                + out.stats.owner_vars + out.stats.switch_vars + out.stats.mode_vars)
+            throw std::logic_error("direct ILP variable category totals do not match model");
+        debug::info("========== Direct ILP model stats ==========");
+        debug::info_fmt("Model: vars={} constraints={} nonzeros={} owners={} commodities={} build_ms={}",
+            out.stats.variables, out.stats.rows, out.stats.nonzeros,
+            out.stats.owners, out.stats.commodities, out.stats.build_ms);
+        debug::info_fmt("Variables: F(edge)={} D(node)={} Y(owner-node)={} S(TOB switch)={} M(TOB mode)={}",
+            out.stats.edge_vars, out.stats.node_vars, out.stats.owner_vars,
+            out.stats.switch_vars, out.stats.mode_vars);
+        debug::info("Owner variables: F/D/Y are additive; S_ref/M_ref count shared global variables touched");
+        for (std::size_t owner = 0; owner < owner_counts.size(); ++owner) {
+            const auto& indices = owner_commodities[owner];
+            if (indices.empty()) throw std::logic_error("direct ILP owner has no commodity");
+            const auto& net = nets[prepared.commodities[indices.front()].net_index];
+            const char* kind = net.kind == RoutingNetKind::PNnet ? "PNnet"
+                : net.kind == RoutingNetKind::Bnet ? "Bnet" : "Tnet";
+            auto switch_refs = std::set<int>{};
+            auto mode_refs = std::set<int>{};
+            for (std::size_t ci : indices) {
+                for (int edge_id : prepared.commodities[ci].edges) {
+                    const auto& edge = direct.edges[static_cast<std::size_t>(edge_id)];
+                    if (edge.switch_id >= 0) switch_refs.insert(edge_id);
+                    if (edge.mode_group >= 0) mode_refs.insert(edge.mode_group);
+                }
+            }
+            const auto& count = owner_counts[owner];
+            debug::info_fmt("  owner={} net={} name='{}' kind={} sync={} demands={} F={} D={} Y={} total={} S_ref={} M_ref={}",
+                owner, net.net_id, net.name, kind, net.is_sync_bus, indices.size(),
+                count.edge, count.node, count.owner_node,
+                count.edge + count.node + count.owner_node,
+                switch_refs.size(), mode_refs.size());
+        }
+        debug::info("============================================");
         const auto solve_begin = std::chrono::steady_clock::now();
         const bool feasible = mip.run();
         out.stats.solve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(

@@ -298,7 +298,7 @@ target("test_ILP")
         "algorithm/test_ILP/direct_ilp/undirected_graph.cc",
         "algorithm/test_ILP/direct_ilp/direct_router.cc",
         "algorithm/test_ILP/direct_ilp/direct_validate.cc",
-        "algorithm/test_ILP/post_sat_rrr/post_sat_rrr.cc",
+        "algorithm/test_ILP/rrr/rrr.cc",
         "algorithm/test_ILP/common/cob_unit_mask.cc",
         "algorithm/test_ILP/common/route_metrics.cc"
     )
@@ -326,7 +326,7 @@ target("test_ILP_unit")
         "algorithm/test_ILP/direct_ilp/undirected_graph.cc",
         "algorithm/test_ILP/direct_ilp/direct_router.cc",
         "algorithm/test_ILP/direct_ilp/direct_validate.cc",
-        "algorithm/test_ILP/post_sat_rrr/post_sat_rrr.cc",
+        "algorithm/test_ILP/rrr/rrr.cc",
         "algorithm/test_ILP/common/cob_unit_mask.cc",
         "algorithm/test_ILP/common/route_metrics.cc"
     )
@@ -335,6 +335,19 @@ target("test_ILP_unit")
         "source/hardware/**.cc"
     )
     add_highs_dependency()
+
+target("tob_unit_graph_verify")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_includedirs("source", "source/global", "algorithm/test_ILP")
+    add_files(
+        "algorithm/TOB/verify_unit_graph.cc",
+        "algorithm/test_ILP/graph/unified_routing_graph.cc",
+        "algorithm/test_ILP/direct_ilp/undirected_graph.cc",
+        "source/global/**.cc",
+        "source/hardware/**.cc"
+    )
 
 local function add_weighted_maxsat_sources()
     add_includedirs("source", "source/global", "algorithm/test_ILP", "algorithm/weighted_maxsat")

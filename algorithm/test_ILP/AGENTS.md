@@ -2,7 +2,7 @@
 
 ## 当前目标和流程
 
-`test_ILP` 从原始配置建立细粒度硬件图，对每个 net 构造 bbox+1 与 TOB patch 范围，在无向图上用 HiGHS 联合求解直接详细布线，独立验证，再以相同 scope 运行 RRR 并最终验证。当前入口不运行 PNnet 预分配、Global Routing、SAT 或 post-SAT 候选 ILP。旧方法保存在 `dev.ILP_SAT` 分支；方法说明见 `../../../问题定义与方法/第二十三版方法.md`。
+`test_ILP` 从原始配置建立细粒度硬件图，对每个 net 使用原始 bbox（不扩大、不加 TOB patch）构造范围，在无向图上用 HiGHS 联合求解直接详细布线，独立验证，再以相同 scope 运行 RRR 并最终验证。当前入口不运行 PNnet 预分配、Global Routing、SAT 或 post-SAT 候选 ILP。旧方法保存在 `dev.ILP_SAT` 分支；方法说明见 `../../../问题定义与方法/第二十三版方法.md`。
 
 该目录是实验入口，不应无意修改 `source/algo/router/` 的正式路由流程。`source/hardware/` 和 `source/circuit/` 决定真实拓扑与端点。当前分支仍保留一部分旧方法源文件供其他实验目标使用，但 `test_ILP` 仅编译新入口所需模块。
 
@@ -14,11 +14,12 @@
 | `scope/build_routing_nets.*`, `scope/scope_bbox.*` | 原始 net、端点及 bbox 规则 |
 | `graph/unified_routing_graph.*` | 细粒度硬件图及 PN 虚拟源 |
 | `common/routing_scope.hh` | ILP、RRR 共用的局部节点/arc scope 容器 |
-| `direct_ilp/direct_scope.*` | net 级 bbox+1、7/9 Channel TOB patch、端点 TOB 和局部 arc scope |
+| `direct_ilp/direct_scope.*` | 原始 net 级 bbox、端点 Bump 的 TOB 接入节点和局部 arc scope |
 | `direct_ilp/undirected_graph.*` | 物理反向 arc 合并；反向缺失或硬件属性不一致时硬失败 |
 | `direct_ilp/direct_router.*` | commodity/owner、无向边度数、节点容量、TOB、SyncBus 等长、HiGHS 与路径提取 |
 | `direct_ilp/direct_validate.*` | 独立检查物理路径、scope、互斥、TOB、同步长度及线长 |
-| `post_sat_rrr/` | 复用局部 RRR 搜索；接收直接 ILP 解及同一份 scope，SyncBus 固定 |
+| `rrr/` | 局部 RRR 搜索；接收直接 ILP 解及同一份 scope，SyncBus 固定 |
+| `common/highs_log_sink.hh` | HiGHS 原生日志输出 |
 | `common/route_metrics.*` | Track+Bump 物理并集线长 |
 | `test/direct_ilp_unit.cc` | 新流程的合成回归入口 |
 
@@ -36,7 +37,7 @@
 xmake build test_ILP
 xmake build test_ILP_unit
 ./output/test_ILP_unit
-./output/test_ILP algorithm/test_ILP/test/case_2btt --time-limit 1 -o /tmp/direct_ilp_case
+./output/test_ILP algorithm/test_ILP/test/multi-pin/1 --time-limit 1 -o /tmp/direct_ilp_case
 ```
 
 `--time-limit MIN` 限制直接 ILP 的 HiGHS 求解。`-v` 输出额外的 bbox 与 scope 诊断。`debug.log` 记录模型规模、求解时间、结果路径与 RRR 统计；同目录的 `highs.log` 保存求解器原生日志，两者均不依赖 `-v`。
