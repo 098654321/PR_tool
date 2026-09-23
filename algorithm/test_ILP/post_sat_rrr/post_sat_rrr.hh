@@ -2,7 +2,7 @@
 
 #include "common/routing_types.hh"
 #include "graph/unified_routing_graph.hh"
-#include "sat/unified_sat_scope.hh"
+#include "common/routing_scope.hh"
 
 #include <optional>
 
@@ -21,7 +21,7 @@ struct PostSatRrrOptions {
 // returns to the previous legal incumbent.
 auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
                                   const std::Vector<RoutingNet> &nets,
-                                  const std::Vector<UnifiedSatNetScope> &scopes,
+                                  const std::Vector<RoutingScope> &scopes,
                                   const SatRoutingResult &sat_result,
                                   const PostSatRrrOptions &options = {})
     -> SatRoutingResult;
@@ -32,7 +32,7 @@ auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
 // regenerating compact Channel guides and owns its own acceptance/fallback.
 auto rebuild_all_non_sync_routes_rrr(
     const UnifiedGraph &graph, const std::Vector<RoutingNet> &nets,
-    const std::Vector<UnifiedSatNetScope> &scopes,
+    const std::Vector<RoutingScope> &scopes,
     const SatRoutingResult &sat_result,
     const PostSatRrrOptions &options = {}) -> std::optional<SatRoutingResult>;
 

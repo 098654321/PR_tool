@@ -169,9 +169,14 @@ auto compute_scope_child_bboxes(const RoutingNet& net) -> std::Vector<IlpBoundin
             if (source_index >= net.sources.size()) {
                 continue;
             }
-            boxes.emplace_back(compute_tnet_bbox(
-                net.sources[source_index].track_coord,
-                demand.sink.bump));
+            const auto& source = net.sources[source_index];
+            if (source.kind == GraphNodeRef::Kind::Track
+                && demand.sink.kind == GraphNodeRef::Kind::Bump) {
+                boxes.emplace_back(compute_tnet_bbox(source.track_coord, demand.sink.bump));
+            } else if (source.kind == GraphNodeRef::Kind::Bump
+                       && demand.sink.kind == GraphNodeRef::Kind::Track) {
+                boxes.emplace_back(compute_tnet_bbox(demand.sink.track_coord, source.bump));
+            }
         }
         return boxes;
     }

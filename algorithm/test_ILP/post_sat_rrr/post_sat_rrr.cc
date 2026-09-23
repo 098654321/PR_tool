@@ -1,7 +1,7 @@
 #include "post_sat_rrr/post_sat_rrr.hh"
 
 #include "common/cob_unit_mask.hh"
-#include "sat/routing_path_log.hh"
+#include "common/route_metrics.hh"
 
 #include <algorithm>
 #include <chrono>
@@ -292,8 +292,8 @@ private:
   std::map<int, std::set<Owner>> swap_;
 };
 
-auto scope_for(const std::Vector<UnifiedSatNetScope> &scopes,
-               const std::size_t net_id) -> const UnifiedSatNetScope * {
+auto scope_for(const std::Vector<RoutingScope> &scopes,
+               const std::size_t net_id) -> const RoutingScope * {
   const auto it =
       std::find_if(scopes.begin(), scopes.end(),
                    [&](const auto &scope) { return scope.net_id == net_id; });
@@ -361,7 +361,7 @@ auto history_value(const std::map<ConflictKey, double> &history,
   return it == history.end() ? 0.0 : it->second;
 }
 
-auto route_one(const UnifiedGraph &graph, const UnifiedSatNetScope &scope,
+auto route_one(const UnifiedGraph &graph, const RoutingScope &scope,
                const Usage &usage, const RouteSpec &spec,
                const std::map<ConflictKey, double> &history,
                const int congestion_height) -> std::Vector<int> {
@@ -458,7 +458,7 @@ auto erase_owner_paths(SatRoutingResult &result, const Owner owner) -> void {
 }
 
 auto append_owner_routes(
-    const UnifiedGraph &graph, const std::Vector<UnifiedSatNetScope> &scopes,
+    const UnifiedGraph &graph, const std::Vector<RoutingScope> &scopes,
     const std::map<Owner, std::Vector<RouteSpec>> &specs_by_owner,
     const Owner owner, const std::map<ConflictKey, double> &history,
     const int congestion_height, Usage &usage, SatRoutingResult &result)
@@ -485,7 +485,7 @@ auto append_owner_routes(
 
 auto reroute_owner(
     const UnifiedGraph &graph, const std::Vector<RoutingNet> &nets,
-    const std::Vector<UnifiedSatNetScope> &scopes,
+    const std::Vector<RoutingScope> &scopes,
     const std::map<Owner, std::Vector<RouteSpec>> &specs_by_owner,
     const Owner owner, const std::map<ConflictKey, double> &history,
     const int congestion_height, SatRoutingResult &result) -> bool {
@@ -525,7 +525,7 @@ auto rebuild_metadata(const UnifiedGraph &graph, SatRoutingResult &result,
 
 auto validate_candidate(const UnifiedGraph &graph,
                         const std::Vector<RoutingNet> &nets,
-                        const std::Vector<UnifiedSatNetScope> &scopes,
+                        const std::Vector<RoutingScope> &scopes,
                         const std::map<Owner, std::Vector<RouteSpec>> &specs,
                         const SatRoutingResult &baseline,
                         const SatRoutingResult &candidate) -> bool {
@@ -607,7 +607,7 @@ auto validate_candidate(const UnifiedGraph &graph,
 }
 
 auto shortest_wirelength(const UnifiedGraph &graph,
-                         const UnifiedSatNetScope &scope, const RouteSpec &spec)
+                         const RoutingScope &scope, const RouteSpec &spec)
     -> std::size_t {
   auto empty_result = SatRoutingResult{};
   auto empty_nets = std::Vector<RoutingNet>{};
@@ -624,7 +624,7 @@ struct Trigger {
 };
 
 auto trigger_order(const UnifiedGraph &graph,
-                   const std::Vector<UnifiedSatNetScope> &scopes,
+                   const std::Vector<RoutingScope> &scopes,
                    const std::map<Owner, std::Vector<RouteSpec>> &specs,
                    const SatRoutingResult &result) -> std::Vector<Trigger> {
   auto out = std::Vector<Trigger>{};
@@ -674,7 +674,7 @@ auto update_history(std::map<ConflictKey, double> &history,
 
 auto rebuild_all_non_sync_routes_rrr(
     const UnifiedGraph &graph, const std::Vector<RoutingNet> &nets,
-    const std::Vector<UnifiedSatNetScope> &scopes,
+    const std::Vector<RoutingScope> &scopes,
     const SatRoutingResult &sat_result, const PostSatRrrOptions &options)
     -> std::optional<SatRoutingResult> {
   if (!sat_result.ok) {
@@ -788,7 +788,7 @@ auto rebuild_all_non_sync_routes_rrr(
 
 auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
                                   const std::Vector<RoutingNet> &nets,
-                                  const std::Vector<UnifiedSatNetScope> &scopes,
+                                  const std::Vector<RoutingScope> &scopes,
                                   const SatRoutingResult &sat_result,
                                   const PostSatRrrOptions &options)
     -> SatRoutingResult {
@@ -806,7 +806,7 @@ auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
             std::chrono::steady_clock::now() - begin)
             .count();
     debug::info_fmt(
-        "V20 post-SAT maze summary: status={} accepted={} triggers={} "
+        "direct RRR summary: status={} accepted={} triggers={} "
         "accepted_triggers={} rrr_iterations={} rerouted_owners={} "
         "wirelength={}->{} total_ms={}",
         result.post_sat_maze_status, result.post_sat_maze_accepted,
@@ -819,13 +819,13 @@ auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
   };
 
   if (!sat_result.ok) {
-    return finish(std::move(incumbent), "SKIPPED_NO_SAT_SOLUTION");
+    return finish(std::move(incumbent), "SKIPPED_NO_ILP_SOLUTION");
   }
   const auto specs = build_specs(graph, nets, sat_result);
   if (specs.empty()) {
     return finish(std::move(incumbent), "SKIPPED_NO_NON_SYNC_NETS");
   }
-  debug::info_fmt("V20 post-SAT maze start: non_sync_owners={} "
+  debug::info_fmt("direct RRR start: non_sync_owners={} "
                   "baseline_wirelength={} max_sweeps={} max_rrr_iterations={} "
                   "stagnation_limit={} sync_policy=hard-obstacle",
                   specs.size(), sat_result.total_wirelength, options.max_sweeps,
@@ -841,7 +841,7 @@ auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
       int congestion_height = 4;
       if (!reroute_owner(graph, nets, scopes, specs, trigger.owner, history,
                          congestion_height, transaction)) {
-        debug::info_fmt("V20 post-SAT maze trigger: sweep={} owner={} "
+        debug::info_fmt("direct RRR trigger: sweep={} owner={} "
                         "stretch={} status=UNROUTABLE rollback=true",
                         sweep, trigger.owner, trigger.stretch);
         continue;
@@ -858,7 +858,7 @@ auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
         const auto report = usage.report();
         rebuild_metadata(graph, transaction);
         if (options.verbose_level >= 1) {
-          debug::info_fmt("V20 post-SAT maze iter: sweep={} trigger={} iter={} "
+          debug::info_fmt("direct RRR iter: sweep={} trigger={} iter={} "
                           "overflow={} dirty_owners={} total_wirelength={}",
                           sweep, trigger.owner, iteration, report.overflow,
                           report.owners.size(), transaction.total_wirelength);
@@ -934,13 +934,13 @@ auto optimize_post_sat_routes_rrr(const UnifiedGraph &graph,
                  incumbent.post_sat_maze_rerouted_owners) = persistent;
         ++incumbent.post_sat_maze_accepted_triggers;
         sweep_improved = true;
-        debug::info_fmt("V20 post-SAT maze trigger: sweep={} owner={} "
+        debug::info_fmt("direct RRR trigger: sweep={} owner={} "
                         "stretch={} status=ACCEPT wirelength={}->{}",
                         sweep, trigger.owner, trigger.stretch, before,
                         incumbent.total_wirelength);
       } else {
         debug::info_fmt(
-            "V20 post-SAT maze trigger: sweep={} owner={} stretch={} status={} "
+            "direct RRR trigger: sweep={} owner={} stretch={} status={} "
             "rollback=true candidate_wirelength={} incumbent_wirelength={}",
             sweep, trigger.owner, trigger.stretch,
             converged ? "NO_IMPROVEMENT" : "RRR_NOT_CONVERGED",

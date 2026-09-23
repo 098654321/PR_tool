@@ -127,15 +127,28 @@ auto build_routing_nets(const std::Vector<std::Rc<circuit::Net>>& nets) -> std::
     };
 
     for (const auto& net : nets) {
-        if (dynamic_cast<const circuit::BumpToBumpsNet*>(net.get()) != nullptr) {
-            throw std::runtime_error(std::format(
-                "unsupported multi-fanout net BumpToBumpsNet '{}'",
-                net->name()));
+        if (const auto* bbs = dynamic_cast<const circuit::BumpToBumpsNet*>(net.get())) {
+            auto routing_net = make_routing_net(*net, RoutingNetKind::Bnet);
+            const auto source_index = add_unique_source(
+                routing_net, make_bump_ref(bump_to_routing_coord(bbs->begin_bump())));
+            for (auto* bump : bbs->end_bumps()) {
+                add_demand(routing_net, make_bump_ref(bump_to_routing_coord(bump)),
+                           {source_index}, true);
+            }
+            push_net(std::move(routing_net));
+            continue;
         }
-        if (dynamic_cast<const circuit::BumpToTracksNet*>(net.get()) != nullptr) {
-            throw std::runtime_error(std::format(
-                "unsupported multi-fanout net BumpToTracksNet '{}'",
-                net->name()));
+        if (const auto* bts = dynamic_cast<const circuit::BumpToTracksNet*>(net.get())) {
+            auto routing_net = make_routing_net(*net, RoutingNetKind::Tnet);
+            const auto source_index = add_unique_source(
+                routing_net, make_bump_ref(bump_to_routing_coord(bts->begin_bump())));
+            for (auto* track : bts->end_tracks()) {
+                const auto coord = track->coord();
+                add_demand(routing_net, make_track_ref(coord, coord.index),
+                           {source_index}, true);
+            }
+            push_net(std::move(routing_net));
+            continue;
         }
 
         if (const auto* tsb_net = dynamic_cast<const circuit::TracksToBumpsNet*>(net.get())) {
