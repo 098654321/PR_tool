@@ -292,13 +292,13 @@ auto bump_to_tracks_bbox_case() -> void {
             "BumpToTracks bbox omitted track sink");
 }
 
-auto original_bbox_scope_case() -> void {
+auto bbox_plus_one_scope_case() -> void {
     auto graph = UnifiedGraph{};
     graph.rows = 9;
     graph.cols = 13;
     const int inside = add_track(graph, 0, 1);
     const int patch_track = add_track(graph, 1, 0);
-    const int outside = add_track(graph, 2, 0);
+    const int outside = add_track(graph, 3, 0);
     const int source = add_bump(graph, 0);
     const int sink = add_bump(graph, 1);
     auto net = RoutingNet{};
@@ -313,10 +313,10 @@ auto original_bbox_scope_case() -> void {
     const auto& scope = scopes.front();
     require(scope.node_offset[static_cast<std::size_t>(inside)] >= 0,
             "original bbox omitted an inside Track");
-    require(scope.node_offset[static_cast<std::size_t>(patch_track)] < 0,
-            "direct scope added a TOB patch Track");
+    require(scope.node_offset[static_cast<std::size_t>(patch_track)] >= 0,
+            "direct scope omitted a bbox+1 Track");
     require(scope.node_offset[static_cast<std::size_t>(outside)] < 0,
-            "direct scope expanded the bbox");
+            "direct scope exceeded bbox+1");
     require(scope.node_offset[static_cast<std::size_t>(source)] >= 0
                 && scope.node_offset[static_cast<std::size_t>(sink)] >= 0,
             "direct scope omitted a Bump endpoint");
@@ -404,7 +404,7 @@ auto main() -> int {
     PR_tool::owner_capacity_case();
     PR_tool::shared_owner_case();
     PR_tool::bump_to_tracks_bbox_case();
-    PR_tool::original_bbox_scope_case();
+    PR_tool::bbox_plus_one_scope_case();
     PR_tool::tob_matching_case();
     PR_tool::tob_second_stage_matching_case();
     PR_tool::tob_mode_case();

@@ -1,7 +1,7 @@
-#include "direct_ilp/direct_router.hh"
 #include "direct_ilp/direct_scope.hh"
 #include "direct_ilp/direct_validate.hh"
-#include "rrr/rrr.hh"
+#include "route_ilp/route_master.hh"
+#include "route_ilp/route_rrr.hh"
 #include "scope/build_routing_nets.hh"
 #include "test_ilp_cli.hh"
 
@@ -36,24 +36,33 @@ auto run_main(int argc, char** argv) -> int {
         auto nets = build_routing_nets(basedie->nets_to_vector());
         auto graph = build_unified_graph(interposer.get(), nets);
         augment_graph_for_pnnet(graph, nets);
-        debug::info_fmt("direct ILP graph: nodes={} arcs={} nets={}",
+        debug::info_fmt("route ILP graph: nodes={} arcs={} nets={}",
                         graph.nodes.size(), graph.arcs.size(), nets.size());
-        const auto direct = build_direct_graph(graph);
-        debug::info_fmt("direct ILP undirected graph: edges={}", direct.edges.size());
         const auto scopes = build_direct_scopes(graph, nets, cli.verbose_level);
-        auto solved = solve_direct_ilp(graph, direct, nets, scopes,
-            DirectIlpOptions{cli.verbose_level, cli.time_limit_minutes,
+        auto solved = solve_route_ilp(graph, nets, scopes,
+            RouteIlpOptions{cli.verbose_level, cli.time_limit_minutes,
                              (log_dir / "highs.log").string()});
-        if (!solved.route.ok || !validate_direct_route(graph, nets, scopes, solved.route)) {
-            debug::error_fmt("direct ILP did not produce a legal route: {}",
+        if (!solved.has_integer_solution || !validate_partial_route(
+                graph, nets, scopes, solved.route, solved.bus_lengths)) {
+            debug::error_fmt("route ILP did not produce a legal partial route: {}",
                              solved.route.message);
             return 1;
         }
-        auto final = optimize_routes_rrr(
-            graph, nets, scopes, solved.route,
-            RrrOptions{.verbose_level = cli.verbose_level});
-        if (!validate_direct_route(graph, nets, scopes, final)) {
-            debug::error("RRR produced an invalid route");
+        debug::info_fmt("route ILP partial validation: PASS paths={} missing={} wirelength={}",
+                        solved.route.paths.size(), solved.missing.size(),
+                        solved.route.total_wirelength);
+        const auto deadline = cli.time_limit_minutes > 0 ?
+            begin + std::chrono::minutes(cli.time_limit_minutes) :
+            std::chrono::steady_clock::time_point::max();
+        auto final = optimize_route_columns_rrr(graph, nets, scopes, solved,
+                                                 cli.verbose_level, deadline);
+        if (!validate_partial_route(graph, nets, scopes, final,
+                                    solved.bus_lengths)) {
+            debug::error("RRR produced an invalid partial route");
+            return 1;
+        }
+        if (!final.ok || !validate_direct_route(graph, nets, scopes, final)) {
+            debug::error_fmt("route ILP + RRR incomplete: status={}", final.rrr_status);
             return 1;
         }
         debug::info_fmt("ILP -> RRR: wirelength={}->{} status={} accepted={}",
@@ -70,11 +79,11 @@ auto run_main(int argc, char** argv) -> int {
         }
         const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - begin).count();
-        debug::info_fmt("direct ILP + RRR complete: wirelength={} total_ms={}",
+        debug::info_fmt("route ILP + RRR complete: wirelength={} total_ms={}",
                         final.total_wirelength, total_ms);
         return 0;
     } catch (const std::exception& error) {
-        debug::error_fmt("direct ILP + RRR failed: {}", error.what());
+        debug::error_fmt("route ILP + RRR failed: {}", error.what());
         return 1;
     }
 }

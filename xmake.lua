@@ -295,10 +295,10 @@ target("test_ILP")
         "algorithm/test_ILP/scope/scope_bbox.cc",
         "algorithm/test_ILP/graph/unified_routing_graph.cc",
         "algorithm/test_ILP/direct_ilp/direct_scope.cc",
-        "algorithm/test_ILP/direct_ilp/undirected_graph.cc",
-        "algorithm/test_ILP/direct_ilp/direct_router.cc",
         "algorithm/test_ILP/direct_ilp/direct_validate.cc",
-        "algorithm/test_ILP/rrr/rrr.cc",
+        "algorithm/test_ILP/route_ilp/route_search.cc",
+        "algorithm/test_ILP/route_ilp/route_master.cc",
+        "algorithm/test_ILP/route_ilp/route_rrr.cc",
         "algorithm/test_ILP/common/cob_unit_mask.cc",
         "algorithm/test_ILP/common/route_metrics.cc"
     )
@@ -334,6 +334,25 @@ target("test_ILP_unit")
         "source/global/**.cc",
         "source/hardware/**.cc"
     )
+    add_highs_dependency()
+
+target("route_ilp_unit")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_includedirs("source", "source/global", "algorithm/test_ILP")
+    add_files(
+        "algorithm/test_ILP/test/route_ilp_unit.cc",
+        "algorithm/test_ILP/scope/scope_bbox.cc",
+        "algorithm/test_ILP/graph/unified_routing_graph.cc",
+        "algorithm/test_ILP/direct_ilp/direct_validate.cc",
+        "algorithm/test_ILP/route_ilp/route_search.cc",
+        "algorithm/test_ILP/route_ilp/route_master.cc",
+        "algorithm/test_ILP/route_ilp/route_rrr.cc",
+        "algorithm/test_ILP/common/cob_unit_mask.cc",
+        "algorithm/test_ILP/common/route_metrics.cc"
+    )
+    add_files("source/global/**.cc", "source/hardware/**.cc")
     add_highs_dependency()
 
 target("tob_unit_graph_verify")

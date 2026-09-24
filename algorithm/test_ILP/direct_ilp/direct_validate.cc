@@ -25,10 +25,12 @@ auto arc_between(const UnifiedGraph& graph, int u, int v) -> int {
 
 } // namespace
 
-auto validate_direct_route(const UnifiedGraph& graph,
-                           const std::Vector<RoutingNet>& nets,
-                           const std::Vector<RoutingScope>& scopes,
-                           const RoutingResult& route) -> bool {
+auto validate_route(const UnifiedGraph& graph,
+                    const std::Vector<RoutingNet>& nets,
+                    const std::Vector<RoutingScope>& scopes,
+                    const RoutingResult& route,
+                    const std::map<std::size_t, std::size_t>& bus_targets,
+                    bool allow_missing) -> bool {
     auto fail = [](const std::String& reason) {
         debug::error_fmt("direct route validation: FAIL {}", reason);
         return false;
@@ -43,6 +45,7 @@ auto validate_direct_route(const UnifiedGraph& graph,
     auto modes = std::map<int, bool>{};
     auto switches = std::set<int>{};
     auto bus_lengths = std::map<std::size_t, std::set<std::size_t>>{};
+    auto owner_edges = std::map<Owner, std::set<std::pair<int, int>>>{};
     for (const auto& path : route.paths) {
         const auto ni = net_by_id.find(path.net_id);
         const auto si = scope_by_id.find(path.net_id);
@@ -72,7 +75,9 @@ auto validate_direct_route(const UnifiedGraph& graph,
             net.is_sync_bus ? path.demand_id : std::numeric_limits<std::size_t>::max()};
         auto seen = std::set<int>{};
         std::size_t length = 0;
-        for (int node : path.node_path) {
+        int path_unit = -1;
+        for (std::size_t index = 0; index < path.node_path.size(); ++index) {
+            const int node = path.node_path[index];
             if (node < 0 || static_cast<std::size_t>(node) >= graph.nodes.size()
                 || static_cast<std::size_t>(node) >= scope.node_offset.size()
                 || scope.node_offset[static_cast<std::size_t>(node)] < 0
@@ -80,12 +85,28 @@ auto validate_direct_route(const UnifiedGraph& graph,
                     == UnifiedNodeKind::VirtualSource
                 || !seen.insert(node).second)
                 return fail("invalid, repeated, or out-of-scope node");
+            const auto& data = graph.nodes[static_cast<std::size_t>(node)];
+            if (data.kind == UnifiedNodeKind::Bump && index != 0 &&
+                index + 1 != path.node_path.size())
+                return fail("Bump used as an internal route node");
+            if (data.kind == UnifiedNodeKind::Track) {
+                if (path_unit >= 0 && path_unit != static_cast<int>(data.unit))
+                    return fail("path crosses Track units");
+                path_unit = static_cast<int>(data.unit);
+            }
             const auto [it, inserted] = owners.emplace(node, owner);
             if (!inserted && it->second != owner) return fail("physical node conflict");
             if (is_wirelength_resource_node(graph, node)) ++length;
         }
-        if (net.is_sync_bus) bus_lengths[net.net_id].insert(length);
+        if (net.is_sync_bus) {
+            bus_lengths[net.net_id].insert(length);
+            const auto target = bus_targets.find(net.net_id);
+            if (target != bus_targets.end() && length != target->second)
+                return fail("SyncBus differs from current target length");
+        }
         for (std::size_t i = 1; i < path.node_path.size(); ++i) {
+            owner_edges[owner].insert(std::minmax(path.node_path[i - 1],
+                                                  path.node_path[i]));
             const int arc_id = arc_between(graph, path.node_path[i - 1], path.node_path[i]);
             if (arc_id < 0 || static_cast<std::size_t>(arc_id) >= scope.arc_offset.size()
                 || scope.arc_offset[static_cast<std::size_t>(arc_id)] < 0)
@@ -120,11 +141,30 @@ auto validate_direct_route(const UnifiedGraph& graph,
             }
         }
     }
-    for (const auto& net : nets) {
-        for (const auto& demand : net.demands) {
-            if (counts[{net.net_id, demand.demand_id}] != 1)
-                return fail("unrouted demand");
+    for (const auto& [_, edges] : owner_edges) {
+        auto parent = std::map<int, int>{};
+        const auto root = [&](auto&& self, int node) -> int {
+            auto [it, inserted] = parent.emplace(node, node);
+            if (it->second != node) it->second = self(self, it->second);
+            return it->second;
+        };
+        for (const auto& [u, v] : edges) {
+            const int a = root(root, u), b = root(root, v);
+            if (a == b) return fail("physical route union contains a cycle");
+            parent[a] = b;
         }
+    }
+    for (const auto& net : nets) {
+        int present = 0;
+        for (const auto& demand : net.demands) {
+            const int count = counts[{net.net_id, demand.demand_id}];
+            if ((!allow_missing && count != 1) || count > 1)
+                return fail("unrouted demand");
+            present += count;
+        }
+        if (allow_missing && !net.is_sync_bus && present != 0 &&
+            present != static_cast<int>(net.demands.size()))
+            return fail("partially routed non-Sync owner");
     }
     for (const auto& [_, lengths] : bus_lengths)
         if (lengths.size() != 1) return fail("SyncBus Track+Bump length mismatch");
@@ -139,9 +179,26 @@ auto validate_direct_route(const UnifiedGraph& graph,
         if (it == route.vline_mode_straight_by_group.end() || it->second != straight)
             return fail("TOB mode metadata mismatch");
     }
-    debug::info_fmt("direct route validation: PASS paths={} wirelength={} switches={} modes={}",
-                    route.paths.size(), route.total_wirelength, switches.size(), modes.size());
+    if (!allow_missing)
+        debug::info_fmt("direct route validation: PASS paths={} wirelength={} switches={} modes={}",
+                        route.paths.size(), route.total_wirelength,
+                        switches.size(), modes.size());
     return true;
+}
+
+auto validate_direct_route(const UnifiedGraph& graph,
+                           const std::Vector<RoutingNet>& nets,
+                           const std::Vector<RoutingScope>& scopes,
+                           const RoutingResult& route) -> bool {
+    return validate_route(graph, nets, scopes, route, {}, false);
+}
+
+auto validate_partial_route(const UnifiedGraph& graph,
+                            const std::Vector<RoutingNet>& nets,
+                            const std::Vector<RoutingScope>& scopes,
+                            const RoutingResult& route,
+                            const std::map<std::size_t, std::size_t>& bus_lengths) -> bool {
+    return validate_route(graph, nets, scopes, route, bus_lengths, true);
 }
 
 } // namespace PR_tool
