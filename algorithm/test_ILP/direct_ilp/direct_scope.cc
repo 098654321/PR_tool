@@ -35,7 +35,7 @@ auto build_direct_scopes(const UnifiedGraph& graph,
     auto result = std::Vector<RoutingScope>{};
     result.reserve(nets.size());
     for (const auto& net : nets) {
-        const auto box = expand_pair_bbox_one_cell(compute_scope_bbox_for_net(net));
+        const auto box = full_chip_bbox();
         auto terminal_bumps = std::set<Bump_coord>{};
         for (const auto& demand : net.demands) {
             for (const auto index : demand.candidate_source_indices) {

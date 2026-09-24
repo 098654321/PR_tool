@@ -27,6 +27,13 @@ auto parse_test_ilp_cli(std::span<const std::string_view> args)
             if (error != std::errc{} || end != value.data() + value.size()
                 || options.time_limit_minutes <= 0)
                 throw std::invalid_argument("--time-limit requires positive minutes");
+        } else if (arg == "--m-mode") {
+            if (++i >= args.size())
+                throw std::invalid_argument("--m-mode requires a mode");
+            const auto mode = parse_route_big_m_mode(args[i]);
+            if (!mode)
+                throw std::invalid_argument(std::format("unknown --m-mode: {}", args[i]));
+            options.big_m_mode = *mode;
         } else if (arg.size() > 1 && arg[0] == '-') {
             bool verbose = true;
             for (std::size_t j = 1; j < arg.size(); ++j) verbose &= arg[j] == 'v';

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "route_ilp/route_big_m.hh"
+
 #include <initializer_list>
 #include <span>
 #include <std/string.hh>
@@ -12,6 +14,7 @@ struct TestIlpCliOptions {
     std::String output_dir{"."};
     int verbose_level{0};
     int time_limit_minutes{0};
+    RouteBigMMode big_m_mode{RouteBigMMode::Fixed};
 };
 
 auto parse_test_ilp_cli(std::span<const std::string_view> args)

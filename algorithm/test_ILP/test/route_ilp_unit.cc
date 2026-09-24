@@ -3,6 +3,8 @@
 #include "route_ilp/route_rrr.hh"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <stdexcept>
 
 namespace PR_tool {
@@ -86,8 +88,16 @@ auto simple_master() -> void {
     const auto result = solve_route_ilp(graph, nets, scopes,
         RouteIlpOptions{0, 1, "/private/tmp/route_ilp_unit_highs.log"});
     require(result.route.ok && result.missing.empty(), "master failed simple net");
+    require(result.big_m == 10000.0, "default route ILP M changed");
     require(validate_direct_route(graph, nets, scopes, result.route),
             "master produced invalid route");
+    bool rejected = false;
+    try {
+        (void)solve_route_ilp(graph, nets, scopes,
+            RouteIlpOptions{0, 1, "/private/tmp/route_ilp_unit_highs.log",
+                            RouteBigMMode::MinLmin});
+    } catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected, "SyncBus M mode accepted an instance without SyncBus");
 }
 
 auto sync_master_length() -> void {
@@ -108,6 +118,11 @@ auto sync_master_length() -> void {
             "master did not use common SyncBus length");
     require(validate_direct_route(graph, nets, scopes, result.route),
             "master SyncBus invalid");
+    const auto gap = solve_route_ilp(graph, nets, scopes,
+        RouteIlpOptions{0, 1, "/private/tmp/route_ilp_unit_highs.log",
+                        RouteBigMMode::GapTwo});
+    require(std::abs(gap.big_m - 3.5) < 1e-9,
+            "negative initial max-owner gap was subtracted incorrectly");
 }
 
 auto sync_master_length_increase() -> void {
@@ -130,6 +145,52 @@ auto sync_master_length_increase() -> void {
             "master did not raise SyncBus length after mode conflict");
     require(validate_direct_route(graph, nets, scopes, result.route),
             "length-increased SyncBus invalid");
+}
+
+auto big_m_modes() -> void {
+    auto graph = UnifiedGraph{};
+    for (int i = 0; i < 18; ++i) add_node(graph, UnifiedNodeKind::Track, i);
+    edge(graph, 0, 1); edge(graph, 2, 3);
+    edge(graph, 4, 5); edge(graph, 5, 6);
+    edge(graph, 7, 8); edge(graph, 8, 9);
+    for (int i = 10; i < 17; ++i) edge(graph, i, i + 1);
+    auto nets = std::Vector<RoutingNet>(3);
+    for (std::size_t bus = 0; bus < 2; ++bus) {
+        auto& net = nets[bus];
+        net.net_id = bus;
+        net.is_sync_bus = true;
+        const int first = bus == 0 ? 0 : 4;
+        const int second = bus == 0 ? 2 : 7;
+        const int offset = bus == 0 ? 1 : 2;
+        net.sources = {ref(UnifiedNodeKind::Track, first),
+                       ref(UnifiedNodeKind::Track, second)};
+        net.demands = {{0, ref(UnifiedNodeKind::Track, first + offset), {0}, true},
+                       {1, ref(UnifiedNodeKind::Track, second + offset), {1}, true}};
+    }
+    nets[2].net_id = 2;
+    nets[2].sources = {ref(UnifiedNodeKind::Track, 10)};
+    nets[2].demands = {{0, ref(UnifiedNodeKind::Track, 17), {0}, true}};
+    const auto scopes = std::Vector<RoutingScope>{
+        full_scope(graph, 0), full_scope(graph, 1), full_scope(graph, 2)};
+    const auto expected = std::array{
+        std::pair{RouteBigMMode::MinLmin, 2.0},
+        std::pair{RouteBigMMode::MinLminPlusOne, 3.0},
+        std::pair{RouteBigMMode::MaxLmin, 3.0},
+        std::pair{RouteBigMMode::MaxLminPlusOne, 4.0},
+        std::pair{RouteBigMMode::GapOne, 8.0},
+        std::pair{RouteBigMMode::GapTwo, 6.0},
+        std::pair{RouteBigMMode::GapThree, 4.0 + 4.0 / 3.0},
+        std::pair{RouteBigMMode::GapFour, 5.0},
+    };
+    for (const auto [mode, value] : expected) {
+        const auto result = solve_route_ilp(graph, nets, scopes,
+            RouteIlpOptions{0, 1, "/private/tmp/route_ilp_unit_highs.log", mode});
+        require(std::abs(result.big_m - value) < 1e-9,
+                "route ILP selected the wrong M for a SyncBus experiment mode");
+        if (mode == RouteBigMMode::MinLmin)
+            require(result.missing.contains({2, 0}),
+                    "MIP selected an isolated owner whose route costs more than M");
+    }
 }
 
 auto missing_sync_lane() -> void {
@@ -358,6 +419,7 @@ auto main() -> int {
     PR_tool::simple_master();
     PR_tool::sync_master_length();
     PR_tool::sync_master_length_increase();
+    PR_tool::big_m_modes();
     PR_tool::missing_sync_lane();
     PR_tool::sync_lane_displacement();
     PR_tool::sync_cut_tail();

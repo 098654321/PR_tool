@@ -292,7 +292,7 @@ auto bump_to_tracks_bbox_case() -> void {
             "BumpToTracks bbox omitted track sink");
 }
 
-auto bbox_plus_one_scope_case() -> void {
+auto full_chip_scope_case() -> void {
     auto graph = UnifiedGraph{};
     graph.rows = 9;
     graph.cols = 13;
@@ -315,8 +315,8 @@ auto bbox_plus_one_scope_case() -> void {
             "original bbox omitted an inside Track");
     require(scope.node_offset[static_cast<std::size_t>(patch_track)] >= 0,
             "direct scope omitted a bbox+1 Track");
-    require(scope.node_offset[static_cast<std::size_t>(outside)] < 0,
-            "direct scope exceeded bbox+1");
+    require(scope.node_offset[static_cast<std::size_t>(outside)] >= 0,
+            "full-chip scope omitted a Track outside bbox+1");
     require(scope.node_offset[static_cast<std::size_t>(source)] >= 0
                 && scope.node_offset[static_cast<std::size_t>(sink)] >= 0,
             "direct scope omitted a Bump endpoint");
@@ -394,9 +394,17 @@ auto tob_mode_case() -> void {
 
 auto main() -> int {
     PR_tool::debug::initial_log("/private/tmp/direct_ilp_unit_debug.log");
-    const auto options = PR_tool::parse_test_ilp_cli({"config", "--time-limit", "2", "-vv"});
-    if (options.time_limit_minutes != 2 || options.verbose_level != 2)
+    const auto options = PR_tool::parse_test_ilp_cli(
+        {"config", "--time-limit", "2", "--m-mode", "gap-3", "-vv"});
+    if (options.time_limit_minutes != 2 || options.verbose_level != 2 ||
+        options.big_m_mode != PR_tool::RouteBigMMode::GapThree)
         throw std::runtime_error("CLI parsing failed");
+    bool invalid_mode_rejected = false;
+    try {
+        (void)PR_tool::parse_test_ilp_cli({"config", "--m-mode", "invalid"});
+    } catch (const std::invalid_argument&) { invalid_mode_rejected = true; }
+    if (!invalid_mode_rejected)
+        throw std::runtime_error("invalid M mode was accepted");
     PR_tool::simple_path_case();
     PR_tool::pn_source_case();
     PR_tool::pn_multiple_demands_case();
@@ -404,7 +412,7 @@ auto main() -> int {
     PR_tool::owner_capacity_case();
     PR_tool::shared_owner_case();
     PR_tool::bump_to_tracks_bbox_case();
-    PR_tool::bbox_plus_one_scope_case();
+    PR_tool::full_chip_scope_case();
     PR_tool::tob_matching_case();
     PR_tool::tob_second_stage_matching_case();
     PR_tool::tob_mode_case();

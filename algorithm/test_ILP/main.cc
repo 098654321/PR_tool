@@ -23,7 +23,8 @@ auto run_main(int argc, char** argv) -> int {
         cli = parse_test_ilp_cli(args);
     } catch (const std::exception& error) {
         debug::error(error.what());
-        debug::info("Usage: test_ILP <config_path> [-v|-vv] [-o DIR] [--time-limit MIN]");
+        debug::info("Usage: test_ILP <config_path> [-v|-vv] [-o DIR] [--time-limit MIN] [--m-mode MODE]");
+        debug::info("M modes: fixed, min-lmin, min-lmin-plus-1, max-lmin, max-lmin-plus-1, gap-1..gap-4");
         return 1;
     }
     const auto log_dir = std::filesystem::path{cli.output_dir};
@@ -41,7 +42,7 @@ auto run_main(int argc, char** argv) -> int {
         const auto scopes = build_direct_scopes(graph, nets, cli.verbose_level);
         auto solved = solve_route_ilp(graph, nets, scopes,
             RouteIlpOptions{cli.verbose_level, cli.time_limit_minutes,
-                             (log_dir / "highs.log").string()});
+                             (log_dir / "highs.log").string(), cli.big_m_mode});
         if (!solved.has_integer_solution || !validate_partial_route(
                 graph, nets, scopes, solved.route, solved.bus_lengths)) {
             debug::error_fmt("route ILP did not produce a legal partial route: {}",

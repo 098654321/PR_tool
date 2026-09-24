@@ -1,5 +1,6 @@
 #pragma once
 
+#include "route_ilp/route_big_m.hh"
 #include "route_ilp/route_search.hh"
 
 namespace PR_tool {
@@ -8,6 +9,7 @@ struct RouteIlpOptions {
     int verbose_level{};
     int time_limit_minutes{};
     std::String highs_log_path;
+    RouteBigMMode big_m_mode{RouteBigMMode::Fixed};
 };
 
 struct RouteIlpResult {
@@ -16,6 +18,7 @@ struct RouteIlpResult {
     std::set<RouteOwner> missing;
     std::map<std::size_t, std::size_t> bus_lengths;
     std::String status;
+    double big_m{};
 };
 
 auto solve_route_ilp(const UnifiedGraph& graph,
