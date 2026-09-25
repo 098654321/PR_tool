@@ -34,4 +34,11 @@ auto total_wirelength(const UnifiedGraph& graph, const RoutingResult& result)
     return total;
 }
 
+auto total_wirelength(const UnifiedGraph& graph, const SatRoutingResult& result)
+    -> std::size_t {
+    auto routing = RoutingResult{};
+    routing.paths = result.paths;
+    return total_wirelength(graph, routing);
+}
+
 } // namespace PR_tool

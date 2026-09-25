@@ -224,6 +224,10 @@ auto search_path(const UnifiedGraph& graph, const RoutingScope& scope,
     best[static_cast<std::size_t>(source)] = 0.0;
     int expansions = 0;
     while (!queue.empty() && expansions++ < options.max_expansions) {
+        if (options.shared_expansions != nullptr &&
+            --*options.shared_expansions < 0) break;
+        if ((expansions == 1 || (expansions & 255) == 0) &&
+            std::chrono::steady_clock::now() >= options.deadline) break;
         const auto [cost, index] = queue.top(); queue.pop();
         const auto label = labels[index];
         if (cost != label.cost) continue;
@@ -385,6 +389,174 @@ auto find_route_column(const UnifiedGraph& graph, const RoutingNet& net,
     }
     try { return make_column(graph, net, owner, out.paths, true, groups); }
     catch (const std::logic_error&) { return RouteColumn{owner}; }
+}
+
+static auto exclusive_branch_weight_with_groups(
+    const UnifiedGraph& graph, const RouteColumn& base,
+    std::size_t demand_id, const RouteSearchOptions& options,
+    const ModeSwitches& groups) -> double {
+    auto retained_nodes = std::set<int>{};
+    auto retained_edges = std::set<std::pair<int, int>>{};
+    auto retained_resources = std::set<RouteResource>{};
+    auto target = static_cast<const SourceSinkPairPath*>(nullptr);
+    for (const auto& path : base.paths) {
+        if (path.demand_id == demand_id) { target = &path; continue; }
+        retained_nodes.insert(path.node_path.begin(), path.node_path.end());
+        for (int node : path.node_path) retained_resources.insert({0, node, 0});
+        for (std::size_t j = 1; j < path.node_path.size(); ++j) {
+            retained_edges.insert(std::minmax(path.node_path[j - 1], path.node_path[j]));
+            const int aid = arc_between(graph, path.node_path[j - 1], path.node_path[j]);
+            if (aid < 0) throw std::logic_error("retained terminal branch lacks arc");
+            const auto resources = resources_for_arc(graph,
+                graph.arcs[static_cast<std::size_t>(aid)], groups);
+            retained_resources.insert(resources.begin(), resources.end());
+        }
+    }
+    if (target == nullptr) return 0.0;
+    double weight = 0.0;
+    if (!target->node_path.empty() &&
+        !retained_nodes.contains(target->node_path.front())) {
+        const int source = target->node_path.front();
+        if (is_wirelength_resource_node(graph, source)) weight += 1.0;
+        const auto price = options.prices.find({0, source, 0});
+        if (price != options.prices.end()) weight += std::max(0.0, price->second);
+    }
+    for (std::size_t j = 1; j < target->node_path.size(); ++j) {
+        const int u = target->node_path[j - 1], v = target->node_path[j];
+        if (retained_edges.contains(std::minmax(u, v))) continue;
+        const int aid = arc_between(graph, u, v);
+        if (aid < 0) throw std::logic_error("terminal branch lacks arc");
+        weight += path_weight(graph, graph.arcs[static_cast<std::size_t>(aid)],
+                              retained_resources, options, groups);
+    }
+    return weight;
+}
+
+auto exclusive_branch_weight(const UnifiedGraph& graph, const RouteColumn& base,
+                             std::size_t demand_id,
+                             const RouteSearchOptions& options) -> double {
+    return exclusive_branch_weight_with_groups(
+        graph, base, demand_id, options, mode_switches(graph));
+}
+
+auto terminal_branch_weights(const UnifiedGraph& graph, const RouteColumn& base,
+                             const RouteSearchOptions& options)
+    -> std::Vector<std::pair<double, std::size_t>> {
+    const auto groups = mode_switches(graph);
+    auto result = std::Vector<std::pair<double, std::size_t>>{};
+    for (const auto& path : base.paths)
+        result.emplace_back(exclusive_branch_weight_with_groups(
+            graph, base, path.demand_id, options, groups), path.demand_id);
+    return result;
+}
+
+auto find_terminal_columns(const UnifiedGraph& graph, const RoutingNet& net,
+                           const RoutingScope& scope, RouteOwner owner,
+                           const RouteSearchOptions& options,
+                           const RouteColumn& base,
+                           std::size_t replace_demand) -> std::Vector<RouteColumn> {
+    auto result = std::Vector<RouteColumn>{};
+    const auto demand = std::find_if(net.demands.begin(), net.demands.end(),
+        [&](const auto& item) { return item.demand_id == replace_demand; });
+    if (demand == net.demands.end() || base.paths.size() < 2) return result;
+    auto kept = std::Vector<SourceSinkPairPath>{};
+    struct Attachment {
+        std::size_t source_index{};
+        int physical_source_node{-1};
+        std::Vector<int> prefix;
+    };
+    auto attachments = std::map<int, Attachment>{};
+    for (const auto& path : base.paths) {
+        if (path.demand_id == replace_demand) continue;
+        kept.push_back(path);
+        for (std::size_t j = 0; j < path.node_path.size(); ++j)
+            attachments.try_emplace(path.node_path[j], Attachment{path.source_index,
+                path.physical_source_node,
+                std::Vector<int>(path.node_path.begin(), path.node_path.begin() + j + 1)});
+    }
+    if (kept.empty()) return result;
+    if (net.kind == RoutingNetKind::PNnet)
+        for (const auto source_index : demand->candidate_source_indices) {
+            const int source = resolve_graph_node(graph, net.sources.at(source_index));
+            attachments.try_emplace(source, Attachment{source_index, source, {source}});
+        }
+    const auto groups = mode_switches(graph);
+    const auto own = make_column(graph, net, owner, kept, false, groups).resources;
+    auto retained = std::set<int>{};
+    for (const auto& [node, _] : attachments) retained.insert(node);
+    const int sink = resolve_graph_node(graph, demand->sink);
+    int shared_expansions = 4 * options.max_expansions;
+    auto bounded = options;
+    bounded.shared_expansions = &shared_expansions;
+    for (const auto& [attachment, prefix] : attachments) {
+        if (shared_expansions <= 0 ||
+            std::chrono::steady_clock::now() >= options.deadline) break;
+        if (std::find(demand->candidate_source_indices.begin(),
+                      demand->candidate_source_indices.end(), prefix.source_index)
+            == demand->candidate_source_indices.end()) continue;
+        const auto& start_node = graph.nodes[static_cast<std::size_t>(attachment)];
+        if (start_node.kind == UnifiedNodeKind::Bump && prefix.prefix.size() > 1 &&
+            attachment != sink) continue;
+        int prefix_unit = -1;
+        for (int node : prefix.prefix)
+            if (graph.nodes[static_cast<std::size_t>(node)].kind == UnifiedNodeKind::Track)
+                prefix_unit = static_cast<int>(graph.nodes[static_cast<std::size_t>(node)].unit);
+        const auto& sink_node = graph.nodes[static_cast<std::size_t>(sink)];
+        auto banned_nodes = retained;
+        banned_nodes.erase(attachment);
+        for (std::size_t unit = 0; unit < 16; ++unit) {
+            if (shared_expansions <= 0 ||
+                std::chrono::steady_clock::now() >= options.deadline) break;
+            if ((prefix_unit >= 0 && prefix_unit != static_cast<int>(unit)) ||
+                (sink_node.kind == UnifiedNodeKind::Track && sink_node.unit != unit)) continue;
+            using Bans = std::set<std::pair<int, int>>;
+            auto pending = std::deque<Bans>{{}};
+            auto visited = std::set<Bans>{{}};
+            int trials = 0;
+            while (!pending.empty() && trials++ < 16) {
+                if (shared_expansions <= 0 ||
+                    std::chrono::steady_clock::now() >= options.deadline) break;
+                auto bans = std::move(pending.front()); pending.pop_front();
+                auto branch = attachment == sink ? std::Vector<int>{attachment} :
+                    search_path(graph, scope, attachment, sink, unit_bit(unit),
+                                own, bounded, groups, bans, banned_nodes);
+                if (branch.empty()) continue;
+                auto full = prefix.prefix;
+                full.insert(full.end(), branch.begin() + 1, branch.end());
+                auto candidate_paths = kept;
+                candidate_paths.push_back({net.net_id, prefix.source_index,
+                    demand->demand_id, prefix.physical_source_node, std::move(full)});
+                try {
+                    auto column = make_column(graph, net, owner,
+                                              candidate_paths, true, groups);
+                    const auto original = std::find_if(base.paths.begin(), base.paths.end(),
+                        [&](const auto& old) { return old.demand_id == replace_demand; });
+                    if (original != base.paths.end() &&
+                        original->source_index == column.paths.back().source_index &&
+                        original->node_path == column.paths.back().node_path)
+                        throw std::logic_error("unchanged terminal route");
+                    if (std::ranges::none_of(result, [&](const auto& old) {
+                        return old.paths.back().source_index ==
+                                   column.paths.back().source_index &&
+                               old.paths.back().node_path == column.paths.back().node_path;
+                    })) result.push_back(std::move(column));
+                    break;
+                } catch (const std::logic_error&) {
+                    for (std::size_t j = 1; j < branch.size(); ++j) {
+                        auto next = bans;
+                        next.insert(std::minmax(branch[j - 1], branch[j]));
+                        if (visited.insert(next).second)
+                            pending.push_back(std::move(next));
+                    }
+                }
+            }
+        }
+    }
+    std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
+        return std::tuple{a.wirelength, a.paths.back().node_path.size()} <
+               std::tuple{b.wirelength, b.paths.back().node_path.size()};
+    });
+    return result;
 }
 
 auto find_sync_prefix_column(const UnifiedGraph& graph, const RoutingNet& net,

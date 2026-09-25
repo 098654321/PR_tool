@@ -14,7 +14,8 @@ struct TestIlpCliOptions {
     std::String output_dir{"."};
     int verbose_level{0};
     int time_limit_minutes{0};
-    RouteBigMMode big_m_mode{RouteBigMMode::Fixed};
+    RouteBigMMode big_m_mode{RouteBigMMode::Default};
+    bool init_sat{false};
 };
 
 auto parse_test_ilp_cli(std::span<const std::string_view> args)

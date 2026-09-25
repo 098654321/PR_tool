@@ -395,16 +395,25 @@ auto tob_mode_case() -> void {
 auto main() -> int {
     PR_tool::debug::initial_log("/private/tmp/direct_ilp_unit_debug.log");
     const auto options = PR_tool::parse_test_ilp_cli(
-        {"config", "--time-limit", "2", "--m-mode", "gap-3", "-vv"});
+        {"config", "--time-limit", "2", "--m-mode", "gap-3", "--init-SAT", "-vv"});
     if (options.time_limit_minutes != 2 || options.verbose_level != 2 ||
-        options.big_m_mode != PR_tool::RouteBigMMode::GapThree)
+        options.big_m_mode != PR_tool::RouteBigMMode::GapThree || !options.init_sat)
         throw std::runtime_error("CLI parsing failed");
+    if (PR_tool::parse_test_ilp_cli({"config", "--m-mode", "default"}).big_m_mode !=
+        PR_tool::RouteBigMMode::Default)
+        throw std::runtime_error("default M mode was rejected");
     bool invalid_mode_rejected = false;
     try {
         (void)PR_tool::parse_test_ilp_cli({"config", "--m-mode", "invalid"});
     } catch (const std::invalid_argument&) { invalid_mode_rejected = true; }
     if (!invalid_mode_rejected)
         throw std::runtime_error("invalid M mode was accepted");
+    invalid_mode_rejected = false;
+    try {
+        (void)PR_tool::parse_test_ilp_cli({"config", "--m-mode", "min-lmin"});
+    } catch (const std::invalid_argument&) { invalid_mode_rejected = true; }
+    if (!invalid_mode_rejected)
+        throw std::runtime_error("retired M mode was accepted");
     PR_tool::simple_path_case();
     PR_tool::pn_source_case();
     PR_tool::pn_multiple_demands_case();

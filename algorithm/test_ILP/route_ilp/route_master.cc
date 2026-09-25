@@ -160,10 +160,12 @@ auto format_resource_node(const UnifiedGraph& graph, RouteResource resource,
 
 auto same_column(const RouteColumn& a, const RouteColumn& b) -> bool {
     if (a.paths.size() != b.paths.size() || a.resources != b.resources) return false;
-    for (std::size_t j = 0; j < a.paths.size(); ++j)
-        if (a.paths[j].demand_id != b.paths[j].demand_id ||
-            a.paths[j].source_index != b.paths[j].source_index ||
-            a.paths[j].node_path != b.paths[j].node_path) return false;
+    for (const auto& path : a.paths)
+        if (std::ranges::none_of(b.paths, [&](const auto& other) {
+            return path.demand_id == other.demand_id &&
+                   path.source_index == other.source_index &&
+                   path.node_path == other.node_path;
+        })) return false;
     return true;
 }
 
@@ -216,6 +218,9 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
                           std::chrono::steady_clock::time_point global_begin)
     -> RouteIlpResult {
     const auto start = std::chrono::steady_clock::now();
+    const auto deadline = options.time_limit_minutes > 0 ?
+        global_begin + std::chrono::minutes(options.time_limit_minutes) :
+        std::chrono::steady_clock::time_point::max();
     const auto remaining = [&]() -> double {
         if (options.time_limit_minutes <= 0) return 1e9;
         const double elapsed = std::chrono::duration<double>(
@@ -248,16 +253,45 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
     for (std::size_t i = 0; i < owners.size(); ++i) {
         const auto& net = net_for_owner(nets, owners[i]);
         const auto& scope = scope_for_owner(scopes, owners[i]);
-        shortest[i] = find_route_column(graph, net, scope, owners[i], {});
+        auto search = RouteSearchOptions{};
+        search.deadline = deadline;
+        shortest[i] = find_route_column(graph, net, scope, owners[i], search);
         if (net.is_sync_bus && !shortest[i].paths.empty())
             result.bus_lengths[net.net_id] = std::max(
                 result.bus_lengths[net.net_id], shortest[i].wirelength);
     }
     const auto initial_bus_lengths = result.bus_lengths;
+    auto sat_columns = std::Vector<RouteColumn>(owners.size());
+    auto sat_bus_lengths = std::map<std::size_t, std::size_t>{};
+    if (options.initial_sat_route != nullptr) {
+        for (std::size_t i = 0; i < owners.size(); ++i) {
+            const auto& net = net_for_owner(nets, owners[i]);
+            auto paths = std::Vector<SourceSinkPairPath>{};
+            for (const auto& path : options.initial_sat_route->paths)
+                if (path.net_id == net.net_id &&
+                    (!net.is_sync_bus || path.demand_id == owners[i].demand_id))
+                    paths.push_back(path);
+            sat_columns[i] = route_column_from_paths(graph, net, owners[i], paths);
+            if (net.is_sync_bus) {
+                const auto [it, inserted] = sat_bus_lengths.emplace(
+                    net.net_id, sat_columns[i].wirelength);
+                if (!inserted && it->second != sat_columns[i].wirelength)
+                    throw std::logic_error("initial SAT SyncBus lengths disagree");
+            }
+        }
+        for (const auto& [bus, length] : sat_bus_lengths)
+            result.bus_lengths[bus] = length;
+        debug::info_fmt("route ILP initial SAT columns: owners={} wirelength={}",
+            sat_columns.size(), options.initial_sat_route->total_wirelength);
+    }
     for (std::size_t i = 0; i < owners.size(); ++i) {
         const auto& net = net_for_owner(nets, owners[i]);
         if (!net.is_sync_bus) {
             if (!shortest[i].paths.empty()) pool[i].push_back(shortest[i]);
+            if (options.initial_sat_route != nullptr &&
+                std::ranges::none_of(pool[i], [&](const auto& column) {
+                    return same_column(column, sat_columns[i]);
+                })) pool[i].push_back(sat_columns[i]);
             continue;
         }
         const auto target = result.bus_lengths[net.net_id];
@@ -266,10 +300,15 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
             pool[i].push_back(shortest[i]);
         else {
             auto search = RouteSearchOptions{}; search.exact_length = target;
+            search.deadline = deadline;
             auto column = find_route_column(graph, net,
                 scope_for_owner(scopes, owners[i]), owners[i], search);
             if (!column.paths.empty()) pool[i].push_back(std::move(column));
         }
+        if (options.initial_sat_route != nullptr &&
+            std::ranges::none_of(pool[i], [&](const auto& column) {
+                return same_column(column, sat_columns[i]);
+            })) pool[i].push_back(sat_columns[i]);
     }
     std::size_t min_lmin = std::numeric_limits<std::size_t>::max();
     std::size_t max_lmin = 0;
@@ -277,7 +316,7 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
         min_lmin = std::min(min_lmin, length);
         max_lmin = std::max(max_lmin, length);
     }
-    if (options.big_m_mode != RouteBigMMode::Fixed) {
+    if (options.big_m_mode != RouteBigMMode::Default) {
         if (initial_bus_lengths.empty())
             throw std::invalid_argument("selected M mode requires a SyncBus");
         for (std::size_t i = 0; i < owners.size(); ++i)
@@ -291,16 +330,13 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
     for (const auto& columns : pool)
         if (!columns.empty()) {
             ++initial_covered_owners;
-            max_initial_owner_wirelength = std::max(max_initial_owner_wirelength,
-                                                   columns.front().wirelength);
+            for (const auto& column : columns)
+                max_initial_owner_wirelength = std::max(max_initial_owner_wirelength,
+                                                       column.wirelength);
         }
     double big_m = 10000.0;
     switch (options.big_m_mode) {
-        case RouteBigMMode::Fixed: break;
-        case RouteBigMMode::MinLmin: big_m = min_lmin; break;
-        case RouteBigMMode::MinLminPlusOne: big_m = min_lmin + 1; break;
-        case RouteBigMMode::MaxLmin: big_m = max_lmin; break;
-        case RouteBigMMode::MaxLminPlusOne: big_m = max_lmin + 1; break;
+        case RouteBigMMode::Default: break;
         case RouteBigMMode::GapOne:
         case RouteBigMMode::GapTwo:
         case RouteBigMMode::GapThree:
@@ -347,7 +383,7 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
         const bool has_previous = std::isfinite(previous_lp_objective);
         const double change = has_previous ? previous_lp_objective - lp.objective : 0.0;
         stagnant = has_previous && change >= 0.0 &&
-            change < 0.01 * wirelength_objective + 1e-9 ? stagnant + 1 : 0;
+            change < 0.001 * wirelength_objective + 1e-9 ? stagnant + 1 : 0;
         previous_lp_objective = lp.objective;
         debug::info_fmt("route ILP LP progress: round={} wirelength_part={} objective_drop={} stagnant={}/5",
                         round, wirelength_objective,
@@ -407,7 +443,7 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
             else debug::info("route ILP hotspot: largest eta_e-u_e=none");
         }
         if (stagnant >= 5) {
-            debug::info("route ILP pricing stop: five consecutive LP objective drops below 1% of wirelength part");
+            debug::info("route ILP pricing stop: five consecutive LP objective drops below 0.1% of wirelength part");
             break;
         }
         auto candidate_users = std::map<RouteResource, std::set<std::size_t>>{};
@@ -444,6 +480,7 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
             const auto& net = net_for_owner(nets, owners[i]);
             const auto& scope = scope_for_owner(scopes, owners[i]);
             auto options_for_search = RouteSearchOptions{};
+            options_for_search.deadline = deadline;
             if (net.is_sync_bus) options_for_search.exact_length =
                 result.bus_lengths[net.net_id];
             for (const auto& [resource, dual] : lp.resource_dual)
@@ -452,74 +489,89 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
             if (!pool[i].empty())
                 for (std::size_t j = 1; j < pool[i].size(); ++j)
                     if (lp.x[i][j] > lp.x[i][base]) base = j;
-            auto terminals = std::Vector<std::pair<std::size_t, std::size_t>>{};
-            if (!pool[i].empty())
-                for (const auto& path : pool[i][base].paths) {
-                    auto other_nodes = std::set<int>{};
-                    for (const auto& other : pool[i][base].paths)
-                        if (other.demand_id != path.demand_id)
-                            other_nodes.insert(other.node_path.begin(),
-                                               other.node_path.end());
-                    std::size_t branch_cost = 0;
-                    for (int node : path.node_path)
-                        if (!other_nodes.contains(node) &&
-                            is_wirelength_resource_node(graph, node)) ++branch_cost;
-                    terminals.emplace_back(branch_cost, path.demand_id);
-                }
+            auto terminals = pool[i].empty() ?
+                std::Vector<std::pair<double, std::size_t>>{} :
+                terminal_branch_weights(graph, pool[i][base], options_for_search);
             std::sort(terminals.begin(), terminals.end(), std::greater{});
             if (!pool[i].empty())
                 for (const auto& path : pool[i][base].paths)
                     for (int node : path.node_path)
                         options_for_search.discouraged_nodes.insert(node);
             const auto discouraged = options_for_search.discouraged_nodes;
-            auto negative = std::Vector<RouteColumn>{};
-            auto feasibility = std::Vector<RouteColumn>{};
-            for (int variant = 0; variant < 5; ++variant) {
-                options_for_search.variant = round * 5 + variant;
-                options_for_search.discouraged_nodes = variant == 0 ?
-                    std::set<int>{} : discouraged;
-                const RouteColumn* base_column = pool[i].empty() ?
-                    nullptr : &pool[i][base];
-                const std::size_t terminal = terminals.empty() ? 0 :
-                    terminals[static_cast<std::size_t>(variant) % terminals.size()].second;
-                auto candidate = find_route_column(graph, net, scope, owners[i],
-                                                   options_for_search,
-                                                   base_column, terminal);
-                if (candidate.paths.empty() || std::ranges::any_of(pool[i],
-                    [&](const auto& old) { return same_column(old, candidate); }) ||
-                    std::ranges::any_of(negative, [&](const auto& old) {
-                        return same_column(old, candidate); }) ||
-                    std::ranges::any_of(feasibility, [&](const auto& old) {
-                        return same_column(old, candidate); })) continue;
-                double reduced = static_cast<double>(candidate.wirelength) -
-                    (i < lp.owner_dual.size() ? lp.owner_dual[i] : 0.0);
-                for (const auto& resource : candidate.resources) {
-                    const auto it = lp.resource_dual.find(resource);
-                    if (it != lp.resource_dual.end()) reduced -= it->second;
-                }
-                if (reduced < -1e-7) negative.push_back(std::move(candidate));
-                else if (lp.slack[i] > 1e-6)
-                    feasibility.push_back(std::move(candidate));
-            }
             auto by_length = [](const RouteColumn& a, const RouteColumn& b) {
                 return std::tuple{a.wirelength, a.paths.size()} <
                        std::tuple{b.wirelength, b.paths.size()};
             };
-            std::sort(negative.begin(), negative.end(), by_length);
-            std::sort(feasibility.begin(), feasibility.end(), by_length);
-            auto& chosen = negative.empty() ? feasibility : negative;
-            const auto take = std::min<std::size_t>(2, chosen.size());
-            if (take > 0 && options.verbose_level >= 2) {
-                debug::info_fmt("route ILP pool update: net={} demand={} added={} shortest_wirelength={}",
-                    owners[i].net_id, owners[i].demand_id, take,
-                    chosen.front().wirelength);
-                log_column_paths(graph, chosen.front(), "route ILP pool update");
+            auto additions = std::Vector<RouteColumn>{};
+            const auto selected_terminals = terminals.empty() ? std::size_t{1} :
+                std::min<std::size_t>(5, terminals.size());
+            for (std::size_t t = 0; t < selected_terminals; ++t) {
+                const std::size_t terminal = terminals.empty() ? 0 : terminals[t].second;
+                auto negative = std::Vector<RouteColumn>{};
+                auto feasibility = std::Vector<RouteColumn>{};
+                auto novel = std::Vector<RouteColumn>{};
+                auto proposals = std::Vector<RouteColumn>{};
+                const bool multi_terminal = !pool[i].empty() &&
+                    pool[i][base].paths.size() > 1;
+                if (multi_terminal) {
+                    options_for_search.discouraged_nodes.clear();
+                    proposals = find_terminal_columns(graph, net, scope, owners[i],
+                        options_for_search, pool[i][base], terminal);
+                } else {
+                    const int variants = selected_terminals == 1 ? 5 : 2;
+                    for (int variant = 0; variant < variants; ++variant) {
+                        options_for_search.variant = round * 10 + static_cast<int>(t) * 2 + variant;
+                        options_for_search.discouraged_nodes = variant == 0 ?
+                            std::set<int>{} : discouraged;
+                        auto candidate = find_route_column(graph, net, scope, owners[i],
+                            options_for_search,
+                            pool[i].empty() ? nullptr : &pool[i][base], terminal);
+                        if (!candidate.paths.empty()) proposals.push_back(std::move(candidate));
+                    }
+                }
+                for (auto& candidate : proposals) {
+                    if (candidate.paths.empty() || std::ranges::any_of(pool[i],
+                        [&](const auto& old) { return same_column(old, candidate); }) ||
+                        std::ranges::any_of(additions, [&](const auto& old) {
+                            return same_column(old, candidate); }) ||
+                        std::ranges::any_of(novel, [&](const auto& old) {
+                            return same_column(old, candidate); }) ||
+                        std::ranges::any_of(negative, [&](const auto& old) {
+                            return same_column(old, candidate); }) ||
+                        std::ranges::any_of(feasibility, [&](const auto& old) {
+                            return same_column(old, candidate); })) continue;
+                    if (multi_terminal) {
+                        novel.push_back(std::move(candidate));
+                        continue;
+                    }
+                    double reduced = static_cast<double>(candidate.wirelength) -
+                        (i < lp.owner_dual.size() ? lp.owner_dual[i] : 0.0);
+                    for (const auto& resource : candidate.resources) {
+                        const auto it = lp.resource_dual.find(resource);
+                        if (it != lp.resource_dual.end()) reduced -= it->second;
+                    }
+                    if (reduced < -1e-7) negative.push_back(std::move(candidate));
+                    else if (lp.slack[i] > 1e-6)
+                        feasibility.push_back(std::move(candidate));
+                }
+                std::sort(negative.begin(), negative.end(), by_length);
+                std::sort(feasibility.begin(), feasibility.end(), by_length);
+                std::sort(novel.begin(), novel.end(), by_length);
+                auto& chosen = multi_terminal ? novel :
+                    negative.empty() ? feasibility : negative;
+                const auto take = std::min<std::size_t>(2, chosen.size());
+                if (take > 0 && options.verbose_level >= 2) {
+                    debug::info_fmt("route ILP pool update: net={} demand={} terminal={} added={} shortest_wirelength={}",
+                        owners[i].net_id, owners[i].demand_id, terminal, take,
+                        chosen.front().wirelength);
+                    log_column_paths(graph, chosen.front(), "route ILP pool update");
+                }
+                for (std::size_t j = 0; j < take; ++j)
+                    additions.push_back(std::move(chosen[j]));
             }
-            if (take > 0) ++updated;
-            for (std::size_t j = 0; j < take; ++j) {
-                pool[i].push_back(std::move(chosen[j]));
-                ++added;
-            }
+            if (!additions.empty()) ++updated;
+            added += additions.size();
+            for (auto& column : additions) pool[i].push_back(std::move(column));
         }
         debug::info_fmt("route ILP pricing round={} added={} updated_owners={}", round, added, updated);
         bool sync_slack = false;
@@ -548,7 +600,8 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
     if (remaining() > 0.0 && round < 64)
         for (std::size_t i = 0; i < owners.size(); ++i) {
             const auto& net = net_for_owner(nets, owners[i]);
-            if (net.is_sync_bus && (!mip.feasible || mip.slack[i] > 0.5) &&
+            if (options.initial_sat_route == nullptr && net.is_sync_bus &&
+                (!mip.feasible || mip.slack[i] > 0.5) &&
                 initial_bus_lengths.contains(net.net_id) &&
                 result.bus_lengths[net.net_id] == initial_bus_lengths.at(net.net_id))
                 increased[net.net_id] = result.bus_lengths[net.net_id] + 1;
@@ -565,6 +618,7 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
         pool[i].clear();
         auto search = RouteSearchOptions{};
         search.exact_length = result.bus_lengths.at(net.net_id);
+        search.deadline = deadline;
         auto column = find_route_column(graph, net,
             scope_for_owner(scopes, owners[i]), owners[i], search);
         if (!column.paths.empty()) pool[i].push_back(std::move(column));

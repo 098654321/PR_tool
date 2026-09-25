@@ -11,5 +11,7 @@ auto net_wirelength(const UnifiedGraph& graph,
     -> std::size_t;
 auto total_wirelength(const UnifiedGraph& graph, const RoutingResult& result)
     -> std::size_t;
+auto total_wirelength(const UnifiedGraph& graph, const SatRoutingResult& result)
+    -> std::size_t;
 
 } // namespace PR_tool

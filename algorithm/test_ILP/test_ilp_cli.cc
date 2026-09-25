@@ -34,6 +34,8 @@ auto parse_test_ilp_cli(std::span<const std::string_view> args)
             if (!mode)
                 throw std::invalid_argument(std::format("unknown --m-mode: {}", args[i]));
             options.big_m_mode = *mode;
+        } else if (arg == "--init-SAT") {
+            options.init_sat = true;
         } else if (arg.size() > 1 && arg[0] == '-') {
             bool verbose = true;
             for (std::size_t j = 1; j < arg.size(); ++j) verbose &= arg[j] == 'v';

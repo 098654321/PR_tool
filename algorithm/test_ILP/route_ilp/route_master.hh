@@ -9,7 +9,8 @@ struct RouteIlpOptions {
     int verbose_level{};
     int time_limit_minutes{};
     std::String highs_log_path;
-    RouteBigMMode big_m_mode{RouteBigMMode::Fixed};
+    RouteBigMMode big_m_mode{RouteBigMMode::Default};
+    const RoutingResult* initial_sat_route{};
 };
 
 struct RouteIlpResult {

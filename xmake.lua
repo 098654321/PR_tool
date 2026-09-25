@@ -293,7 +293,9 @@ target("test_ILP")
         "algorithm/test_ILP/test_ilp_cli.cc",
         "algorithm/test_ILP/scope/build_routing_nets.cc",
         "algorithm/test_ILP/scope/scope_bbox.cc",
+        "algorithm/test_ILP/scope/pair_routing_state.cc",
         "algorithm/test_ILP/graph/unified_routing_graph.cc",
+        "algorithm/test_ILP/delay/pair_delay_precompute.cc",
         "algorithm/test_ILP/direct_ilp/direct_scope.cc",
         "algorithm/test_ILP/direct_ilp/direct_validate.cc",
         "algorithm/test_ILP/route_ilp/route_search.cc",
@@ -301,6 +303,23 @@ target("test_ILP")
         "algorithm/test_ILP/route_ilp/route_rrr.cc",
         "algorithm/test_ILP/common/cob_unit_mask.cc",
         "algorithm/test_ILP/common/route_metrics.cc"
+    )
+    add_files(
+        "algorithm/test_ILP/sat/unified_sat_scope.cc",
+        "algorithm/test_ILP/sat/sat_constraint_kits.cc",
+        "algorithm/test_ILP/sat/sat_encoding_stats.cc",
+        "algorithm/test_ILP/sat/unified_sat_encoder.cc",
+        "algorithm/test_ILP/sat/node_occupancy.cc",
+        "algorithm/test_ILP/sat/encode_tob_special.cc",
+        "algorithm/test_ILP/sat/encode_bus_sync.cc",
+        "algorithm/test_ILP/sat/solve_unified_sat.cc",
+        "algorithm/test_ILP/sat/routing_feedback.cc",
+        "algorithm/test_ILP/sat/routing_round_diagnostics.cc",
+        "algorithm/test_ILP/sat/ideal_shortest_wirelength.cc",
+        "algorithm/test_ILP/sat/routing_solution_validate.cc",
+        "algorithm/test_ILP/sat/sat_solution_extract.cc",
+        "algorithm/test_ILP/sat/routing_path_log.cc",
+        "algorithm/test_ILP/sat_allocation/cadical_solver.cc"
     )
     add_files(
         "source/algo/**.cc",
@@ -311,6 +330,7 @@ target("test_ILP")
         "source/serde/**.cc"
     )
     add_highs_dependency()
+    add_cadical_dependency()
 
 target("test_ILP_unit")
     set_kind("binary")

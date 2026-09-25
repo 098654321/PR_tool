@@ -109,4 +109,20 @@ struct RoutingResult {
     std::size_t rrr_rerouted_owners{0};
 };
 
+// Optional initial SAT solve; only paths are passed to the route ILP.
+struct SatRoutingResult {
+    bool ok{false};
+    std::String message;
+    std::size_t num_vars{};
+    std::size_t num_clauses{};
+    long long solve_ms{};
+    long long sat_total_ms{};
+    long long sat_pre_ms{};
+    std::size_t feedback_rounds{};
+    std::size_t total_wirelength{};
+    std::Vector<SourceSinkPairPath> paths;
+    std::map<std::size_t, bool> vline_mode_straight_by_group;
+    std::Vector<int> used_tob_switch_ids;
+};
+
 } // namespace PR_tool

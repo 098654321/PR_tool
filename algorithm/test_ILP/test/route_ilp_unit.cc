@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 
@@ -95,7 +96,7 @@ auto simple_master() -> void {
     try {
         (void)solve_route_ilp(graph, nets, scopes,
             RouteIlpOptions{0, 1, "/private/tmp/route_ilp_unit_highs.log",
-                            RouteBigMMode::MinLmin});
+                            RouteBigMMode::GapOne});
     } catch (const std::invalid_argument&) { rejected = true; }
     require(rejected, "SyncBus M mode accepted an instance without SyncBus");
 }
@@ -125,6 +126,62 @@ auto sync_master_length() -> void {
             "negative initial max-owner gap was subtracted incorrectly");
 }
 
+auto sat_bus_length_seed() -> void {
+    auto graph = UnifiedGraph{};
+    for (int i = 0; i < 8; ++i) add_node(graph, UnifiedNodeKind::Track, i);
+    edge(graph, 0, 1); edge(graph, 1, 2); edge(graph, 2, 3);
+    edge(graph, 0, 2);
+    edge(graph, 4, 5); edge(graph, 5, 6); edge(graph, 6, 7);
+    edge(graph, 4, 6);
+    auto net = RoutingNet{}; net.is_sync_bus = true;
+    net.sources = {ref(UnifiedNodeKind::Track, 0), ref(UnifiedNodeKind::Track, 4)};
+    net.demands = {{0, ref(UnifiedNodeKind::Track, 3), {0}, true},
+                   {1, ref(UnifiedNodeKind::Track, 7), {1}, true}};
+    auto sat = RoutingResult{};
+    sat.paths = {{0, 0, 0, -1, {0, 1, 2, 3}},
+                 {0, 1, 1, -1, {4, 5, 6, 7}}};
+    sat.total_wirelength = 8;
+    const auto result = solve_route_ilp(graph, {net}, {full_scope(graph)},
+        RouteIlpOptions{0, 1, "/private/tmp/route_ilp_unit_highs.log",
+                        RouteBigMMode::Default, &sat});
+    require(result.route.ok && result.bus_lengths.at(0) == 4,
+            "SAT seed common length was lost to shorter search routes");
+    require(result.route.total_wirelength == 8,
+            "SAT seed did not supply complete length-four routes");
+}
+
+auto terminal_tree_pricing() -> void {
+    auto graph = UnifiedGraph{};
+    for (int i = 0; i < 6; ++i) add_node(graph, UnifiedNodeKind::Track, i);
+    edge(graph, 0, 1); edge(graph, 1, 2); edge(graph, 1, 3);
+    edge(graph, 1, 4); edge(graph, 4, 3);
+    edge(graph, 2, 5); edge(graph, 5, 3);
+    auto net = RoutingNet{};
+    net.sources = {ref(UnifiedNodeKind::Track, 0)};
+    net.demands = {{0, ref(UnifiedNodeKind::Track, 2), {0}, true},
+                   {1, ref(UnifiedNodeKind::Track, 3), {0}, true}};
+    const auto base = route_column_from_paths(graph, net, {0, 0},
+        {{0, 0, 0, -1, {0, 1, 2}}, {0, 0, 1, -1, {0, 1, 3}}});
+    auto options = RouteSearchOptions{};
+    options.prices[{0, 3, 0}] = 5.0;
+    require(exclusive_branch_weight(graph, base, 1, options) >
+            exclusive_branch_weight(graph, base, 0, options),
+            "terminal ranking ignored the weighted exclusive branch");
+    const auto columns = find_terminal_columns(graph, net, full_scope(graph),
+        {0, 0}, {}, base, 1);
+    require(columns.size() == 2, "terminal did not retain two replacement routes");
+    require(columns[0].paths.back().node_path != columns[1].paths.back().node_path,
+            "terminal replacements are duplicates");
+    require(std::ranges::all_of(columns, [&](const auto& column) {
+        return column.paths.front().node_path == std::Vector<int>{0, 1, 2} &&
+            column.paths.back().node_path != std::Vector<int>{0, 1, 3};
+    }), "terminal replacement did not attach to the retained tree");
+    options.deadline = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    require(find_terminal_columns(graph, net, full_scope(graph),
+                {0, 0}, options, base, 1).empty(),
+            "terminal search ignored its shared deadline");
+}
+
 auto sync_master_length_increase() -> void {
     auto graph = UnifiedGraph{};
     for (int i = 0; i < 6; ++i) add_node(graph, UnifiedNodeKind::Track, i);
@@ -150,10 +207,12 @@ auto sync_master_length_increase() -> void {
 auto big_m_modes() -> void {
     auto graph = UnifiedGraph{};
     for (int i = 0; i < 18; ++i) add_node(graph, UnifiedNodeKind::Track, i);
+    add_node(graph, UnifiedNodeKind::Track, 18);
     edge(graph, 0, 1); edge(graph, 2, 3);
     edge(graph, 4, 5); edge(graph, 5, 6);
     edge(graph, 7, 8); edge(graph, 8, 9);
     for (int i = 10; i < 17; ++i) edge(graph, i, i + 1);
+    edge(graph, 10, 18); edge(graph, 18, 11);
     auto nets = std::Vector<RoutingNet>(3);
     for (std::size_t bus = 0; bus < 2; ++bus) {
         auto& net = nets[bus];
@@ -173,10 +232,7 @@ auto big_m_modes() -> void {
     const auto scopes = std::Vector<RoutingScope>{
         full_scope(graph, 0), full_scope(graph, 1), full_scope(graph, 2)};
     const auto expected = std::array{
-        std::pair{RouteBigMMode::MinLmin, 2.0},
-        std::pair{RouteBigMMode::MinLminPlusOne, 3.0},
-        std::pair{RouteBigMMode::MaxLmin, 3.0},
-        std::pair{RouteBigMMode::MaxLminPlusOne, 4.0},
+        std::pair{RouteBigMMode::Default, 10000.0},
         std::pair{RouteBigMMode::GapOne, 8.0},
         std::pair{RouteBigMMode::GapTwo, 6.0},
         std::pair{RouteBigMMode::GapThree, 4.0 + 4.0 / 3.0},
@@ -187,10 +243,16 @@ auto big_m_modes() -> void {
             RouteIlpOptions{0, 1, "/private/tmp/route_ilp_unit_highs.log", mode});
         require(std::abs(result.big_m - value) < 1e-9,
                 "route ILP selected the wrong M for a SyncBus experiment mode");
-        if (mode == RouteBigMMode::MinLmin)
-            require(result.missing.contains({2, 0}),
-                    "MIP selected an isolated owner whose route costs more than M");
     }
+    auto sat = RoutingResult{};
+    sat.paths = {{0, 0, 0, -1, {0, 1}}, {0, 1, 1, -1, {2, 3}},
+                 {1, 0, 0, -1, {4, 5, 6}}, {1, 1, 1, -1, {7, 8, 9}},
+                 {2, 0, 0, -1, {10, 18, 11, 12, 13, 14, 15, 16, 17}}};
+    const auto sat_gap = solve_route_ilp(graph, nets, scopes,
+        RouteIlpOptions{0, 1, "/private/tmp/route_ilp_unit_highs.log",
+                        RouteBigMMode::GapOne, &sat});
+    require(std::abs(sat_gap.big_m - 9.0) < 1e-9,
+            "gap M ignored a longer SAT initial candidate");
 }
 
 auto missing_sync_lane() -> void {
@@ -418,6 +480,8 @@ auto unit_change() -> void {
 auto main() -> int {
     PR_tool::simple_master();
     PR_tool::sync_master_length();
+    PR_tool::sat_bus_length_seed();
+    PR_tool::terminal_tree_pricing();
     PR_tool::sync_master_length_increase();
     PR_tool::big_m_modes();
     PR_tool::missing_sync_lane();
