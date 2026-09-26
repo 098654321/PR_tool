@@ -330,11 +330,14 @@ def write_placeholder(output: Path, title: str, status: str) -> None:
 
 
 def render_final(paths: list, visual_dir: Path, status: str) -> None:
+    is_nege_or_pose = lambda p: p.net_name in ("Nege nets", "Pose nets")
+    is_track_to_bumps = lambda p: p.net_name.startswith(TRACK_TO_BUMPS_NAMES)
+    is_sync = lambda p: p.display == "SyncBus"
     groups = (
-        ("all_nege_nets.png", lambda p: p.net_name == "Nege nets", "Nege nets"),
-        ("all_pose_nets.png", lambda p: p.net_name == "Pose nets", "Pose nets"),
-        ("all_track_to_bumps.png", lambda p: p.net_name.startswith(TRACK_TO_BUMPS_NAMES), "TrackToBump(s) and BumpToBump nets"),
-        ("all_sync_nets.png", lambda p: p.display == "SyncBus", "Sync nets"),
+        ("all_nege_pose_nets.png", is_nege_or_pose, "Nege and Pose nets"),
+        ("all_sync_nets.png", is_sync, "Sync nets"),
+        ("all_track_to_bumps.png", is_track_to_bumps, "TrackToBump(s) and BumpToBump nets"),
+        ("all_other_nets.png", lambda p: not (is_nege_or_pose(p) or is_sync(p) or is_track_to_bumps(p)), "Other nets"),
     )
     for filename, predicate, label in groups:
         selected = [path for path in paths if predicate(path)]
@@ -369,10 +372,10 @@ def process_case_mode(root: Path, case: int, mode: str) -> int:
         render_final(paths, visual_dir, status)
     else:
         for filename, label in (
-            ("all_nege_nets.png", "Nege routes unavailable"),
-            ("all_pose_nets.png", "Pose routes unavailable"),
-            ("all_track_to_bumps.png", "TrackToBumps/TrackToBump/BumpToBump routes unavailable"),
+            ("all_nege_pose_nets.png", "Nege/Pose routes unavailable"),
             ("all_sync_nets.png", "Sync routes unavailable"),
+            ("all_track_to_bumps.png", "TrackToBumps/TrackToBump/BumpToBump routes unavailable"),
+            ("all_other_nets.png", "Other net routes unavailable"),
         ):
             write_placeholder(visual_dir / filename, label, status)
         loads_dir = visual_dir / "load-per-unit"

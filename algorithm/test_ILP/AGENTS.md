@@ -43,7 +43,7 @@ xmake build route_ilp_unit
 ./output/test_ILP algorithm/test_ILP/test/multi-pin/1 --time-limit 1 -o /tmp/route_ilp_case
 ```
 
-`--m-mode` 选择 `default`（默认 M=10000）或 `gap-1` 至 `gap-4`；动态档要求至少一组 SyncBus 且每条同步 lane 有初始路径。`gap-d` 取 `max(Lmin+1)+(初始候选池最大 owner 线长-max(Lmin+1))/d`。`--init-SAT` 启用 SAT 完整初始解并保留其同步线共同长度，SAT 仅供候选池使用。`--time-limit MIN` 限制 route ILP 与 RRR 的总运行时间。`-v` 输出额外的 bbox 与 scope 诊断；`-vv` 还输出每轮 LP 的基树路径、候选池更新路径及热点资源。`debug.log` 记录模型规模、M 的实际取值、求解时间、结果路径与 RRR 统计；同目录的 `highs.log` 和可选 `cadical/round_*/unified_sat.trace` 保存求解器日志。
+`--m-mode` 选择 `default`（默认 M=10000）或 `gap-1` 至 `gap-4`；动态档要求至少一组 SyncBus 且每条同步 lane 有初始路径。`gap-d` 取 `max(Lmin+1)+(初始候选池最大 owner 线长-max(Lmin+1))/d`。`--init-SAT` 启用 SAT 完整初始解并保留其同步线共同长度，SAT 仅供候选池使用。`--time-limit MIN` 限制 route ILP 与 RRR 的总运行时间。`-v` 输出额外的 bbox 与 scope 诊断；`-vv` 还输出每轮 LP 的基树路径、候选池更新路径及热点资源。`debug.log` 记录模型规模、M 的实际取值、求解时间、结果路径与 RRR 统计；同目录的 `highs.log` 保存 HiGHS 原生日志。当前 `test_ILP` 不生成 CaDiCaL API trace。
 
 测试时有一个常见的问题，就是source/hardware/interposer.hh当中给出的COB_ARRAY_WIDTH不一定和当前测试case使用的WIDTH一致，因为有些case用的是13，有些case用的是12。如果遇到类似“invalid external port coord: { row: 7, col: 12, H, index: 63 }”这样的问题，说明是WIDTH不一致导致的错误。你可以在认为其余测试已经足够的情况下直接忽略这个报错的测试，也可以回到source/hardware/interposer.hh，把WIDTH调整为12后重新构建并测试。
 
@@ -53,4 +53,4 @@ xmake build route_ilp_unit
 - 关键约束应有小型合成测试；测试断言必须在 Release 构建中生效。真实 case 用于检查规模、耗时与最终物理合法性。
 - 单文件保持紧凑，避免无关重构；保证正确性的前提下关注求解速度。
 - 代码文件的单次修改超过 200 行时，在实现完成后进行分离审查：如果实现过程是启动子agent实现的，那么可以由原主agent自己审查；如果实现是由主agent自己实现的，那么需要启动一个子agent审查。如果单次修改不超过200行，可以由实现的agent自己审查。如果审查之后有问题需要修正，但是修正之后不需要再进行单独的审查工作。
-- 在写代码的时候，关键的算法中间信息与结果信息（例如建模中的变量/约束数量、求解时间、求解出来的布线路径结果）等需要加入日志（debug.log），即使不含-v也要输出；一些次级信息，用于辅助深入debug的，例如算法参数、bbox范围等，在-v等情况下也要输出；如果算法调用了ILP/SAT等求解器等，求解器的原生求解日志需要生成在debug.log同目录下，即使运行时没有-v也要
+- 在写代码的时候，关键的算法中间信息与结果信息（例如建模中的变量/约束数量、求解时间、求解出来的布线路径结果）等需要加入日志（debug.log），即使不含-v也要输出；一些次级信息，用于辅助深入debug的，例如算法参数、bbox范围等，在-v等情况下也要输出；HiGHS 原生日志需要生成在 debug.log 同目录下，即使运行时没有 -v 也要；CaDiCaL API trace 按当前用户要求不生成。

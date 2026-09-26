@@ -43,8 +43,6 @@ auto run_main(int argc, char** argv) -> int {
         if (cli.init_sat) {
             auto sat_options = UnifiedSatSolveOptions{};
             sat_options.verbose_level = cli.verbose_level;
-            sat_options.cadical.log_dir = (log_dir / "cadical").string();
-            sat_options.cadical.enable_sat_log = true;
             initial_sat = solve_unified_sat(interposer.get(), *basedie.get(), sat_options);
             if (!initial_sat.ok) {
                 debug::error_fmt("initial SAT failed: {}", initial_sat.message);
