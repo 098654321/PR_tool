@@ -14,9 +14,13 @@ if [[ ! -d "$pr_tool_dir" ]]; then
 fi
 cd "$pr_tool_dir"
 
-read -r -p 'Project subdirectory name under Projects: ' project_name
-if [[ -z "$project_name" || "$project_name" == */* || "$project_name" == '.' || "$project_name" == '..' ]]; then
-    echo 'Project name must be a non-empty single directory name without /, . or ..' >&2
+read -r -p 'Project path under Projects (e.g. v24-0926-othercases/default): ' project_name
+if [[ -z "$project_name" || "$project_name" == /* || "$project_name" == */ || "$project_name" == *//* ]]; then
+    echo 'Project path must be a non-empty relative path under Projects without empty path components.' >&2
+    exit 2
+fi
+if [[ "/${project_name}/" == *"/../"* || "/${project_name}/" == *"/./"* ]]; then
+    echo 'Project path must not contain . or .. path components.' >&2
     exit 2
 fi
 

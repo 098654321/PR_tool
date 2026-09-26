@@ -32,7 +32,9 @@ PATH_RE = re.compile(
     r"(\d+) demand=(\d+) source=(\d+) path=(.*)$"
 )
 LP_RE = re.compile(r"route ILP LP round=(\d+)")
-UPDATE_RE = re.compile(r"route ILP pool update: net=(\d+) demand=(\d+) added=(\d+)")
+UPDATE_RE = re.compile(
+    r"route ILP pool update: net=(\d+) demand=(\d+)(?: terminal=\d+)? added=(\d+)"
+)
 HOTSPOT_RE = re.compile(r"route ILP hotspot: most negative pi_e=([^ ]+) node=(.*)$")
 TRACK_SEARCH_RE = re.compile(
     r"T U\d+ (?P<dir>[HV])\((?P<row>-?\d+),(?P<col>-?\d+)\) idx=(?P<idx>\d+)"
