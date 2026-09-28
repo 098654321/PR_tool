@@ -151,8 +151,13 @@ auto validate_routing_solution(
     report.path_count = out.paths.size();
     report.mode_groups = out.vline_mode_straight_by_group.size();
     auto net_by_id = std::map<std::size_t, const RoutingNet*> {};
+    auto endpoint_nodes = std::map<std::size_t, std::set<int>> {};
     for (const auto& net : nets) {
         net_by_id.emplace(net.net_id, &net);
+        for (const auto& source : net.sources)
+            endpoint_nodes[net.net_id].insert(resolve_graph_node(graph, source));
+        for (const auto& demand : net.demands)
+            endpoint_nodes[net.net_id].insert(resolve_graph_node(graph, demand.sink));
     }
 
     auto source_by_key = std::map<std::pair<std::size_t, std::size_t>, const SourceDelayVars*> {};
@@ -418,7 +423,8 @@ auto validate_routing_solution(
                     -1,
                     "extracted path must not contain virtual source node");
             }
-            if (net.has_scope_bbox && !node_in_scope(graph, node, net.scope_bbox)) {
+            if (net.has_scope_bbox && !node_in_scope(graph, node, net.scope_bbox)
+                && !endpoint_nodes.at(net.net_id).contains(node)) {
                 add_violation(
                     report,
                     ViolationKind::NodeOutOfScope,

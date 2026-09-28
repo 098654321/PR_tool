@@ -115,8 +115,9 @@ auto expand_pair_delay_one(PairRoutingState& pair) -> void {
 }
 
 auto apply_feedback_step_to_pair(PairRoutingState& pair, int net_failure_count) -> void {
-    expand_pair_delay_one(pair);
-    if (net_failure_count % 2 == 0) {
+    // A structurally disconnected scope has no shortest delay to extend yet.
+    if (!pair.delays.empty()) expand_pair_delay_one(pair);
+    if (net_failure_count % 4 == 1) {
         pair.pair_bbox = expand_pair_bbox_one_cell(pair.pair_bbox);
     }
 }

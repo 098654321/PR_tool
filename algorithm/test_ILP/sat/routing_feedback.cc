@@ -85,58 +85,33 @@ auto apply_feedback_expansion(
     }
 
     const auto critical_nets = critical_net_ids(critical_pairs);
-    auto full_critical_nets = std::set<std::size_t> {};
+    auto expandable_pairs = std::Vector<PairRoutingState*> {};
     for (const auto& key : critical_pairs) {
-        const auto* pair = find_pair_state(state, key);
-        if (pair != nullptr && is_full_chip_bbox(pair->pair_bbox)) {
-            full_critical_nets.insert(pair->key.net_id);
+        auto* pair = find_pair_state(state, key);
+        if (pair != nullptr && !is_full_chip_bbox(pair->pair_bbox)) {
+            expandable_pairs.push_back(pair);
         }
+    }
+
+    const bool expand_other_nets = expandable_pairs.empty();
+    if (expand_other_nets) {
+        for (auto& pair : state.pairs)
+            if (!critical_nets.contains(pair.key.net_id))
+                expandable_pairs.push_back(&pair);
+    }
+    if (expandable_pairs.empty()) {
+        return FeedbackExpansionStatus::Exhausted;
     }
 
     auto touched_nets = std::set<std::size_t> {};
-    if (!full_critical_nets.empty()) {
-        for (const std::size_t net_id : critical_nets) {
-            if (full_critical_nets.contains(net_id)) {
-                increment_feedback_failure_count(state, net_id);
-            }
-        }
-
-        auto other_nets = std::set<std::size_t> {};
-        for (const auto& pair : state.pairs) {
-            if (!full_critical_nets.contains(pair.key.net_id)) {
-                other_nets.insert(pair.key.net_id);
-            }
-        }
-        for (const std::size_t net_id : other_nets) {
-            const int failure_count = increment_feedback_failure_count(state, net_id);
-            const auto net_it = state.pair_indices_by_net.find(net_id);
-            if (net_it == state.pair_indices_by_net.end()) {
-                continue;
-            }
-            for (const std::size_t pair_index : net_it->second) {
-                apply_feedback_step_to_pair(state.pairs[pair_index], failure_count);
-            }
-            touched_nets.insert(net_id);
-        }
-    }
-    else {
-        for (const std::size_t net_id : critical_nets) {
-            increment_feedback_failure_count(state, net_id);
-        }
-        for (const auto& key : critical_pairs) {
-            auto* pair = find_pair_state(state, key);
-            if (pair == nullptr) {
-                continue;
-            }
-            const int failure_count = state.feedback_failure_count_by_net[key.net_id];
-            apply_feedback_step_to_pair(*pair, failure_count);
-            touched_nets.insert(key.net_id);
-        }
-    }
-
-    if (touched_nets.empty()) {
-        return FeedbackExpansionStatus::Exhausted;
-    }
+    for (const auto* pair : expandable_pairs) touched_nets.insert(pair->key.net_id);
+    for (const std::size_t net_id : touched_nets)
+        increment_feedback_failure_count(state, net_id);
+    for (auto* pair : expandable_pairs)
+        apply_feedback_step_to_pair(*pair, state.feedback_failure_count_by_net[pair->key.net_id]);
+    debug::info_fmt("feedback expansion: mode={} failed_nets={} expanded_nets={} expanded_pairs={}",
+        expand_other_nets ? "non_failed" : "failed", critical_nets.size(),
+        touched_nets.size(), expandable_pairs.size());
 
     for (const std::size_t net_id : touched_nets) {
         const auto* net = net_by_id(nets, net_id);
@@ -197,7 +172,23 @@ auto solve_with_feedback(
         const auto precompute_begin = std::chrono::steady_clock::now();
         apply_state_to_nets(problem_state, nets);
         const auto scopes = build_all_scopes(graph, nets);
-        const auto delays = compute_pair_delays(graph, nets, scopes, &problem_state);
+        auto delays = DelayPrecomputeResult{};
+        try {
+            delays = compute_pair_delays(graph, nets, scopes, &problem_state);
+        } catch (const ScopedPathUnavailable& error) {
+            out.feedback_rounds = round;
+            debug::info_fmt("feedback scoped path unavailable: net={} demand={} reason={}",
+                error.pair_key.net_id, error.pair_key.demand_id, error.what());
+            if (apply_feedback_expansion(problem_state, nets, {error.pair_key})
+                == FeedbackExpansionStatus::Exhausted) {
+                out.message = "UNSAT";
+                log_feedback_round_end(round, FeedbackRoundStatus::UnsatExhausted);
+                stamp_sat_timing(out);
+                return out;
+            }
+            log_feedback_round_end(round, FeedbackRoundStatus::UnsatExpand);
+            continue;
+        }
         const auto precompute_end = std::chrono::steady_clock::now();
         const auto precompute_ms =
             std::chrono::duration_cast<std::chrono::milliseconds>(

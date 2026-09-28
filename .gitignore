@@ -33,3 +33,4 @@ local/*
 test/module_test/test_writer/*
 
 .superpowers/
+.codex/

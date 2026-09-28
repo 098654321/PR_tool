@@ -417,12 +417,17 @@ auto node_in_scope(const UnifiedGraph& graph, int node_id, const IlpBoundingBox&
         return true;
     }
     if (node.kind == UnifiedNodeKind::Track) {
+        // Array-edge Tracks have only one physical neighboring COB.
         if (node.track_dir == 0) {
-            return cob_in_scope(graph, node.track_row, node.track_col - 1, scope)
-                || cob_in_scope(graph, node.track_row, node.track_col, scope);
+            const bool left = cob_in_scope(graph, node.track_row, node.track_col - 1, scope);
+            const bool right = cob_in_scope(graph, node.track_row, node.track_col, scope);
+            if (node.track_col == 0 || node.track_col == graph.cols) return left || right;
+            return left && right;
         }
-        return cob_in_scope(graph, node.track_row - 1, node.track_col, scope)
-            || cob_in_scope(graph, node.track_row, node.track_col, scope);
+        const bool down = cob_in_scope(graph, node.track_row - 1, node.track_col, scope);
+        const bool up = cob_in_scope(graph, node.track_row, node.track_col, scope);
+        if (node.track_row == 0 || node.track_row == graph.rows) return down || up;
+        return down && up;
     }
     const auto [tob_row, tob_col] = tob_index_from_linear(node.tob);
     const auto [cob0, cob1] = tob_pair_cob_coords(tob_row, tob_col);

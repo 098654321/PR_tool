@@ -364,7 +364,7 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
         result.bus_lengths.size(), big_m);
     bool first_log = true;
     int stagnant = 0;
-    double previous_lp_objective = std::numeric_limits<double>::quiet_NaN();
+    double previous_wirelength_objective = std::numeric_limits<double>::quiet_NaN();
     int round = 0;
     auto mip = MasterSolution{};
     while (true) {
@@ -380,14 +380,16 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
         for (std::size_t i = 0; i < owners.size(); ++i)
             for (std::size_t j = 0; j < pool[i].size(); ++j)
                 wirelength_objective += pool[i][j].wirelength * lp.x[i][j];
-        const bool has_previous = std::isfinite(previous_lp_objective);
-        const double change = has_previous ? previous_lp_objective - lp.objective : 0.0;
-        stagnant = has_previous && change >= 0.0 &&
-            change < 0.001 * wirelength_objective + 1e-9 ? stagnant + 1 : 0;
-        previous_lp_objective = lp.objective;
-        debug::info_fmt("route ILP LP progress: round={} wirelength_part={} objective_drop={} stagnant={}/5",
+        const bool has_previous = std::isfinite(previous_wirelength_objective);
+        const double change = has_previous ?
+            std::abs(wirelength_objective - previous_wirelength_objective) : 0.0;
+        stagnant = has_previous &&
+            change <= 0.001 * previous_wirelength_objective ? stagnant + 1 : 0;
+        debug::info_fmt("route ILP LP progress: round={} wirelength_part={} previous_wirelength_part={} wirelength_abs_change={} stagnant={}/5",
                         round, wirelength_objective,
+                        has_previous ? std::to_string(previous_wirelength_objective) : "n/a",
                         has_previous ? std::to_string(change) : "n/a", stagnant);
+        previous_wirelength_objective = wirelength_objective;
         if (options.verbose_level >= 2)
             for (std::size_t i = 0; i < owners.size(); ++i) {
                 if (pool[i].empty() || lp.x[i].empty()) {
@@ -443,7 +445,7 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
             else debug::info("route ILP hotspot: largest eta_e-u_e=none");
         }
         if (stagnant >= 5) {
-            debug::info("route ILP pricing stop: five consecutive LP objective drops below 0.1% of wirelength part");
+            debug::info("route ILP pricing stop: five consecutive LP wirelength relative changes at most 0.1%");
             break;
         }
         auto candidate_users = std::map<RouteResource, std::set<std::size_t>>{};
@@ -628,7 +630,7 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
             log_column_paths(graph, pool[i].front(), "route ILP SyncBus pool rebuilt");
     }
     stagnant = 0;
-    previous_lp_objective = std::numeric_limits<double>::quiet_NaN();
+    previous_wirelength_objective = std::numeric_limits<double>::quiet_NaN();
     ++round;
     }
     result.status = mip.status;

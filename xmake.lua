@@ -332,6 +332,27 @@ target("test_ILP")
     add_highs_dependency()
     add_cadical_dependency()
 
+target("sat_feedback_unit")
+    set_kind("binary")
+    set_targetdir("./output")
+    set_default(false)
+    add_includedirs("source", "source/global", "algorithm/test_ILP")
+    add_files(
+        "algorithm/test_ILP/test/sat_feedback_unit.cc",
+        "algorithm/test_ILP/scope/build_routing_nets.cc",
+        "algorithm/test_ILP/scope/scope_bbox.cc",
+        "algorithm/test_ILP/scope/pair_routing_state.cc",
+        "algorithm/test_ILP/graph/unified_routing_graph.cc",
+        "algorithm/test_ILP/delay/pair_delay_precompute.cc",
+        "algorithm/test_ILP/common/cob_unit_mask.cc",
+        "algorithm/test_ILP/common/route_metrics.cc",
+        "algorithm/test_ILP/sat/*.cc",
+        "algorithm/test_ILP/sat_allocation/cadical_solver.cc",
+        "source/algo/**.cc", "source/circuit/**.cc", "source/global/**.cc",
+        "source/hardware/**.cc", "source/parse/**.cc", "source/serde/**.cc"
+    )
+    add_cadical_dependency()
+
 target("test_ILP_unit")
     set_kind("binary")
     set_targetdir("./output")
