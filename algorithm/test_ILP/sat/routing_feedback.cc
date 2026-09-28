@@ -166,7 +166,7 @@ auto solve_with_feedback(
         }
     };
 
-    for (std::size_t round = 0; round < options.max_feedback_rounds; ++round) {
+    for (std::size_t round = 0;; ++round) {
         log_feedback_round_begin(round);
 
         const auto precompute_begin = std::chrono::steady_clock::now();
@@ -352,16 +352,6 @@ auto solve_with_feedback(
         }
     }
 
-    out.message = "UNSAT";
-    out.feedback_rounds = options.max_feedback_rounds;
-    debug::error_fmt(
-        "unified SAT failed: exceeded max_feedback_rounds={}",
-        options.max_feedback_rounds);
-    log_feedback_round_end(
-        options.max_feedback_rounds,
-        FeedbackRoundStatus::MaxRoundsExceeded);
-    stamp_sat_timing(out);
-    return out;
 }
 
 } // namespace PR_tool

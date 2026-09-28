@@ -1,5 +1,6 @@
 #include "sat/routing_feedback.hh"
 #include "sat/routing_solution_validate.hh"
+#include "sat/sat_solution_extract.hh"
 #include "scope/scope_bbox.hh"
 
 #include <hardware/cob/cob.hh>
@@ -149,6 +150,60 @@ auto endpoint_scope_exception() -> void {
                 ViolationKind::NodeOutOfScope), "SAT validation accepted a non-terminal fringe Track");
 }
 
+auto terminal_tob_channel_exception() -> void {
+    const auto graph = build_unified_graph(nullptr, {});
+    const auto bump_ref = [](std::size_t tob) {
+        auto ref = GraphNodeRef{}; ref.kind = GraphNodeRef::Kind::Bump;
+        ref.bump = Bump_coord{tob, 0, 0, 0}; return ref;
+    };
+    auto net = RoutingNet{}; net.kind = RoutingNetKind::Bnet;
+    net.sources = {bump_ref(0)}; // TOB (0,0), Channel V(1,0).
+    net.demands = {{0, bump_ref(hardware::Interposer::TOB_ARRAY_WIDTH + 1), {0}, true}};
+    auto nets = std::Vector<RoutingNet>{net};
+    auto state = init_routing_problem_state(nets);
+    apply_state_to_nets(state, nets);
+    require(format_bbox(nets[0].scope_bbox) == "(1,2,0,3)",
+            "TOB fixture must use the original initial Bnet bbox");
+    const auto scopes = build_all_scopes(graph, nets);
+    const auto& scope = scopes[0];
+    std::size_t access_tracks = 0;
+    for (int id = 0; id < static_cast<int>(graph.nodes.size()); ++id) {
+        const auto& node = graph.nodes[id];
+        if (node.kind != UnifiedNodeKind::Track) continue;
+        const bool access = node.track_dir == 1 &&
+            ((node.track_row == 1 && node.track_col == 0) ||
+             (node.track_row == 3 && node.track_col == 3));
+        require((scope.node_offset[id] >= 0) == (node_in_scope(graph, id, nets[0].scope_bbox) || access),
+                "TOB access exception omitted a Track or leaked to another Channel");
+        if (access) {
+            ++access_tracks;
+            require(!node_in_scope(graph, id, nets[0].scope_bbox),
+                    "TOB access fixture must exercise Tracks outside the initial bbox");
+        }
+    }
+    require(access_tracks == 256, "both endpoint Channels must include all 128 Tracks");
+    for (int aid = 0; aid < static_cast<int>(graph.arcs.size()); ++aid) {
+        const auto& arc = graph.arcs[aid];
+        const auto& u = graph.nodes[arc.u];
+        if (arc.physical_switch_kind == PhysicalSwitchKind::VLineTrack &&
+            u.kind == UnifiedNodeKind::VLine &&
+            (u.tob == 0 || u.tob == hardware::Interposer::TOB_ARRAY_WIDTH + 1))
+            require(scope.arc_offset[aid] >= 0, "endpoint TOB access switch missing from scope");
+    }
+    const auto delays = compute_pair_delays(graph, nets, scopes, &state);
+    auto session = CadicalSession{};
+    const auto model = build_unified_sat_model(session, graph, nets, scopes, delays);
+    for (const auto& alpha : model.alpha_vars) session.assume(alpha.alpha_lit);
+    const auto solved = session.solve();
+    require(solved.ok, "endpoint TOB net must route in its initial scope without expansion");
+    auto route = extract_sat_solution(graph, nets, model, session, solved);
+    require(route.ok && route.paths.size() == 1 &&
+            validate_routing_solution(graph, nets, model, session, route).pass,
+            "SAT validation rejected endpoint TOB Channel scope exceptions");
+    std::cout << "terminal TOB scope: access_tracks=" << access_tracks
+              << " initial_scope_route=PASS\n";
+}
+
 auto mixed_failures(bool same_net) -> void {
     auto state = RoutingProblemState{};
     const auto full = add_pair(state, 0, 0, full_chip_bbox());
@@ -202,6 +257,7 @@ auto sync_group_consistency() -> void {
 auto main() -> int {
     using namespace PR_tool;
     expansion_rhythm(); expanded_scope_connectivity(); endpoint_scope_exception();
+    terminal_tob_channel_exception();
     mixed_failures(false); mixed_failures(true);
     fallback_and_exhaustion(); sync_group_consistency();
     std::cout << "sat_feedback_unit: PASS\n";

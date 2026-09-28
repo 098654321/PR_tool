@@ -18,7 +18,6 @@ enum class FeedbackRoundStatus {
     UnsatExhausted,
     SolverError,
     MemoryLimit,
-    MaxRoundsExceeded,
 };
 
 struct NetStretchInfo {

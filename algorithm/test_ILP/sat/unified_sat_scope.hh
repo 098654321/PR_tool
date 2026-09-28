@@ -8,6 +8,9 @@
 
 namespace PR_tool {
 
+auto terminal_tob_access_tracks(const UnifiedGraph& graph, const RoutingNet& net)
+    -> std::set<int>;
+
 auto build_scope(
     const UnifiedGraph& graph,
     const RoutingNet& net,

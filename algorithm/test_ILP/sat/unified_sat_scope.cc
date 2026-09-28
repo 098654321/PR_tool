@@ -86,6 +86,23 @@ auto checked_endpoint(
 
 } // namespace
 
+auto terminal_tob_access_tracks(const UnifiedGraph& graph, const RoutingNet& net)
+    -> std::set<int> {
+    auto tracks = std::set<int>{};
+    for (const auto tob : terminal_tobs(net)) {
+        for (std::size_t line = 0; line < 128; ++line) {
+            const int vline = graph.vline_node_by_key.at({tob, line});
+            for (const int aid : graph.out_arc_ids[static_cast<std::size_t>(vline)]) {
+                const auto& arc = graph.arcs[static_cast<std::size_t>(aid)];
+                if (arc.physical_switch_kind == PhysicalSwitchKind::VLineTrack
+                    && graph.nodes[static_cast<std::size_t>(arc.v)].kind == UnifiedNodeKind::Track)
+                    tracks.insert(arc.v);
+            }
+        }
+    }
+    return tracks;
+}
+
 auto build_scope(
     const UnifiedGraph& graph,
     const RoutingNet& net,
@@ -109,6 +126,9 @@ auto build_scope(
             included[static_cast<std::size_t>(node)] = true;
         }
     }
+    // Keep the entire access Channel of each endpoint TOB, even at the bbox fringe.
+    for (const int node : terminal_tob_access_tracks(graph, net))
+        included[static_cast<std::size_t>(node)] = true;
     for (const int node : source_nodes) {
         if (node >= 0 && static_cast<std::size_t>(node) < included.size()) {
             included[static_cast<std::size_t>(node)] = true;

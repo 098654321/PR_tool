@@ -1,4 +1,5 @@
 #include "sat/routing_solution_validate.hh"
+#include "sat/unified_sat_scope.hh"
 
 #include <algorithm>
 #include <debug/debug.hh>
@@ -151,13 +152,15 @@ auto validate_routing_solution(
     report.path_count = out.paths.size();
     report.mode_groups = out.vline_mode_straight_by_group.size();
     auto net_by_id = std::map<std::size_t, const RoutingNet*> {};
-    auto endpoint_nodes = std::map<std::size_t, std::set<int>> {};
+    auto scope_exception_nodes = std::map<std::size_t, std::set<int>> {};
     for (const auto& net : nets) {
         net_by_id.emplace(net.net_id, &net);
+        auto& exceptions = scope_exception_nodes[net.net_id];
+        exceptions = terminal_tob_access_tracks(graph, net);
         for (const auto& source : net.sources)
-            endpoint_nodes[net.net_id].insert(resolve_graph_node(graph, source));
+            exceptions.insert(resolve_graph_node(graph, source));
         for (const auto& demand : net.demands)
-            endpoint_nodes[net.net_id].insert(resolve_graph_node(graph, demand.sink));
+            exceptions.insert(resolve_graph_node(graph, demand.sink));
     }
 
     auto source_by_key = std::map<std::pair<std::size_t, std::size_t>, const SourceDelayVars*> {};
@@ -424,7 +427,7 @@ auto validate_routing_solution(
                     "extracted path must not contain virtual source node");
             }
             if (net.has_scope_bbox && !node_in_scope(graph, node, net.scope_bbox)
-                && !endpoint_nodes.at(net.net_id).contains(node)) {
+                && !scope_exception_nodes.at(net.net_id).contains(node)) {
                 add_violation(
                     report,
                     ViolationKind::NodeOutOfScope,

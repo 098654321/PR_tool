@@ -95,8 +95,6 @@ auto feedback_round_status_name(FeedbackRoundStatus status) -> std::String {
             return "SOLVER_ERROR";
         case FeedbackRoundStatus::MemoryLimit:
             return "MEMORY_LIMIT";
-        case FeedbackRoundStatus::MaxRoundsExceeded:
-            return "MAX_ROUNDS_EXCEEDED";
     }
     return "UNKNOWN";
 }
