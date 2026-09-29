@@ -300,6 +300,7 @@ target("test_ILP")
         "algorithm/test_ILP/direct_ilp/direct_validate.cc",
         "algorithm/test_ILP/route_ilp/route_search.cc",
         "algorithm/test_ILP/route_ilp/route_master.cc",
+        "algorithm/test_ILP/route_ilp/route_incumbent.cc",
         "algorithm/test_ILP/route_ilp/route_rrr.cc",
         "algorithm/test_ILP/common/cob_unit_mask.cc",
         "algorithm/test_ILP/common/route_metrics.cc"
@@ -389,6 +390,7 @@ target("route_ilp_unit")
         "algorithm/test_ILP/direct_ilp/direct_validate.cc",
         "algorithm/test_ILP/route_ilp/route_search.cc",
         "algorithm/test_ILP/route_ilp/route_master.cc",
+        "algorithm/test_ILP/route_ilp/route_incumbent.cc",
         "algorithm/test_ILP/route_ilp/route_rrr.cc",
         "algorithm/test_ILP/common/cob_unit_mask.cc",
         "algorithm/test_ILP/common/route_metrics.cc"

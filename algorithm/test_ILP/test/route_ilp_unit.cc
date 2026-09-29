@@ -1,5 +1,6 @@
 #include "direct_ilp/direct_validate.hh"
 #include "route_ilp/route_master.hh"
+#include "route_ilp/route_incumbent.hh"
 #include "route_ilp/route_rrr.hh"
 
 #include <algorithm>
@@ -74,6 +75,78 @@ auto full_scope(const UnifiedGraph& graph, std::size_t net_id = 0)
         scope.arc_offset.push_back(a); scope.arc_ids.push_back(a);
     }
     return scope;
+}
+
+auto minimum_price_hotspots() -> void {
+    const auto a = RouteResource{0, 1, 0}, b = RouteResource{3, 2, 3};
+    const auto c = RouteResource{0, 4, 0};
+    require(minimum_dual_resources({{a, -5.0}, {b, -5.0 + 1e-10}, {c, -2.0}})
+            == std::set<RouteResource>{a, b},
+            "hotspots must include tied minimum prices and exclude other negative prices");
+    require(minimum_dual_resources({{a, 0.0}, {c, 0.0}})
+            == std::set<RouteResource>{a, c}, "zero minimum price ties were dropped");
+    require(minimum_dual_resources({}).empty(), "empty capacity set created a hotspot");
+}
+
+auto integer_lp_incumbent() -> void {
+    auto graph = UnifiedGraph{};
+    for (int n = 0; n < 11; ++n) add_node(graph, UnifiedNodeKind::Track, n);
+    edge(graph, 0, 1); edge(graph, 0, 4); edge(graph, 4, 1);
+    edge(graph, 4, 10); edge(graph, 10, 1);
+    edge(graph, 2, 3); edge(graph, 2, 5); edge(graph, 5, 3);
+    edge(graph, 6, 7); edge(graph, 8, 9);
+    auto nets = std::Vector<RoutingNet>(4);
+    auto scopes = std::Vector<RoutingScope>{};
+    for (std::size_t i = 0; i < nets.size(); ++i) {
+        auto& net = nets[i]; net.net_id = i; net.is_sync_bus = i == 1 || i == 3;
+        const int source = i == 0 ? 0 : i == 1 ? 2 : i == 2 ? 6 : 8;
+        net.sources = {ref(UnifiedNodeKind::Track, source)};
+        net.demands = {{0, ref(UnifiedNodeKind::Track, source + 1), {0}, true}};
+        scopes.push_back(full_scope(graph, i));
+    }
+    const auto column = [&](std::size_t net, std::Vector<int> path) {
+        return route_column_from_paths(graph, nets[net], {net, 0},
+            {{net, 0, 0, -1, std::move(path)}});
+    };
+    auto pool = std::Vector<std::Vector<RouteColumn>>{
+        {column(0, {0, 1}), column(0, {0, 4, 1})}, {column(1, {2, 3})},
+        {column(2, {6, 7})}, {column(3, {8, 9})}};
+    auto x = std::Vector<std::Vector<double>>{{1.0 - 1e-7, 1e-7}, {1}, {1}, {1}};
+    auto slack = std::Vector<double>(4, 0.0);
+    auto saved = complete_integer_lp_columns(pool, x, slack);
+    require(saved.has_value(), "near-integer complete LP solution was rejected");
+    x[0] = {0.5, 0.5};
+    require(!complete_integer_lp_columns(pool, x, slack), "fractional LP was saved as integer");
+    x[0] = {1, 0}; slack[1] = 1e-4;
+    require(!complete_integer_lp_columns(pool, x, slack), "LP with slack was saved as complete");
+    pool[0].push_back(column(0, {0, 4, 10, 1}));
+    const auto complete = remap_mip_start(pool, *saved, 10000);
+    require(complete.routed == 4 && complete.objective == 8 &&
+            complete.x[0] == std::Vector<double>{1, 0, 0} &&
+            complete.x[1] == std::Vector<double>{1} &&
+            std::ranges::all_of(complete.slack, [](double s) { return s == 0; }),
+            "candidate pool growth corrupted the saved MIP selection");
+    const auto targets = std::map<std::size_t, std::size_t>{{1, 3}, {3, 2}};
+    const auto discarded = discard_old_sync_columns(*saved, nets, targets);
+    require(discarded == std::Vector<RouteOwner>{{1, 0}} &&
+            !saved->at(0).paths.empty() && !saved->at(2).paths.empty() &&
+            !saved->at(3).paths.empty(), "length change discarded unaffected owner choices");
+    pool[1] = {column(1, {2, 5, 3})};
+    const auto partial = remap_mip_start(pool, *saved, 10000);
+    require(partial.routed == 3 && partial.objective == 10006 &&
+            partial.slack == std::Vector<double>{0, 1, 0, 0} &&
+            partial.x[1] == std::Vector<double>{0}, "invalid lane did not become integer slack");
+    auto route = RoutingResult{};
+    for (const auto& kept : *saved) {
+        route.paths.insert(route.paths.end(), kept.paths.begin(), kept.paths.end());
+        route.total_wirelength += kept.wirelength;
+    }
+    require(validate_partial_route(graph, nets, scopes, route, targets),
+            "retained integer partial seed is physically invalid");
+    const auto solved = solve_route_ilp(graph, nets, scopes,
+        RouteIlpOptions{0, 1, "/private/tmp/route_incumbent_unit_highs.log"});
+    require(solved.route.ok && solved.route.total_wirelength == 8,
+            "MIP start with multiple owner variable groups failed");
 }
 
 auto simple_master() -> void {
@@ -478,6 +551,8 @@ auto unit_change() -> void {
 } // namespace PR_tool
 
 auto main() -> int {
+    PR_tool::minimum_price_hotspots();
+    PR_tool::integer_lp_incumbent();
     PR_tool::simple_master();
     PR_tool::sync_master_length();
     PR_tool::sat_bus_length_seed();
