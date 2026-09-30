@@ -14,9 +14,6 @@ struct RouteMipStart {
     std::String source;
 };
 
-auto minimum_dual_resources(const std::map<RouteResource, double>& duals)
-    -> std::set<RouteResource>;
-
 auto same_route_column(const RouteColumn& a, const RouteColumn& b) -> bool;
 
 auto complete_integer_lp_columns(

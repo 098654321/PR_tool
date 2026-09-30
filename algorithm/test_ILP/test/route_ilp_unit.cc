@@ -77,17 +77,6 @@ auto full_scope(const UnifiedGraph& graph, std::size_t net_id = 0)
     return scope;
 }
 
-auto minimum_price_hotspots() -> void {
-    const auto a = RouteResource{0, 1, 0}, b = RouteResource{3, 2, 3};
-    const auto c = RouteResource{0, 4, 0};
-    require(minimum_dual_resources({{a, -5.0}, {b, -5.0 + 1e-10}, {c, -2.0}})
-            == std::set<RouteResource>{a, b},
-            "hotspots must include tied minimum prices and exclude other negative prices");
-    require(minimum_dual_resources({{a, 0.0}, {c, 0.0}})
-            == std::set<RouteResource>{a, c}, "zero minimum price ties were dropped");
-    require(minimum_dual_resources({}).empty(), "empty capacity set created a hotspot");
-}
-
 auto integer_lp_incumbent() -> void {
     auto graph = UnifiedGraph{};
     for (int n = 0; n < 11; ++n) add_node(graph, UnifiedNodeKind::Track, n);
@@ -551,7 +540,6 @@ auto unit_change() -> void {
 } // namespace PR_tool
 
 auto main() -> int {
-    PR_tool::minimum_price_hotspots();
     PR_tool::integer_lp_incumbent();
     PR_tool::simple_master();
     PR_tool::sync_master_length();

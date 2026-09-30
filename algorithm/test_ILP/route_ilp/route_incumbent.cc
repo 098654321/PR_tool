@@ -5,17 +5,6 @@
 
 namespace PR_tool {
 
-auto minimum_dual_resources(const std::map<RouteResource, double>& duals)
-    -> std::set<RouteResource> {
-    auto result = std::set<RouteResource>{};
-    if (duals.empty()) return result;
-    const double minimum = std::min_element(duals.begin(), duals.end(),
-        [](const auto& a, const auto& b) { return a.second < b.second; })->second;
-    for (const auto& [resource, dual] : duals)
-        if (std::abs(dual - minimum) <= 1e-8) result.insert(resource);
-    return result;
-}
-
 auto same_route_column(const RouteColumn& a, const RouteColumn& b) -> bool {
     if (a.paths.size() != b.paths.size() || a.resources != b.resources) return false;
     for (const auto& path : a.paths)

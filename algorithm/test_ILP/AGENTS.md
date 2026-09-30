@@ -17,7 +17,7 @@
 | `direct_ilp/direct_scope.*` | net 级全 COB 阵列、端点 Bump 的 TOB 接入节点和 arc scope |
 | `route_ilp/route_search.*` | 物理 owner、候选路径搜索及节点/TOB 资源集合 |
 | `route_ilp/route_master.*` | 完整候选的 LP 定价与 HiGHS 整数选择，允许未布通 owner |
-| `route_ilp/route_incumbent.*` | 并列最小对偶热点、完整整数 LP 提取、同步长度失效检查与 MIP 初始解重映射 |
+| `route_ilp/route_incumbent.*` | 完整整数 LP 提取、同步长度失效检查与 MIP 初始解重映射 |
 | `sat/*`, `delay/*`, `scope/pair_routing_state.*` | 可选 `--init-SAT` 的原 SAT 编码、反馈扩窗与路径提取 |
 | `route_ilp/route_rrr.*` | 接收合法部分解，补布缺失 owner 并事务式重布 |
 | `direct_ilp/direct_validate.*` | 独立检查部分或完整路径、scope、互斥、TOB、同步长度及线长 |
@@ -32,7 +32,7 @@
 - 内部 Channel Track 仅在两端 COB 都在 bbox 内时纳入；芯片边界外接 Track 仅需唯一物理邻接 COB 在 bbox 内。实际 source/sink（含 PN 候选源）由 scope 构造单独保留；SAT scope 额外纳入每个端点 TOB 接入 Channel 的全部 128 条 Track 及已选节点间的 arc，SAT 验证采用相同例外。单独的 Track 端点仍只保留自身，不连带纳入同一 Channel 的其它 Track。
 - SAT 延迟预计算发现 scope 无结构路径时，按失败路径对进入反馈扩窗；尚无最短延迟的空长度集合保持为空，扩大范围后再初始化，不能用虚构的长度 1 代替。
 - SyncBus 的每条 lane 是独立物理 owner，共享总线的全阵列 scope；RRR 可重布 lane，但长度须保持当前共同长度。
-- 热点为全部并列最小容量对偶（绝对容差 1e-8，含最小值为 0 的情况）与基树预测超容资源的并集。挑选 slack >1e-6、基树使用热点或端点在热点 `bbox+1` 内的 owner；不根据未选候选关联热点，也不进行周期性/空集合全量回退。候选搜索与 RRR 仍用全阵列 scope。
+- 热点为全部容量对偶小于 -1e-8 的资源与基树预测超容资源的并集。挑选 slack >1e-6、基树使用热点、候选池中任意列使用热点或端点在热点 `bbox+1` 内的 owner；每三轮（`round % 3 == 2`）和挑选结果为空时选全部 owner。候选搜索与 RRR 仍用全阵列 scope。
 - 每轮以 1e-6 容差检查完整整数 LP 解，经物理验证后保存线长最小者；SAT 解为后备。MIP 按当前 owner/候选重新映射并提交选路向量。同步长度变化仅删除保存解中长度失效的 lane，其余选路保留，缺失 lane 在初始向量中设 x=0、s=1；不同保存解不能直接混合。
 - RRR 事务中可暂时拆线或发生冲突；只提交零 overflow、每个已布通 owner 完整合法且未布通数减少，或未布通数不变而线长下降的结果。
 

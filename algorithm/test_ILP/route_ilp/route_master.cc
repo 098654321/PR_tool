@@ -453,14 +453,14 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
                 if (resource.kind == 0 || resource.kind == 3)
                     predicted[resource].insert(i);
         }
-        const auto minimum_resources = minimum_dual_resources(lp.resource_dual);
-        for (const auto& resource : minimum_resources) predicted.try_emplace(resource);
+        for (const auto& [resource, dual] : lp.resource_dual)
+            if (dual < -1e-8) predicted.try_emplace(resource);
         if (options.verbose_level >= 2) {
             const auto most_negative = std::min_element(lp.resource_dual.begin(),
                 lp.resource_dual.end(), [](const auto& a, const auto& b) {
                     return a.second < b.second;
                 });
-            if (most_negative != lp.resource_dual.end())
+            if (most_negative != lp.resource_dual.end() && most_negative->second < -1e-8)
                 debug::info_fmt("route ILP hotspot: most negative pi_e={} node={}",
                     most_negative->second,
                     format_resource_node(graph, most_negative->first, switch_nodes));
@@ -480,9 +480,20 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
             debug::info("route ILP pricing stop: five consecutive LP wirelength relative changes at most 0.1%");
             break;
         }
+        auto candidate_users = std::map<RouteResource, std::set<std::size_t>>{};
+        for (std::size_t i = 0; i < owners.size(); ++i)
+            for (const auto& column : pool[i])
+                for (const auto& resource : column.resources)
+                    if (resource.kind == 0 || resource.kind == 3)
+                        candidate_users[resource].insert(i);
         for (const auto& [resource, users] : predicted) {
-            if (users.size() <= 1 && !minimum_resources.contains(resource)) continue;
+            const auto price = lp.resource_dual.find(resource);
+            if (users.size() <= 1 && (price == lp.resource_dual.end() ||
+                price->second >= -1e-8)) continue;
             selected.insert(users.begin(), users.end());
+            const auto known = candidate_users.find(resource);
+            if (known != candidate_users.end())
+                selected.insert(known->second.begin(), known->second.end());
             const auto anchor = resource_anchor(graph, resource, switch_nodes);
             const auto neighborhood = expand_pair_bbox_one_cell({
                 anchor.row, anchor.row, anchor.col, anchor.col});
@@ -491,15 +502,17 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
                     [&](const auto endpoint) { return in_box(endpoint, neighborhood); }))
                     selected.insert(i);
         }
+        const bool full_selection_fallback = selected.empty() || round % 3 == 2;
+        if (full_selection_fallback)
+            for (std::size_t i = 0; i < owners.size(); ++i) selected.insert(i);
         debug::info_fmt("route ILP pricing selection: round={} owners={}",
                         round, selected.size());
-        debug::info_fmt("route ILP pricing hotspots: slack_owners={} overloaded_resources={} minimum_pi={} minimum_resources={}",
+        debug::info_fmt("route ILP pricing hotspots: slack_owners={} overloaded_resources={} negative_dual_resources={} full_selection_fallback={}",
             std::ranges::count_if(lp.slack, [](double s) { return s > 1e-6; }),
             std::ranges::count_if(predicted, [](const auto& item) { return item.second.size() > 1; }),
-            minimum_resources.empty() ? "n/a" : std::to_string(std::min_element(
-                lp.resource_dual.begin(), lp.resource_dual.end(),
-                [](const auto& a, const auto& b) { return a.second < b.second; })->second),
-            minimum_resources.size());
+            std::ranges::count_if(lp.resource_dual,
+                [](const auto& item) { return item.second < -1e-8; }),
+            full_selection_fallback);
         auto added = std::size_t{};
         auto updated = std::size_t{};
         for (const std::size_t i : selected) {
