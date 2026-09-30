@@ -453,17 +453,20 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
                 if (resource.kind == 0 || resource.kind == 3)
                     predicted[resource].insert(i);
         }
-        for (const auto& [resource, dual] : lp.resource_dual)
-            if (dual < -1e-8) predicted.try_emplace(resource);
+        const auto minimum_dual = std::min_element(lp.resource_dual.begin(),
+            lp.resource_dual.end(), [](const auto& a, const auto& b) {
+                return a.second < b.second;
+            });
+        const bool has_dual_hotspot = minimum_dual != lp.resource_dual.end() &&
+            minimum_dual->second < -1e-8;
+        if (has_dual_hotspot)
+            for (const auto& [resource, dual] : lp.resource_dual)
+                if (dual == minimum_dual->second) predicted.try_emplace(resource);
         if (options.verbose_level >= 2) {
-            const auto most_negative = std::min_element(lp.resource_dual.begin(),
-                lp.resource_dual.end(), [](const auto& a, const auto& b) {
-                    return a.second < b.second;
-                });
-            if (most_negative != lp.resource_dual.end() && most_negative->second < -1e-8)
+            if (has_dual_hotspot)
                 debug::info_fmt("route ILP hotspot: most negative pi_e={} node={}",
-                    most_negative->second,
-                    format_resource_node(graph, most_negative->first, switch_nodes));
+                    minimum_dual->second,
+                    format_resource_node(graph, minimum_dual->first, switch_nodes));
             else debug::info("route ILP hotspot: most negative pi_e=none");
             const auto most_congested = std::max_element(predicted.begin(),
                 predicted.end(), [](const auto& a, const auto& b) {
@@ -488,8 +491,9 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
                         candidate_users[resource].insert(i);
         for (const auto& [resource, users] : predicted) {
             const auto price = lp.resource_dual.find(resource);
-            if (users.size() <= 1 && (price == lp.resource_dual.end() ||
-                price->second >= -1e-8)) continue;
+            const bool dual_hotspot = has_dual_hotspot &&
+                price != lp.resource_dual.end() && price->second == minimum_dual->second;
+            if (users.size() <= 1 && !dual_hotspot) continue;
             selected.insert(users.begin(), users.end());
             const auto known = candidate_users.find(resource);
             if (known != candidate_users.end())
@@ -502,17 +506,19 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
                     [&](const auto endpoint) { return in_box(endpoint, neighborhood); }))
                     selected.insert(i);
         }
-        const bool full_selection_fallback = selected.empty();
-        if (full_selection_fallback)
+        const bool periodic_full_selection = round % 3 == 2;
+        if (periodic_full_selection)
             for (std::size_t i = 0; i < owners.size(); ++i) selected.insert(i);
         debug::info_fmt("route ILP pricing selection: round={} owners={}",
                         round, selected.size());
-        debug::info_fmt("route ILP pricing hotspots: slack_owners={} overloaded_resources={} negative_dual_resources={} full_selection_fallback={}",
+        debug::info_fmt("route ILP pricing hotspots: slack_owners={} overloaded_resources={} minimum_dual_resources={} periodic_full_selection={}",
             std::ranges::count_if(lp.slack, [](double s) { return s > 1e-6; }),
             std::ranges::count_if(predicted, [](const auto& item) { return item.second.size() > 1; }),
             std::ranges::count_if(lp.resource_dual,
-                [](const auto& item) { return item.second < -1e-8; }),
-            full_selection_fallback);
+                [&](const auto& item) {
+                    return has_dual_hotspot && item.second == minimum_dual->second;
+                }),
+            periodic_full_selection);
         auto added = std::size_t{};
         auto updated = std::size_t{};
         for (const std::size_t i : selected) {
