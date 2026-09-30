@@ -502,7 +502,7 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
                     [&](const auto endpoint) { return in_box(endpoint, neighborhood); }))
                     selected.insert(i);
         }
-        const bool full_selection_fallback = selected.empty() || round % 3 == 2;
+        const bool full_selection_fallback = selected.empty();
         if (full_selection_fallback)
             for (std::size_t i = 0; i < owners.size(); ++i) selected.insert(i);
         debug::info_fmt("route ILP pricing selection: round={} owners={}",
