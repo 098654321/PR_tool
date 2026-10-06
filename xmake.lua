@@ -474,6 +474,7 @@ target("FPIA_RRR")
         "algorithm/FPIA-RRR/resource_model.cc",
         "algorithm/FPIA-RRR/maze_search.cc",
         "algorithm/FPIA-RRR/rrr_router.cc",
+        "algorithm/FPIA-RRR/rrr_routing.cc",
         "algorithm/FPIA-RRR/sync_equalize.cc",
         "algorithm/FPIA-RRR/route_validate.cc"
     )
@@ -493,6 +494,8 @@ target("FPIA_RRR_unit")
     add_includedirs("source", "source/global", "algorithm/FPIA-RRR")
     add_files(
         "algorithm/FPIA-RRR/test/unit_main.cc",
+        "algorithm/FPIA-RRR/test/adapter_cases.cc",
+        "algorithm/FPIA-RRR/test/rrr_budget_cases.cc",
         "algorithm/FPIA-RRR/test/tob_mux_fanout.cc",
         "algorithm/FPIA-RRR/rrr_cli.cc",
         "algorithm/FPIA-RRR/net_adapter.cc",
@@ -501,6 +504,7 @@ target("FPIA_RRR_unit")
         "algorithm/FPIA-RRR/resource_model.cc",
         "algorithm/FPIA-RRR/maze_search.cc",
         "algorithm/FPIA-RRR/rrr_router.cc",
+        "algorithm/FPIA-RRR/rrr_routing.cc",
         "algorithm/FPIA-RRR/sync_equalize.cc",
         "algorithm/FPIA-RRR/route_validate.cc"
     )
@@ -528,6 +532,7 @@ target("FPIA_RRR_mux_test")
         "algorithm/FPIA-RRR/resource_model.cc",
         "algorithm/FPIA-RRR/maze_search.cc",
         "algorithm/FPIA-RRR/rrr_router.cc",
+        "algorithm/FPIA-RRR/rrr_routing.cc",
         "algorithm/FPIA-RRR/sync_equalize.cc",
         "algorithm/FPIA-RRR/route_validate.cc"
     )

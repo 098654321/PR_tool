@@ -457,17 +457,16 @@ auto solve_route_ilp_impl(const UnifiedGraph& graph,
             lp.resource_dual.end(), [](const auto& a, const auto& b) {
                 return a.second < b.second;
             });
-        const bool has_dual_hotspot = minimum_dual != lp.resource_dual.end() &&
-            minimum_dual->second < -1e-8;
+        const bool has_dual_hotspot = minimum_dual != lp.resource_dual.end();
         if (has_dual_hotspot)
             for (const auto& [resource, dual] : lp.resource_dual)
                 if (dual == minimum_dual->second) predicted.try_emplace(resource);
         if (options.verbose_level >= 2) {
             if (has_dual_hotspot)
-                debug::info_fmt("route ILP hotspot: most negative pi_e={} node={}",
+                debug::info_fmt("route ILP hotspot: minimum pi_e={} node={}",
                     minimum_dual->second,
                     format_resource_node(graph, minimum_dual->first, switch_nodes));
-            else debug::info("route ILP hotspot: most negative pi_e=none");
+            else debug::info("route ILP hotspot: minimum pi_e=none");
             const auto most_congested = std::max_element(predicted.begin(),
                 predicted.end(), [](const auto& a, const auto& b) {
                     return a.second.size() < b.second.size();

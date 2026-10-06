@@ -1,6 +1,7 @@
 #include "rrr_cli.hh"
 
 #include <charconv>
+#include <cmath>
 #include <format>
 #include <stdexcept>
 
@@ -50,6 +51,21 @@ auto parse_rrr_cli(std::span<std::string_view> args) -> RrrCliOptions {
                 throw std::invalid_argument("--seed requires a non-negative integer argument");
             }
             options.seed = parse_non_negative_int(args[i], "--seed");
+            continue;
+        }
+        if (arg == "--time-budget-seconds") {
+            if (++i >= args.size()) {
+                throw std::invalid_argument("--time-budget-seconds requires a non-negative number");
+            }
+            double seconds = 0;
+            const auto value = args[i];
+            const auto [end, error] = std::from_chars(
+                value.data(), value.data() + value.size(), seconds);
+            if (error != std::errc{} || end != value.data() + value.size()
+                || !std::isfinite(seconds) || seconds < 0) {
+                throw std::invalid_argument("--time-budget-seconds requires a finite non-negative number");
+            }
+            options.time_budget_seconds = seconds;
             continue;
         }
         if (arg.size() >= 2 && arg[0] == '-' && arg[1] == 'v') {

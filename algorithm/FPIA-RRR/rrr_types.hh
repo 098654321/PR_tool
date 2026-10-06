@@ -3,6 +3,7 @@
 #include <hardware/track/trackcoord.hh>
 
 #include <cstddef>
+#include <chrono>
 #include <std/collection.hh>
 #include <std/integer.hh>
 #include <std/string.hh>
@@ -10,23 +11,31 @@
 
 namespace PR_tool {
 
+inline constexpr int kRrrDefaultMaxIterations = 1000000000;
+
 struct RrrCliOptions {
     std::String config_path;
     std::String output_dir{"."};
     int verbose_level{0};
-    int max_iterations{64};
+    int max_iterations{kRrrDefaultMaxIterations};
+    double time_budget_seconds{0};
     int seed{1};
 };
 
 struct RrrResult {
     std::String status;
+    std::String stop_reason;
     int iterations{0};
+    int optimization_rounds{0};
     int best_overflow{0};
     int unequal_sync_groups{0};
     std::size_t total_sync_gap{0};
     std::size_t total_wirelength{0};
     std::Vector<std::Vector<std::Vector<int>>> paths;
     std::i64 routing_ms{0};
+    std::i64 first_legal_ms{-1};
+    std::i64 best_legal_ms{-1};
+    std::i64 budget_elapsed_ms{0};
 };
 
 struct OwnerId {
@@ -123,7 +132,9 @@ struct RrrParams {
     double increment{1};
     double history_weight{1};
     double detour_bias{0};
-    int max_iterations{64};
+    int max_iterations{kRrrDefaultMaxIterations};
+    double time_budget_seconds{0};
+    std::chrono::steady_clock::time_point budget_start{};
     int stagnation_limit{8};
     int sync_tail_extra_tracks{64};
     int seed{1};

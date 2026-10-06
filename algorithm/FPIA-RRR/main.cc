@@ -10,6 +10,8 @@
 #include <utility/elapsed.hh>
 
 #include <cstdlib>
+#include <chrono>
+#include <algorithm>
 #include <filesystem>
 #include <stdexcept>
 
@@ -18,7 +20,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: ./output/FPIA_RRR <config_path> [-v|-vv] [-o DIR] [--max-iterations N] [--seed N]";
+    "Usage: ./output/FPIA_RRR <config_path> [-v|-vv] [-o DIR] [--max-iterations N] [--seed N] [--time-budget-seconds S]";
 
 } // namespace
 
@@ -47,6 +49,7 @@ auto run_main(int argc, char** argv) -> int {
     const auto log_dir = std::filesystem::path {cli.output_dir};
     std::filesystem::create_directories(log_dir);
     debug::initial_log(log_dir / "debug.log");
+    const auto begin = std::chrono::steady_clock::now();
 
     auto [interposer, basedie] = PR_tool::parse::read_config(cli.config_path, 0, false);
     algo::build_nets(basedie.get(), interposer.get());
@@ -56,14 +59,19 @@ auto run_main(int argc, char** argv) -> int {
     auto params = RrrParams {};
     params.max_iterations = cli.max_iterations;
     params.seed = cli.seed;
+    params.time_budget_seconds = cli.time_budget_seconds;
+    params.budget_start = begin;
     const auto result = run_rrr(graph, nets, params, interposer.get(), cli.verbose_level);
-    if (result.status != "success" || result.best_overflow != 0) {
-        return 1;
-    }
-    if (!validate_rrr_solution(graph, nets, result, interposer.get())) {
-        return 1;
-    }
-    return 0;
+    const bool success = result.status == "success" && result.best_overflow == 0
+        && validate_rrr_solution(graph, nets, result, interposer.get());
+    const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - begin).count();
+    debug::info_fmt(
+        "FPIA RRR complete: status={} stop_reason={} wirelength={} total_ms={} time_budget_seconds={} over_budget_ms={}",
+        success ? "success" : "failed", result.stop_reason, result.total_wirelength, total_ms,
+        cli.time_budget_seconds,
+        cli.time_budget_seconds > 0 ? std::max(0.0, total_ms - cli.time_budget_seconds * 1000) : 0.0);
+    return success ? 0 : 1;
 }
 
 } // namespace PR_tool
