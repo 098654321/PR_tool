@@ -75,10 +75,10 @@ auto optimization_nets(
         }
         const auto current = net_wirelength(graph, paths[i]);
         const auto reference = *references[i];
-        // Integer lengths: current-reference > floor(reference/5) is strictly >20%.
-        if (current > reference && current - reference > reference / 5) {
+        // Integer lengths: current-reference > floor(reference/10) is strictly >10%.
+        if (current > reference && current - reference > reference / 10) {
             selected.insert(i);
-            debug::info_fmt("FPIA RRR: optimize candidate net_id={} wirelength={} reference={} excess_percent=20",
+            debug::info_fmt("FPIA RRR: optimize candidate net_id={} wirelength={} reference={} excess_percent=10",
                             nets[i].net_id, current, reference);
         }
     }

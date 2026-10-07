@@ -87,8 +87,8 @@ Bnet 另 claim bnet_unit_key，route_demand 传入 interposer 做 NESW。
 这是无外部竞争的 maze 参考值，不是严格最优下界；失败记日志，该 net 不参与额外优化。
 预布线耗时计入 routing_ms、total_ms 与预算；无预算时不做参考预布线。
 
-额外优化只改外层调度：当前完整解合法且尚有预算时，仅选 L_current > 1.2×L_ref 的
-net（严格超过 20%，恰好 20% 不选）。普通多汇网整体拆、SyncNet 整组拆，其余保持不动。
+额外优化只改外层调度：当前完整解合法且尚有预算时，仅选 L_current > 1.1×L_ref 的
+net（严格超过 10%，恰好 10% 不选）。普通多汇网整体拆、SyncNet 整组拆，其余保持不动。
 对所选集合先全部 rip，再调用原 route_owner / route_sync_group；每轮把筛选后初始排序
 的起点循环移动一个 net/组，不拆组、不改组内 lane 顺序。无候选时立即返回最好合法解，
 stop_reason=no_optimization_candidates，不回退到全量重布，不等待预算耗尽。
@@ -138,7 +138,7 @@ type_weight：node=1、switch/matching/mux=2、mode-conflict=8。
 | seed | 1 | 只记日志，搜索/排序确定，无随机数 |
 | max_iterations | 1000000000 | 修复与优化轮次安全上限 |
 | time_budget_seconds | 0 | 关闭预算，正数启用软预算 |
-| optimization_excess_percent | 20 | 编译期筛选比例，严格大于参考线长的 120% |
+| optimization_excess_percent | 10 | 编译期筛选比例，严格大于参考线长的 110% |
 | stagnation_limit | 8 | 仅无预算时 H=16 阶段连续无改进停止 |
 | H / k / s | 4 / 1.0 / 20 | 拥塞高度 / logistic 陡峭度 / overflow 线性斜率 |
 | decay / increment / history_weight | 0.9 / 1 / 1 | history_next=decay×history+increment×overflow |
@@ -178,6 +178,6 @@ SyncNet 测试打印初始/最终路径、Track 数与 N_i，第二层打印 sta
 mux_test 扫 algorithm/test_ILP/test 与 test/config 的全部 config.json，检查非法 fanout。
 预算回归：初解超时、无解超时修复、优化/修复交替、冲突 trial 后恢复最好合法解、
 安全上限、禁用 stagnation、整组 SyncNet、实际预算停止；另测参考隔离、fanout/PNnet
-共享树线长、严格 20% 边界、选择性重布、无候选提前退出。
+共享树线长、严格 10% 边界、选择性重布、无候选提前退出。
 
 命名空间 PR_tool；std::Vector / std::String；单测 Catch-free require()；本文件 ≤200 行。

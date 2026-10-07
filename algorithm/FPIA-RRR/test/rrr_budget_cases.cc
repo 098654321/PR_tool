@@ -304,18 +304,23 @@ auto test_reference_isolation_and_threshold() -> void {
     value.nets = {net(value.graph, 10, 0, 1), net(value.graph, 11, 2, 3),
                   net(value.graph, 12, 0, 1), net(value.graph, 13, 2, 3)};
     auto owners = rrr_detail::build_owners(value.nets);
-    owners[0].demand_paths = {{0, 4, 5, 6, 7, 1}}; // 6 vs 5: exactly 20%, not selected.
-    owners[1].demand_paths = {{2, 4, 5, 6, 7, 8, 3}}; // 7 vs 5: selected.
+    owners[0].demand_paths = {{0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 1}}; // 11 vs 10: exactly 10%, not selected.
+    owners[1].demand_paths = {{2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 3}}; // 12 vs 10: selected.
     owners[2].demand_paths = {{0, 4, 5, 6, 1, 4, 5}}; // Duplicates count once: 5.
     owners[3].demand_paths = {{2, 4, 5, 6, 7, 8, 3}};
     const auto selected = rrr_detail::optimization_nets(
-        value.graph, value.nets, owners, {5, 5, 5, std::nullopt});
+        value.graph, value.nets, owners, {10, 10, 5, std::nullopt});
     require(selected == std::Set<std::size_t> {1},
-            "selection must use strict >20%, per-net unique wirelength, and net indices");
+            "selection must use strict >10%, per-net unique wirelength, and net indices");
     owners[0].demand_paths = {{0, 4, 5, 1}};
     const auto fractional = rrr_detail::optimization_nets(
         value.graph, value.nets, owners, {3, std::nullopt, std::nullopt, std::nullopt});
-    require(fractional == std::Set<std::size_t> {0}, "4 vs 3 must exceed the fractional 20% threshold");
+    require(fractional == std::Set<std::size_t> {0}, "4 vs 3 must exceed the fractional 10% threshold");
+    owners[0].demand_paths = {{0, 4, 5, 6, 7, 1}};
+    require(rrr_detail::optimization_nets(
+                value.graph, value.nets, owners, {5, std::nullopt, std::nullopt, std::nullopt})
+                == std::Set<std::size_t> {0},
+            "6 vs 5 must now be selected by the lowered 10% threshold");
 }
 
 auto test_reference_fanout_and_pnnet() -> void {
@@ -380,7 +385,7 @@ auto test_selective_optimization_keeps_other_nets() -> void {
     const auto references = rrr_detail::reference_wirelengths(value.graph, value.nets, params, &interposer);
     require(rrr_detail::optimization_nets(value.graph, value.nets, owners, references)
                 == std::Set<std::size_t> {0},
-            "only net 0 exceeds its reference by more than 20%");
+            "only net 0 exceeds its reference by more than 10%");
 }
 
 } // namespace

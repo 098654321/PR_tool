@@ -110,7 +110,7 @@ auto run_rrr(
         "FPIA RRR: graph nodes={} arcs={} route_owners={}",
         graph.nodes.size(), graph.arcs.size(), owners.size());
     debug::info_fmt(
-        "FPIA RRR: params max_iterations={} seed={} H={} k={} s={} sync_tail_extra_tracks={} time_budget_seconds={} optimization_excess_percent=20",
+        "FPIA RRR: params max_iterations={} seed={} H={} k={} s={} sync_tail_extra_tracks={} time_budget_seconds={} optimization_excess_percent=10",
         params.max_iterations, params.seed, params.H, params.k, params.s,
         params.sync_tail_extra_tracks, params.time_budget_seconds);
 
@@ -295,7 +295,7 @@ auto run_rrr(
                 const auto selected = optimization_nets(graph, nets, owners, references);
                 if (selected.empty()) {
                     stop_reason = "no_optimization_candidates";
-                    debug::info_fmt("FPIA RRR: no optimization candidates above 20%; return best legal solution");
+                    debug::info_fmt("FPIA RRR: no optimization candidates above 10%; return best legal solution");
                     if (iterations == 0) {
                         debug::info_fmt(
                             "FPIA RRR: iter=0 overflow=0 new_overflow=0 max_resource_overflow=0 dirty_owners=0 rerouted=0 total_wirelength={} unequal_sync_groups=0 sync_gap=0 H={}",
