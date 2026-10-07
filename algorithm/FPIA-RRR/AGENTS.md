@@ -71,7 +71,7 @@ overflow=0、各组 N_i 相等、全部连接才是候选合法解，还须独�
 完整 live state 按 (overflow,unequal_sync_groups,total_sync_gap,total_wirelength)
 字典序保存诊断 best；另单独保存经过独立校验的最好合法解，仅在线长严格降低时更新。
 快照同时保存 owners 与完整 ResourceModel，结束优先恢复最好合法解。
-history_next → dirty → 全部 rip → reroute；每连续 4 轮无改进则 H=min(H+4,16)
+history_next（repair/optimize 统一用 params.decay，默认 1）→ dirty → 全部 rip → reroute；每连续 4 轮无改进则 H=min(H+4,16)
 并重置停滞计数。无预算时保留 first-legal 停止、H=16 后 stagnation_limit 停止，
 maze 异常则 unroutable。Claim 用 path_resource_keys，与 maze arc_resource_keys 同投影；
 Bnet 另 claim bnet_unit_key，route_demand 传入 interposer 做 NESW。
@@ -141,7 +141,7 @@ type_weight：node=1、switch/matching/mux=2、mode-conflict=8。
 | optimization_excess_percent | 10 | 编译期筛选比例，严格大于参考线长的 110% |
 | stagnation_limit | 8 | 仅无预算时 H=16 阶段连续无改进停止 |
 | H / k / s | 4 / 1.0 / 20 | 拥塞高度 / logistic 陡峭度 / overflow 线性斜率 |
-| decay / increment / history_weight | 0.9 / 1 / 1 | history_next=decay×history+increment×overflow |
+| decay / increment / history_weight | 1 / 1 / 1 | 所有轮次统一用配置 decay；history_next=decay×history+increment×overflow |
 | detour_bias | 0 | 关闭 |
 | sync_tail_extra_tracks | 64 | target 超出初始最长 lane 的 Track 预算 |
 | r | 0.5,0.75,1.0 | 切尾比例 |
@@ -160,7 +160,7 @@ stop_reason 是退出原因；触及预算/上限但有合法解时 status 仍�
 checkpoint 记录每步时间与 incumbent；最终入口打印 total_ms/time_budget_seconds/over_budget_ms。
 iter 中 overflow/max_resource_overflow 为 rip 前值；new_overflow/wirelength 为 rip 后值；
 dirty_owners 是计划 rip 的 owner 数，rerouted 是实际 maze 数，成功轮通常相同。
-初解早退两者为 0；maze 异常不打印部分计数 iter 行。
+初解早退两者为 0；maze 异常不打印部分计数 iter 行。params/iter 均记录统一的实际 history_decay。
 
 Info：最终按 RoutingNet 聚合 dump 所有路径，不提前 dump。route 块头含
 net_id/name/kind/demands/wirelength/sources；普通分支 demand/start/sink/path，
@@ -179,5 +179,22 @@ mux_test 扫 algorithm/test_ILP/test 与 test/config 的全部 config.json，检
 预算回归：初解超时、无解超时修复、优化/修复交替、冲突 trial 后恢复最好合法解、
 安全上限、禁用 stagnation、整组 SyncNet、实际预算停止；另测参考隔离、fanout/PNnet
 共享树线长、严格 10% 边界、选择性重布、无候选提前退出。
+
+## TODO
+
+以下针对 case15 拥塞振荡：策略 1 已实现、实验效果待验证；策略 2 尚未实施，不保证收敛。
+原 repair 的 H 上限 16、history 衰减使惩罚有界；单独增大 H 同时抬高空闲代价，作用有限。
+
+1. **统一不衰减 history（已实现）**：首次合法解之前的修复、额外优化及其产生冲突后的修复轮，
+   统一用 params.decay（默认 1），即 h_next=h+increment×overflow（默认 increment=1），保留热点记忆。
+   不按阶段切换 decay；参考预布线/初始 maze 不更新 history；H 上限 16、s=20 不变。
+2. **增强超容量项**：若策略 1 仍振荡，在其基础上将 repair 的 s 从 20 降到 2，
+   使 H/s×max(0,u-1) 增强十倍，不直接提高 u=1 的代价；优化阶段保持原 s=20。
+
+实现：RrrParams::decay 默认 1，每轮调用 ResourceModel::history_next() 使用同一个配置值。
+保持搜索流程、SyncNet 整组/原子 target 更新、预算与最好合法解机制不变，不引入 SAT 选网。
+验证：记录实际系数、overflow 最小值/趋势、dirty 数、首次合法解时间及最终线长；
+case15 先观察是否低于初始 overflow=281，成功仍须 overflow=0、同步等长且独立校验通过。
+风险：可能增加绕行、搜索耗时并使后续线长优化更保守，须与原参数对照。
 
 命名空间 PR_tool；std::Vector / std::String；单测 Catch-free require()；本文件 ≤200 行。

@@ -55,7 +55,7 @@ auto test_resource_claim_release() -> void {
     require(defaults.H == 4, "RrrParams H default must be 4");
     require(defaults.k == 1.0, "RrrParams k default must be 1.0");
     require(defaults.s == 20, "RrrParams s default must be 20");
-    require(defaults.decay == 0.9, "RrrParams decay default must be 0.9");
+    require(defaults.decay == 1.0, "RrrParams decay default must be 1 for every phase");
     require(defaults.increment == 1, "RrrParams increment default must be 1");
     require(defaults.history_weight == 1, "RrrParams history_weight default must be 1");
     require(defaults.detour_bias == 0, "RrrParams detour_bias default must be 0");
@@ -142,7 +142,41 @@ auto test_resource_cross_owner_overflow() -> void {
     model.history_next();
     require_near(model.history(node), 1.0, "history_next must add increment * overflow");
     model.history_next();
-    require_near(model.history(node), 1.9, "history_next must decay previous history then add overflow");
+    require_near(model.history(node), 2.0, "history_next must retain previous history then add overflow");
+}
+
+auto test_resource_history_no_decay() -> void {
+    auto params = RrrParams {};
+    params.increment = 2;
+    auto model = ResourceModel {params};
+    const auto a = OwnerId {1, 0};
+    const auto b = OwnerId {2, 0};
+    const auto node = node_resource(8);
+    const auto mux_a = tob_mux_input_key(42, 0);
+    const auto mux_b = tob_mux_input_key(42, 1);
+    const auto keys = std::Vector<ResourceKey> {node, mux_a, mux_b, mode_conflict_key(7)};
+    model.claim(a, {node, mux_a, mode_straight_key(7)});
+    model.claim(b, {node, mux_b, mode_swap_key(7)});
+    for (int i = 0; i < 20; ++i) {
+        model.history_next();
+    }
+    model.release(a);
+    model.release(b);
+    model.history_next();
+    const auto saved = model;
+    for (const auto& key : keys) {
+        require_near(model.history(key), 40.0, "history must accumulate and survive released hotspots");
+    }
+    model.history_next();
+    for (const auto& key : keys) {
+        require_near(model.history(key), 40.0, "legal optimization rounds must retain history on all resource kinds");
+    }
+    model = saved;
+    model.history_next();
+    for (const auto& key : keys) {
+        require_near(model.history(key), 40.0, "snapshot restoration must retain history without decay");
+    }
+    require(model.params().decay == 1.0, "snapshots must preserve the unified decay parameter");
 }
 
 auto test_resource_mode_conflict() -> void {
@@ -921,6 +955,7 @@ auto main(int argc, char** argv) -> int {
         test_resource_claim_release();
         test_resource_same_owner_branch_share();
         test_resource_cross_owner_overflow();
+        test_resource_history_no_decay();
         test_resource_mode_conflict();
         test_resource_partial_matching();
         test_resource_hline_vline_node_exclusive();

@@ -110,9 +110,9 @@ auto run_rrr(
         "FPIA RRR: graph nodes={} arcs={} route_owners={}",
         graph.nodes.size(), graph.arcs.size(), owners.size());
     debug::info_fmt(
-        "FPIA RRR: params max_iterations={} seed={} H={} k={} s={} sync_tail_extra_tracks={} time_budget_seconds={} optimization_excess_percent=10",
+        "FPIA RRR: params max_iterations={} seed={} H={} k={} s={} sync_tail_extra_tracks={} time_budget_seconds={} optimization_excess_percent=10 history_decay={}",
         params.max_iterations, params.seed, params.H, params.k, params.s,
-        params.sync_tail_extra_tracks, params.time_budget_seconds);
+        params.sync_tail_extra_tracks, params.time_budget_seconds, params.decay);
 
     auto result = RrrResult {};
     auto best = BestSnapshot {};
@@ -406,10 +406,10 @@ auto run_rrr(
         }
         const auto new_sync = sync_violation(graph, nets, owners, interposer);
         debug::info_fmt(
-            "FPIA RRR: iter={} overflow={} new_overflow={} max_resource_overflow={} dirty_owners={} rerouted={} total_wirelength={} unequal_sync_groups={} sync_gap={} H={} phase={}",
+            "FPIA RRR: iter={} overflow={} new_overflow={} max_resource_overflow={} dirty_owners={} rerouted={} total_wirelength={} unequal_sync_groups={} sync_gap={} H={} phase={} history_decay={}",
             iter, overflow, resources.overflow(), max_ov, dirty_ids.size(), rerouted,
             current_wirelength(graph, nets, owners), new_sync.unequal_groups,
-            new_sync.total_gap, params.H, optimize ? "optimize" : "repair");
+            new_sync.total_gap, params.H, optimize ? "optimize" : "repair", params.decay);
         if (verbose_level >= 1) {
             dump_overflows(owners, nets, resources);
         }
