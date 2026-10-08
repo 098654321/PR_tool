@@ -1,5 +1,6 @@
 #include "test/rrr_budget_cases.hh"
 
+#include "maze_search.hh"
 #include "rrr_cli.hh"
 #include "rrr_router.hh"
 #include "route_validate.hh"
@@ -8,6 +9,7 @@
 #include <debug/debug.hh>
 
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 
@@ -131,6 +133,34 @@ auto test_cli_budget() -> void {
         rejected = true;
     }
     require(rejected, "missing budget value must be rejected");
+}
+
+auto test_overflow_slope() -> void {
+    auto graph = UnifiedGraph {};
+    add_node(graph);
+    add_node(graph);
+    add_path(graph, {0, 1});
+    const auto owner = OwnerId {100, 0};
+    for (const int height : {4, 16}) {
+        auto strong = RrrParams {};
+        strong.H = height;
+        auto weak = strong;
+        weak.s = 20;
+        auto resources = ResourceModel {};
+        for (int u = 1; u <= 3; ++u) {
+            const double strong_cost = arc_incremental_cost(
+                graph, resources, owner, graph.arcs.front(), {0}, strong);
+            const double weak_cost = arc_incremental_cost(
+                graph, resources, owner, graph.arcs.front(), {0}, weak);
+            const double common = 2.0 + height / (std::exp(strong.k * (1 - u)) + 1.0);
+            const double excess = static_cast<double>(height) / 2.0 * (u - 1);
+            require(std::abs(strong_cost - common - excess) < 1e-9,
+                    "s=2 must apply H/2 times overflow without changing the base cost");
+            require(std::abs((strong_cost - common) - 10 * (weak_cost - common)) < 1e-9,
+                    "s=2 must strengthen only the overflow term tenfold compared with s=20");
+            resources.claim(OwnerId {static_cast<std::size_t>(101 + u), 0}, {node_resource(1)});
+        }
+    }
 }
 
 auto test_expired_initial_legal() -> void {
@@ -392,6 +422,7 @@ auto test_selective_optimization_keeps_other_nets() -> void {
 
 auto run_rrr_budget_unit_tests() -> void {
     test_cli_budget();
+    test_overflow_slope();
     test_reference_isolation_and_threshold();
     test_reference_fanout_and_pnnet();
     test_unavailable_reference();

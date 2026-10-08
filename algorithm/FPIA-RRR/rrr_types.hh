@@ -127,8 +127,8 @@ inline auto is_physical_occupancy_key(const ResourceKey& key) -> bool {
 struct RrrParams {
     int H{4};
     double k{1.0};
-    int s{20};
-    double decay{1.0};
+    int s{2};
+    double decay{0.9};
     double increment{1};
     double history_weight{1};
     double detour_bias{0};
