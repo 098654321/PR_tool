@@ -4,7 +4,6 @@
 #include "maze_search.hh"
 #include "resource_model.hh"
 #include "route_log.hh"
-#include "route_validate.hh"
 #include "sync_equalize.hh"
 
 #include <debug/debug.hh>
@@ -16,74 +15,6 @@
 #include <utility>
 
 namespace PR_tool::rrr_detail {
-
-
-
-auto reference_wirelengths(
-    const UnifiedGraph& graph,
-    const std::Vector<RoutingNet>& nets,
-    const RrrParams& params,
-    hardware::Interposer* interposer
-) -> std::Vector<std::optional<std::size_t>> {
-    auto references = std::Vector<std::optional<std::size_t>>(nets.size());
-    for (std::size_t i = 0; i < nets.size(); ++i) {
-        const auto isolated_nets = std::Vector<RoutingNet> {nets[i]};
-        auto isolated_owners = build_owners(isolated_nets);
-        auto isolated_params = params;
-        auto isolated_resources = ResourceModel {isolated_params};
-        try {
-            bool routed = true;
-            if (nets[i].is_sync_bus) {
-                routed = route_sync_group(0, isolated_owners, graph, isolated_nets,
-                                          isolated_resources, isolated_params, interposer);
-            } else {
-                for (auto& owner : isolated_owners) {
-                    route_owner(owner, graph, isolated_nets, isolated_resources,
-                                isolated_params, interposer);
-                }
-            }
-            auto candidate = RrrResult {};
-            candidate.paths = collect_paths_by_net(isolated_nets, isolated_owners);
-            if (routed && validate_rrr_solution(graph, isolated_nets, candidate, interposer)) {
-                references[i] = total_wirelength(graph, candidate.paths);
-                debug::info_fmt("FPIA RRR: reference net_id={} wirelength={}",
-                                nets[i].net_id, *references[i]);
-            } else {
-                debug::info_fmt("FPIA RRR: reference net_id={} unavailable; skip optimization",
-                                nets[i].net_id);
-            }
-        }
-        catch (const std::runtime_error& error) {
-            debug::info_fmt("FPIA RRR: reference net_id={} unavailable: {}; skip optimization",
-                            nets[i].net_id, error.what());
-        }
-    }
-    return references;
-}
-
-auto optimization_nets(
-    const UnifiedGraph& graph,
-    const std::Vector<RoutingNet>& nets,
-    const std::Vector<OwnerRecord>& owners,
-    const std::Vector<std::optional<std::size_t>>& references
-) -> std::Set<std::size_t> {
-    const auto paths = collect_paths_by_net(nets, owners);
-    auto selected = std::Set<std::size_t> {};
-    for (std::size_t i = 0; i < nets.size(); ++i) {
-        if (!references[i].has_value()) {
-            continue;
-        }
-        const auto current = net_wirelength(graph, paths[i]);
-        const auto reference = *references[i];
-        // Integer lengths: current-reference > floor(reference/10) is strictly >10%.
-        if (current > reference && current - reference > reference / 10) {
-            selected.insert(i);
-            debug::info_fmt("FPIA RRR: optimize candidate net_id={} wirelength={} reference={} excess_percent=10",
-                            nets[i].net_id, current, reference);
-        }
-    }
-    return selected;
-}
 
 auto ref_row_col(const GraphNodeRef& ref) -> std::pair<int, int> {
     if (ref.kind == GraphNodeRef::Kind::Track) {

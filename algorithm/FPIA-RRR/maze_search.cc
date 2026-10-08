@@ -144,11 +144,15 @@ auto opposite_mode_key(const ResourceKey& mode_key) -> ResourceKey {
     return mode_straight_key(mode_key.id);
 }
 
-auto mode_is_incompatible(
+auto would_introduce_opposite_mode(
     const ResourceModel& resources,
+    OwnerId owner,
     const ResourceKey& mode_key
 ) -> bool {
     if (mode_key.kind != ResourceKind::ModeStraight && mode_key.kind != ResourceKind::ModeSwap) {
+        return false;
+    }
+    if (owner_holds_key(resources, owner, mode_key)) {
         return false;
     }
     return resources.has_any_owner(opposite_mode_key(mode_key));
@@ -160,14 +164,9 @@ auto key_incremental_cost(
     const ResourceKey& key,
     const RrrParams& params
 ) -> double {
-    // Called for ModeConflict only when the proposed mode is incompatible:
-    // one binary violation is represented as u=cap+1, even before first claim.
-    const int u = key.kind == ResourceKind::ModeConflict
-        ? 2 : predicted_owner_count(resources, owner, key);
-    const double penalty = logistic_p(u, params);
-    const double legal_penalty = 1.0 + static_cast<double>(params.H) / 2.0;
-    const double present = static_cast<double>(resources.type_weight(key)) * penalty;
-    return present + params.history_weight * resources.history(key) * (penalty / legal_penalty);
+    const int u = predicted_owner_count(resources, owner, key);
+    const double present = static_cast<double>(resources.type_weight(key)) * logistic_p(u, params);
+    return present + params.history_weight * resources.history(key);
 }
 
 auto arc_cost(
@@ -185,14 +184,14 @@ auto arc_cost(
 ) -> double {
     double cost = 1.0;
     for (const auto& key : arc_keys(graph, arc)) {
-        if (mode_is_incompatible(resources, key)) {
-            const auto conflict = mode_conflict_key(key.id);
-            cost += key_incremental_cost(resources, owner, conflict, params);
-        }
         if (key_is_free(graph, resources, owner, key, arc.u, starts)) {
             continue;
         }
         cost += key_incremental_cost(resources, owner, key, params);
+        if (would_introduce_opposite_mode(resources, owner, key)) {
+            const auto conflict = mode_conflict_key(key.id);
+            cost += key_incremental_cost(resources, owner, conflict, params);
+        }
     }
     if (params.detour_bias != 0 && has_bbox && node_kind(graph, arc.v) == UnifiedNodeKind::Track) {
         const auto& dest = graph.nodes[static_cast<std::size_t>(arc.v)];

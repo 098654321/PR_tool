@@ -54,7 +54,7 @@ auto test_resource_claim_release() -> void {
     const auto defaults = RrrParams {};
     require(defaults.H == 4, "RrrParams H default must be 4");
     require(defaults.k == 1.0, "RrrParams k default must be 1.0");
-    require(defaults.s == 2, "RrrParams s default must be 2");
+    require(defaults.s == 20, "RrrParams s default must be 20");
     require(defaults.decay == 0.9, "RrrParams decay default must be 0.9 for every phase");
     require(defaults.increment == 1, "RrrParams increment default must be 1");
     require(defaults.history_weight == 1, "RrrParams history_weight default must be 1");

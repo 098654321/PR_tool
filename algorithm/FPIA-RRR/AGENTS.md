@@ -11,7 +11,7 @@
 - 修改后评估是否同步更新本文件（≤200 行）。
 - 单次修改 >100 行时，启动子 agent 审查。
 - 单文件职责紧凑，不超过 1000 行；关键步骤用 debug::info_fmt 打日志。
-- 只在当前 git 分支工作，禁止切换分支、跨分支合并、git push。
+- 当前分支 dev.ILP_RRR_add_iteration；未经用户明确要求，不切换分支、跨分支合并或 git push。
 - 涉及关键数据结构或方法时主动简要解释设计，注意运行速度。
 
 ## 目的与边界
@@ -44,7 +44,7 @@ build_hardware_graph → run_rrr → 成功则独立 validate_rrr_solution。
 CLI max_iterations/seed/time_budget_seconds 写入 RrrParams，budget_start 为入口计时起点。
 退出码 0 仅当 status=success、best_overflow=0、独立校验通过，否则非零。
 
-routing_ms/RRR_routing_time 覆盖参考预布线（启用预算时）、initial maze + RRR，不含 parse/建图。
+routing_ms/RRR_routing_time 覆盖 initial maze + RRR，不含 parse/建图。
 elapsed_ms 使用 Elapsed::milliseconds()。最终 total_ms 与 test_ILP/main.cc 同口径：
 日志初始化后、配置解析前开始，包含解析、建图、全部布线、最终路径输出和独立校验。
 预算起点与 total_ms 相同；直接调用 run_rrr 未传 budget_start 则从 routing 开始。
@@ -81,21 +81,14 @@ Bnet 另 claim bnet_unit_key，route_demand 传入 interposer 做 NESW。
 退出。max_iterations 仍是安全上限：触顶有合法解返回 success，无合法解返回 iteration_limit。
 默认 S=0 关闭预算。预算不硬中断单次 maze/equalize，允许一轮执行及最终输出/校验造成超时。
 
-启用预算时先为每个 net 独立预布线：每次新建空 ResourceModel（无其他 net、无 history），
-调用原 route_owner / route_sync_group，保留自身硬件约束与 SyncNet 组内互斥/等长。
-只记录独立校验通过的参考线长 L_ref（net 内去重 Track+Bump），不提交临时路径到正式解。
-这是无外部竞争的 maze 参考值，不是严格最优下界；失败记日志，该 net 不参与额外优化。
-预布线耗时计入 routing_ms、total_ms 与预算；无预算时不做参考预布线。
-
-额外优化只改外层调度：当前完整解合法且尚有预算时，仅选 L_current > 1.1×L_ref 的
-net（严格超过 10%，恰好 10% 不选）。普通多汇网整体拆、SyncNet 整组拆，其余保持不动。
-对所选集合先全部 rip，再调用原 route_owner / route_sync_group；每轮把筛选后初始排序
-的起点循环移动一个 net/组，不拆组、不改组内 lane 顺序。无候选时立即返回最好合法解，
-stop_reason=no_optimization_candidates，不回退到全量重布，不等待预算耗尽。
-新解冲突/不等长时进入原 dirty 修复（不受线长筛选限制），合法后再优化。预算停止仍以
+额外优化只改外层调度：当前完整解合法且尚有预算时，全量拆除全部普通 net 和完整
+SyncNet 组，再调用原 route_owner / route_sync_group。不做参考预布线或线长阈值筛选。
+每轮把初始排序的起点循环移动一个 net/组，不拆组、不改组内 lane 顺序。
+即使线长/路径没有改善，也持续优化到预算停止（或 max_iterations 安全上限）。
+新解冲突/不等长时进入原 dirty 修复，合法后再全量优化。预算停止仍以
 历史 best_legal 为条件，live 非法但已有 best_legal 时超时直接返回它，不等待下一次合法。
 预算模式 maze 异常时恢复完整 best（无则清空）并整轮重试；异常轮不保存部分路径。
-搜索状态/队列、资源投影、同步组等长算法不变；cost 采用下述第一步改造。
+搜索状态/队列、资源投影、同步组等长算法不变；cost 恢复原始加性设计。
 
 ## 独立校验 validate_rrr_solution
 
@@ -138,19 +131,17 @@ type_weight：node=1、switch/matching/mux=2、mode-conflict=8。
 | seed | 1 | 只记日志，搜索/排序确定，无随机数 |
 | max_iterations | 1000000000 | 修复与优化轮次安全上限 |
 | time_budget_seconds | 0 | 关闭预算，正数启用软预算 |
-| optimization_excess_percent | 10 | 编译期筛选比例，严格大于参考线长的 110% |
 | stagnation_limit | 8 | 仅无预算时 H=16 阶段连续无改进停止 |
-| H / k / s | 4 / 1.0 / 2 | 拥塞高度 / logistic 陡峭度 / overflow 线性斜率 |
+| H / k / s | 4 / 1.0 / 20 | 拥塞高度 / logistic 陡峭度 / overflow 线性斜率 |
 | decay / increment / history_weight | 0.9 / 1 / 1 | 所有轮次统一用配置 decay；history_next=decay×history+increment×overflow |
 | detour_bias | 0 | 关闭 |
 | sync_tail_extra_tracks | 64 | target 超出初始最长 lane 的 Track 预算 |
 | r | 0.5,0.75,1.0 | 切尾比例 |
 
 P(u)=1+H/(exp(k×(cap-u))+1)+[u>cap]×H/s×(u-cap)，present_cost=type_weight×P(u)。
-新增资源 cost=type_weight×P(u)+history_weight×history×P(u)/P(1)；P(1)=1+H/2。
-u=1 保持原加性成本；u>1 放大历史项；同 owner 树/exact mux 复用仍免新增资源费用。
-mode 按加入后的不兼容状态单独计费：有 opposite mode 则虚拟 u=2（一次违规），与当前
-是否已经冲突/owner 是否持有同模式无关；同模式共享不收费，仍允许有限成本暂态冲突。
+新增资源 cost=type_weight×P(u)+history_weight×history；同 owner 树/exact mux 复用免新增费用。
+mode 恢复原实现：owner 未持有当前 mode 且已有 opposite mode 时，追加 ModeConflict
+费用，使用该资源当前 occupancy 的原预测计数（非固定虚拟 u=2）；同 owner mode 复用免计费。
 cap=1，普通 u 为加入后的 owner 数，mux 用 distinct peers。H 增大促使绕热点且线长常增；
 k 增大代价跳变更陡；s 减小 overflow 惩罚更陡。H 连续停滞后依次尝试 4/8/12/16。
 
@@ -164,7 +155,8 @@ stop_reason 是退出原因；触及预算/上限但有合法解时 status 仍�
 checkpoint 记录每步时间与 incumbent；最终入口打印 total_ms/time_budget_seconds/over_budget_ms。
 iter 中 overflow/max_resource_overflow 为 rip 前值；new_overflow/wirelength 为 rip 后值；
 dirty_owners 是计划 rip 的 owner 数，rerouted 是调度 owner 数（不累计等长内部 tail 搜索），成功轮通常相同。
-初解早退两者为 0；maze 异常不打印部分计数 iter 行。params/iter 均记录实际 history_decay；params 标记 cost_policy=normalized_history、mode_conflict_u=2。
+初解早退两者为 0；maze 异常不打印部分计数 iter 行。params/iter 均记录实际 history_decay；
+params 标记 cost_policy=additive、optimization_scope=all。
 
 Info：最终按 RoutingNet 聚合 dump 所有路径，不提前 dump。route 块头含
 net_id/name/kind/demands/wirelength/sources；普通分支 demand/start/sink/path，
@@ -181,14 +173,15 @@ sync tail cutoff 用 Info；不打印 sync net_id=... N_i=... equal=。
 SyncNet 测试打印初始/最终路径、Track 数与 N_i，第二层打印 status/iteration/overflow。
 mux_test 扫 algorithm/test_ILP/test 与 test/config 的全部 config.json，检查非法 fanout。
 预算回归：初解超时、无解超时修复、优化/修复交替、冲突 trial 后恢复最好合法解、
-安全上限、禁用 stagnation、整组 SyncNet、实际预算停止；另测参考隔离、fanout/PNnet
-共享树线长、严格 10% 边界、选择性重布、无候选提前退出；超容量代价验证 s=2 的线性项
-比 s=20 强十倍，未超容量代价不变（H=4/16）；另测各容量/mux 历史耦合、树复用及双向 mode 首次/持续冲突预测计价。
+安全上限、禁用 stagnation、整组 SyncNet、实际预算停止；最短合法解即使不改善仍持续
+全量优化，验证预算和迭代上限停止；超容量代价比较 s=2/20 的线性项（H=4/16）。
+另测各容量/mux 加性历史、树复用及原双向 mode 首次/持续冲突与复用计价。
 
 ## TODO
 
-1. 第一步（已实现，case15 收敛效果待实验）：保留统一 decay=0.9、s=2、H≤16；历史项乘
-   P(u)/P(1)，修正 mode 的不兼容预测计价。拆线/同步整组等长/10%筛选/预算/best_legal 不变。
+本分支用于原始 cost（decay=0.9、s=20、H≤16）+全量额外优化对照，以下 cost 策略不启用。
+
+1. 第一步（本分支已撤回，后续待对照）：历史项乘 P(u)/P(1)，修正 mode 的不兼容预测计价。
    不扩展候选路径的模式状态；尚未提交路径内部的模式冲突仍是边界，不能声称保证收敛。
 2. 第二步（未实现）：若仍进入平台，再将 EMA 历史替换为 NCTU-GR 式频次累积与 √轮数
    归一化（h_next=h+of，dah=h/(C1+C2√t)），让持续热点缓慢涨价、旧热点逐渐降价。

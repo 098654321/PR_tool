@@ -144,6 +144,7 @@ auto test_overflow_slope() -> void {
     for (const int height : {4, 16}) {
         auto strong = RrrParams {};
         strong.H = height;
+        strong.s = 2;
         auto weak = strong;
         weak.s = 20;
         auto resources = ResourceModel {};
@@ -163,7 +164,7 @@ auto test_overflow_slope() -> void {
     }
 }
 
-auto test_history_cost_coupling() -> void {
+auto test_additive_history_cost() -> void {
     const auto owner = OwnerId {100, 0};
     for (const auto key : {node_resource(1), switch_resource(7), matching_endpoint_key(1, 0),
                            tob_mux_input_key(1, 3), tob_mux_output_key(1, 3)}) {
@@ -196,17 +197,9 @@ auto test_history_cost_coupling() -> void {
                     + static_cast<double>(height) / params.s * (u - 1);
                 const double present = resources.type_weight(key) * penalty;
                 const double actual = arc_incremental_cost(graph, resources, owner, arc, {0}, params);
-                const double old_cost = 1 + present + params.history_weight * history;
-                const double expected = 1 + present
-                    + params.history_weight * history * penalty / (1 + height / 2.0);
+                const double expected = 1 + present + params.history_weight * history;
                 require(std::abs(actual - expected) < 1e-9,
-                        "capacity and mux resources must scale history by P(u)/P(1)");
-                if (u == 1 || height == 0) {
-                    require(std::abs(actual - old_cost) < 1e-9,
-                            "legal occupancy and H=0 costs must stay unchanged");
-                } else {
-                    require(actual > old_cost, "hotspot overflow must cost more than additive history");
-                }
+                        "capacity and mux resources must use unscaled additive history at every occupancy");
                 other = key;
                 if (is_mux_port_key(key)) {
                     other.extra = 10 + u;
@@ -220,7 +213,7 @@ auto test_history_cost_coupling() -> void {
     }
 }
 
-auto test_mode_conflict_cost() -> void {
+auto test_original_mode_cost() -> void {
     const auto owner = OwnerId {100, 0};
     for (const bool straight : {true, false}) {
         auto graph = UnifiedGraph {};
@@ -246,32 +239,30 @@ auto test_mode_conflict_cost() -> void {
                     "compatible mode sharing must not add congestion cost");
             resources.release(OwnerId {1, 0});
             resources.claim(OwnerId {2, 0}, {opposite});
-            const double penalty = 1 + height / (std::exp(-1.0) + 1)
+            const double first_penalty = 1 + height / 2.0;
+            const double over_penalty = 1 + height / (std::exp(-1.0) + 1)
                 + static_cast<double>(height) / params.s;
             require(std::abs(arc_incremental_cost(graph, resources, owner, arc, {0}, params)
-                             - baseline - 8 * penalty) < 1e-9,
-                    "first incompatible mode must charge one predicted violation, not u=1");
-            auto weak = params;
-            weak.s = 20;
-            require(std::abs(arc_incremental_cost(graph, resources, owner, arc, {0}, params)
-                             - arc_incremental_cost(graph, resources, owner, arc, {0}, weak)
-                             - 8 * height * (1.0 / 2 - 1.0 / 20)) < 1e-9,
-                    "s must affect even the first mode conflict");
+                             - baseline - 8 * first_penalty) < 1e-9,
+                    "original first mode conflict must use predicted ModeConflict occupancy u=1");
             resources.claim(owner, {mode});
             resources.history_next();
-            const double expected = baseline + 8 * penalty
-                + params.history_weight * penalty / (1 + height / 2.0);
-            require(std::abs(arc_incremental_cost(graph, resources, owner, arc, {0}, params)
-                             - expected) < 1e-9,
-                    "reusing one's mode must not hide incompatibility with another owner");
+            require(arc_incremental_cost(graph, resources, owner, arc, {0}, params) == baseline,
+                    "original same-owner mode reuse must remain exempt from incremental mode cost");
             resources.release(owner);
+            const double expected = baseline + 8 * first_penalty + params.history_weight;
             require(std::abs(arc_incremental_cost(graph, resources, owner, arc, {0}, params)
                              - expected) < 1e-9,
-                    "first conflict must include the scaled history retained after rip-up");
+                    "original first mode conflict must include unscaled additive history after rip-up");
+            resources.claim(OwnerId {3, 0}, {mode});
+            require(std::abs(arc_incremental_cost(graph, resources, owner, arc, {0}, params)
+                             - baseline - 8 * over_penalty - params.history_weight) < 1e-9,
+                    "already-conflicted mode must use predicted ModeConflict occupancy u=2");
             require(route_demand(graph, resources, owner, {0}, 1, params)
                         == std::Vector<int> {0, 1},
                     "mode conflicts must remain finite-cost soft constraints during maze routing");
             resources.release(OwnerId {2, 0});
+            resources.release(OwnerId {3, 0});
             resources.claim(owner, {mode});
             require(arc_incremental_cost(graph, resources, owner, arc, {0}, params) == baseline,
                     "compatible mode reuse must not charge old conflict history");
@@ -322,7 +313,7 @@ auto test_optimize_and_restore_best() -> void {
     const auto result = run_rrr(value.graph, value.nets, params, &interposer);
     check_legal(value, result, &interposer);
     require(result.iterations == 2 && result.optimization_rounds == 1,
-            "a repaired legal solution must enter a filtered optimization round");
+            "a repaired legal solution must enter a full optimization round");
     require(result.stop_reason == "iteration_limit", "explicit iteration cap must still apply");
     require(result.total_wirelength <= baseline.total_wirelength,
             "later rounds must never degrade the returned legal incumbent");
@@ -396,15 +387,6 @@ auto test_sync_optimization() -> void {
     require(result.iterations == 4 && result.optimization_rounds > 0,
             "SyncNet optimization must continue with whole-group scheduling");
     require(result.paths[1].size() == 2, "SyncNet group must retain both lanes");
-    const auto references = rrr_detail::reference_wirelengths(value.graph, value.nets, params, &interposer);
-    require(references[1] == 5, "SyncNet reference must be measured as a whole net, not independent lanes");
-    auto owners = rrr_detail::build_owners(value.nets);
-    for (auto& owner : owners) {
-        owner.demand_paths = {result.paths[owner.net_index][owner.is_sync ? owner.id.demand_id : 0]};
-    }
-    require(rrr_detail::optimization_nets(value.graph, value.nets, owners, references)
-                == std::Set<std::size_t> {1},
-            "only the inflated SyncNet group must be selected; normal net remains untouched");
 }
 
 auto test_live_budget_and_legacy() -> void {
@@ -416,12 +398,13 @@ auto test_live_budget_and_legacy() -> void {
     require(legacy.iterations == 0 && legacy.stop_reason == "feasible",
             "disabled budget must preserve first-legal stopping");
     params.time_budget_seconds = 3600;
-    const auto no_candidates = run_rrr(value.graph, value.nets, params, &interposer);
-    check_legal(value, no_candidates, &interposer);
-    require(no_candidates.stop_reason == "no_optimization_candidates"
-                && no_candidates.iterations == 0 && no_candidates.optimization_rounds == 0,
-            "nets at reference length must stop without a full-reroute fallback");
-    require(no_candidates.paths == legacy.paths, "reference routing must not alter the initial solution");
+    params.max_iterations = 12;
+    const auto repeated = run_rrr(value.graph, value.nets, params, &interposer);
+    check_legal(value, repeated, &interposer);
+    require(repeated.stop_reason == "iteration_limit"
+                && repeated.iterations == 12 && repeated.optimization_rounds == 12,
+            "unchanged shortest legal routes must continue full optimization while budget remains");
+    require(repeated.paths == legacy.paths, "unchanged full reroutes must preserve the best legal paths");
 
     const auto optimizable = optimization_fixture();
     params.H = 0;
@@ -435,103 +418,31 @@ auto test_live_budget_and_legacy() -> void {
     check_legal(optimizable, result, &interposer);
     require(result.stop_reason == "time_budget" && result.budget_elapsed_ms >= 5,
             "positive live budget must stop after a completed round");
-    require(result.optimization_rounds > 0, "live budget must spend time on eligible nets");
+    require(result.optimization_rounds > 0, "live budget must spend time on full optimization");
 
+    params = RrrParams {};
+    params.time_budget_seconds = 0.005;
+    params.max_iterations = 100000;
+    debug::set_debug_level(debug::DebugLevel::Warning);
+    const auto flat = run_rrr(value.graph, value.nets, params, &interposer);
+    debug::set_debug_level(debug::DebugLevel::Info);
+    check_legal(value, flat, &interposer);
+    require(flat.stop_reason == "time_budget" && flat.budget_elapsed_ms >= 5
+                && flat.optimization_rounds > 1 && flat.paths == legacy.paths,
+            "unchanged legal routes must keep optimizing until the live time budget expires");
 }
 
-auto test_reference_isolation_and_threshold() -> void {
-    auto value = fixture();
-    auto interposer = hardware::Interposer {};
-    const auto references = rrr_detail::reference_wirelengths(
-        value.graph, value.nets, RrrParams {}, &interposer);
-    require(references.size() == 2 && references[0] == 3 && references[1] == 3,
-            "each reference must ignore the other net's occupancy");
-    value = optimization_fixture();
-    value.nets = {net(value.graph, 10, 0, 1), net(value.graph, 11, 2, 3),
-                  net(value.graph, 12, 0, 1), net(value.graph, 13, 2, 3)};
-    auto owners = rrr_detail::build_owners(value.nets);
-    owners[0].demand_paths = {{0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 1}}; // 11 vs 10: exactly 10%, not selected.
-    owners[1].demand_paths = {{2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 3}}; // 12 vs 10: selected.
-    owners[2].demand_paths = {{0, 4, 5, 6, 1, 4, 5}}; // Duplicates count once: 5.
-    owners[3].demand_paths = {{2, 4, 5, 6, 7, 8, 3}};
-    const auto selected = rrr_detail::optimization_nets(
-        value.graph, value.nets, owners, {10, 10, 5, std::nullopt});
-    require(selected == std::Set<std::size_t> {1},
-            "selection must use strict >10%, per-net unique wirelength, and net indices");
-    owners[0].demand_paths = {{0, 4, 5, 1}};
-    const auto fractional = rrr_detail::optimization_nets(
-        value.graph, value.nets, owners, {3, std::nullopt, std::nullopt, std::nullopt});
-    require(fractional == std::Set<std::size_t> {0}, "4 vs 3 must exceed the fractional 10% threshold");
-    owners[0].demand_paths = {{0, 4, 5, 6, 7, 1}};
-    require(rrr_detail::optimization_nets(
-                value.graph, value.nets, owners, {5, std::nullopt, std::nullopt, std::nullopt})
-                == std::Set<std::size_t> {0},
-            "6 vs 5 must now be selected by the lowered 10% threshold");
-}
-
-auto test_reference_fanout_and_pnnet() -> void {
-    auto value = fixture();
-    auto& shared = value.graph.nodes[4];
-    shared.kind = UnifiedNodeKind::Track;
-    shared.track_row = 20;
-    shared.track_col = 20;
-    value.nets.resize(1);
-    value.nets[0].demands.push_back(RoutingDemand {1, ref(value.graph, 3), {0}, true});
-    auto interposer = hardware::Interposer {};
-    const auto fanout = rrr_detail::reference_wirelengths(
-        value.graph, value.nets, RrrParams {}, &interposer);
-    require(fanout[0] == 4, "fanout reference must count its shared Track only once");
-
-    value.nets[0].kind = RoutingNetKind::PNnet;
-    value.nets[0].sources.push_back(ref(value.graph, 2));
-    for (auto& demand : value.nets[0].demands) {
-        demand.candidate_source_indices = {0, 1};
-        demand.fixed_pair = false;
-    }
-    const auto pnnet = rrr_detail::reference_wirelengths(
-        value.graph, value.nets, RrrParams {}, &interposer);
-    require(pnnet[0] == 4, "PNnet reference must retain multi-source tree growth");
-}
-
-auto test_unavailable_reference() -> void {
+auto test_unreachable_initial_not_legal() -> void {
     auto value = Fixture {};
     add_node(value.graph);
     add_node(value.graph);
     value.nets = {net(value.graph, 0, 0, 1)};
     auto interposer = hardware::Interposer {};
-    const auto references = rrr_detail::reference_wirelengths(
-        value.graph, value.nets, RrrParams {}, &interposer);
-    require(!references[0].has_value(), "unreachable isolated route must not invent a reference length");
     auto params = expired_params();
     params.max_iterations = 0;
     const auto result = run_rrr(value.graph, value.nets, params, &interposer);
     require(result.status != "success" && result.first_legal_ms == -1,
-            "failed reference must not become a legal incumbent or bypass real routing");
-}
-
-auto test_selective_optimization_keeps_other_nets() -> void {
-    const auto value = fixture();
-    auto interposer = hardware::Interposer {};
-    auto params = RrrParams {};
-    params.H = 0;
-    params.increment = 10;
-    const auto baseline = run_rrr(value.graph, value.nets, params, &interposer);
-    check_legal(value, baseline, &interposer);
-    params.time_budget_seconds = 3600;
-    params.max_iterations = 2; // One repair, then one optimization of net 0 only.
-    const auto result = run_rrr(value.graph, value.nets, params, &interposer);
-    check_legal(value, result, &interposer);
-    require(result.optimization_rounds == 1 && result.iterations == 2,
-            "only the inflated net must enter optimization after repair");
-    require(result.paths[1] == baseline.paths[1], "unselected net must retain its paths");
-    auto owners = rrr_detail::build_owners(value.nets);
-    for (std::size_t i = 0; i < owners.size(); ++i) {
-        owners[i].demand_paths = baseline.paths[i];
-    }
-    const auto references = rrr_detail::reference_wirelengths(value.graph, value.nets, params, &interposer);
-    require(rrr_detail::optimization_nets(value.graph, value.nets, owners, references)
-                == std::Set<std::size_t> {0},
-            "only net 0 exceeds its reference by more than 10%");
+            "unreachable initial routing must not become a legal incumbent");
 }
 
 } // namespace
@@ -539,12 +450,9 @@ auto test_selective_optimization_keeps_other_nets() -> void {
 auto run_rrr_budget_unit_tests() -> void {
     test_cli_budget();
     test_overflow_slope();
-    test_history_cost_coupling();
-    test_mode_conflict_cost();
-    test_reference_isolation_and_threshold();
-    test_reference_fanout_and_pnnet();
-    test_unavailable_reference();
-    test_selective_optimization_keeps_other_nets();
+    test_additive_history_cost();
+    test_original_mode_cost();
+    test_unreachable_initial_not_legal();
     test_expired_initial_legal();
     test_expired_no_legal_repairs();
     test_optimize_and_restore_best();

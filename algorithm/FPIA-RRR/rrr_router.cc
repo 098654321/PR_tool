@@ -110,7 +110,7 @@ auto run_rrr(
         "FPIA RRR: graph nodes={} arcs={} route_owners={}",
         graph.nodes.size(), graph.arcs.size(), owners.size());
     debug::info_fmt(
-        "FPIA RRR: params max_iterations={} seed={} H={} k={} s={} sync_tail_extra_tracks={} time_budget_seconds={} optimization_excess_percent=10 history_decay={} cost_policy=normalized_history mode_conflict_u=2",
+        "FPIA RRR: params max_iterations={} seed={} H={} k={} s={} sync_tail_extra_tracks={} time_budget_seconds={} optimization_scope=all history_decay={} cost_policy=additive",
         params.max_iterations, params.seed, params.H, params.k, params.s,
         params.sync_tail_extra_tracks, params.time_budget_seconds, params.decay);
 
@@ -222,13 +222,8 @@ auto run_rrr(
         }
         return rerouted;
     };
-    auto full_order = [&](int shift, const std::Set<std::size_t>* selected = nullptr) -> std::Vector<OwnerId> {
+    auto full_order = [&](int shift) -> std::Vector<OwnerId> {
         auto order = initial_order(owners);
-        if (selected != nullptr) {
-            std::erase_if(order, [&](std::size_t index) {
-                return !selected->contains(owners[index].net_index);
-            });
-        }
         auto starts = std::Vector<std::size_t> {};
         for (std::size_t i = 0; i < order.size(); ++i) {
             if (i == 0 || owners[order[i]].net_index != owners[order[i - 1]].net_index) {
@@ -246,13 +241,6 @@ auto run_rrr(
         }
         return ids;
     };
-
-    const auto references = budget_enabled
-        ? reference_wirelengths(graph, nets, params, interposer)
-        : std::Vector<std::optional<std::size_t>> {};
-    if (budget_enabled) {
-        debug::info_fmt("FPIA RRR: reference complete budget_elapsed_ms={}", elapsed_ms());
-    }
 
     try {
         reroute(full_order(0));
@@ -292,19 +280,8 @@ auto run_rrr(
         auto dirty_ids = std::Vector<OwnerId> {};
         if (optimize || retry_all) {
             if (optimize) {
-                const auto selected = optimization_nets(graph, nets, owners, references);
-                if (selected.empty()) {
-                    stop_reason = "no_optimization_candidates";
-                    debug::info_fmt("FPIA RRR: no optimization candidates above 10%; return best legal solution");
-                    if (iterations == 0) {
-                        debug::info_fmt(
-                            "FPIA RRR: iter=0 overflow=0 new_overflow=0 max_resource_overflow=0 dirty_owners=0 rerouted=0 total_wirelength={} unequal_sync_groups=0 sync_gap=0 H={}",
-                            current_wirelength(graph, nets, owners), params.H);
-                    }
-                    return finish();
-                }
                 ++optimization_rounds;
-                dirty_ids = full_order(optimization_rounds, &selected);
+                dirty_ids = full_order(optimization_rounds);
             } else {
                 dirty_ids = full_order(iter + 1);
             }

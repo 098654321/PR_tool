@@ -4,7 +4,6 @@
 #include "resource_model.hh"
 
 #include <limits>
-#include <optional>
 #include <utility>
 
 namespace PR_tool::rrr_detail {
@@ -65,21 +64,6 @@ auto current_wirelength(
     const std::Vector<RoutingNet>& nets,
     const std::Vector<OwnerRecord>& owners
 ) -> std::size_t;
-
-// An unavailable isolated route has no reference and is excluded from optimization.
-auto reference_wirelengths(
-    const UnifiedGraph& graph,
-    const std::Vector<RoutingNet>& nets,
-    const RrrParams& params,
-    hardware::Interposer* interposer
-) -> std::Vector<std::optional<std::size_t>>;
-
-auto optimization_nets(
-    const UnifiedGraph& graph,
-    const std::Vector<RoutingNet>& nets,
-    const std::Vector<OwnerRecord>& owners,
-    const std::Vector<std::optional<std::size_t>>& references
-) -> std::Set<std::size_t>;
 
 auto demand_source_nodes(
     const UnifiedGraph& graph,
