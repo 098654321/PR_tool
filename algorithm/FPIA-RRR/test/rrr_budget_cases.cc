@@ -163,6 +163,122 @@ auto test_overflow_slope() -> void {
     }
 }
 
+auto test_history_cost_coupling() -> void {
+    const auto owner = OwnerId {100, 0};
+    for (const auto key : {node_resource(1), switch_resource(7), matching_endpoint_key(1, 0),
+                           tob_mux_input_key(1, 3), tob_mux_output_key(1, 3)}) {
+        auto graph = UnifiedGraph {};
+        add_node(graph);
+        add_node(graph);
+        add_path(graph, {0, 1});
+        auto& arc = graph.arcs.front();
+        arc.resource_keys_ready = true;
+        arc.resource_keys.count = 1;
+        arc.resource_keys.values[0] = key;
+        for (const int height : {0, 4, 16}) {
+            auto params = RrrParams {};
+            params.H = height;
+            params.history_weight = 1.75;
+            auto resources = ResourceModel {params};
+            auto other = key;
+            if (is_mux_port_key(key)) {
+                other.extra = 4;
+            }
+            resources.claim(OwnerId {1, 0}, {key});
+            resources.claim(OwnerId {2, 0}, {other});
+            resources.history_next();
+            resources.release(OwnerId {1, 0});
+            resources.release(OwnerId {2, 0});
+            const double history = resources.history(key);
+            require(history == 1, "fixture must retain congestion history after rip-up");
+            for (int u = 1; u <= 3; ++u) {
+                const double penalty = 1 + height / (std::exp(1.0 - u) + 1)
+                    + static_cast<double>(height) / params.s * (u - 1);
+                const double present = resources.type_weight(key) * penalty;
+                const double actual = arc_incremental_cost(graph, resources, owner, arc, {0}, params);
+                const double old_cost = 1 + present + params.history_weight * history;
+                const double expected = 1 + present
+                    + params.history_weight * history * penalty / (1 + height / 2.0);
+                require(std::abs(actual - expected) < 1e-9,
+                        "capacity and mux resources must scale history by P(u)/P(1)");
+                if (u == 1 || height == 0) {
+                    require(std::abs(actual - old_cost) < 1e-9,
+                            "legal occupancy and H=0 costs must stay unchanged");
+                } else {
+                    require(actual > old_cost, "hotspot overflow must cost more than additive history");
+                }
+                other = key;
+                if (is_mux_port_key(key)) {
+                    other.extra = 10 + u;
+                }
+                resources.claim(OwnerId {static_cast<std::size_t>(101 + u), 0}, {other});
+            }
+            resources.claim(owner, {key});
+            require(arc_incremental_cost(graph, resources, owner, arc, {0}, params) == 1,
+                    "same-owner tree and exact mux reuse must retain zero incremental resource cost");
+        }
+    }
+}
+
+auto test_mode_conflict_cost() -> void {
+    const auto owner = OwnerId {100, 0};
+    for (const bool straight : {true, false}) {
+        auto graph = UnifiedGraph {};
+        add_node(graph);
+        add_node(graph);
+        graph.nodes[0].kind = UnifiedNodeKind::VLine;
+        graph.nodes[1].kind = UnifiedNodeKind::Track;
+        add_path(graph, {0, 1});
+        auto& arc = graph.arcs.front();
+        arc.mode_group_id = 7;
+        arc.is_vline_track_straight = straight;
+        arc.is_vline_track_swap = !straight;
+        const auto mode = straight ? mode_straight_key(7) : mode_swap_key(7);
+        const auto opposite = straight ? mode_swap_key(7) : mode_straight_key(7);
+        for (const int height : {4, 16}) {
+            auto params = RrrParams {};
+            params.H = height;
+            params.history_weight = 1.75;
+            auto resources = ResourceModel {params};
+            const double baseline = arc_incremental_cost(graph, resources, owner, arc, {0}, params);
+            resources.claim(OwnerId {1, 0}, {mode});
+            require(arc_incremental_cost(graph, resources, owner, arc, {0}, params) == baseline,
+                    "compatible mode sharing must not add congestion cost");
+            resources.release(OwnerId {1, 0});
+            resources.claim(OwnerId {2, 0}, {opposite});
+            const double penalty = 1 + height / (std::exp(-1.0) + 1)
+                + static_cast<double>(height) / params.s;
+            require(std::abs(arc_incremental_cost(graph, resources, owner, arc, {0}, params)
+                             - baseline - 8 * penalty) < 1e-9,
+                    "first incompatible mode must charge one predicted violation, not u=1");
+            auto weak = params;
+            weak.s = 20;
+            require(std::abs(arc_incremental_cost(graph, resources, owner, arc, {0}, params)
+                             - arc_incremental_cost(graph, resources, owner, arc, {0}, weak)
+                             - 8 * height * (1.0 / 2 - 1.0 / 20)) < 1e-9,
+                    "s must affect even the first mode conflict");
+            resources.claim(owner, {mode});
+            resources.history_next();
+            const double expected = baseline + 8 * penalty
+                + params.history_weight * penalty / (1 + height / 2.0);
+            require(std::abs(arc_incremental_cost(graph, resources, owner, arc, {0}, params)
+                             - expected) < 1e-9,
+                    "reusing one's mode must not hide incompatibility with another owner");
+            resources.release(owner);
+            require(std::abs(arc_incremental_cost(graph, resources, owner, arc, {0}, params)
+                             - expected) < 1e-9,
+                    "first conflict must include the scaled history retained after rip-up");
+            require(route_demand(graph, resources, owner, {0}, 1, params)
+                        == std::Vector<int> {0, 1},
+                    "mode conflicts must remain finite-cost soft constraints during maze routing");
+            resources.release(OwnerId {2, 0});
+            resources.claim(owner, {mode});
+            require(arc_incremental_cost(graph, resources, owner, arc, {0}, params) == baseline,
+                    "compatible mode reuse must not charge old conflict history");
+        }
+    }
+}
+
 auto test_expired_initial_legal() -> void {
     auto value = fixture();
     value.nets.resize(1);
@@ -423,6 +539,8 @@ auto test_selective_optimization_keeps_other_nets() -> void {
 auto run_rrr_budget_unit_tests() -> void {
     test_cli_budget();
     test_overflow_slope();
+    test_history_cost_coupling();
+    test_mode_conflict_cost();
     test_reference_isolation_and_threshold();
     test_reference_fanout_and_pnnet();
     test_unavailable_reference();

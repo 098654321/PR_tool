@@ -110,7 +110,7 @@ auto run_rrr(
         "FPIA RRR: graph nodes={} arcs={} route_owners={}",
         graph.nodes.size(), graph.arcs.size(), owners.size());
     debug::info_fmt(
-        "FPIA RRR: params max_iterations={} seed={} H={} k={} s={} sync_tail_extra_tracks={} time_budget_seconds={} optimization_excess_percent=10 history_decay={}",
+        "FPIA RRR: params max_iterations={} seed={} H={} k={} s={} sync_tail_extra_tracks={} time_budget_seconds={} optimization_excess_percent=10 history_decay={} cost_policy=normalized_history mode_conflict_u=2",
         params.max_iterations, params.seed, params.H, params.k, params.s,
         params.sync_tail_extra_tracks, params.time_budget_seconds, params.decay);
 

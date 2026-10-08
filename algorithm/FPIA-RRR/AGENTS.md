@@ -95,7 +95,7 @@ stop_reason=no_optimization_candidates，不回退到全量重布，不等待预
 新解冲突/不等长时进入原 dirty 修复（不受线长筛选限制），合法后再优化。预算停止仍以
 历史 best_legal 为条件，live 非法但已有 best_legal 时超时直接返回它，不等待下一次合法。
 预算模式 maze 异常时恢复完整 best（无则清空）并整轮重试；异常轮不保存部分路径。
-单次 maze、资源投影、同步组等长算法不变。
+搜索状态/队列、资源投影、同步组等长算法不变；cost 采用下述第一步改造。
 
 ## 独立校验 validate_rrr_solution
 
@@ -147,6 +147,10 @@ type_weight：node=1、switch/matching/mux=2、mode-conflict=8。
 | r | 0.5,0.75,1.0 | 切尾比例 |
 
 P(u)=1+H/(exp(k×(cap-u))+1)+[u>cap]×H/s×(u-cap)，present_cost=type_weight×P(u)。
+新增资源 cost=type_weight×P(u)+history_weight×history×P(u)/P(1)；P(1)=1+H/2。
+u=1 保持原加性成本；u>1 放大历史项；同 owner 树/exact mux 复用仍免新增资源费用。
+mode 按加入后的不兼容状态单独计费：有 opposite mode 则虚拟 u=2（一次违规），与当前
+是否已经冲突/owner 是否持有同模式无关；同模式共享不收费，仍允许有限成本暂态冲突。
 cap=1，普通 u 为加入后的 owner 数，mux 用 distinct peers。H 增大促使绕热点且线长常增；
 k 增大代价跳变更陡；s 减小 overflow 惩罚更陡。H 连续停滞后依次尝试 4/8/12/16。
 
@@ -160,7 +164,7 @@ stop_reason 是退出原因；触及预算/上限但有合法解时 status 仍�
 checkpoint 记录每步时间与 incumbent；最终入口打印 total_ms/time_budget_seconds/over_budget_ms。
 iter 中 overflow/max_resource_overflow 为 rip 前值；new_overflow/wirelength 为 rip 后值；
 dirty_owners 是计划 rip 的 owner 数，rerouted 是调度 owner 数（不累计等长内部 tail 搜索），成功轮通常相同。
-初解早退两者为 0；maze 异常不打印部分计数 iter 行。params/iter 均记录统一的实际 history_decay。
+初解早退两者为 0；maze 异常不打印部分计数 iter 行。params/iter 均记录实际 history_decay；params 标记 cost_policy=normalized_history、mode_conflict_u=2。
 
 Info：最终按 RoutingNet 聚合 dump 所有路径，不提前 dump。route 块头含
 net_id/name/kind/demands/wirelength/sources；普通分支 demand/start/sink/path，
@@ -179,11 +183,16 @@ mux_test 扫 algorithm/test_ILP/test 与 test/config 的全部 config.json，检
 预算回归：初解超时、无解超时修复、优化/修复交替、冲突 trial 后恢复最好合法解、
 安全上限、禁用 stagnation、整组 SyncNet、实际预算停止；另测参考隔离、fanout/PNnet
 共享树线长、严格 10% 边界、选择性重布、无候选提前退出；超容量代价验证 s=2 的线性项
-比 s=20 强十倍，未超容量代价不变（H=4/16）。
+比 s=20 强十倍，未超容量代价不变（H=4/16）；另测各容量/mux 历史耦合、树复用及双向 mode 首次/持续冲突预测计价。
 
 ## TODO
 
-增强超容量项（已实现，case6/15 收敛效果待实验）：所有迭代统一 s=20→2，将 H/s×overflow
-增强十倍，u≤1 代价不变；统一 decay=0.9、H 上限16。可能增加绕行/耗时，须单独对照验证。
+1. 第一步（已实现，case15 收敛效果待实验）：保留统一 decay=0.9、s=2、H≤16；历史项乘
+   P(u)/P(1)，修正 mode 的不兼容预测计价。拆线/同步整组等长/10%筛选/预算/best_legal 不变。
+   不扩展候选路径的模式状态；尚未提交路径内部的模式冲突仍是边界，不能声称保证收敛。
+2. 第二步（未实现）：若仍进入平台，再将 EMA 历史替换为 NCTU-GR 式频次累积与 √轮数
+   归一化（h_next=h+of，dah=h/(C1+C2√t)），让持续热点缓慢涨价、旧热点逐渐降价。
+   of 统计实际提交重布的冲突频次，不计 maze 扩展/等长回滚尝试；不是轮末 overflow 的同义词。
+   常数须按本图粒度校准；分步对照，并记录各类 overflow、历史值范围和热点持续轮数。
 
 命名空间 PR_tool；std::Vector / std::String；单测 Catch-free require()；本文件 ≤200 行。
