@@ -225,6 +225,34 @@ auto initial_order(const std::Vector<OwnerRecord>& owners) -> std::Vector<std::s
     return order;
 }
 
+auto initial_type_order(
+    const std::Vector<OwnerRecord>& owners,
+    const std::Vector<RoutingNet>& nets
+) -> std::Vector<std::size_t> {
+    auto order = initial_order(owners);
+    const auto priority = [&](std::size_t index) {
+        const auto& net = nets[owners[index].net_index];
+        if (net.initial_type_priority >= 0) {
+            return net.initial_type_priority;
+        }
+        if (net.is_sync_bus) {
+            return 0;
+        }
+        if (net.kind == RoutingNetKind::PNnet) {
+            return 5;
+        }
+        if (net.kind == RoutingNetKind::Bnet) {
+            return net.demands.size() > 1 ? 2 : 4;
+        }
+        return net.demands.size() > 1 ? 1 : 3;
+    };
+    // Keep the old ordering within each type; optimization still uses initial_order.
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+        return priority(a) < priority(b);
+    });
+    return order;
+}
+
 auto find_owner_index(const std::Vector<OwnerRecord>& owners, OwnerId id) -> std::size_t {
     for (std::size_t i = 0; i < owners.size(); ++i) {
         if (owners[i].id == id) {

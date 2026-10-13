@@ -196,6 +196,7 @@ struct RoutingNet {
     std::Vector<GraphNodeRef> sources;
     std::Vector<RoutingDemand> demands;
     bool is_sync_bus{false};
+    int initial_type_priority{-1}; // Original Net type priority; -1 for synthetic nets.
 };
 
 } // namespace PR_tool

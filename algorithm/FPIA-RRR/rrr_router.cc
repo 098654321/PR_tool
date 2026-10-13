@@ -243,7 +243,16 @@ auto run_rrr(
     };
 
     try {
-        reroute(full_order(0));
+        auto initial_ids = std::Vector<OwnerId> {};
+        for (const auto index : initial_type_order(owners, nets)) {
+            const auto id = owners[index].id;
+            initial_ids.push_back(id);
+            if (id.demand_id == 0) {
+                debug::info_fmt("FPIA RRR: initial order net_id={} name={}",
+                                id.net_id, nets[owners[index].net_index].name);
+            }
+        }
+        reroute(initial_ids);
     }
     catch (const std::runtime_error& error) {
         debug::info_fmt("FPIA RRR: initial routing failed: {}", error.what());

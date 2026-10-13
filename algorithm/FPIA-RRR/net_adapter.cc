@@ -79,6 +79,7 @@ auto make_routing_net(const circuit::Net& net, RoutingNetKind kind) -> RoutingNe
     routing_net.origin_key = net.name();
     routing_net.origin_uid = net.uid();
     routing_net.kind = kind;
+    routing_net.initial_type_priority = static_cast<int>(net.priority().value());
     return routing_net;
 }
 

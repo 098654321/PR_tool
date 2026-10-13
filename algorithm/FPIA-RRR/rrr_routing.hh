@@ -75,6 +75,11 @@ auto build_owners(const std::Vector<RoutingNet>& nets) -> std::Vector<OwnerRecor
 
 auto initial_order(const std::Vector<OwnerRecord>& owners) -> std::Vector<std::size_t>;
 
+auto initial_type_order(
+    const std::Vector<OwnerRecord>& owners,
+    const std::Vector<RoutingNet>& nets
+) -> std::Vector<std::size_t>;
+
 auto find_owner_index(const std::Vector<OwnerRecord>& owners, OwnerId id) -> std::size_t;
 
 auto add_tree_node(OwnerRecord& owner, const UnifiedGraph& graph, int node) -> void;

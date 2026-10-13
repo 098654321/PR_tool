@@ -58,8 +58,10 @@ first_legal_ms、best_legal_ms、budget_elapsed_ms 相对预算起点；未有�
 paths[net][demand] 为节点 id 序列。
 
 Owner：普通 Bnet/Tnet/PNnet/fanout 为 {net_id,0}，SyncNet lane 为 {net_id,demand_id}。
-初始顺序：bus（lane 数、组 HPWL 降序、net_id 升序，组内 demand_id 升序）再普通网
-（端口数、HPWL 降序、id 升序）。Dirty：exposure、retry、HPWL 降序，id 升序。
+仅初始布线按原 Net 类型 priority 0→5 排序：SyncNet→TrackToBumps/BumpToTracks→
+BumpToBumps→单端 Track↔Bump→BumpToBump→PNnet；现有不支持的 Bump 多汇类型仍拒绝。
+同类型内沿用旧序：bus 按 lane 数、组 HPWL 降序，普通网按端口数、HPWL 降序，
+最后 id 升序，组内 demand_id 升序。Dirty 仍按 exposure、retry、HPWL 降序，id 升序。
 HPWL 为终端包围盒，Bump 使用 tob_anchor_cob；PNnet 计入全部候选源。
 fanout/PNnet rip 整棵树后按 demand_id 重生；树起点只收 Track，不得从 HLine/VLine 起步。
 
@@ -83,7 +85,8 @@ Bnet 另 claim bnet_unit_key，route_demand 传入 interposer 做 NESW。
 
 额外优化只改外层调度：当前完整解合法且尚有预算时，全量拆除全部普通 net 和完整
 SyncNet 组，再调用原 route_owner / route_sync_group。不做参考预布线或线长阈值筛选。
-每轮把初始排序的起点循环移动一个 net/组，不拆组、不改组内 lane 顺序。
+每轮仍把旧排序（bus 优先，再按规模/HPWL/id）的起点循环移动一个 net/组；
+不使用新增的初始类型排序，不拆组、不改组内 lane 顺序。
 即使线长/路径没有改善，也持续优化到预算停止（或 max_iterations 安全上限）。
 新解冲突/不等长时进入原 dirty 修复，合法后再全量优化。预算停止仍以
 历史 best_legal 为条件，live 非法但已有 best_legal 时超时直接返回它，不等待下一次合法。
@@ -158,7 +161,7 @@ dirty_owners 是计划 rip 的 owner 数，rerouted 是调度 owner 数（不累
 初解早退两者为 0；maze 异常不打印部分计数 iter 行。params/iter 均记录实际 history_decay；
 params 标记 cost_policy=additive、optimization_scope=all。
 
-Info：最终按 RoutingNet 聚合 dump 所有路径，不提前 dump。route 块头含
+Info：initial order 按初始布线计划列出 net_id/name；最终按 RoutingNet 聚合 dump 所有路径，不提前 dump。route 块头含
 net_id/name/kind/demands/wirelength/sources；普通分支 demand/start/sink/path，
 SyncNet lane/source/sink/N_i/path。wirelength 是本 net 去重 Track+Bump，不打印 nodes。
 Debug：每轮 overflow owners=[name,...]（lane 用 name#demand_id）、equalize r/target/limit/
@@ -176,6 +179,7 @@ mux_test 扫 algorithm/test_ILP/test 与 test/config 的全部 config.json，检
 安全上限、禁用 stagnation、整组 SyncNet、实际预算停止；最短合法解即使不改善仍持续
 全量优化，验证预算和迭代上限停止；超容量代价比较 s=2/20 的线性项（H=4/16）。
 另测各容量/mux 加性历史、树复用及原双向 mode 首次/持续冲突与复用计价。
+初始类型排序回归覆盖原 priority 保留、六层类型顺序、整组连续及旧优化排序不变。
 
 ## TODO
 

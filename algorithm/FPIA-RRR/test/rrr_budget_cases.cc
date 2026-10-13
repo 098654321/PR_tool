@@ -1,12 +1,15 @@
 #include "test/rrr_budget_cases.hh"
 
 #include "maze_search.hh"
+#include "net_adapter.hh"
 #include "rrr_cli.hh"
 #include "rrr_router.hh"
 #include "route_validate.hh"
 #include "rrr_routing.hh"
 
 #include <debug/debug.hh>
+#include <circuit/net/types/bbnet.hh>
+#include <circuit/net/types/tbsnet.hh>
 
 #include <chrono>
 #include <cmath>
@@ -108,6 +111,67 @@ auto check_legal(const Fixture& value, const RrrResult& result, hardware::Interp
             "budget result must pass independent validation");
     require(result.first_legal_ms >= 0 && result.best_legal_ms >= result.first_legal_ms,
             "legal solution timestamps must be recorded");
+}
+
+auto test_initial_type_order() -> void {
+    const auto value = fixture();
+    auto nets = std::Vector<RoutingNet> {};
+    for (std::size_t i = 0; i < 7; ++i) {
+        nets.push_back(net(value.graph, i, 0, 1));
+    }
+    nets[0].kind = RoutingNetKind::PNnet;
+    nets[0].sources.resize(4, nets[0].sources.front());
+    nets[1].kind = RoutingNetKind::Bnet;
+    nets[3].kind = RoutingNetKind::Bnet;
+    nets[3].demands.resize(4, nets[3].demands.front());
+    nets[4].demands.push_back(RoutingDemand {1, ref(value.graph, 3), {0}, true});
+    nets[5].is_sync_bus = true;
+    nets[5].demands.push_back(RoutingDemand {1, ref(value.graph, 3), {0}, true});
+    nets[6].initial_type_priority = 1; // TrackToBumpsNet can contain just one sink.
+    const auto owners = rrr_detail::build_owners(nets);
+    const auto old_order = rrr_detail::initial_order(owners);
+    const auto typed = rrr_detail::initial_type_order(owners, nets);
+    auto ids = [&](const std::Vector<std::size_t>& order) {
+        auto result = std::Vector<std::size_t> {};
+        for (const auto i : order) {
+            result.push_back(owners[i].id.net_id);
+        }
+        return result;
+    };
+    require(ids(typed) == std::Vector<std::size_t> {5, 5, 4, 6, 3, 2, 1, 0},
+            "initial routing must follow type priorities 0..5 and keep same-type ordering");
+    require(owners[typed[0]].id.demand_id == 0 && owners[typed[1]].id.demand_id == 1,
+            "initial type ordering must keep SyncNet lanes together in demand order");
+    require(ids(old_order) == std::Vector<std::size_t> {5, 5, 0, 3, 4, 1, 2, 6}
+                && rrr_detail::initial_order(owners) == old_order,
+            "type ordering must not change the legacy ordering used by optimization rounds");
+
+    auto interposer = hardware::Interposer {};
+    auto name = std::String {"type_order"};
+    auto uid = name;
+    auto* bump = interposer.get_bump({0, 0}, 0).value();
+    auto* other = interposer.get_bump({0, 0}, 1).value();
+    auto* track = interposer.get_track(0, 0, hardware::TrackDirection::Horizontal, 0).value();
+    const auto adapted = build_routing_nets({
+        std::make_shared<circuit::BumpToBumpNet>(bump, other, std::HashSet<int> {0}, name, uid),
+        std::make_shared<circuit::TrackToBumpsNet>(
+            track, std::Vector<hardware::Bump*> {bump}, std::HashSet<int> {0}, name, uid)});
+    require(adapted[0].initial_type_priority == 4 && adapted[1].initial_type_priority == 1,
+            "adapter must preserve original type priority even for a one-sink fanout class");
+}
+
+auto test_initial_routing_uses_type_order() -> void {
+    auto value = fixture();
+    value.nets[0].kind = RoutingNetKind::Bnet;
+    auto params = RrrParams {};
+    params.s = 1; // Make the first routed net's shared node expensive enough to detour.
+    auto interposer = hardware::Interposer {};
+    const auto result = run_rrr(value.graph, value.nets, params, &interposer);
+    check_legal(value, result, &interposer);
+    require(result.iterations == 0 && result.stop_reason == "feasible"
+                && result.paths[0][0] == std::Vector<int> {0, 5, 6, 1}
+                && result.paths[1][0] == std::Vector<int> {2, 4, 3},
+            "initial run must route Tnet before Bnet, not the legacy net-id order");
 }
 
 auto test_cli_budget() -> void {
@@ -448,6 +512,8 @@ auto test_unreachable_initial_not_legal() -> void {
 } // namespace
 
 auto run_rrr_budget_unit_tests() -> void {
+    test_initial_type_order();
+    test_initial_routing_uses_type_order();
     test_cli_budget();
     test_overflow_slope();
     test_additive_history_cost();
