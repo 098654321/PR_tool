@@ -29,6 +29,8 @@ struct RouteColumn {
     std::size_t wirelength{};
 };
 
+class RrrCostModel;
+
 struct RouteSearchOptions {
     std::map<RouteResource, double> prices;
     std::set<int> discouraged_nodes;
@@ -36,6 +38,7 @@ struct RouteSearchOptions {
     std::size_t exact_length{}; // zero means ordinary shortest route
     int max_expansions{300000};
     int* shared_expansions{};
+    RrrCostModel* rrr_cost{}; // null retains the ILP pricing cost
     std::chrono::steady_clock::time_point deadline{
         std::chrono::steady_clock::time_point::max()};
 };

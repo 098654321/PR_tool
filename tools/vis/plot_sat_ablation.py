@@ -65,9 +65,9 @@ def read_data(data: Path) -> tuple[list, list]:
 def draw(stages: list, comparisons: list, output: Path) -> None:
     plt.rcParams.update({"font.family": "serif", "font.serif": ["Times New Roman", "DejaVu Serif"],
                          "font.size": 16.5, "pdf.fonttype": 42, "ps.fonttype": 42})
-    fig, axes = plt.subplots(1, 3, figsize=(6.8, 4.0),
+    fig, axes = plt.subplots(1, 3, figsize=(6.8, 3.4),
                              gridspec_kw={"width_ratios": [1.0, 1.15, 1.55]})
-    fig.subplots_adjust(left=.17, right=.94, bottom=.21, top=.78, wspace=.85)
+    fig.subplots_adjust(left=.17, right=.94, bottom=.159, top=.829, wspace=.85)
     wl_ax, time_ax, gain_ax = axes
     y = list(range(len(comparisons)))
     labels = [row[0][:-1] + r"$^{*}$" if row[0].endswith("*") else row[0]
@@ -120,17 +120,17 @@ def draw(stages: list, comparisons: list, output: Path) -> None:
 
     left = wl_ax.get_position().x0
     right = time_ax.get_position().x1
-    fig.text((left + right) / 2, .98, "(a) Effect of SAT initialization", ha="center", va="top", fontsize=15)
+    fig.text((left + right) / 2, .988, "(a) Effect of SAT initialization", ha="center", va="top", fontsize=15)
     gain_pos = gain_ax.get_position()
-    fig.text((gain_pos.x0 + gain_pos.x1) / 2, .98, "(b) ILP/RRR stage gains", ha="center", va="top", fontsize=15)
+    fig.text((gain_pos.x0 + gain_pos.x1) / 2, .988, "(b) ILP/RRR stage gains", ha="center", va="top", fontsize=15)
     gain_handles, gain_labels = gain_ax.get_legend_handles_labels()
     fig.legend(gain_handles, gain_labels, loc="upper center",
-               bbox_to_anchor=((gain_pos.x0 + gain_pos.x1) / 2, .883),
+               bbox_to_anchor=((gain_pos.x0 + gain_pos.x1) / 2, .951),
                frameon=False, ncol=2, fontsize=15, handlelength=1, columnspacing=1)
     handles = [Line2D([], [], marker="o", linestyle="none", color=BLUE, markersize=4, label="SAT+ILP+RRR"),
                Line2D([], [], marker="D", linestyle="none", color=ORANGE, markerfacecolor="none",
                       markersize=5, label="ILP+RRR")]
-    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=((left + right) / 2, .883),
+    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=((left + right) / 2, .951),
                frameon=False, ncol=2, fontsize=15, handlelength=1, columnspacing=1)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=300, facecolor="white")

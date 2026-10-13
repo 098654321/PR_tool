@@ -10,6 +10,7 @@
 #include <stdexcept>
 
 namespace PR_tool {
+auto run_rrr_cost_tests() -> void;
 namespace {
 
 auto require(bool value, const char* message) -> void {
@@ -540,6 +541,7 @@ auto unit_change() -> void {
 } // namespace PR_tool
 
 auto main() -> int {
+    PR_tool::run_rrr_cost_tests();
     PR_tool::integer_lp_incumbent();
     PR_tool::simple_master();
     PR_tool::sync_master_length();

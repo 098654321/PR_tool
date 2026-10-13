@@ -20,6 +20,7 @@
 | `route_ilp/route_incumbent.*` | 完整整数 LP 提取、同步长度失效检查与 MIP 初始解重映射 |
 | `sat/*`, `delay/*`, `scope/pair_routing_state.*` | 可选 `--init-SAT` 的原 SAT 编码、反馈扩窗与路径提取 |
 | `route_ilp/route_rrr.*` | 接收合法部分解，补布缺失 owner 并事务式重布 |
+| `route_ilp/rrr_cost.*` | RRR 专用 FPIA 加法代价、事务占用与 sweep 末历史更新，不影响 ILP 定价 |
 | `direct_ilp/direct_validate.*` | 独立检查部分或完整路径、scope、互斥、TOB、同步长度及线长 |
 | `common/highs_log_sink.hh` | HiGHS 原生日志输出 |
 | `common/route_metrics.*` | Track+Bump 物理并集线长 |
@@ -35,6 +36,8 @@
 - 热点为全部并列最小容量对偶资源（包括最小值为零）与基树预测超容资源的并集。挑选 slack >1e-6、基树使用热点、候选池中任意列使用热点或端点在热点 `bbox+1` 内的 owner；仅每三轮（`round % 3 == 2`）选全部 owner，空集合不回退。候选搜索与 RRR 仍用全阵列 scope。
 - 每轮以 1e-6 容差检查完整整数 LP 解，经物理验证后保存线长最小者；SAT 解为后备。MIP 按当前 owner/候选重新映射并提交选路向量。同步长度变化仅删除保存解中长度失效的 lane，其余选路保留，缺失 lane 在初始向量中设 x=0、s=1；不同保存解不能直接混合。
 - RRR 事务中可暂时拆线或发生冲突；只提交零 overflow、每个已布通 owner 完整合法且未布通数减少，或未布通数不变而线长下降的结果。
+- RRR 搜索与候选评分统一使用 FPIA-RRR 加法代价：每 arc 基础代价 1，资源增量为 `type_weight * P(u) + history`，`P(u)=1+4/(exp(1-u)+1)+0.2*max(0,u-1)`。节点权重 1，switch/matching/mux 权重 2，相反 mode 冲突权重 8；同 owner 已有树资源复用不重复收费，mux 按不同 peer 数计占用。每次搜索从事务当前路径重建占用，保留树/同步前缀也计入占用；失败事务的占用不传到下次搜索。每个 sweep 结束按已提交状态更新 `history=0.9*history+overflow`，日志输出 overflow 和历史总量。已提交结果零 overflow，因此从零初始化的 history 保持为零，不累积失败试探罚分。
+- RRR 沿用最多 2 个 sweep、每 owner 6 个变体、被挤出 owner 至多 4 次重搜及原有接受条件。变体通过 demand 顺序、unit/等价代价邻接顺序和同步切尾比例变化，不使用旧路径加 2 或微小代价扰动；ILP 候选搜索仍使用原有线长与容量对偶代价。
 
 ## 构建和测试
 

@@ -1,4 +1,5 @@
 #include "route_ilp/route_rrr.hh"
+#include "route_ilp/rrr_cost.hh"
 
 #include "common/route_metrics.hh"
 #include "direct_ilp/direct_validate.hh"
@@ -58,25 +59,18 @@ auto search(const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
             const std::Vector<RoutingScope>& scopes, RouteOwner owner,
             const Selection& occupied,
             const std::map<std::size_t, std::size_t>& bus_lengths,
-            int variant, bool hard_avoid,
-            const std::map<RouteResource, double>& history,
+            int variant, RrrCostModel& cost,
             const RouteColumn* former = nullptr) -> RouteColumn {
     auto options = RouteSearchOptions{};
     options.variant = variant;
-    options.prices = history;
+    cost.set_selection(occupied);
+    options.rrr_cost = &cost;
     const auto& net = net_for_owner(nets, owner);
     if (net.is_sync_bus) {
         const auto it = bus_lengths.find(net.net_id);
         if (it == bus_lengths.end()) return RouteColumn{owner};
         options.exact_length = it->second;
     }
-    for (const auto& [_, candidate] : occupied)
-        for (const auto& resource : candidate.resources)
-            options.prices[resource] += hard_avoid ? 1000.0 : 10.0;
-    if (former != nullptr && variant > 0)
-        for (const auto& path : former->paths)
-            for (int node : path.node_path)
-                options.discouraged_nodes.insert(node);
     if (net.is_sync_bus && former != nullptr && variant >= 1 && variant <= 3) {
         const int tail_percent = variant == 1 ? 50 : variant == 2 ? 75 : 100;
         const auto cut_tail = find_sync_prefix_column(graph, net,
@@ -96,7 +90,7 @@ auto transaction(const UnifiedGraph& graph,
                  const std::Vector<RoutingScope>& scopes,
                  const std::map<std::size_t, std::size_t>& bus_lengths,
                  const Selection& incumbent, RouteOwner seed,
-                 int variant, const std::map<RouteResource, double>& history)
+                 int variant, RrrCostModel& cost)
     -> Selection {
     auto working = incumbent;
     auto former = RouteColumn{};
@@ -106,7 +100,7 @@ auto transaction(const UnifiedGraph& graph,
         working.erase(old);
     }
     const auto fresh = search(graph, nets, scopes, seed, working, bus_lengths,
-        variant, false, history, former.paths.empty() ? nullptr : &former);
+        variant, cost, former.paths.empty() ? nullptr : &former);
     if (fresh.paths.empty()) return {};
     auto displaced = std::Vector<RouteOwner>{};
     for (const auto& [other, column] : working)
@@ -123,7 +117,7 @@ auto transaction(const UnifiedGraph& graph,
         std::size_t best_count = std::numeric_limits<std::size_t>::max();
         for (int attempt = 0; attempt < 4; ++attempt) {
             auto replacement = search(graph, nets, scopes, other, working,
-                bus_lengths, variant + attempt, true, history, &old_column);
+                bus_lengths, variant + attempt, cost, &old_column);
             if (replacement.paths.empty()) continue;
             auto conflicts = std::Vector<RouteOwner>{};
             bool invalid = false;
@@ -188,12 +182,14 @@ auto optimize_route_columns_rrr(const UnifiedGraph& graph,
     const auto original_wirelength = incumbent.total_wirelength;
     auto accepted = 0;
     auto attempts = 0;
-    auto history = std::map<RouteResource, double>{};
+    auto cost = RrrCostModel{graph};
+    debug::info("route RRR cost: policy=fpia_additive H=4 k=1 s=20 decay=0.9 increment=1 history_weight=1 present_update=transaction_occupancy history_update=committed_sweep");
     debug::info_fmt("route RRR start: owners={} missing={} wirelength={}",
         owners.size(), missing_count(owners.size(), selected),
         incumbent.total_wirelength);
     for (int sweep = 0; sweep < 2; ++sweep) {
         bool improved = false;
+        const auto previous_accepted = accepted;
         auto order = std::Vector<RouteOwner>{};
         for (const auto owner : owners)
             if (!selected.contains(owner)) order.push_back(owner);
@@ -205,14 +201,8 @@ auto optimize_route_columns_rrr(const UnifiedGraph& graph,
                 if (std::chrono::steady_clock::now() >= deadline) break;
                 ++attempts;
                 auto trial = transaction(graph, nets, scopes,
-                    baseline.bus_lengths, selected, owner, variant, history);
-                if (trial.empty() || !no_conflicts(trial)) {
-                    const auto current = selected.find(owner);
-                    if (current != selected.end())
-                        for (const auto& resource : current->second.resources)
-                            history[resource] += 0.25;
-                    continue;
-                }
+                    baseline.bus_lengths, selected, owner, variant, cost);
+                if (trial.empty() || !no_conflicts(trial)) continue;
                 auto candidate = assemble(graph, trial, owners.size());
                 if (!validate_partial_route(graph, nets, scopes, candidate,
                                             baseline.bus_lengths)) continue;
@@ -231,6 +221,11 @@ auto optimize_route_columns_rrr(const UnifiedGraph& graph,
                 break;
             }
         }
+        cost.set_selection(selected);
+        const auto history = cost.history_next();
+        debug::info_fmt("route RRR history: sweep={} committed_overflow={} nonzero_resources={} total={} accepted={}",
+            sweep, history.overflow, history.nonzero_resources, history.total,
+            accepted - previous_accepted);
         if (!improved) break;
     }
     incumbent.rrr_attempted = true;
