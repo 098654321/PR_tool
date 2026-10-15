@@ -148,7 +148,7 @@ auto run_rrr(
         initialize_sync_targets(graph, nets, owners, params, interposer);
         if (raw_nets != nullptr) {
             if (raw_nets->size() != nets.size()) throw std::invalid_argument("initial raw/routing net count mismatch");
-            order = original_initial_route(graph, nets, owners, resources, params, interposer, *raw_nets);
+            order = original_initial_route(graph, nets, owners, resources, interposer, *raw_nets);
         } else {
             // Graph-only unit-test seam; production always executes the actual Sort/Resources/Maze.
             for (auto index : initial_type_order(owners, nets)) {

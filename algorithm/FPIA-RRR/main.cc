@@ -53,7 +53,8 @@ auto run_main(int argc, char** argv) -> int {
 
     auto [interposer, basedie] = PR_tool::parse::read_config(cli.config_path, 0, false);
     algo::build_nets(basedie.get(), interposer.get());
-    const auto raw_nets = basedie->nets_to_vector();
+    // Preserve the same mode-0 input sequence as source/algo/router/route_nets.
+    const auto raw_nets = basedie->nets().at(0);
     const auto nets = build_routing_nets(raw_nets);
     const auto graph = build_hardware_graph(interposer.get(), nets);
 

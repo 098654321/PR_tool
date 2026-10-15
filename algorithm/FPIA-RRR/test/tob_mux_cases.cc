@@ -26,7 +26,7 @@ auto scan_config(const std::filesystem::path& case_dir) -> bool {
     try {
         auto [interposer, basedie] = parse::read_config(case_dir.string(), 0, false);
         algo::build_nets(basedie.get(), interposer.get());
-        const auto raw_nets = basedie->nets_to_vector();
+        const auto raw_nets = basedie->nets().at(0);
         const auto nets = build_routing_nets(raw_nets);
         const auto graph = build_hardware_graph(interposer.get(), nets);
         auto params = RrrParams {};

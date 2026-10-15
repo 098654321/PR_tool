@@ -123,11 +123,6 @@ auto route_sync_group(
     hardware::Interposer* interposer
 ) -> bool;
 
-auto equalize_routed_sync_group(std::size_t net_index, std::Vector<OwnerRecord>& owners,
-                               const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
-                               ResourceModel& resources, const RrrParams& params,
-                               hardware::Interposer* interposer) -> bool;
-
 auto sync_violation(
     const UnifiedGraph& graph,
     const std::Vector<RoutingNet>& nets,

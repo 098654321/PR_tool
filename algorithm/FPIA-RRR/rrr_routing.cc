@@ -519,16 +519,6 @@ auto route_sync_group(
         owner.demand_paths[0] = std::move(path);
     }
 
-    return equalize_routed_sync_group(net_index, owners, graph, nets, resources, params, interposer);
-}
-
-auto equalize_routed_sync_group(std::size_t net_index, std::Vector<OwnerRecord>& owners,
-                               const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
-                               ResourceModel& resources, const RrrParams& params,
-                               hardware::Interposer* interposer) -> bool {
-    const auto group = group_owner_indices(owners, net_index);
-    if (group.empty()) return true;
-    const auto& net = nets[net_index];
     if (interposer == nullptr) {
         throw std::invalid_argument("RRR: SyncNet routing requires an Interposer");
     }

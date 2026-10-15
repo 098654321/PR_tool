@@ -2,7 +2,8 @@
 
 本目录实现独立 baseline：同步长度预计算 → 原始顺序 maze 初始化 →
 事务式 RRR 补布/优化。普通 net 参照 test_ILP 的 route_rrr/route_search；
-同步组保留 FPIA 的整组目标增长与切尾等长。spec.md 是旧版方法记录，不修改该文件。
+首轮同步组完全交给原始布线器；后续同步组保留 FPIA 的整组目标增长与切尾等长。
+spec.md 是旧版方法记录，不修改该文件。
 
 ## 工作流程要求
 
@@ -57,7 +58,9 @@ N_i=按访问次序计数 Track + TOB 常数，Bnet +2、Tnet +1；同组不得�
 初始目标 L0=max_i Lmin_i。只写 OwnerRecord::sync_target，不 claim 预计算路径，
 不更新 history。日志逐 lane 输出 shortest N_i，逐组输出 initial target。
 
-正式同步等长首先尝试预计算目标；不直接以普通 maze 实际最长长度覆盖它。
+预计算目标不干预原始首轮。成功同步组导入实际共同长度作为后续 sync_target；
+失败/未尝试同步组保留预计算目标。后续 FPIA 同步等长首先尝试当前 sync_target，
+不直接以 FPIA maze 实际最长长度覆盖它。
 只有切尾搜索找到更长候选时，才按实际长度推进整组目标。
 r={0.5,0.75,1.0}，保留 floor(N_track*(1-r)) 个 Track 的前缀再搜索尾段。
 出现更长 N_f 时整组恢复快照，以实际 N_f 更新目标后重来，不盲目 target+1。
@@ -67,19 +70,18 @@ r={0.5,0.75,1.0}，保留 floor(N_track*(1-r)) 个 Track 的前缀再搜索尾�
 
 ## 原始顺序 maze 初始化（initial_route.hh）
 
-直接调用 source/algo/router 的 Sort::execute 和 Resources::execute，
+生产入口使用 BaseDie::nets().at(0) 的原生构建顺序，不使用 nets_to_vector 的指针排序。
+直接调用 source/algo/router 的 Sort::execute、Resources::execute 和 Route::execute，
 严格保留 priority 更新、端口数归一化及原始比较器；不额外按 HPWL 或 ID 重排。
-按此顺序逐条执行原始 Net::route(MazeRouteStrategy)；普通 net 使用原始 BFS。
-SyncNet 使用 initial_sync_route.hh 在本目录适配原始私有 sync_preroute/BFS，
-保持 COB unit 候选排序、btb→ttb→btt 预布线顺序及其他同步 Track 端口保护。
-导入每条 lane 后，若全部达到预计算共同目标，原样保留，不进入等长调整；
-否则从这些原始路径开始 FPIA 切尾等长，不重新执行 FPIA 首次 maze。
-不调用原始 SyncNet 的另一个等长循环；不以预布线最长长度覆盖预计算目标。
+Route 按此顺序逐条执行原始 Net::route(MazeRouteStrategy)，包括原始 SyncNet 的
+预布线与自身等长循环；首轮不调用任何 FPIA maze/切尾，不本地复刻原始算法。
+Route 首次 RetryExpt 时立即退出，按 engine.position() 只导入已成功前缀；
+失败 net 的部分 package 不导入，失败及未尝试 net 交给现有事务式 RRR。
 
 成功 package 转成统一图中的完整 source→sink 路径，包括 COB 和 TOB 三层连接。
 fanout/PNnet 从 package 的实际连接并集重建每个 demand，不能直接拼接扁平 regular_path。
 导入后按 RRR 资源规则检查完整合法部分解；不可共享的跨 owner 资源仍不允许共享。
-首次无路或导入结果非法时，恢复此前成功前缀，立即停止原始阶段；
+首次无路或成功前缀导入结果非法时，仅保留此前通过校验的成功前缀；
 失败 net 的部分分支/同步 lane 不保留，后续未尝试 net 也交给 RRR。
 不继续尝试剩余原始 maze，不再使用旧的软拥塞初始补布。
 原始初始化结束后清理所有临时硬件预留，包括失败 fanout 尚未写回 package 的预留。
@@ -146,7 +148,8 @@ paths[net][demand]、total_wirelength、RRR_routing_time、total_ms 及最终 ro
 FPIA_RRR_unit 支持 --synthetic-only、--budget-only；断言使用 require，Release 有效。
 覆盖独立最短同步目标（包括忽略互相占用、长度而非 cost）、目标增长整组回滚、
 原始真实 Sort 的端口偏置、首次失败前缀和寄存器清理、事务补布/优化/失败回滚、
-原始 Btb/Btt/Ttb 同步初始路径在共同目标下原样保留及临时预留清理、
+原始 Btb/Btt/Ttb 同步完整布线不受 FPIA 目标干预、实际长度交接及临时预留清理、
+原始 Route 首次失败后不尝试后缀且由事务补布至首个合法解、
 预算超时补布、零 overflow 部分解失败、安全上限和最好合法解单调保留。
 真实矩阵：case_2btb、case_2btt、case_2fanout、case_bus2btb、case_bus2btt、test/config/case5。
 配置需匹配当前 Interposer 宽度；不得为测试越界修改目录外硬件配置。

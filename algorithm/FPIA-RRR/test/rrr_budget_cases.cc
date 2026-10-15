@@ -474,7 +474,7 @@ auto test_original_sort_and_interruption() -> void {
     auto resources = ResourceModel{};
     const auto idle = interposer.adjacent_idle_tracks(source).size();
     const auto order = rrr_detail::original_initial_route(graph, nets, owners,
-        resources, RrrParams{}, &interposer, raw);
+        resources, &interposer, raw);
     require(order == std::Vector<std::size_t>{1, 0},
             "original Sort must use exact priority/port bias, not old RRR port/HPWL order");
     require(rrr_detail::owner_connected(owners[1]) && !rrr_detail::owner_connected(owners[0]),
@@ -575,28 +575,55 @@ auto test_original_sync_initial_paths_are_preserved() -> void {
                 == expected.sync_target, "original one-lane fixture must achieve the independent target");
         sync->clear_current_package(); rrr_detail::clear_initial_reservations(&interposer);
         auto resources = ResourceModel{};
-        rrr_detail::original_initial_route(graph, nets, owners, resources, RrrParams{}, &interposer, raw);
+        owners.front().sync_target = expected.sync_target + 100;
+        rrr_detail::original_initial_route(graph, nets, owners, resources, &interposer, raw);
         require(owners.front().demand_paths == expected.demand_paths
                 && owners.front().sync_target == expected.sync_target,
-                "successful initialization must preserve original Btb/Btt/Ttb paths and target exactly");
+                "original Btb/Btt/Ttb routing must ignore FPIA target and import its actual common length");
         auto candidate = RrrResult{}; candidate.paths = rrr_detail::collect_paths_by_net(nets, owners);
         require(resources.overflow() == 0 && validate_rrr_solution(graph, nets, candidate, &interposer),
                 "imported original synchronous paths must pass full independent validation");
         require(sync->pathpackage()._regular_path.empty() && member->pathpackage()._regular_path.empty()
                 && interposer.is_idle_tracks(track), "sync initialization must clear temporary reservations");
-
-        // Exercise clear/equalize/export without rerunning the first FPIA maze.
-        // With no explicit target, the existing equalizer uses the snapshot maximum.
-        owners = rrr_detail::build_owners(nets); resources = ResourceModel{};
-        rrr_detail::original_initial_route(graph, nets, owners, resources, RrrParams{}, &interposer, raw);
-        require(owners.front().sync_target == expected.sync_target
-                && owners.front().demand_paths == expected.demand_paths,
-                "FPIA equalization must start from the imported original snapshot, including Btt reversal");
-        candidate.paths = rrr_detail::collect_paths_by_net(nets, owners);
-        require(resources.overflow() == 0 && validate_rrr_solution(graph, nets, candidate, &interposer)
-                && member->pathpackage()._regular_path.empty() && interposer.is_idle_tracks(track),
-                "equalized sync export must remain legal and leave no temporary reservations");
     }
+}
+
+auto test_original_route_failure_hands_off_to_rrr() -> void {
+    struct ProbeNet : circuit::TrackToBumpsNet {
+        int& calls;
+        bool fail;
+        ProbeNet(hardware::Track* source, std::Vector<hardware::Bump*> sinks,
+                 std::String& name, int& calls, bool fail)
+            : TrackToBumpsNet(source, sinks, std::HashSet<int>{0}, name, name), calls(calls), fail(fail) {}
+        auto route(hardware::Interposer* interposer, const algo::RouteStrategy& strategy) -> void override {
+            ++calls;
+            if (fail) throw algo::RetryExpt("controlled first initial failure", this);
+            TrackToBumpsNet::route(interposer, strategy);
+        }
+    };
+    auto interposer = hardware::Interposer{};
+    auto raw = std::Vector<std::Rc<circuit::Net>>{};
+    auto calls = std::Array<int, 3>{};
+    for (int i = 0, bump_index = 0; i < 3; ++i) {
+        auto name = std::String{"initial_probe_"} + std::to_string(i);
+        auto sinks = std::Vector<hardware::Bump*>{};
+        for (int j = 0; j <= i; ++j) sinks.push_back(interposer.get_bump(0, 0, bump_index++).value());
+        auto* source = interposer.get_track(0, 0, hardware::TrackDirection::Horizontal, i * 9).value();
+        raw.push_back(std::make_shared<ProbeNet>(source, sinks, name, calls[i], i == 1));
+    }
+    const auto nets = build_routing_nets(raw);
+    const auto graph = build_hardware_graph(&interposer, nets);
+    auto owners = rrr_detail::build_owners(nets);
+    auto resources = ResourceModel{};
+    const auto order = rrr_detail::original_initial_route(graph, nets, owners, resources, &interposer, raw);
+    require(order == std::Vector<std::size_t>{0, 1, 2} && calls == std::Array<int, 3>{1, 1, 0},
+            "original Route must stop at its first failure without attempting remaining nets");
+    require(rrr_detail::owner_connected(owners[0]) && rrr_detail::missing_owners(owners) == 2
+            && resources.overflow() == 0, "only the successful original prefix may enter RRR");
+    const auto result = run_rrr(graph, nets, expired_params(), &interposer, 0, &raw);
+    check_legal(Fixture{graph, nets}, result, &interposer);
+    require(result.iterations > 0 && result.stop_reason == "time_budget" && calls[2] == 0,
+            "after original failure, current transactions must finish missing nets despite expired budget");
 }
 
 } // namespace
@@ -606,6 +633,7 @@ auto run_rrr_budget_unit_tests() -> void {
     test_initial_routing_uses_type_order();
     test_original_sort_and_interruption();
     test_original_sync_initial_paths_are_preserved();
+    test_original_route_failure_hands_off_to_rrr();
     test_shortest_sync_targets_are_independent();
     test_cli_budget();
     test_overflow_slope();
