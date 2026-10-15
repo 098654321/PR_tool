@@ -19,6 +19,7 @@ struct OwnerRecord {
     int port_count{0};
     int lane_count{0};
     int retry{0};
+    std::size_t sync_target{0};
     std::Vector<std::Vector<int>> demand_paths;
     std::Set<int> tree;
     std::Set<ResourceKey> claimed;
@@ -73,6 +74,12 @@ auto demand_source_nodes(
 
 auto build_owners(const std::Vector<RoutingNet>& nets) -> std::Vector<OwnerRecord>;
 
+auto initialize_sync_targets(const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
+                             std::Vector<OwnerRecord>& owners, RrrParams params,
+                             hardware::Interposer* interposer) -> void;
+
+auto owner_paths_valid(const UnifiedGraph& graph, const OwnerRecord& owner) -> bool;
+
 auto initial_order(const std::Vector<OwnerRecord>& owners) -> std::Vector<std::size_t>;
 
 auto initial_type_order(
@@ -115,6 +122,11 @@ auto route_sync_group(
     RrrParams& params,
     hardware::Interposer* interposer
 ) -> bool;
+
+auto equalize_routed_sync_group(std::size_t net_index, std::Vector<OwnerRecord>& owners,
+                               const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
+                               ResourceModel& resources, const RrrParams& params,
+                               hardware::Interposer* interposer) -> bool;
 
 auto sync_violation(
     const UnifiedGraph& graph,

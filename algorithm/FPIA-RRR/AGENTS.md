@@ -1,195 +1,153 @@
 # PR_tool / algorithm/FPIA-RRR 工程指南
 
-本目录实现独立 FPIA rip-up-and-reroute（RRR）全局布线器，用作 test_ILP 的 baseline。
-方法规范见 spec.md；当前主循环、SyncNet 等长、TOB mux 独占与独立校验均已接通。
-不写 controlbits，不改 Interposer 寄存器。
+本目录实现独立 baseline：同步长度预计算 → 原始顺序 maze 初始化 →
+事务式 RRR 补布/优化。普通 net 参照 test_ILP 的 route_rrr/route_search；
+同步组保留 FPIA 的整组目标增长与切尾等长。spec.md 是旧版方法记录，不修改该文件。
 
 ## 工作流程要求
 
-- 改代码前读清方法文档与 source/hardware、source/circuit 映射；不允许修改方法文档。
-- 优先改动 algorithm/test_ILP；非必要不改 source 主流程。本 baseline 任务不改 test_ILP。
-- 修改后评估是否同步更新本文件（≤200 行）。
-- 单次修改 >100 行时，启动子 agent 审查。
-- 单文件职责紧凑，不超过 1000 行；关键步骤用 debug::info_fmt 打日志。
-- 当前分支 dev.ILP_RRR_add_iteration；未经用户明确要求，不切换分支、跨分支合并或 git push。
-- 涉及关键数据结构或方法时主动简要解释设计，注意运行速度。
+- 修改范围限 algorithm/FPIA-RRR；不改 test_ILP、source 或根 xmake.lua。
+- 改代码前读方法文档及 source/hardware、source/circuit 映射。
+- 单次修改 >100 行时启动独立子 agent 审查；单文件不超过 1000 行。
+- 当前分支 dev.ILP_RRR_add_iteration；未经用户要求不切换、合并或 push。
+- 关键中间步骤使用 debug::info_fmt；保持搜索速度并验证硬件合法性。
+- 修改持久约定时同步更新本文件，保持 ≤200 行。
 
-## 目的与边界
+## 边界与构建
 
-- 与 test_ILP 使用相同输入、解析器、Interposer 拓扑与 wirelength 语义，仅路由策略不同。
-- 每次只路由 mode=0，不切换 mode，不加载旧路径，不做 incremental routing。
-- 不调用 suspend/give_out/connect/PathPackage::connect_all。
-- occupancy 只存在于 ResourceModel，不修改 source 主流程；不链接 CaDiCaL/Gurobi。
-
-## 目录结构
-
-入口：main.cc / rrr_cli.* / rrr_types.hh；图与映射：net_adapter.* / hw_map.hh /
-hardware_graph.*；路由：rrr_router.*（外层调度）、rrr_routing.*（原辅助函数拆分）、
-maze_search.* / resource_model.* / sync_equalize.*；日志与校验：route_log.* /
-route_validate.*；测试：test/unit_main.cc / adapter_cases.* / rrr_budget_cases.* /
-tob_mux_fanout.* / tob_mux_cases.cc。
-
-## CLI、入口与计时
+与 test_ILP 共用配置解析、真实 Interposer 拓扑及 Track+Bump 并集线长。
+只运行 mode=0，不加载旧路径、不切换 mode，不调用 SAT/ILP 或写 controlbits。
+只有原始 maze 初始化临时调用 source 路由器的 suspend/give_out。
+初始化结束（包括失败/异常）清理 package 并重置临时寄存器；后续 RRR 占用仅在
+ResourceModel 中维护，绝不调用 connect_all。不得将预留状态带入后续 RRR。
 
 ```bash
-./output/FPIA_RRR <config_path> [-v|-vv] [-o DIR] [--max-iterations N] [--seed N] [--time-budget-seconds S]
 xmake build FPIA_RRR
 xmake build FPIA_RRR_unit && ./output/FPIA_RRR_unit
 xmake build FPIA_RRR_mux_test && ./output/FPIA_RRR_mux_test
+./output/FPIA_RRR CONFIG [-v|-vv] [-o DIR] [--max-iterations N] [--seed N] [--time-budget-seconds S]
 ```
 
--o 写 DIR/debug.log。无 -v 也输出 spec §9 汇总及最终全部 demand 路径。
--v/-vv 均设为 Debug。main：Elapsed::start → parse/build_nets → build_routing_nets →
-build_hardware_graph → run_rrr → 成功则独立 validate_rrr_solution。
-CLI max_iterations/seed/time_budget_seconds 写入 RrrParams，budget_start 为入口计时起点。
-退出码 0 仅当 status=success、best_overflow=0、独立校验通过，否则非零。
+-o 写 DIR/debug.log；默认输出到当前目录。-v/-vv 打开 Debug。
+不链接 CaDiCaL、Gurobi 或 HiGHS；复现事务算法而不调用 ILP 求解器。
+所有新模块在本目录维护；initial_route.hh、transaction.hh、transaction_search.hh
+为头文件模块，因此无需修改目录外的构建列表。
 
-routing_ms/RRR_routing_time 覆盖 initial maze + RRR，不含 parse/建图。
-elapsed_ms 使用 Elapsed::milliseconds()。最终 total_ms 与 test_ILP/main.cc 同口径：
-日志初始化后、配置解析前开始，包含解析、建图、全部布线、最终路径输出和独立校验。
-预算起点与 total_ms 相同；直接调用 run_rrr 未传 budget_start 则从 routing 开始。
+## 入口与计时
 
-## run_rrr 与外层调度
+main：parse/build_nets → build_routing_nets/build_hardware_graph → run_rrr →
+最终独立校验。保留 raw_nets，并传给 run_rrr 的末尾可选参数。
+生产 CLI 必须走真实原始 Sort/Resources/Maze；未传 raw_nets 的路径仅供合成图单测使用，
+用严格资源阻塞的图搜索作为初始布线测试接缝，不宣称与原始 BFS 选路相同。
 
-run_rrr(graph,nets,params,interposer,verbose_level=0) → RrrResult；interposer 必须非空。
-结果含 status/stop_reason、iterations/optimization_rounds、best_overflow、
-unequal_sync_groups/total_sync_gap、total_wirelength/paths/routing_ms。
-first_legal_ms、best_legal_ms、budget_elapsed_ms 相对预算起点；未有合法解的前两者为 -1。
-paths[net][demand] 为节点 id 序列。
+total_ms 与 test_ILP 入口同口径：日志初始化后、配置解析前开始，包含解析、建图、
+同步最短长度预计算、原始 maze、RRR、最终路径输出和独立校验。
+routing_ms/RRR_routing_time 包含预计算、初始化与 RRR，不含解析、建图和最终路径输出。
+budget_start 与 total_ms 起点相同；直接调用 run_rrr 未设置则从 routing 开始。
 
-Owner：普通 Bnet/Tnet/PNnet/fanout 为 {net_id,0}，SyncNet lane 为 {net_id,demand_id}。
-仅初始布线按原 Net 类型 priority 0→5 排序：SyncNet→TrackToBumps/BumpToTracks→
-BumpToBumps→单端 Track↔Bump→BumpToBump→PNnet；现有不支持的 Bump 多汇类型仍拒绝。
-同类型内沿用旧序：bus 按 lane 数、组 HPWL 降序，普通网按端口数、HPWL 降序，
-最后 id 升序，组内 demand_id 升序。Dirty 仍按 exposure、retry、HPWL 降序，id 升序。
-HPWL 为终端包围盒，Bump 使用 tob_anchor_cob；PNnet 计入全部候选源。
-fanout/PNnet rip 整棵树后按 demand_id 重生；树起点只收 Track，不得从 HLine/VLine 起步。
+退出码 0 仅当 status=success、missing_owners=0、best_overflow=0 且完整独立校验通过。
+零 overflow 的部分解不能报告成功。
 
-SyncNet 第一个 owner 调用 route_sync_group：全 lane maze 后 equalize；sibling 的
-Node/Switch/Matching/TobMux 硬阻塞（Mode/BnetUnit 不互斥），已填 sibling 经 routed_sync 跳过。
-Dirty 任意 lane 扩到整组后先全部 rip 再 reroute；目标增长时整组回滚并按新目标重新等长。
-overflow=0、各组 N_i 相等、全部连接才是候选合法解，还须独立校验通过才保存。
+## 同步组共同长度初始化
 
-完整 live state 按 (overflow,unequal_sync_groups,total_sync_gap,total_wirelength)
-字典序保存诊断 best；另单独保存经过独立校验的最好合法解，仅在线长严格降低时更新。
-快照同时保存 owners 与完整 ResourceModel，结束优先恢复最好合法解。
-history_next（统一 decay，默认 0.9）→ 原 overflow dirty 集+不等长组 → 排序 → 全 rip → reroute；每连续 4 轮无改进则 H=min(H+4,16)
-并重置停滞计数。无预算时保留 first-legal 停止、H=16 后 stagnation_limit 停止，
-maze 异常则 unroutable。Claim 用 path_resource_keys，与 maze arc_resource_keys 同投影；
-Bnet 另 claim bnet_unit_key，route_demand 传入 interposer 做 NESW。
+正式布线前，每个 SyncNet 的每个 2-pin lane 独立搜索，不考虑任何其他 net/lane
+的资源占用。只按 Track 节点数最短搜索，仍保持真实邻接、Bnet unit 及单路内部合法性。
+不得用拥塞加权 cost 最小或图 arc hop 最小代替最短同步长度。
+N_i=按访问次序计数 Track + TOB 常数，Bnet +2、Tnet +1；同组不得混合 Bnet/Tnet。
+初始目标 L0=max_i Lmin_i。只写 OwnerRecord::sync_target，不 claim 预计算路径，
+不更新 history。日志逐 lane 输出 shortest N_i，逐组输出 initial target。
 
-时间预算 S>0：初始布线及每轮完成后 checkpoint，记录当前时间。有历史合法解且时间
-达到预算则停止；无合法解超时仍继续，首次找到合法解后停止。预算模式不因 stagnation
-退出。max_iterations 仍是安全上限：触顶有合法解返回 success，无合法解返回 iteration_limit。
-默认 S=0 关闭预算。预算不硬中断单次 maze/equalize，允许一轮执行及最终输出/校验造成超时。
+正式同步等长首先尝试预计算目标；不直接以普通 maze 实际最长长度覆盖它。
+只有切尾搜索找到更长候选时，才按实际长度推进整组目标。
+r={0.5,0.75,1.0}，保留 floor(N_track*(1-r)) 个 Track 的前缀再搜索尾段。
+出现更长 N_f 时整组恢复快照，以实际 N_f 更新目标后重来，不盲目 target+1。
+保留 sibling 物理硬阻塞、前缀/parent-chain 禁回环及内部 mux/mode 合法检查。
+搜索上限仍为 sync_tail_extra_tracks=64、尾部 labels 至多 80000。
+组路径与 sync_target 只随成功事务一起提交；失败整体回滚，不能泄漏长度更新。
 
-额外优化只改外层调度：当前完整解合法且尚有预算时，全量拆除全部普通 net 和完整
-SyncNet 组，再调用原 route_owner / route_sync_group。不做参考预布线或线长阈值筛选。
-每轮仍把旧排序（bus 优先，再按规模/HPWL/id）的起点循环移动一个 net/组；
-不使用新增的初始类型排序，不拆组、不改组内 lane 顺序。
-即使线长/路径没有改善，也持续优化到预算停止（或 max_iterations 安全上限）。
-新解冲突/不等长时进入原 dirty 修复，合法后再全量优化。预算停止仍以
-历史 best_legal 为条件，live 非法但已有 best_legal 时超时直接返回它，不等待下一次合法。
-预算模式 maze 异常时恢复完整 best（无则清空）并整轮重试；异常轮不保存部分路径。
-搜索状态/队列、资源投影、同步组等长算法不变；cost 恢复原始加性设计。
+## 原始顺序 maze 初始化（initial_route.hh）
 
-## 独立校验 validate_rrr_solution
+直接调用 source/algo/router 的 Sort::execute 和 Resources::execute，
+严格保留 priority 更新、端口数归一化及原始比较器；不额外按 HPWL 或 ID 重排。
+按此顺序逐条执行原始 Net::route(MazeRouteStrategy)；普通 net 使用原始 BFS。
+SyncNet 使用 initial_sync_route.hh 在本目录适配原始私有 sync_preroute/BFS，
+保持 COB unit 候选排序、btb→ttb→btt 预布线顺序及其他同步 Track 端口保护。
+导入每条 lane 后，若全部达到预计算共同目标，原样保留，不进入等长调整；
+否则从这些原始路径开始 FPIA 切尾等长，不重新执行 FPIA 首次 maze。
+不调用原始 SyncNet 的另一个等长循环；不以预布线最长长度覆盖预计算目标。
 
-不读取 live occupancy，使用 path_resource_keys 将结果 claim 到新的 ResourceModel。
-失败时 debug::error 并返回 false；需 interposer 才能检查 SyncNet N_i。
-检查：每 demand 路径非空、sink 正确、首节点为候选源或同 owner 树 Track（非 H/VLine）、
-相邻节点属于 directed_arc_set、collect_illegal_tob_fanout 为空；
-Track/Bump/HLine/VLine、物理开关、matching、TOB mux port、mode-conflict overflow 均为 0；
-Bnet 每 owner 至多一个 selected_unit；SyncNet N_i 相同且 lane 物理 claimed key 互斥。
-Mode/BnetUnit 是兼容/per-owner 锁，不作为跨 lane 独占资源。
+成功 package 转成统一图中的完整 source→sink 路径，包括 COB 和 TOB 三层连接。
+fanout/PNnet 从 package 的实际连接并集重建每个 demand，不能直接拼接扁平 regular_path。
+导入后按 RRR 资源规则检查完整合法部分解；不可共享的跨 owner 资源仍不允许共享。
+首次无路或导入结果非法时，恢复此前成功前缀，立即停止原始阶段；
+失败 net 的部分分支/同步 lane 不保留，后续未尝试 net 也交给 RRR。
+不继续尝试剩余原始 maze，不再使用旧的软拥塞初始补布。
+原始初始化结束后清理所有临时硬件预留，包括失败 fanout 尚未写回 package 的预留。
 
-## SyncNet 长度与等长 API
+## 事务式 RRR（transaction.hh / transaction_search.hh）
 
-N_i：按访问序计数 Track 节点，加 PathPackage TOB 端点常数：Bnet +2、Tnet +1。
-同组不得混 Bnet/Tnet；sync_track_cut_index(N_i,r)=floor(N_i*(1-r))。
-equalize_sync_group 短 lane 按 r={0.5,0.75,1.0} 切尾，每次整组固定同一 target。
-某 lane 只找到更长 N_f 时，整组回滚，以实际 N_f 更新 target 后重来；普通不可达不盲目
-target+1。sibling 硬阻塞，前缀及 parent chain 禁回环。仅全部 N_i 精确相等才提交。
+已提交状态始终为零 overflow 的完整 owner 集合，允许部分 owner 尚未布通。
+普通 net 为整棵树 owner={net_id,0}；SyncNet lane 各有独立 owner，
+但调度、冲突挤出和目标变化以整个同步组作为原子事务单元。
 
-## Maze / 资源 / 线长
+每 sweep 先按原始排序处理缺失 net/组，再处理已连接者：
+1. 种子尝试 6 个变体，事务内先拆种子，再搜索新路径。
+2. 找到与新路径冲突的其他 owner/组，拆除并加入 displacement 队列。
+3. 被挤出对象至多重搜 4 次，选择不触及已锁定对象且冲突对象最少的候选。
+4. 新挤出对象继续入队，成功者锁定；失败则放弃整个试探。
+5. 只有零 overflow、完整 owner/组合法且未布通 owner 数减少，
+   或未布通数不变且总线长严格下降，才提交整个事务。
 
-route_demand(graph,resources,owner,sources,sink,params,tree={},is_bnet=false,
-interposer=nullptr,hard_block={}) 使用 Dijkstra，不 claim；树起点只收 Track。
-容量为 1；mode straight+swap 冲突；Bnet selected_unit 锁。wirelength 按每 net 去重
-Track+Bump 再求和，不统计 HLine/VLine，不按 SyncNet 等长 N_i 求和。
+普通候选参照 test_ILP：完整物理 source 路径，轮换 demand/unit/等代价邻接顺序，
+每 source/unit 最多 32 次内部合法性去边回退，每次搜索最多 300000 扩展。
+Track unit 与 VLine local unit 筛选与 test_ILP 一致；不做随机扰动或旧路径加价。
+同步组调用现有 FPIA maze+tail equalize，变体 1/2/3 分别优先 50%/75%/100% 切尾。
+不使用旧 dirty 排序、全量拆线优化、轮换全网起点或停滞后提高 H。
 
-TOB mux 同一 owner 对一个 port 只能用一个 peer；Bump–HLine、HLine–VLine、
-VLine–Track 投影 TobMuxInput(node,peer)/TobMuxOutput(node,peer)。
-相同 exact connection/extra 可复用，不同 peer 的 overflow=distinct_peers-1（即使同 owner）。
-key_is_free 对 mux 只认 exact key，history 按 (kind,id) 共享。Track Steiner 可同 owner
-共享；禁止 VLine 接多个 HLine、Track mux output 接多个 VLine。
+## Cost 与资源规则
 
-## 缺省超参数
+每 arc 基础代价 1，新增资源加 type_weight*P(u)+history_weight*history：
+P(u)=1+H/(exp(k*(1-u))+1)+[u>1]*(H/s)*(u-1)。
+生产缺省 H=4、k=1、s=20，不自适应提高 H；decay=0.9、increment=1、
+history_weight=1。Node 权重 1，switch/matching/mux 为 2，mode conflict 为 8。
+同 owner 树/exact mux 复用不重复收费，mux 用 distinct peer 占用。
+每次试探从已提交状态复制占用，路径生长与同步前缀保留立即更新事务占用。
+sweep 末只按已提交状态 history_next=0.9*history+overflow；
+失败试探不积累历史。提交状态零 overflow，因此从零开始的 history 一直为零。
 
-CLI 只暴露 max_iterations/seed/time_budget_seconds，其余编译期常数。
-type_weight：node=1、switch/matching/mux=2、mode-conflict=8。
+容量资源含 Track/Bump/HLine/VLine、开关和 matching；straight/swap 是兼容约束，
+Bnet unit 是 per-owner 锁，不作为跨同步 lane 独占资源。
+同 owner mux port 不允许多个 peer，SyncNet lane 不能共享物理资源。
+独立校验重建全部占用，检查完整 demand、端点、图邻接、简单路径、物理并集无环、
+TOB fanout、unit、mode、容量及同步长度，不依赖 live occupancy。
+allow_partial 仅允许缺少整个 net/同步组，不能跳过残缺 owner。
 
-| 参数 | 缺省 | 含义 |
-|---|---|---|
-| seed | 1 | 只记日志，搜索/排序确定，无随机数 |
-| max_iterations | 1000000000 | 修复与优化轮次安全上限 |
-| time_budget_seconds | 0 | 关闭预算，正数启用软预算 |
-| stagnation_limit | 8 | 仅无预算时 H=16 阶段连续无改进停止 |
-| H / k / s | 4 / 1.0 / 20 | 拥塞高度 / logistic 陡峭度 / overflow 线性斜率 |
-| decay / increment / history_weight | 0.9 / 1 / 1 | 所有轮次统一用配置 decay；history_next=decay×history+increment×overflow |
-| detour_bias | 0 | 关闭 |
-| sync_tail_extra_tracks | 64 | target 超出初始最长 lane 的 Track 预算 |
-| r | 0.5,0.75,1.0 | 切尾比例 |
+## 终止、incumbent 与日志
 
-P(u)=1+H/(exp(k×(cap-u))+1)+[u>cap]×H/s×(u-cap)，present_cost=type_weight×P(u)。
-新增资源 cost=type_weight×P(u)+history_weight×history；同 owner 树/exact mux 复用免新增费用。
-mode 恢复原实现：owner 未持有当前 mode 且已有 opposite mode 时，追加 ModeConflict
-费用，使用该资源当前 occupancy 的原预测计数（非固定虚拟 u=2）；同 owner mode 复用免计费。
-cap=1，普通 u 为加入后的 owner 数，mux 用 distinct peers。H 增大促使绕热点且线长常增；
-k 增大代价跳变更陡；s 减小 overflow 惩罚更陡。H 连续停滞后依次尝试 4/8/12/16。
+max_iterations 默认 1000000000，定义为外层 sweep 安全上限，不是单次 maze 次数。
+正预算时取消原 test_ILP 的 2 sweep/无改善提前停止，持续尝试至预算或安全上限。
+到预算且已有完整合法解：在安全检查点停止并返回线长最小的完整合法 incumbent。
+到预算仍无完整合法解：继续，第一次找到完整合法解即停，但仍受 max_iterations 约束。
+无预算时沿用 test_ILP 的最多 2 sweeps/无改善停止；合法初解仍会尝试事务优化。
+预算不硬中断单次搜索/事务；最后一次事务及路径输出/校验可能导致软预算超时。
+每次接受后检查并保存完整合法解；接受条件保证部分解按 (missing,wirelength) 单调改进。
+触顶没有完整解时返回合法部分结果与非成功状态，不能伪装成 success。
 
-## 日志与测试
+保留 graph/params/initial/iter/status、routing result、最终全部路径日志与 CLI 字段。
+新增 initial interrupted position/net、sync shortest/initial target、transaction accept、
+history committed_overflow/total、missing_owners；first_legal_ms/best_legal_ms 保持原口径。
+iter 的 overflow/new_overflow 现在是提交状态，通常为 0；dirty_owners 为计划事务单元数，
+rerouted 为种子试探次数，accepted 为提交次数（不再表示旧全量拆线计数）。
+paths[net][demand]、total_wirelength、RRR_routing_time、total_ms 及最终 route 块保持不变。
+线长仍按每逻辑 net 去重 Track+Bump 求和，不计 HLine/VLine，不直接累加同步目标。
 
-初始 overflow 是 Σmax(0,owner_count-1)，另含 mode、Bnet 双 unit、同 owner mux 多 peer。
-无预算且初解合法时打 iter=0 后退出。保留 spec §9 graph/params/initial/iter/status/
-routing result 汇总字段；params 追加 time_budget_seconds；status 追加 stop_reason、
-optimization_rounds、first_legal_ms、best_legal_ms、budget_elapsed_ms。
-stop_reason 是退出原因；触及预算/上限但有合法解时 status 仍为 success。
-checkpoint 记录每步时间与 incumbent；最终入口打印 total_ms/time_budget_seconds/over_budget_ms。
-iter 中 overflow/max_resource_overflow 为 rip 前值；new_overflow/wirelength 为 rip 后值；
-dirty_owners 是计划 rip 的 owner 数，rerouted 是调度 owner 数（不累计等长内部 tail 搜索），成功轮通常相同。
-初解早退两者为 0；maze 异常不打印部分计数 iter 行。params/iter 均记录实际 history_decay；
-params 标记 cost_policy=additive、optimization_scope=all。
+## 回归测试
 
-Info：initial order 按初始布线计划列出 net_id/name；最终按 RoutingNet 聚合 dump 所有路径，不提前 dump。route 块头含
-net_id/name/kind/demands/wirelength/sources；普通分支 demand/start/sink/path，
-SyncNet lane/source/sink/N_i/path。wirelength 是本 net 去重 Track+Bump，不打印 nodes。
-Debug：每轮 overflow owners=[name,...]（lane 用 name#demand_id）、equalize r/target/limit/
-short_lanes、sync tail maze、sync target advance；结束再打印 overflow 明细。
-sync tail cutoff 用 Info；不打印 sync net_id=... N_i=... equal=。
-
-完整单测 ./output/FPIA_RRR_unit；--synthetic-only 跳过配置 adapter；
---budget-only 仅跑预算与超容量代价回归。配置尺寸必须匹配当前 Interposer。
-配置矩阵：case_2btb/case_2btt/case_2fanout/case_bus2btb/case_bus2btt/case5（PNnet/bus）。
-另测 claim/maze/排序/线长、非法路径/overflow、合法短路径、TOB mux fanout/Steiner/access；
-5-lane SyncNet（Track 数 9/7/6/5/3）+局部冲突验证整组修复/history/等长/原子 target 更新。
-SyncNet 测试打印初始/最终路径、Track 数与 N_i，第二层打印 status/iteration/overflow。
-mux_test 扫 algorithm/test_ILP/test 与 test/config 的全部 config.json，检查非法 fanout。
-预算回归：初解超时、无解超时修复、优化/修复交替、冲突 trial 后恢复最好合法解、
-安全上限、禁用 stagnation、整组 SyncNet、实际预算停止；最短合法解即使不改善仍持续
-全量优化，验证预算和迭代上限停止；超容量代价比较 s=2/20 的线性项（H=4/16）。
-另测各容量/mux 加性历史、树复用及原双向 mode 首次/持续冲突与复用计价。
-初始类型排序回归覆盖原 priority 保留、六层类型顺序、整组连续及旧优化排序不变。
-
-## TODO
-
-本分支用于原始 cost（decay=0.9、s=20、H≤16）+全量额外优化对照，以下 cost 策略不启用。
-
-1. 第一步（本分支已撤回，后续待对照）：历史项乘 P(u)/P(1)，修正 mode 的不兼容预测计价。
-   不扩展候选路径的模式状态；尚未提交路径内部的模式冲突仍是边界，不能声称保证收敛。
-2. 第二步（未实现）：若仍进入平台，再将 EMA 历史替换为 NCTU-GR 式频次累积与 √轮数
-   归一化（h_next=h+of，dah=h/(C1+C2√t)），让持续热点缓慢涨价、旧热点逐渐降价。
-   of 统计实际提交重布的冲突频次，不计 maze 扩展/等长回滚尝试；不是轮末 overflow 的同义词。
-   常数须按本图粒度校准；分步对照，并记录各类 overflow、历史值范围和热点持续轮数。
-
-命名空间 PR_tool；std::Vector / std::String；单测 Catch-free require()；本文件 ≤200 行。
+FPIA_RRR_unit 支持 --synthetic-only、--budget-only；断言使用 require，Release 有效。
+覆盖独立最短同步目标（包括忽略互相占用、长度而非 cost）、目标增长整组回滚、
+原始真实 Sort 的端口偏置、首次失败前缀和寄存器清理、事务补布/优化/失败回滚、
+原始 Btb/Btt/Ttb 同步初始路径在共同目标下原样保留及临时预留清理、
+预算超时补布、零 overflow 部分解失败、安全上限和最好合法解单调保留。
+真实矩阵：case_2btb、case_2btt、case_2fanout、case_bus2btb、case_bus2btt、test/config/case5。
+配置需匹配当前 Interposer 宽度；不得为测试越界修改目录外硬件配置。
+命名空间 PR_tool，使用 std::Vector/std::String，单测使用 Catch-free require()。

@@ -11,6 +11,9 @@ namespace PR_tool {
 
 auto arc_resource_keys(const UnifiedGraph& graph, const UnifiedArc& arc) -> const ArcResourceKeys&;
 
+auto arc_capacity_blocked(const UnifiedGraph& graph, const ResourceModel& resources,
+                          OwnerId owner, const UnifiedArc& arc) -> bool;
+
 auto path_resource_keys(
     const UnifiedGraph& graph,
     const std::Vector<int>& node_path,

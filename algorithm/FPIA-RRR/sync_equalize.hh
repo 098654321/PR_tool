@@ -41,7 +41,8 @@ auto equalize_sync_group(
     ResourceModel& resources,
     const RrrParams& params,
     hardware::Interposer* interposer,
-    std::Vector<SyncLaneState>& lanes
+    std::Vector<SyncLaneState>& lanes,
+    std::size_t* common_target = nullptr
 ) -> bool;
 
 } // namespace PR_tool

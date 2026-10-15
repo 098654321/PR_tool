@@ -27,6 +27,7 @@ struct RrrResult {
     std::String stop_reason;
     int iterations{0};
     int optimization_rounds{0};
+    int missing_owners{0};
     int best_overflow{0};
     int unequal_sync_groups{0};
     std::size_t total_sync_gap{0};
@@ -139,6 +140,11 @@ struct RrrParams {
     int sync_tail_extra_tracks{64};
     int seed{1};
     std::Vector<double> r_sequence{0.5, 0.75, 1.0};
+    // Internal search policies, never CLI knobs. Normal RRR keeps both false.
+    bool hard_capacity{false};
+    bool length_only{false};
+    int shortest_source_hline{-1};
+    int variant{0};
 };
 
 struct Bump_coord {

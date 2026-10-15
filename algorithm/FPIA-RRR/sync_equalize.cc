@@ -266,7 +266,7 @@ auto short_lane_indices(
 ) -> std::Vector<std::size_t> {
     auto shorts = std::Vector<std::size_t> {};
     for (std::size_t i = 0; i < lanes.size(); ++i) {
-        if (sync_lane_length(graph, lanes[i].path, interposer, lanes[i].is_bnet) < n_max) {
+        if (lanes[i].path.empty() || sync_lane_length(graph, lanes[i].path, interposer, lanes[i].is_bnet) != n_max) {
             shorts.push_back(i);
         }
     }
@@ -386,11 +386,20 @@ auto maze_tail(
             if (!valid_node(graph, arc.v)) {
                 continue;
             }
+            if (graph.nodes[arc.v].kind == UnifiedNodeKind::Bump && arc.v != lane.sink) continue;
+            if (params.hard_capacity && arc_capacity_blocked(graph, resources, lane.id, arc)) continue;
             if (forbidden.contains(arc.v) || on_parent_chain(recs, item.rec, arc.v)) {
                 continue;
             }
             if (arc_hard_blocked(graph, resources, lane.id, arc, hard_block)) {
                 continue;
+            }
+            if (arc.physical_switch_id >= 0) {
+                auto path = join_prefix_tail(prefix, reconstruct_tail(recs, item.rec));
+                path.push_back(arc.v);
+                auto own = ResourceModel{};
+                own.claim(lane.id, path_resource_keys(graph, path, lane.is_bnet));
+                if (own.overflow() != 0) continue;
             }
 
             int next_unit = rec.unit;
@@ -460,15 +469,17 @@ auto equalize_sync_group(
     ResourceModel& resources,
     const RrrParams& params,
     hardware::Interposer* interposer,
-    std::Vector<SyncLaneState>& lanes
+    std::Vector<SyncLaneState>& lanes,
+    std::size_t* common_target
 ) -> bool {
-    if (lanes.size() <= 1) {
-        return !lanes.empty() && !lanes.front().path.empty();
-    }
+    if (lanes.empty()) return false;
     if (interposer == nullptr) {
         return false;
     }
-    if (all_lanes_equal(graph, interposer, lanes)) {
+    const auto initial_target = common_target != nullptr ? *common_target : 0;
+    if (all_lanes_equal(graph, interposer, lanes)
+        && (initial_target == 0 || group_max_length(graph, interposer, lanes) == initial_target)) {
+        if (common_target != nullptr) *common_target = group_max_length(graph, interposer, lanes);
         return true;
     }
 
@@ -486,7 +497,7 @@ auto equalize_sync_group(
         ratios = {0.5, 0.75, 1.0};
     }
 
-    const auto base_length = group_max_length(graph, interposer, lanes);
+    const auto base_length = initial_target != 0 ? initial_target : group_max_length(graph, interposer, lanes);
     const auto length_limit = base_length
         + static_cast<std::size_t>(std::max(0, params.sync_tail_extra_tracks));
     for (const double r : ratios) {
@@ -505,7 +516,7 @@ auto equalize_sync_group(
             std::size_t next_target = 0;
             for (const std::size_t idx : queue) {
                 auto& lane = lanes[idx];
-                if (sync_lane_length(graph, lane.path, interposer, lane.is_bnet) >= target_length) {
+                if (!lane.path.empty() && sync_lane_length(graph, lane.path, interposer, lane.is_bnet) == target_length) {
                     continue;
                 }
                 const auto tracks = track_nodes_of(graph, lane.path);
@@ -534,7 +545,9 @@ auto equalize_sync_group(
                 resources.claim(lane.id, path_resource_keys(graph, outcome.path, lane.is_bnet));
                 lane.path = outcome.path;
             }
-            if (!failed && all_lanes_equal(graph, interposer, lanes)) {
+            if (!failed && all_lanes_equal(graph, interposer, lanes)
+                && group_max_length(graph, interposer, lanes) == target_length) {
+                if (common_target != nullptr) *common_target = target_length;
                 return true;
             }
             if (!failed || next_target <= target_length || next_target > length_limit) {

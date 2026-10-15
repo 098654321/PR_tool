@@ -26,10 +26,11 @@ auto scan_config(const std::filesystem::path& case_dir) -> bool {
     try {
         auto [interposer, basedie] = parse::read_config(case_dir.string(), 0, false);
         algo::build_nets(basedie.get(), interposer.get());
-        const auto nets = build_routing_nets(basedie->nets_to_vector());
+        const auto raw_nets = basedie->nets_to_vector();
+        const auto nets = build_routing_nets(raw_nets);
         const auto graph = build_hardware_graph(interposer.get(), nets);
         auto params = RrrParams {};
-        const auto result = run_rrr(graph, nets, params, interposer.get());
+        const auto result = run_rrr(graph, nets, params, interposer.get(), 0, &raw_nets);
         if (!validate_rrr_solution(graph, nets, result, interposer.get())) {
             std::cerr << "FPIA_RRR_mux_test: validate failed for " << case_dir.string()
                       << " status=" << result.status << '\n';

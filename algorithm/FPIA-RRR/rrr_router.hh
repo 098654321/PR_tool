@@ -4,6 +4,7 @@
 #include "rrr_types.hh"
 
 #include <hardware/interposer.hh>
+#include <circuit/net/net.hh>
 #include <std/collection.hh>
 
 namespace PR_tool {
@@ -46,7 +47,8 @@ auto run_rrr(
     const std::Vector<RoutingNet>& nets,
     const RrrParams& params,
     hardware::Interposer* interposer,
-    int verbose_level = 0
+    int verbose_level = 0,
+    const std::Vector<std::Rc<circuit::Net>>* raw_nets = nullptr
 ) -> RrrResult;
 
 } // namespace PR_tool

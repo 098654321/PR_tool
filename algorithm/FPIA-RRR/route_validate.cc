@@ -6,6 +6,7 @@
 #include "sync_equalize.hh"
 
 #include <debug/debug.hh>
+#include <algorithm>
 #include <format>
 #include <map>
 
@@ -144,7 +145,8 @@ auto validate_rrr_solution(
     const UnifiedGraph& graph,
     const std::Vector<RoutingNet>& nets,
     const RrrResult& result,
-    hardware::Interposer* interposer
+    hardware::Interposer* interposer,
+    bool allow_partial
 ) -> bool {
     if (result.paths.size() != nets.size()) {
         return fail("path net count mismatch");
@@ -155,6 +157,7 @@ auto validate_rrr_solution(
     for (std::size_t net_i = 0; net_i < nets.size(); ++net_i) {
         const auto& net = nets[net_i];
         const auto& net_paths = result.paths[net_i];
+        if (allow_partial && net_paths.empty()) continue;
         if (net_paths.size() != net.demands.size()) {
             return fail("demand path count mismatch");
         }
@@ -191,8 +194,11 @@ auto validate_rrr_solution(
         }
 
         const bool is_bnet = net.kind == RoutingNetKind::Bnet;
+        auto edges = std::set<std::pair<int, int>> {};
         for (std::size_t d = 0; d < net.demands.size(); ++d) {
             const auto& path = *matched[d];
+            if (std::set<int>(path.begin(), path.end()).size() != path.size())
+                return fail("path contains repeated node");
             for (const int node : path) {
                 if (!node_in_graph(graph, node)) {
                     return fail("path node out of range");
@@ -202,6 +208,7 @@ auto validate_rrr_solution(
                 if (!graph.directed_arc_set.contains({path[i], path[i + 1]})) {
                     return fail("consecutive nodes are not a graph arc");
                 }
+                if (!net.is_sync_bus) edges.insert(std::minmax(path[i], path[i + 1]));
             }
             const auto sources = demand_source_set(graph, net, net.demands[d]);
             const int first = path.front();
@@ -226,6 +233,17 @@ auto validate_rrr_solution(
             }
         }
 
+        auto parent = std::map<int, int> {};
+        const auto root = [&](auto&& self, int n) -> int {
+            auto [it, inserted] = parent.emplace(n, n);
+            if (!inserted && it->second != n) it->second = self(self, it->second);
+            return it->second;
+        };
+        for (const auto& [u, v] : edges) {
+            const int a = root(root, u), b = root(root, v);
+            if (a == b) return fail("physical net union contains cycle");
+            parent[a] = b;
+        }
         const auto fanout_hits = collect_illegal_tob_fanout(graph, net_paths);
         if (!fanout_hits.empty()) {
             const auto& hit = fanout_hits.front();

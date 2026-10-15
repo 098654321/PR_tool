@@ -6,6 +6,9 @@
 #include "rrr_router.hh"
 #include "route_validate.hh"
 #include "rrr_routing.hh"
+#include "transaction.hh"
+#include "initial_route.hh"
+#include "sync_equalize.hh"
 
 #include <debug/debug.hh>
 #include <circuit/net/types/bbnet.hh>
@@ -29,10 +32,10 @@ auto require(bool condition, const char* message) -> void {
 auto add_node(UnifiedGraph& graph) -> int {
     const int id = static_cast<int>(graph.nodes.size());
     auto node = UnifiedNode {};
-    node.kind = UnifiedNodeKind::Bump;
-    node.bump = Bump_coord {0, 0, 0, static_cast<std::size_t>(id)};
+    node.kind = UnifiedNodeKind::Track;
+    node.track_row = id;
     graph.nodes.push_back(node);
-    graph.bump_node_by_key[node.bump] = id;
+    graph.track_node_by_key[{0, 0, id, 0, 0}] = id;
     graph.in_arc_ids.emplace_back();
     graph.out_arc_ids.emplace_back();
     return id;
@@ -50,8 +53,9 @@ auto add_path(UnifiedGraph& graph, std::Vector<int> path) -> void {
 
 auto ref(const UnifiedGraph& graph, int id) -> GraphNodeRef {
     auto value = GraphNodeRef {};
-    value.kind = GraphNodeRef::Kind::Bump;
-    value.bump = graph.nodes[id].bump;
+    value.kind = GraphNodeRef::Kind::Track;
+    value.track_coord = hardware::TrackCoord{graph.nodes[id].track_row, 0,
+        hardware::TrackDirection::Horizontal, 0};
     return value;
 }
 
@@ -71,12 +75,12 @@ struct Fixture {
 
 auto fixture() -> Fixture {
     auto value = Fixture {};
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 15; ++i) {
         add_node(value.graph);
     }
-    add_path(value.graph, {0, 4, 1});
-    add_path(value.graph, {2, 4, 3});
-    add_path(value.graph, {0, 5, 6, 1});
+    add_path(value.graph, {0, 4, 5, 6, 7, 8, 1});
+    add_path(value.graph, {2, 4, 5, 6, 7, 8, 3});
+    add_path(value.graph, {0, 9, 10, 11, 12, 13, 14, 1});
     value.nets = {net(value.graph, 0, 0, 1), net(value.graph, 1, 2, 3)};
     return value;
 }
@@ -88,7 +92,7 @@ auto optimization_fixture() -> Fixture {
     }
     add_path(value.graph, {0, 4, 5, 6, 7, 8, 1});
     add_path(value.graph, {2, 4, 5, 6, 7, 8, 3});
-    add_path(value.graph, {0, 9, 10, 11, 12, 13, 14, 15, 1});
+    add_path(value.graph, {0, 9, 10, 11, 12, 13, 14, 1});
     add_path(value.graph, {2, 16, 17, 18, 19, 20, 21, 22, 23, 3});
     value.nets = {net(value.graph, 0, 0, 1), net(value.graph, 1, 2, 3)};
     return value;
@@ -168,9 +172,9 @@ auto test_initial_routing_uses_type_order() -> void {
     auto interposer = hardware::Interposer {};
     const auto result = run_rrr(value.graph, value.nets, params, &interposer);
     check_legal(value, result, &interposer);
-    require(result.iterations == 0 && result.stop_reason == "feasible"
-                && result.paths[0][0] == std::Vector<int> {0, 5, 6, 1}
-                && result.paths[1][0] == std::Vector<int> {2, 4, 3},
+    require(result.iterations >= 1
+                && result.paths[0][0] == std::Vector<int> {0, 9, 10, 11, 12, 13, 14, 1}
+                && result.paths[1][0] == std::Vector<int> {2, 4, 5, 6, 7, 8, 3},
             "initial run must route Tnet before Bnet, not the legacy net-id order");
 }
 
@@ -350,8 +354,6 @@ auto test_expired_no_legal_repairs() -> void {
     const auto value = fixture();
     auto interposer = hardware::Interposer {};
     auto params = expired_params();
-    params.H = 0;
-    params.increment = 10;
     const auto result = run_rrr(value.graph, value.nets, params, &interposer);
     check_legal(value, result, &interposer);
     require(result.iterations > 0 && result.optimization_rounds == 0,
@@ -362,138 +364,82 @@ auto test_expired_no_legal_repairs() -> void {
 
 auto test_optimize_and_restore_best() -> void {
     const auto value = optimization_fixture();
-    auto interposer = hardware::Interposer {};
-    auto baseline_params = RrrParams {};
-    baseline_params.H = 0;
-    baseline_params.decay = 0;
-    baseline_params.increment = 10;
-    baseline_params.max_iterations = 50;
-    const auto baseline = run_rrr(value.graph, value.nets, baseline_params, &interposer);
-    check_legal(value, baseline, &interposer);
-
-    auto params = baseline_params;
-    params.time_budget_seconds = 3600;
-    params.max_iterations = 2;
+    auto interposer = hardware::Interposer{};
+    auto params = RrrParams{}; params.max_iterations = 0;
+    const auto initial = run_rrr(value.graph, value.nets, params, &interposer);
+    check_legal(value, initial, &interposer);
+    params.time_budget_seconds = 3600; params.max_iterations = 2;
     const auto result = run_rrr(value.graph, value.nets, params, &interposer);
     check_legal(value, result, &interposer);
-    require(result.iterations == 2 && result.optimization_rounds == 1,
-            "a repaired legal solution must enter a full optimization round");
-    require(result.stop_reason == "iteration_limit", "explicit iteration cap must still apply");
-    require(result.total_wirelength <= baseline.total_wirelength,
-            "later rounds must never degrade the returned legal incumbent");
-
-    // Recreate the rotated round to ensure this test actually exercises a worse/illegal state.
-    auto owners = rrr_detail::build_owners(value.nets);
-    auto resources = ResourceModel {params};
-    rrr_detail::route_owner(owners[1], value.graph, value.nets, resources, params, &interposer);
-    rrr_detail::route_owner(owners[0], value.graph, value.nets, resources, params, &interposer);
-    require(resources.overflow() > 0
-                || rrr_detail::current_wirelength(value.graph, value.nets, owners) > baseline.total_wirelength,
-            "rotated fixture must produce a worse or conflicted trial");
-    require(result.paths == baseline.paths, "iteration cap must restore the earlier best legal paths");
-
-    params.max_iterations = 12;
+    require(result.iterations == 2 && result.optimization_rounds == 2,
+            "complete initial solution must enter transactional optimization");
+    require(result.stop_reason == "iteration_limit", "iteration cap must still apply");
+    require(result.total_wirelength < initial.total_wirelength,
+            "a displacement transaction must improve the initial legal route");
+    params.max_iterations = 8;
     const auto longer = run_rrr(value.graph, value.nets, params, &interposer);
     check_legal(value, longer, &interposer);
-    require(longer.iterations == 12 && longer.optimization_rounds > 1,
-            "optimization and repair must continue while time remains");
-    require(longer.total_wirelength <= baseline.total_wirelength,
-            "multiple rounds must retain best legal wirelength");
+    require(longer.total_wirelength <= result.total_wirelength,
+            "later rejected transactions must not degrade the legal incumbent");
 }
 
 auto test_cap_without_legal_and_stagnation() -> void {
-    auto value = fixture();
-    // Remove the only alternative; both owners must use node 4.
-    value.graph = UnifiedGraph {};
-    for (int i = 0; i < 5; ++i) {
-        add_node(value.graph);
-    }
-    add_path(value.graph, {0, 4, 1});
-    add_path(value.graph, {2, 4, 3});
+    auto value = Fixture{};
+    for (int i = 0; i < 5; ++i) add_node(value.graph);
+    add_path(value.graph, {0, 4, 1}); add_path(value.graph, {2, 4, 3});
     value.nets = {net(value.graph, 0, 0, 1), net(value.graph, 1, 2, 3)};
-    auto params = expired_params();
-    params.max_iterations = 30;
-    params.stagnation_limit = 1;
-    auto interposer = hardware::Interposer {};
+    auto params = expired_params(); params.max_iterations = 5;
+    auto interposer = hardware::Interposer{};
     const auto result = run_rrr(value.graph, value.nets, params, &interposer);
-    require(result.status == "iteration_limit" && result.best_overflow > 0,
-            "iteration cap without feasible solution must report failure");
-    require(result.iterations == 30 && result.first_legal_ms == -1,
-            "time-budget mode must not exit early due to stagnation");
+    require(result.status == "iteration_limit" && result.best_overflow == 0 && result.missing_owners == 1,
+            "zero-overflow partial route must never be success");
+    require(result.iterations == 5 && result.first_legal_ms == -1,
+            "expired budget without a complete legal solution must continue to cap");
+    require(result.paths[0].size() == 1 && result.paths[1].empty(),
+            "failed displacement must restore the previous complete owner");
+    require(validate_rrr_solution(value.graph, value.nets, result, &interposer, true),
+            "retained partial solution must pass partial validation");
 }
 
 auto test_sync_optimization() -> void {
-    auto value = Fixture {};
-    // The normal net has no alternative; only the SyncNet can take the longer route.
-    for (int i = 0; i < 8; ++i) {
-        add_node(value.graph);
-    }
-    add_path(value.graph, {0, 4, 1});
-    add_path(value.graph, {2, 4, 3});
-    value.nets = {net(value.graph, 0, 0, 1)};
-    auto sync = net(value.graph, 1, 2, 3);
-    sync.is_sync_bus = true;
-    const int s = add_node(value.graph);
-    const int t = add_node(value.graph);
-    add_path(value.graph, {s, t});
-    add_path(value.graph, {2, 5, 6, 7, 3});
-    sync.sources.push_back(ref(value.graph, s));
-    sync.demands.push_back(RoutingDemand {1, ref(value.graph, t), {1}, true});
-    value.nets.push_back(sync);
-    auto params = RrrParams {};
-    params.time_budget_seconds = 3600;
-    params.max_iterations = 4;
-    params.H = 0;
-    params.increment = 10;
-    auto interposer = hardware::Interposer {};
+    auto value = Fixture{};
+    for (int i = 0; i < 9; ++i) add_node(value.graph);
+    add_path(value.graph, {0, 4, 5, 1}); add_path(value.graph, {2, 6, 3});
+    add_path(value.graph, {2, 7, 8, 3});
+    auto sync = net(value.graph, 0, 0, 1); sync.is_sync_bus = true;
+    sync.sources.push_back(ref(value.graph, 2));
+    sync.demands.push_back(RoutingDemand{1, ref(value.graph, 3), {1}, true});
+    value.nets = {sync};
+    auto params = RrrParams{}; params.time_budget_seconds = 3600; params.max_iterations = 4;
+    auto interposer = hardware::Interposer{};
     const auto result = run_rrr(value.graph, value.nets, params, &interposer);
     check_legal(value, result, &interposer);
-    require(result.iterations == 4 && result.optimization_rounds > 0,
-            "SyncNet optimization must continue with whole-group scheduling");
-    require(result.paths[1].size() == 2, "SyncNet group must retain both lanes");
+    require(result.iterations == 4 && result.optimization_rounds == 4,
+            "SyncNet group transactions must run until the configured cap");
+    for (const auto& path : result.paths[0])
+        require(sync_lane_length(value.graph, path, &interposer, false) == 5,
+                "independent shortest max must initialize common SyncNet target");
 }
 
 auto test_live_budget_and_legacy() -> void {
-    auto value = fixture();
-    value.nets.resize(1);
-    auto interposer = hardware::Interposer {};
-    auto params = RrrParams {};
-    const auto legacy = run_rrr(value.graph, value.nets, params, &interposer);
-    require(legacy.iterations == 0 && legacy.stop_reason == "feasible",
-            "disabled budget must preserve first-legal stopping");
-    params.time_budget_seconds = 3600;
-    params.max_iterations = 12;
+    auto value = fixture(); value.nets.resize(1);
+    auto interposer = hardware::Interposer{};
+    auto params = RrrParams{};
+    const auto baseline = run_rrr(value.graph, value.nets, params, &interposer);
+    check_legal(value, baseline, &interposer);
+    require(baseline.iterations >= 1, "without budget, legal initial route must still try optimization");
+    params.time_budget_seconds = 3600; params.max_iterations = 3;
     const auto repeated = run_rrr(value.graph, value.nets, params, &interposer);
     check_legal(value, repeated, &interposer);
-    require(repeated.stop_reason == "iteration_limit"
-                && repeated.iterations == 12 && repeated.optimization_rounds == 12,
-            "unchanged shortest legal routes must continue full optimization while budget remains");
-    require(repeated.paths == legacy.paths, "unchanged full reroutes must preserve the best legal paths");
-
-    const auto optimizable = optimization_fixture();
-    params.H = 0;
-    params.increment = 10;
-    params.decay = 0;
-    params.time_budget_seconds = 0.005;
-    params.max_iterations = 100000;
+    require(repeated.iterations == 3 && repeated.optimization_rounds == 3 && repeated.paths == baseline.paths,
+            "unchanged transactions must continue while budget remains");
+    params.time_budget_seconds = 0.005; params.max_iterations = 100000;
     debug::set_debug_level(debug::DebugLevel::Warning);
-    const auto result = run_rrr(optimizable.graph, optimizable.nets, params, &interposer);
+    const auto result = run_rrr(value.graph, value.nets, params, &interposer);
     debug::set_debug_level(debug::DebugLevel::Info);
-    check_legal(optimizable, result, &interposer);
+    check_legal(value, result, &interposer);
     require(result.stop_reason == "time_budget" && result.budget_elapsed_ms >= 5,
-            "positive live budget must stop after a completed round");
-    require(result.optimization_rounds > 0, "live budget must spend time on full optimization");
-
-    params = RrrParams {};
-    params.time_budget_seconds = 0.005;
-    params.max_iterations = 100000;
-    debug::set_debug_level(debug::DebugLevel::Warning);
-    const auto flat = run_rrr(value.graph, value.nets, params, &interposer);
-    debug::set_debug_level(debug::DebugLevel::Info);
-    check_legal(value, flat, &interposer);
-    require(flat.stop_reason == "time_budget" && flat.budget_elapsed_ms >= 5
-                && flat.optimization_rounds > 1 && flat.paths == legacy.paths,
-            "unchanged legal routes must keep optimizing until the live time budget expires");
+            "live budget must stop safely and retain best legal solution");
 }
 
 auto test_unreachable_initial_not_legal() -> void {
@@ -509,11 +455,158 @@ auto test_unreachable_initial_not_legal() -> void {
             "unreachable initial routing must not become a legal incumbent");
 }
 
+auto test_original_sort_and_interruption() -> void {
+    auto interposer = hardware::Interposer{};
+    auto* source = interposer.get_track(0, 0, hardware::TrackDirection::Horizontal, 0).value();
+    auto* b0 = interposer.get_bump(0, 0, 0).value();
+    auto* b1 = interposer.get_bump(0, 0, 1).value();
+    auto* b2 = interposer.get_bump(0, 0, 2).value();
+    auto name0 = std::String{"two_sink"}, uid0 = name0;
+    auto name1 = std::String{"one_sink"}, uid1 = name1;
+    const auto raw = std::Vector<std::Rc<circuit::Net>>{
+        std::make_shared<circuit::TrackToBumpsNet>(source,
+            std::Vector<hardware::Bump*>{b0, b1}, std::HashSet<int>{0}, name0, uid0),
+        std::make_shared<circuit::TrackToBumpsNet>(source,
+            std::Vector<hardware::Bump*>{b2}, std::HashSet<int>{0}, name1, uid1)};
+    const auto nets = build_routing_nets(raw);
+    const auto graph = build_hardware_graph(&interposer, nets);
+    auto owners = rrr_detail::build_owners(nets);
+    auto resources = ResourceModel{};
+    const auto idle = interposer.adjacent_idle_tracks(source).size();
+    const auto order = rrr_detail::original_initial_route(graph, nets, owners,
+        resources, RrrParams{}, &interposer, raw);
+    require(order == std::Vector<std::size_t>{1, 0},
+            "original Sort must use exact priority/port bias, not old RRR port/HPWL order");
+    require(rrr_detail::owner_connected(owners[1]) && !rrr_detail::owner_connected(owners[0]),
+            "initialization must keep success prefix and roll back first conflicting fanout");
+    require(resources.overflow() == 0 && interposer.adjacent_idle_tracks(source).size() == idle,
+            "raw failure must not leak hardware reservations into RRR");
+    auto* remote_lu = interposer.get_cob({7, 7}).value()->sw_register(
+        hardware::COBDirection::Left, 0, hardware::COBDirection::Up);
+    remote_lu->set(hardware::COBSwState::Suspended); // Failed branch not yet in a package.
+    rrr_detail::clear_initial_reservations(&interposer);
+    require(!remote_lu->is_occupied(), "cleanup must also clear unrecorded remote Left-Up reservations");
+}
+
+auto test_shortest_sync_targets_are_independent() -> void {
+    auto value = Fixture{};
+    for (int i = 0; i < 8; ++i) add_node(value.graph);
+    add_path(value.graph, {0, 4, 5, 1});
+    add_path(value.graph, {2, 4, 5, 3});
+    auto sync = net(value.graph, 0, 0, 1); sync.is_sync_bus = true;
+    sync.sources.push_back(ref(value.graph, 2));
+    sync.demands.push_back(RoutingDemand{1, ref(value.graph, 3), {1}, true});
+    value.nets = {sync};
+    auto owners = rrr_detail::build_owners(value.nets);
+    auto interposer = hardware::Interposer{};
+    rrr_detail::initialize_sync_targets(value.graph, value.nets, owners, RrrParams{}, &interposer);
+    require(owners[0].sync_target == 5 && owners[1].sync_target == 5,
+            "overlapping independent shortest paths must not block one another during precompute");
+    require(rrr_detail::missing_owners(owners) == 2 && owners[0].claimed.empty() && owners[1].claimed.empty(),
+            "shortest-length precomputation must never commit a path or occupancy");
+
+    auto metric = Fixture{};
+    for (int i = 0; i < 7; ++i) add_node(metric.graph);
+    for (int i : {2, 3, 4}) metric.graph.nodes[i].kind = UnifiedNodeKind::HLine;
+    add_path(metric.graph, {0, 2, 3, 4, 1}); // 2 Tracks, but more graph hops.
+    add_path(metric.graph, {0, 5, 6, 1});    // Fewer hops/cost, but 4 Tracks.
+    auto lane = net(metric.graph, 0, 0, 1); lane.is_sync_bus = true;
+    metric.nets = {lane};
+    auto metric_owners = rrr_detail::build_owners(metric.nets);
+    rrr_detail::initialize_sync_targets(metric.graph, metric.nets, metric_owners, RrrParams{}, &interposer);
+    require(metric_owners[0].sync_target == 3,
+            "precompute must minimize Track length, not graph hops or weighted FPIA cost");
+    auto model = ResourceModel{};
+    auto params = RrrParams{}; params.r_sequence = {1.0};
+    require(rrr_detail::route_sync_group(0, metric_owners, metric.graph, metric.nets,
+        model, params, &interposer), "precomputed target must be tried during actual equalization");
+    require(metric_owners[0].sync_target == 3 && metric_owners[0].demand_paths[0] == std::Vector<int>{0,2,3,4,1},
+            "weighted maze's longer path must not silently override the precomputed target");
+
+    auto name = std::String{"same_tob_sync"}, uid = name;
+    auto* b0 = interposer.get_bump(0, 0, 0).value();
+    auto* b1 = interposer.get_bump(0, 0, 1).value();
+    auto member = std::make_shared<circuit::BumpToBumpNet>(b0, b1, std::HashSet<int>{0}, name, uid);
+    auto group = std::make_shared<circuit::SyncNet>(
+        std::Vector<std::Rc<circuit::BumpToBumpNet>>{member},
+        std::Vector<std::Rc<circuit::BumpToTrackNet>>{},
+        std::Vector<std::Rc<circuit::TrackToBumpNet>>{}, std::HashSet<int>{0}, name, uid);
+    const auto real_nets = build_routing_nets({group});
+    const auto real_graph = build_hardware_graph(&interposer, real_nets);
+    auto real_owners = rrr_detail::build_owners(real_nets);
+    rrr_detail::initialize_sync_targets(real_graph, real_nets, real_owners, RrrParams{}, &interposer);
+    require(real_owners[0].sync_target > 2,
+            "same-TOB shortest path must reject zero-Track Bump-HLine-Bump shorts");
+}
+
+auto test_original_sync_initial_paths_are_preserved() -> void {
+    for (int kind = 0; kind < 3; ++kind) {
+        auto interposer = hardware::Interposer{};
+        auto name = std::String{"original_sync_initial"}, uid = name;
+        auto* bump = interposer.get_bump(0, 0, 0).value();
+        auto* other = interposer.get_bump(0, 1, 0).value();
+        auto* track = interposer.get_track(0, 0, hardware::TrackDirection::Horizontal, 0).value();
+        auto btb = std::Vector<std::Rc<circuit::BumpToBumpNet>>{};
+        auto btt = std::Vector<std::Rc<circuit::BumpToTrackNet>>{};
+        auto ttb = std::Vector<std::Rc<circuit::TrackToBumpNet>>{};
+        std::Rc<circuit::Net> member;
+        if (kind == 0) {
+            btb.push_back(std::make_shared<circuit::BumpToBumpNet>(bump, other, std::HashSet<int>{0}, name, uid));
+            member = btb.front();
+        } else if (kind == 1) {
+            btt.push_back(std::make_shared<circuit::BumpToTrackNet>(bump, track, std::HashSet<int>{0}, name, uid));
+            member = btt.front();
+        } else {
+            ttb.push_back(std::make_shared<circuit::TrackToBumpNet>(track, bump, std::HashSet<int>{0}, name, uid));
+            member = ttb.front();
+        }
+        auto sync = std::make_shared<circuit::SyncNet>(btb, btt, ttb, std::HashSet<int>{0}, name, uid);
+        const auto raw = std::Vector<std::Rc<circuit::Net>>{sync};
+        const auto nets = build_routing_nets(raw);
+        const auto graph = build_hardware_graph(&interposer, nets);
+        auto owners = rrr_detail::build_owners(nets);
+        rrr_detail::initialize_sync_targets(graph, nets, owners, RrrParams{}, &interposer);
+        sync->check_accessable_cobunit(); interposer.manage_cobunit_resources();
+        const auto strategy = algo::MazeRouteStrategy{};
+        sync->route(&interposer, strategy);
+        auto expected = owners.front();
+        rrr_detail::import_package(expected, member->pathpackage(), graph, nets.front(), &interposer);
+        require(sync_lane_length(graph, expected.demand_paths[0], &interposer, expected.is_bnet)
+                == expected.sync_target, "original one-lane fixture must achieve the independent target");
+        sync->clear_current_package(); rrr_detail::clear_initial_reservations(&interposer);
+        auto resources = ResourceModel{};
+        rrr_detail::original_initial_route(graph, nets, owners, resources, RrrParams{}, &interposer, raw);
+        require(owners.front().demand_paths == expected.demand_paths
+                && owners.front().sync_target == expected.sync_target,
+                "successful initialization must preserve original Btb/Btt/Ttb paths and target exactly");
+        auto candidate = RrrResult{}; candidate.paths = rrr_detail::collect_paths_by_net(nets, owners);
+        require(resources.overflow() == 0 && validate_rrr_solution(graph, nets, candidate, &interposer),
+                "imported original synchronous paths must pass full independent validation");
+        require(sync->pathpackage()._regular_path.empty() && member->pathpackage()._regular_path.empty()
+                && interposer.is_idle_tracks(track), "sync initialization must clear temporary reservations");
+
+        // Exercise clear/equalize/export without rerunning the first FPIA maze.
+        // With no explicit target, the existing equalizer uses the snapshot maximum.
+        owners = rrr_detail::build_owners(nets); resources = ResourceModel{};
+        rrr_detail::original_initial_route(graph, nets, owners, resources, RrrParams{}, &interposer, raw);
+        require(owners.front().sync_target == expected.sync_target
+                && owners.front().demand_paths == expected.demand_paths,
+                "FPIA equalization must start from the imported original snapshot, including Btt reversal");
+        candidate.paths = rrr_detail::collect_paths_by_net(nets, owners);
+        require(resources.overflow() == 0 && validate_rrr_solution(graph, nets, candidate, &interposer)
+                && member->pathpackage()._regular_path.empty() && interposer.is_idle_tracks(track),
+                "equalized sync export must remain legal and leave no temporary reservations");
+    }
+}
+
 } // namespace
 
 auto run_rrr_budget_unit_tests() -> void {
     test_initial_type_order();
     test_initial_routing_uses_type_order();
+    test_original_sort_and_interruption();
+    test_original_sync_initial_paths_are_preserved();
+    test_shortest_sync_targets_are_independent();
     test_cli_budget();
     test_overflow_slope();
     test_additive_history_cost();

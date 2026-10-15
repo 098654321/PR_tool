@@ -16,6 +16,86 @@
 
 namespace PR_tool::rrr_detail {
 
+auto owner_paths_valid(const UnifiedGraph& graph, const OwnerRecord& owner) -> bool {
+    auto own = ResourceModel{};
+    auto edges = std::set<std::pair<int, int>>{};
+    for (const auto& path : owner.demand_paths) {
+        if (std::set<int>(path.begin(), path.end()).size() != path.size()) return false;
+        for (std::size_t j = 0; j < path.size(); ++j) {
+            const int n = path[j];
+            if (n < 0 || static_cast<std::size_t>(n) >= graph.nodes.size()) return false;
+            if (j > 0 && j + 1 < path.size() && graph.nodes[n].kind == UnifiedNodeKind::Bump) return false;
+            if (j > 0) {
+                if (!graph.directed_arc_set.contains({path[j-1], n})) return false;
+                edges.insert(std::minmax(path[j-1], n));
+            }
+        }
+        own.claim(owner.id, path_resource_keys(graph, path, owner.is_bnet));
+    }
+    if (own.overflow() != 0) return false;
+    auto parent = std::map<int, int>{};
+    const auto root = [&](auto&& self, int n) -> int {
+        auto [it, inserted] = parent.emplace(n, n);
+        if (!inserted && it->second != n) it->second = self(self, it->second);
+        return it->second;
+    };
+    for (const auto& [u, v] : edges) {
+        const int a = root(root, u), b = root(root, v);
+        if (a == b) return false;
+        parent[a] = b;
+    }
+    return true;
+}
+
+auto initialize_sync_targets(const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
+                             std::Vector<OwnerRecord>& owners, RrrParams params,
+                             hardware::Interposer* interposer) -> void {
+    params.length_only = true;
+    params.hard_capacity = false;
+    const auto empty = ResourceModel{};
+    for (std::size_t ni = 0; ni < nets.size(); ++ni) {
+        if (!nets[ni].is_sync_bus) continue;
+        std::size_t target = 0;
+        for (const auto index : group_owner_indices(owners, ni)) {
+            const auto& owner = owners[index];
+            const auto& demand = nets[ni].demands[owner.demand_indices.front()];
+            const auto sources = demand_source_nodes(graph, nets[ni], demand);
+            const int sink = resolve_graph_node(graph, demand.sink);
+            auto accesses = std::Vector<int>{-1};
+            if (owner.is_bnet && !sources.empty() &&
+                graph.nodes[sources.front()].bump.TOB == graph.nodes[sink].bump.TOB) {
+                // Keep distinct source accesses as separate searches; collapsing
+                // them would hide a legal return through another HLine.
+                accesses.clear();
+                for (int aid : graph.out_arc_ids[sources.front()])
+                    if (graph.nodes[graph.arcs[aid].v].kind == UnifiedNodeKind::HLine)
+                        accesses.push_back(graph.arcs[aid].v);
+            }
+            auto path = std::Vector<int>{};
+            for (const int access : accesses) {
+                params.shortest_source_hline = access;
+                try {
+                    auto attempt = route_demand(graph, empty, owner.id, sources, sink,
+                        params, {}, owner.is_bnet, interposer);
+                    auto candidate = owner; candidate.demand_paths = {attempt};
+                    if (owner_paths_valid(graph, candidate) && (path.empty() ||
+                        sync_lane_length(graph, attempt, interposer, owner.is_bnet) <
+                        sync_lane_length(graph, path, interposer, owner.is_bnet))) path = std::move(attempt);
+                } catch (const std::runtime_error& error) {
+                    if (!std::string_view(error.what()).starts_with("maze:")) throw;
+                }
+            }
+            params.shortest_source_hline = -1;
+            if (path.empty()) throw std::runtime_error("maze: no legal independent SyncNet shortest path");
+            const auto length = sync_lane_length(graph, path, interposer, owner.is_bnet);
+            target = std::max(target, length);
+            debug::info_fmt("FPIA RRR: sync shortest net_id={} demand={} N_i={}", ni, owner.id.demand_id, length);
+        }
+        for (const auto index : group_owner_indices(owners, ni)) owners[index].sync_target = target;
+        debug::info_fmt("FPIA RRR: sync initial target net_id={} name={} target={}", ni, nets[ni].name, target);
+    }
+}
+
 auto ref_row_col(const GraphNodeRef& ref) -> std::pair<int, int> {
     if (ref.kind == GraphNodeRef::Kind::Track) {
         return {
@@ -439,6 +519,16 @@ auto route_sync_group(
         owner.demand_paths[0] = std::move(path);
     }
 
+    return equalize_routed_sync_group(net_index, owners, graph, nets, resources, params, interposer);
+}
+
+auto equalize_routed_sync_group(std::size_t net_index, std::Vector<OwnerRecord>& owners,
+                               const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
+                               ResourceModel& resources, const RrrParams& params,
+                               hardware::Interposer* interposer) -> bool {
+    const auto group = group_owner_indices(owners, net_index);
+    if (group.empty()) return true;
+    const auto& net = nets[net_index];
     if (interposer == nullptr) {
         throw std::invalid_argument("RRR: SyncNet routing requires an Interposer");
     }
@@ -458,10 +548,12 @@ auto route_sync_group(
         lanes.push_back(std::move(lane));
     }
 
-    const bool equal = equalize_sync_group(graph, resources, params, interposer, lanes);
+    auto target = owners[group.front()].sync_target;
+    const bool equal = equalize_sync_group(graph, resources, params, interposer, lanes, &target);
     for (std::size_t i = 0; i < group.size(); ++i) {
         owners[group[i]].demand_paths[0] = lanes[i].path;
         refresh_owner_from_path(owners[group[i]], graph);
+        if (equal) owners[group[i]].sync_target = target;
     }
     return equal;
 }

@@ -1,4 +1,6 @@
 #include "rrr_router.hh"
+#include "initial_route.hh"
+#include "transaction.hh"
 #include "rrr_routing.hh"
 #include "route_validate.hh"
 
@@ -84,330 +86,193 @@ auto run_rrr(
     const std::Vector<RoutingNet>& nets,
     const RrrParams& input_params,
     hardware::Interposer* interposer,
-    int verbose_level
+    int verbose_level,
+    const std::Vector<std::Rc<circuit::Net>>* raw_nets
 ) -> RrrResult {
     using namespace rrr_detail;
-    if (interposer == nullptr) {
-        throw std::invalid_argument("RRR: run_rrr requires a non-null Interposer");
-    }
+    if (interposer == nullptr) throw std::invalid_argument("RRR: run_rrr requires a non-null Interposer");
     auto params = input_params;
-    auto resources = ResourceModel {params};
+    auto resources = ResourceModel{params};
     auto owners = build_owners(nets);
     const auto routing_start = std::chrono::steady_clock::now();
-    const auto budget_start = params.budget_start == std::chrono::steady_clock::time_point {}
+    const auto budget_start = params.budget_start == std::chrono::steady_clock::time_point{}
         ? routing_start : params.budget_start;
     const bool budget_enabled = params.time_budget_seconds > 0;
-    auto elapsed_ms = [&]() -> std::i64 {
+    const auto elapsed_ms = [&]() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - budget_start).count();
     };
-    auto budget_expired = [&]() -> bool {
-        return budget_enabled && std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - budget_start).count() >= params.time_budget_seconds;
+    const auto budget_expired = [&]() {
+        return budget_enabled && elapsed_ms() >= params.time_budget_seconds * 1000;
     };
-
-    debug::info_fmt(
-        "FPIA RRR: graph nodes={} arcs={} route_owners={}",
+    debug::info_fmt("FPIA RRR: graph nodes={} arcs={} route_owners={}",
         graph.nodes.size(), graph.arcs.size(), owners.size());
     debug::info_fmt(
-        "FPIA RRR: params max_iterations={} seed={} H={} k={} s={} sync_tail_extra_tracks={} time_budget_seconds={} optimization_scope=all history_decay={} cost_policy=additive",
+        "FPIA RRR: params max_iterations={} seed={} H={} k={} s={} sync_tail_extra_tracks={} time_budget_seconds={} optimization_scope=transaction history_decay={} cost_policy=additive",
         params.max_iterations, params.seed, params.H, params.k, params.s,
         params.sync_tail_extra_tracks, params.time_budget_seconds, params.decay);
-
-    auto result = RrrResult {};
-    auto best = BestSnapshot {};
-    auto best_legal = BestSnapshot {};
-    int stagnant = 0;
-    int iterations = 0;
-    int optimization_rounds = 0;
-    bool retry_all = false;
+    auto result = RrrResult{};
+    auto best_owners = owners;
+    bool has_legal = false;
+    auto best_wirelength = std::numeric_limits<std::size_t>::max();
+    auto stop_reason = std::String{"iteration_limit"};
+    int iterations = 0, optimization_rounds = 0;
     bool reported_overrun = false;
-    auto stop_reason = std::String {"iteration_limit"};
-
-    // Only complete, independently validated solutions enter the legal incumbent.
-    auto checkpoint = [&]() -> bool {
-        const int overflow = resources.overflow();
-        const auto sync = sync_violation(graph, nets, owners, interposer);
+    const auto checkpoint = [&]() {
         const auto wirelength = current_wirelength(graph, nets, owners);
-        const bool connected = all_demands_connected(nets, owners);
-        const bool improved = connected && save_best_if_improved(
-            best, overflow, sync, wirelength, resources, owners);
-        if (connected && overflow == 0 && sync.unequal_groups == 0
-            && (!best_legal.valid || wirelength < best_legal.wirelength)) {
-            auto candidate = RrrResult {};
-            candidate.paths = collect_paths_by_net(nets, owners);
-            if (validate_rrr_solution(graph, nets, candidate, interposer)) {
-                save_best_if_improved(best_legal, overflow, sync, wirelength, resources, owners);
-                result.best_legal_ms = elapsed_ms();
-                if (result.first_legal_ms < 0) {
-                    result.first_legal_ms = result.best_legal_ms;
-                }
-                debug::info_fmt(
-                    "FPIA RRR: legal incumbent wirelength={} first_legal_ms={} best_legal_ms={}",
-                    wirelength, result.first_legal_ms, result.best_legal_ms);
-            }
+        if (missing_owners(owners) == 0 && resources.overflow() == 0 &&
+            sync_violation(graph, nets, owners, interposer).unequal_groups == 0 &&
+            (!has_legal || wirelength < best_wirelength)) {
+            auto candidate = RrrResult{}; candidate.paths = collect_paths_by_net(nets, owners);
+            if (!validate_rrr_solution(graph, nets, candidate, interposer))
+                throw std::logic_error("RRR committed complete route failed validation");
+            has_legal = true; best_wirelength = wirelength; best_owners = owners;
+            result.best_legal_ms = elapsed_ms();
+            if (result.first_legal_ms < 0) result.first_legal_ms = result.best_legal_ms;
+            debug::info_fmt("FPIA RRR: legal incumbent wirelength={} first_legal_ms={} best_legal_ms={}",
+                wirelength, result.first_legal_ms, result.best_legal_ms);
         }
-        debug::info_fmt(
-            "FPIA RRR: checkpoint iterations={} budget_elapsed_ms={} has_legal={} best_legal_wirelength={}",
-            iterations, elapsed_ms(), best_legal.valid, best_legal.valid ? best_legal.wirelength : 0);
-        return improved;
+        debug::info_fmt("FPIA RRR: checkpoint iterations={} budget_elapsed_ms={} has_legal={} best_legal_wirelength={} missing_owners={}",
+            iterations, elapsed_ms(), has_legal, has_legal ? best_wirelength : 0, missing_owners(owners));
     };
-    auto should_stop = [&]() -> bool {
-        if (budget_expired()) {
-            if (best_legal.valid) {
-                stop_reason = "time_budget";
-                return true;
-            }
-            if (!reported_overrun) {
-                debug::info_fmt("FPIA RRR: budget exceeded without legal solution; continue until first legal solution");
-                reported_overrun = true;
-            }
-        }
-        if (!budget_enabled && best_legal.valid) {
-            stop_reason = "feasible";
-            return true;
+    const auto should_stop = [&]() {
+        if (budget_expired() && has_legal) { stop_reason = "time_budget"; return true; }
+        if (budget_expired() && !reported_overrun) {
+            debug::info("FPIA RRR: budget exceeded without legal solution; continue until first legal solution");
+            reported_overrun = true;
         }
         return false;
     };
-    auto finish = [&]() -> RrrResult {
-        const auto& saved = best_legal.valid ? best_legal : best;
-        if (saved.valid) {
-            resources = saved.resources;
-            owners = saved.owners;
-        }
-        const auto sync = sync_violation(graph, nets, owners, interposer);
-        result.status = best_legal.valid ? "success" : stop_reason;
-        result.stop_reason = stop_reason;
-        result.iterations = iterations;
-        result.optimization_rounds = optimization_rounds;
-        result.best_overflow = resources.overflow();
-        result.unequal_sync_groups = sync.unequal_groups;
-        result.total_sync_gap = sync.total_gap;
-        result.paths = collect_paths_by_net(nets, owners);
-        result.total_wirelength = total_wirelength(graph, result.paths);
-        result.routing_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - routing_start).count();
-        result.budget_elapsed_ms = elapsed_ms();
-        debug::info_fmt(
-            "FPIA RRR: status={} stop_reason={} iterations={} optimization_rounds={} best_overflow={} unequal_sync_groups={} sync_gap={} routing_ms={} elapsed_ms={} first_legal_ms={} best_legal_ms={} budget_elapsed_ms={}",
-            result.status, result.stop_reason, result.iterations, result.optimization_rounds,
-            result.best_overflow, result.unequal_sync_groups, result.total_sync_gap,
-            result.routing_ms, Elapsed::milliseconds(), result.first_legal_ms,
-            result.best_legal_ms, result.budget_elapsed_ms);
-        debug::info_fmt(
-            "routing result: total_wirelength={} RRR_routing_time={} elapsed_ms={}",
-            result.total_wirelength, result.routing_ms, Elapsed::milliseconds());
-        dump_paths(graph, nets, owners, interposer);
-        if (verbose_level >= 1) {
-            dump_overflows(owners, nets, resources);
-        }
-        return result;
-    };
-    auto reroute = [&](const std::Vector<OwnerId>& ids) -> int {
-        int rerouted = 0;
-        auto routed_sync = std::Set<std::size_t> {};
-        for (const auto id : ids) {
-            const auto index = find_owner_index(owners, id);
-            if (owners[index].is_sync) {
-                if (!routed_sync.insert(owners[index].net_index).second) {
-                    continue;
-                }
-                route_sync_group(owners[index].net_index, owners, graph, nets,
-                                 resources, params, interposer);
-                rerouted += static_cast<int>(group_owner_indices(owners, owners[index].net_index).size());
-            } else {
-                route_owner(owners[index], graph, nets, resources, params, interposer);
-                ++rerouted;
-            }
-        }
-        return rerouted;
-    };
-    auto full_order = [&](int shift) -> std::Vector<OwnerId> {
-        auto order = initial_order(owners);
-        auto starts = std::Vector<std::size_t> {};
-        for (std::size_t i = 0; i < order.size(); ++i) {
-            if (i == 0 || owners[order[i]].net_index != owners[order[i - 1]].net_index) {
-                starts.push_back(i);
-            }
-        }
-        // Rotate only at net/group boundaries, never inside a SyncNet.
-        if (!starts.empty()) {
-            const auto offset = starts[static_cast<std::size_t>(shift) % starts.size()];
-            std::rotate(order.begin(), order.begin() + offset, order.end());
-        }
-        auto ids = std::Vector<OwnerId> {};
-        for (const auto index : order) {
-            ids.push_back(owners[index].id);
-        }
-        return ids;
-    };
-
+    auto order = std::Vector<std::size_t>{};
     try {
-        auto initial_ids = std::Vector<OwnerId> {};
-        for (const auto index : initial_type_order(owners, nets)) {
-            const auto id = owners[index].id;
-            initial_ids.push_back(id);
-            if (id.demand_id == 0) {
-                debug::info_fmt("FPIA RRR: initial order net_id={} name={}",
-                                id.net_id, nets[owners[index].net_index].name);
-            }
-        }
-        reroute(initial_ids);
-    }
-    catch (const std::runtime_error& error) {
-        debug::info_fmt("FPIA RRR: initial routing failed: {}", error.what());
-        if (!budget_enabled) {
-            stop_reason = "unroutable";
-            return finish();
-        }
-        retry_all = true;
-    }
-    debug::info_fmt(
-        "FPIA RRR: initial overflow={} unequal_sync_groups={} sync_gap={} total_wirelength={}",
-        resources.overflow(), sync_violation(graph, nets, owners, interposer).unequal_groups,
-        sync_violation(graph, nets, owners, interposer).total_gap, current_wirelength(graph, nets, owners));
-    checkpoint();
-    if (should_stop()) {
-        const auto initial_sync = sync_violation(graph, nets, owners, interposer);
-        debug::info_fmt(
-            "FPIA RRR: iter=0 overflow={} new_overflow={} max_resource_overflow={} dirty_owners=0 rerouted=0 total_wirelength={} unequal_sync_groups={} sync_gap={} H={}",
-            resources.overflow(), resources.overflow(), max_resource_overflow(owners, resources),
-            current_wirelength(graph, nets, owners), initial_sync.unequal_groups,
-            initial_sync.total_gap, params.H);
-        return finish();
-    }
-
-    for (int iter = 0; iter < params.max_iterations; ++iter) {
-        const int overflow = resources.overflow();
-        const int max_ov = max_resource_overflow(owners, resources);
-        const auto sync = sync_violation(graph, nets, owners, interposer);
-        const bool sync_equal = sync.unequal_groups == 0;
-        const bool optimize = budget_enabled && overflow == 0 && sync_equal
-            && all_demands_connected(nets, owners) && !retry_all;
-
-        resources.history_next();
-        auto dirty_ids = std::Vector<OwnerId> {};
-        if (optimize || retry_all) {
-            if (optimize) {
-                ++optimization_rounds;
-                dirty_ids = full_order(optimization_rounds);
-            } else {
-                dirty_ids = full_order(iter + 1);
-            }
-            debug::info_fmt(
-                "FPIA RRR: schedule={} optimization_rounds={} first_net={}",
-                optimize ? "optimize" : "retry", optimization_rounds,
-                dirty_ids.empty() ? -1 : static_cast<int>(dirty_ids.front().net_id));
+        initialize_sync_targets(graph, nets, owners, params, interposer);
+        if (raw_nets != nullptr) {
+            if (raw_nets->size() != nets.size()) throw std::invalid_argument("initial raw/routing net count mismatch");
+            order = original_initial_route(graph, nets, owners, resources, params, interposer, *raw_nets);
         } else {
-            auto dirty_set = std::Set<OwnerId> {};
-            for (const auto& owner : owners) {
-                if (owner_is_dirty(owner, resources) && dirty_set.insert(owner.id).second) {
-                    dirty_ids.push_back(owner.id);
+            // Graph-only unit-test seam; production always executes the actual Sort/Resources/Maze.
+            for (auto index : initial_type_order(owners, nets)) {
+                const auto ni = owners[index].net_index;
+                if (std::find(order.begin(), order.end(), ni) == order.end()) order.push_back(ni);
+            }
+            auto strict = params; strict.hard_capacity = true;
+            for (auto ni : order) {
+                const auto before = owners;
+                const auto occupancy = resources;
+                try {
+                    if (nets[ni].is_sync_bus) {
+                        if (!route_sync_group(ni, owners, graph, nets, resources, strict, interposer))
+                            throw std::runtime_error("maze: initial SyncNet failed");
+                    } else route_owner(owners[unit_indices(owners, ni).front()],
+                        graph, nets, resources, strict, interposer);
+                    bool valid = resources.overflow() == 0;
+                    for (auto index : unit_indices(owners, ni)) valid = valid && owner_paths_valid(graph, owners[index]);
+                    if (!valid) throw std::runtime_error("maze: initial graph route invalid");
+                } catch (const std::runtime_error& error) {
+                    if (!std::string_view(error.what()).starts_with("maze:")) throw;
+                    owners = before; resources = occupancy;
+                    debug::info_fmt("FPIA RRR: initial routing interrupted net_id={} reason={}", ni, error.what());
+                    break;
                 }
             }
-            auto dirty_sync_nets = std::Set<std::size_t> {};
-            for (const auto id : dirty_ids) {
-                const std::size_t index = find_owner_index(owners, id);
-                if (index < owners.size() && owners[index].is_sync) {
-                    dirty_sync_nets.insert(owners[index].net_index);
-                }
-            }
-            for (const auto& owner : owners) {
-                if (owner.is_sync && dirty_sync_nets.contains(owner.net_index)
-                    && dirty_set.insert(owner.id).second) {
-                    dirty_ids.push_back(owner.id);
-                }
-            }
-            if (!sync_equal) {
-                for (const auto id : unequal_sync_owner_ids(graph, nets, owners, interposer)) {
-                    if (dirty_set.insert(id).second) {
-                        dirty_ids.push_back(id);
-                    }
-                }
-            }
-
-            std::sort(dirty_ids.begin(), dirty_ids.end(), [&](OwnerId lhs, OwnerId rhs) {
-                const auto& a = owners[find_owner_index(owners, lhs)];
-                const auto& b = owners[find_owner_index(owners, rhs)];
-                return rrr_dirty_before(
-                    owner_exposure(a, resources),
-                    a.retry,
-                    a.hpwl,
-                    a.id,
-                    owner_exposure(b, resources),
-                    b.retry,
-                    b.hpwl,
-                    b.id);
-            });
-
         }
-        if (dirty_ids.empty()) {
-            if (!budget_enabled) {
-                stop_reason = "stagnated";
+    } catch (const std::runtime_error& error) {
+        if (!std::string_view(error.what()).starts_with("maze:")) throw;
+        stop_reason = "unroutable";
+        debug::info_fmt("FPIA RRR: initial routing failed: {}", error.what());
+    }
+    debug::info_fmt("FPIA RRR: initial overflow={} unequal_sync_groups={} sync_gap={} total_wirelength={} missing_owners={}",
+        resources.overflow(), sync_violation(graph, nets, owners, interposer).unequal_groups,
+        sync_violation(graph, nets, owners, interposer).total_gap,
+        current_wirelength(graph, nets, owners), missing_owners(owners));
+    checkpoint();
+    bool stop = should_stop() || stop_reason == "unroutable";
+    for (int sweep = 0; !stop && sweep < params.max_iterations; ++sweep) {
+        const bool optimize = missing_owners(owners) == 0;
+        if (optimize) ++optimization_rounds;
+        auto sweep_order = std::Vector<std::size_t>{};
+        for (bool connected : {false, true})
+            for (auto ni : order)
+                if (unit_connected(owners, ni) == connected) sweep_order.push_back(ni);
+        bool improved = false;
+        int attempts = 0, accepted = 0;
+        for (auto ni : sweep_order) {
+            for (int variant = 0; variant < 6; ++variant) {
+                if (should_stop()) { stop = true; break; }
+                auto trial = owners;
+                auto trial_resources = resources;
+                ++attempts;
+                if (!transaction(ni, variant, graph, nets, trial, trial_resources, params, interposer)) continue;
+                const int old_missing = missing_owners(owners), new_missing = missing_owners(trial);
+                const auto old_w = current_wirelength(graph, nets, owners);
+                const auto new_w = current_wirelength(graph, nets, trial);
+                if (new_missing > old_missing || (new_missing == old_missing && new_w >= old_w)) continue;
+                owners = std::move(trial); resources = std::move(trial_resources);
+                improved = true; ++accepted;
+                debug::info_fmt("FPIA RRR: transaction accept sweep={} net_id={} variant={} missing={}->{} wirelength={}->{}",
+                    sweep, nets[ni].net_id, variant, old_missing, new_missing, old_w, new_w);
+                checkpoint();
+                if (should_stop()) stop = true;
                 break;
             }
-            dirty_ids = full_order(iter + 1);
+            if (stop) break;
         }
-
-        for (const auto id : dirty_ids) {
-            rip_owner(owners[find_owner_index(owners, id)], resources);
-        }
-        int rerouted = 0;
-        try {
-            rerouted = reroute(dirty_ids);
-            retry_all = false;
-        }
-        catch (const std::runtime_error& error) {
-            debug::info_fmt("FPIA RRR: iteration={} routing failed: {}", iter + 1, error.what());
-            iterations = iter + 1;
-            if (!budget_enabled) {
-                stop_reason = "unroutable";
-                return finish();
+        // Never charge failed probes. Only the committed legal partial state supplies overflow.
+        resources.history_next();
+        double history_total = 0;
+        auto history_keys = std::set<ResourceKey>{};
+        for (const auto& owner : owners)
+            for (auto key : owner.claimed) {
+                if (is_mux_port_key(key)) key.extra = -1;
+                if (key.kind == ResourceKind::ModeStraight || key.kind == ResourceKind::ModeSwap)
+                    key = mode_conflict_key(key.id);
+                history_keys.insert(key);
             }
-            // Never keep a partially routed round; restart from a complete snapshot.
-            const auto& saved = best_legal.valid ? best_legal : best;
-            if (saved.valid) {
-                resources = saved.resources;
-                owners = saved.owners;
-            } else {
-                resources = ResourceModel {params};
-                owners = build_owners(nets);
-            }
-            retry_all = true;
-            checkpoint();
-            if (should_stop()) {
-                return finish();
-            }
-            continue;
-        }
-
-        iterations = iter + 1;
-        const bool improved = checkpoint();
-        stagnant = improved ? 0 : stagnant + 1;
-        constexpr int kMaxH = 16;
-        if (!improved && stagnant >= 4 && params.H < kMaxH) {
-            params.H = std::min(params.H + 4, kMaxH);
-            stagnant = 0;
-            debug::info_fmt("FPIA RRR: congestion boost H={}", params.H);
-        }
-        const auto new_sync = sync_violation(graph, nets, owners, interposer);
+        for (const auto& key : history_keys) history_total += resources.history(key);
+        debug::info_fmt("FPIA RRR: history sweep={} committed_overflow={} total={} accepted={}",
+            sweep, resources.overflow(), history_total, accepted);
+        iterations = sweep + 1;
         debug::info_fmt(
-            "FPIA RRR: iter={} overflow={} new_overflow={} max_resource_overflow={} dirty_owners={} rerouted={} total_wirelength={} unequal_sync_groups={} sync_gap={} H={} phase={} history_decay={}",
-            iter, overflow, resources.overflow(), max_ov, dirty_ids.size(), rerouted,
-            current_wirelength(graph, nets, owners), new_sync.unequal_groups,
-            new_sync.total_gap, params.H, optimize ? "optimize" : "repair", params.decay);
-        if (verbose_level >= 1) {
-            dump_overflows(owners, nets, resources);
-        }
-        if (should_stop()) {
-            return finish();
-        }
-        if (!budget_enabled && params.H >= kMaxH && stagnant >= params.stagnation_limit) {
-            stop_reason = "stagnated";
-            break;
-        }
+            "FPIA RRR: iter={} overflow=0 new_overflow={} max_resource_overflow=0 dirty_owners={} rerouted={} total_wirelength={} unequal_sync_groups={} sync_gap={} H={} phase={} history_decay={} missing_owners={} accepted={}",
+            sweep, resources.overflow(), sweep_order.size(), attempts,
+            current_wirelength(graph, nets, owners),
+            sync_violation(graph, nets, owners, interposer).unequal_groups,
+            sync_violation(graph, nets, owners, interposer).total_gap,
+            params.H, optimize ? "optimize" : "repair", params.decay, missing_owners(owners), accepted);
+        if (verbose_level >= 1) dump_overflows(owners, nets, resources);
+        checkpoint();
+        stop = stop || should_stop();
+        if (!budget_enabled && !stop && !improved) { stop_reason = "stagnated"; stop = true; }
+        if (!budget_enabled && !stop && sweep + 1 >= 2) { stop_reason = "sweep_limit"; stop = true; }
     }
-    return finish();
+    if (has_legal) owners = best_owners;
+    result.status = has_legal ? "success" : stop_reason;
+    result.stop_reason = stop_reason;
+    result.iterations = iterations;
+    result.optimization_rounds = optimization_rounds;
+    result.missing_owners = missing_owners(owners);
+    // Rebuild after restoring an incumbent; absence of overflow alone is not success.
+    resources = ResourceModel{params};
+    for (const auto& owner : owners)
+        resources.claim(owner.id, std::Vector<ResourceKey>(owner.claimed.begin(), owner.claimed.end()));
+    const auto sync = sync_violation(graph, nets, owners, interposer);
+    result.best_overflow = resources.overflow();
+    result.unequal_sync_groups = sync.unequal_groups;
+    result.total_sync_gap = sync.total_gap;
+    result.paths = collect_paths_by_net(nets, owners);
+    result.total_wirelength = total_wirelength(graph, result.paths);
+    result.routing_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - routing_start).count();
+    result.budget_elapsed_ms = elapsed_ms();
+    debug::info_fmt(
+        "FPIA RRR: status={} stop_reason={} iterations={} optimization_rounds={} best_overflow={} unequal_sync_groups={} sync_gap={} routing_ms={} elapsed_ms={} first_legal_ms={} best_legal_ms={} budget_elapsed_ms={} missing_owners={}",
+        result.status, result.stop_reason, iterations, optimization_rounds, result.best_overflow,
+        sync.unequal_groups, sync.total_gap, result.routing_ms, Elapsed::milliseconds(),
+        result.first_legal_ms, result.best_legal_ms, result.budget_elapsed_ms, result.missing_owners);
+    debug::info_fmt("routing result: total_wirelength={} RRR_routing_time={} elapsed_ms={}",
+        result.total_wirelength, result.routing_ms, Elapsed::milliseconds());
+    dump_paths(graph, nets, owners, interposer);
+    return result;
 }
 
 } // namespace PR_tool

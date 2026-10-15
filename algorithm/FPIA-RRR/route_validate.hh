@@ -27,7 +27,8 @@ auto validate_rrr_solution(
     const UnifiedGraph& graph,
     const std::Vector<RoutingNet>& nets,
     const RrrResult& result,
-    hardware::Interposer* interposer = nullptr
+    hardware::Interposer* interposer = nullptr,
+    bool allow_partial = false
 ) -> bool;
 
 } // namespace PR_tool

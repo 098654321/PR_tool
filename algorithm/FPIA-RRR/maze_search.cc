@@ -245,6 +245,16 @@ auto arc_is_hard_blocked(
     return false;
 }
 
+auto violates_capacity(const ResourceModel& resources, OwnerId owner,
+                       const UnifiedGraph& graph, const UnifiedArc& arc) -> bool {
+    for (const auto& key : arc_keys(graph, arc)) {
+        if (is_physical_occupancy_key(key) && !resources.holds(owner, key)
+            && predicted_owner_count(resources, owner, key) > 1) return true;
+        if (would_introduce_opposite_mode(resources, owner, key)) return true;
+    }
+    return false;
+}
+
 constexpr int kBnetStateCount = 17;
 
 struct DenseSearchScratch {
@@ -302,6 +312,11 @@ auto reconstruct_path(const DenseSearchScratch& scratch, std::size_t sink_state)
 
 auto arc_resource_keys(const UnifiedGraph& graph, const UnifiedArc& arc) -> const ArcResourceKeys& {
     return arc_keys(graph, arc);
+}
+
+auto arc_capacity_blocked(const UnifiedGraph& graph, const ResourceModel& resources,
+                          OwnerId owner, const UnifiedArc& arc) -> bool {
+    return violates_capacity(resources, owner, graph, arc);
 }
 
 auto path_resource_keys(
@@ -492,9 +507,37 @@ auto route_demand_from_tree(
             if (!valid_node(graph, arc.v)) {
                 continue;
             }
+            if (node_kind(graph, arc.v) == UnifiedNodeKind::Bump && arc.v != sink) continue;
+            if (params.length_only) {
+                // A legal two-pin path uses TOB access only at its endpoints;
+                // a VLine-HLine-VLine transit would short two mux inputs.
+                const auto ku = node_kind(graph, arc.u), kv = node_kind(graph, arc.v);
+                if (ku == UnifiedNodeKind::Bump && kv == UnifiedNodeKind::HLine &&
+                    params.shortest_source_hline >= 0 && arc.v != params.shortest_source_hline) continue;
+                const bool source_access = (!is_bnet || item.unit < 0) && std::ranges::any_of(ordered_sources, [&](int n) {
+                    return node_kind(graph, n) == UnifiedNodeKind::Bump &&
+                        graph.nodes[n].bump.TOB == graph.nodes[arc.u].tob;
+                });
+                const bool sink_access = (!is_bnet || item.unit >= 0) && node_kind(graph, sink) == UnifiedNodeKind::Bump &&
+                    graph.nodes[sink].bump.TOB == graph.nodes[arc.v].tob;
+                if ((ku == UnifiedNodeKind::HLine && kv == UnifiedNodeKind::VLine && !source_access) ||
+                    (ku == UnifiedNodeKind::VLine && kv == UnifiedNodeKind::HLine && !sink_access) ||
+                    (ku == UnifiedNodeKind::Track && kv == UnifiedNodeKind::VLine && !sink_access) ||
+                    (ku == UnifiedNodeKind::VLine && kv == UnifiedNodeKind::Track && !source_access)) continue;
+                if (kv == UnifiedNodeKind::Bump && is_bnet && item.unit < 0) continue;
+                if (arc.physical_switch_id >= 0) {
+                    auto path = reconstruct_path(scratch, state);
+                    if (std::find(path.begin(), path.end(), arc.v) != path.end()) continue;
+                    path.push_back(arc.v);
+                    auto own = ResourceModel{};
+                    own.claim(owner, path_resource_keys(graph, path, is_bnet));
+                    if (own.overflow() != 0) continue;
+                }
+            }
             if (arc_is_hard_blocked(graph, resources, owner, arc, hard_block)) {
                 continue;
             }
+            if (params.hard_capacity && violates_capacity(resources, owner, graph, arc)) continue;
             int next_unit = item.unit;
             if (is_bnet && is_vline_track(graph, arc)) {
                 const int track_node = track_endpoint(graph, arc);
@@ -508,7 +551,9 @@ auto route_demand_from_tree(
                 next_unit = locked >= 0 ? locked : unit;
             }
 
-            const double step = arc_cost(
+            const double step = params.length_only
+                ? (node_kind(graph, arc.v) == UnifiedNodeKind::Track ? 1.0 : 0.0)
+                : arc_cost(
                 graph,
                 resources,
                 owner,

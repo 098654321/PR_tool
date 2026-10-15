@@ -53,7 +53,8 @@ auto run_main(int argc, char** argv) -> int {
 
     auto [interposer, basedie] = PR_tool::parse::read_config(cli.config_path, 0, false);
     algo::build_nets(basedie.get(), interposer.get());
-    const auto nets = build_routing_nets(basedie->nets_to_vector());
+    const auto raw_nets = basedie->nets_to_vector();
+    const auto nets = build_routing_nets(raw_nets);
     const auto graph = build_hardware_graph(interposer.get(), nets);
 
     auto params = RrrParams {};
@@ -61,7 +62,7 @@ auto run_main(int argc, char** argv) -> int {
     params.seed = cli.seed;
     params.time_budget_seconds = cli.time_budget_seconds;
     params.budget_start = begin;
-    const auto result = run_rrr(graph, nets, params, interposer.get(), cli.verbose_level);
+    const auto result = run_rrr(graph, nets, params, interposer.get(), cli.verbose_level, &raw_nets);
     const bool success = result.status == "success" && result.best_overflow == 0
         && validate_rrr_solution(graph, nets, result, interposer.get());
     const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
