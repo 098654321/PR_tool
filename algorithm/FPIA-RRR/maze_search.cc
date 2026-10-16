@@ -130,7 +130,7 @@ auto arc_cost(
     const UnifiedGraph& graph, const ResourceModel& resources, OwnerId owner,
     const UnifiedArc& arc, const StartMembership& starts
 ) -> double {
-    // VPR congestion cost: destination graph node only, base=1, c=0, B=0.
+    // OpenROAD congestion cost: destination graph node only, no arc surcharge.
     // Reused tree nodes do not consume another unit of this owner's capacity.
     if (starts.contains(graph, arc.v)) return 0;
     return resources.node_cost(owner, arc.v);

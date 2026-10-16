@@ -1,6 +1,7 @@
 #include "resource_model.hh"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 #include <set>
 
@@ -18,8 +19,7 @@ auto mux_port_key(const ResourceKey& key) -> ResourceKey {
 
 } // namespace
 
-ResourceModel::ResourceModel(RrrParams params)
-    : _params {std::move(params)}, _pres_fac{_params.first_iter_pres_fac} {}
+ResourceModel::ResourceModel(RrrParams params) : _params {std::move(params)} {}
 
 auto ResourceModel::is_capacity_key(const ResourceKey& key) const -> bool {
     return key.kind == ResourceKind::Node
@@ -332,7 +332,7 @@ auto ResourceModel::owners_of(const ResourceKey& key) const -> std::Vector<Owner
 auto ResourceModel::history(const ResourceKey& key) const -> double {
     if (key.kind != ResourceKind::Node) return 0;
     const auto it = _history.find(key);
-    return it == _history.end() ? 1.0 : it->second;
+    return it == _history.end() ? 0.0 : it->second;
 }
 
 auto ResourceModel::history_next() -> void {
@@ -348,18 +348,14 @@ auto ResourceModel::history_next() -> void {
     }
 }
 
-auto ResourceModel::reset_present() -> void { _pres_fac = _params.first_iter_pres_fac; }
-
-auto ResourceModel::advance_present() -> void {
-    _pres_fac = std::min(_params.max_pres_fac, _pres_fac == _params.first_iter_pres_fac
-        ? _params.initial_pres_fac : _pres_fac * _params.pres_fac_mult);
-}
-
 auto ResourceModel::node_cost(OwnerId owner, int node_id) const -> double {
     const auto key = node_resource(node_id);
     if (holds(owner, key)) return 0;
-    const int predicted = occupancy_count(key) + 1;
-    return history(key) * (1.0 + _pres_fac * std::max(0, predicted - 1));
+    // OpenROAD form in note.md: current usage, red=0, capacity=1.
+    // History is inside BOTH nonlinear and linear terms, not an additive cost.
+    const double q = occupancy_count(key) + _params.L * history(key);
+    return 1.0 + _params.H / (1.0 + std::exp(_params.k * (1.0 - q)))
+        + static_cast<double>(_params.H) / _params.s * std::max(q - 1.0, 0.0);
 }
 
 auto ResourceModel::type_weight(const ResourceKey& key) const -> int {

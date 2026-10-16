@@ -2,8 +2,8 @@
 
 本目录实现独立 AIR-style baseline，依据用户 note.md 的场景适配：
 独立参考布线 → 空实际解 → 增量补布 → 合法性判断/最好解保存 →
-更新 VPR 节点 cost → 冲突剪枝 → 仅当前合法时主动线长拆线 → 下一轮。
-不再采用旧原始 maze warm start、事务式 displacement RRR 或 Logistic cost。
+更新 OpenROAD 节点 cost → 冲突剪枝 → 仅当前合法时主动线长拆线 → 下一轮。
+不再采用旧原始 maze warm start、事务式 displacement RRR 或旧 FPIA 外加 history 的 cost。
 spec.md 是旧版方法记录，不修改该文件。
 
 ## 工作流程要求
@@ -72,7 +72,7 @@ bin_area=4*Area(bbox)/num_sinks，bin_size=sqrt(bin_area)。
    不能把不含物理 source 的枝段误当完整 demand。
 3. fanout（sink 数）≥16 时先只用目标 sink 所在 bin 中的树节点初始化 heap；
    bin 为空或附近搜索失败，回退到整棵树。
-4. 普通连接使用 VPR 加权 Dijkstra，无 criticality、delay 或 A* lookahead。
+4. 普通连接使用 OpenROAD cost 加权 Dijkstra，无 criticality、delay 或 A* lookahead。
    从 terminal 最小 bbox 开始；未完成连接时保留边界 frontier，
    沿受阻方向扩大 bbox，最多覆盖整张图，不永久排除框外路径。
 5. 仍保留 Track unit、VLine local unit、内部 mux/mode、简单路径/树无环检查；
@@ -92,22 +92,30 @@ r={0.5,0.75,1.0}，保留 floor(N_track*(1-r)) 个 Track 的前缀再搜索尾�
 保留 sibling 物理硬阻塞、前缀/parent-chain 禁回环及内部 mux/mode 合法检查。
 sync_tail_extra_tracks=64，尾部 labels 至多 80000。
 等长或内部合法性失败时清理整组，不能泄漏部分 lane 占用。
-同步基础 maze/切尾搜索复用原实现，但 arc 增量也只采用 VPR 图节点 cost。
+同步基础 maze/切尾搜索复用原实现，但 arc 增量也只采用 OpenROAD 图节点 cost。
 
-## VPR cost 与硬件资源规则
+## OpenROAD cost 与硬件资源规则
 
-扩展 u→v：g(v)=g(u)+C(v)，无额外 arc 基价、转弯项或延迟项。
-C(v)=b(v)*a(v)*p(v)，b(v)=1，容量 k(v)=1，a 初值为 1。
-p(v)=1+pres_fac*max(0,o(v)+1-1)，按 prospective occupancy 计算。
-同 owner 已占用的树节点增量为 0，不重复增加 demand。
-a_next(v)=a(v)+acc_fac*max(0,o(v)-1)，acc_fac=1，不衰减、不清空。
-history 在每轮结束、拆线之前根据完整当前拥塞快照累积。
+严格采用用户 note.md 的 OpenROAD 形式，映射到图节点：
+扩展 u→v：g(v)=g(u)+c(v)，无额外 arc 基价、转弯项或延迟项。
+q(v)=usage(v)+red(v)+L*h(v)，本场景 red=0、L=0.9、C=1。
+c(v)=1+H/(1+exp(k*(C-q(v))))+(H/s)*max(q(v)-C,0)。
+H=4、k=1、s=20 沿用旧 FPIA_RRR 的固定默认值，不自适应提高 H。
 
-首轮 pres_fac=0，下一轮 0.5，随后 ×1.3，上限 1000。
-每次得到当前合法解时 reset_present 到 0，保留 history；
-随后按框架 UPDATE_COSTS 推进，所以其后搜索从 0.5 开始。
+usage 是当前 ResourceModel 占用（本次已拆路径不再计入），不加候选的 +1；
+同 owner 已占用的树节点增量为 0，不重复收费。
+历史项进入 q，同时影响 logistic 与线性项；不得在函数外另加 history，
+不得采用旧 FPIA 的额外 arc=1/type_weight 叠加，也不再使用 VPR a*p 乘积。
+L=0.9 是输入权重，不是历史衰减系数。
 
-只有图节点（Track/Bump/HLine/VLine）计 VPR cost。
+note.md 未另给 OpenROAD 历史更新规则，因此保留 AIR 的逐轮拥塞累积：
+h 初值为 0，h_next(v)=h(v)+acc_fac*max(0,usage(v)-1)，acc_fac=1。
+每轮在拆线之前按当前拥塞快照更新，不衰减、不在 convergence 时清空。
+OpenROAD 公式没有 pres_fac，因此删除 VPR 的 0→0.5→×1.3 调度和 reset_present；
+合法后占用随实际拆线释放，自然降低 usage，保留历史惩罚。
+这里只替换 cost，不照搬 OpenROAD 的其他历史更新/参数阶段调度。
+
+只有图节点（Track/Bump/HLine/VLine）计费。
 PhysicalSwitch、matching endpoint、mux peer、straight/swap 不额外计费或累积 history，
 但继续参与 overflow 检测、冲突剪枝与最终硬件合法性检查。
 容量/兼容规则不因 cost 限定为节点而删除；Bnet unit 是 per-owner 锁。
@@ -145,14 +153,15 @@ PhysicalSwitch、matching endpoint、mux peer、straight/swap 不额外计费或
 校验重新构造全部占用，检查完整 demand、端点、邻接、简单路径、物理并集无环、
 TOB fanout、unit、mode、容量及同步长度，不依赖 live occupancy。
 paths[net][demand] 与最终全部 route 日志格式保留。
-iter 输出当前实际 overflow/线长/missing/pres/convergences/has_legal；
+iter 输出当前实际 overflow/线长/missing/convergences/has_legal；
 prepare 输出 illegal_ripup、wirelength_ripup 与 repair/optimize 阶段。
 保留 status、total_wirelength、RRR_routing_time、total_ms、最好解时间信息。
 
 ## 回归测试
 
 FPIA_RRR_unit 支持 --synthetic-only、--budget-only，require 在 Release 有效。
-覆盖节点 VPR 乘积/历史/重置、资源共享与硬件冲突、Sync 尾部等长/失败回滚、
+覆盖 OpenROAD 公式/当前占用非 prospective/历史进入两个项/仅节点计费、
+历史从零累加且不衰减、资源共享与硬件冲突、Sync 尾部等长/失败回滚、
 预算超时继续至合法、预算内持续优化及 incumbent 保留、同快照冲突剪枝、
 大树 root 前缀保留/不误判已连通、小 net 和 Sync 整组拆线、
 dynamic bbox、nearby→full fallback 和分支完整 root 路径重建。

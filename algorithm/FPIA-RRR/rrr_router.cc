@@ -61,9 +61,8 @@ auto run_rrr(
     for (const auto& net : nets) states.push_back({air_spatial(graph, net)});
     const auto order = air_order(nets, interposer, raw_nets);
     debug::info_fmt("FPIA RRR: graph nodes={} arcs={} route_owners={}", graph.nodes.size(), graph.arcs.size(), owners.size());
-    debug::info_fmt("FPIA RRR: params seed={} time_budget_seconds={} algorithm=AIR cost_policy=VPR-node-only first_iter_pres_fac={} initial_pres_fac={} pres_fac_mult={} max_pres_fac={} acc_fac={} iteration_limit=none convergence_limit=none",
-        params.seed, params.time_budget_seconds, params.first_iter_pres_fac, params.initial_pres_fac,
-        params.pres_fac_mult, params.max_pres_fac, params.acc_fac);
+    debug::info_fmt("FPIA RRR: params seed={} time_budget_seconds={} algorithm=AIR cost_policy=OpenROAD-node-only H={} k={} s={} L={} C=1 red=0 usage_policy=current acc_fac={} iteration_limit=none convergence_limit=none",
+        params.seed, params.time_budget_seconds, params.H, params.k, params.s, params.L, params.acc_fac);
     if (params.time_budget_seconds <= 0)
         debug::info("FPIA RRR: no positive time budget; routing has no automatic iteration/convergence stop");
     for (auto ni : order) air_reference(ni, graph, nets, states[ni], params, interposer);
@@ -106,27 +105,25 @@ auto run_rrr(
                     wirelength, result.first_legal_ms, result.best_legal_ms);
             }
         }
-        debug::info_fmt("FPIA RRR: iter={} overflow={} total_wirelength={} unequal_sync_groups={} sync_gap={} missing_owners={} present_factor={} convergences={} has_legal={} budget_elapsed_ms={}",
+        debug::info_fmt("FPIA RRR: iter={} overflow={} total_wirelength={} unequal_sync_groups={} sync_gap={} missing_owners={} convergences={} has_legal={} budget_elapsed_ms={}",
             result.iterations-1, overflow, wirelength, sync.unequal_groups, sync.total_gap,
-            missing, resources.present_factor(), result.convergences, has_legal, elapsed_ms());
+            missing, result.convergences, has_legal, elapsed_ms());
         if (verbose_level >= 1) dump_overflows(owners, nets, resources);
         if (expired() && has_legal) break;
         if (expired() && !reported_overrun) {
             debug::info("FPIA RRR: budget exceeded without legal solution; continue until first legal solution");
             reported_overrun = true;
         }
-        if (legal) resources.reset_present();
         // Price congestion BEFORE pruning it. Only graph-node history accumulates.
         resources.history_next();
-        resources.advance_present();
         const int pruned = air_prune_illegal(graph, nets, owners, resources, states, interposer);
         auto selected = std::Vector<std::size_t>{};
         if (legal) {
             selected = air_wirelength_candidates(graph, nets, owners, states);
             for (auto ni : selected) air_rip_net(ni, owners, resources);
         }
-        debug::info_fmt("FPIA RRR: prepare illegal_ripup={} wirelength_ripup={} next_present_factor={} phase={}",
-            pruned, selected.size(), resources.present_factor(), legal ? "optimize" : "repair");
+        debug::info_fmt("FPIA RRR: prepare illegal_ripup={} wirelength_ripup={} phase={}",
+            pruned, selected.size(), legal ? "optimize" : "repair");
     }
     owners = std::move(best);
     resources = ResourceModel{params};

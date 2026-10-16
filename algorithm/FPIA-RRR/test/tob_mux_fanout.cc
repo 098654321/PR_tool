@@ -136,7 +136,7 @@ auto test_mux_same_owner_two_peers_overflow() -> void {
     require(model.overflow() == 1, "reclaiming the same connection must not add another peer");
     model.history_next();
     const auto third = tob_mux_output_key(10, 22);
-    require(model.history(first) == 0, "only graph nodes accrue VPR history");
+    require(model.history(first) == 0, "only graph nodes accrue cost history");
     require(model.history(second) == model.history(first), "mux history must be shared across extras of one port");
     require(model.history(third) == model.history(first), "a new extra on a hot mux port must see the same history");
 }

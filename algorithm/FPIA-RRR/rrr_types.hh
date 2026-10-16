@@ -124,10 +124,10 @@ inline auto is_physical_occupancy_key(const ResourceKey& key) -> bool {
 }
 
 struct RrrParams {
-    double first_iter_pres_fac{0};
-    double initial_pres_fac{0.5};
-    double pres_fac_mult{1.3};
-    double max_pres_fac{1000};
+    int H{4};
+    double k{1};
+    int s{20};
+    double L{0.9};
     double acc_fac{1};
     double time_budget_seconds{0};
     std::chrono::steady_clock::time_point budget_start{};

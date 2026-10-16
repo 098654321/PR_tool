@@ -52,11 +52,10 @@ auto contains_owner(const std::Vector<OwnerId>& owners, OwnerId owner) -> bool {
 
 auto test_resource_claim_release() -> void {
     const auto defaults = RrrParams {};
-    require(defaults.first_iter_pres_fac == 0, "first present factor must be zero");
-    require(defaults.initial_pres_fac == 0.5 && defaults.pres_fac_mult == 1.3,
-            "present factor schedule must match the note");
-    require(defaults.max_pres_fac == 1000 && defaults.acc_fac == 1,
-            "VPR cap and history accumulation must match the note");
+    require(defaults.H == 4 && defaults.k == 1 && defaults.s == 20,
+            "OpenROAD logistic parameters must reuse the old FPIA defaults");
+    require(defaults.L == 0.9 && defaults.acc_fac == 1,
+            "history input weight and AIR accumulation must match the adaptation");
     require(defaults.sync_tail_extra_tracks == 64, "RrrParams sync tail slack must be 64 tracks");
     require(defaults.seed == 1, "RrrParams seed default must be 1");
     require(defaults.r_sequence.size() == 3, "RrrParams r sequence must have three values");
@@ -134,39 +133,44 @@ auto test_resource_cross_owner_overflow() -> void {
         model.overflow(sync_node) == 1,
         "SyncNet members with distinct demand_id must be different owners");
 
-    require_near(model.history(node), 1.0, "history starts at 1");
+    require_near(model.history(node), 0.0, "history penalty starts at zero");
     model.history_next();
-    require_near(model.history(node), 2.0, "history_next must accumulate overflow");
+    require_near(model.history(node), 1.0, "history_next must accumulate overflow");
     model.history_next();
-    require_near(model.history(node), 3.0, "history must accumulate without decay");
+    require_near(model.history(node), 2.0, "history must accumulate without decay");
 }
 
-auto test_resource_vpr_node_cost() -> void {
+auto test_resource_openroad_node_cost() -> void {
     auto model = ResourceModel {};
     const auto owner = OwnerId {100, 0};
     const auto node = node_resource(1);
-    require_near(model.node_cost(owner, 1), 1, "free node cost is base times history");
-    model.claim(OwnerId {1, 0}, {node, switch_resource(7), mode_straight_key(7)});
-    require_near(model.node_cost(owner, 1), 1, "first iteration ignores present congestion");
-    model.advance_present();
-    require_near(model.present_factor(), 0.5, "second present factor is 0.5");
-    require_near(model.node_cost(owner, 1), 1.5, "present includes prospective occupancy");
-    model.claim(OwnerId {2, 0}, {node, switch_resource(7), mode_swap_key(7)});
+    const auto a = OwnerId {1, 0}, b = OwnerId {2, 0};
+    const double free_cost = 1 + 4 / (1 + std::exp(1.0));
+    require_near(model.node_cost(owner, 1), free_cost, "free node uses q=0, not VPR cost or prospective +1");
+    model.claim(a, {node, switch_resource(7), mode_straight_key(7)});
+    require_near(model.node_cost(owner, 1), 3, "one current owner gives q=C, no candidate +1");
+    model.claim(b, {node, switch_resource(7), mode_swap_key(7)});
+    require_near(model.node_cost(owner, 1), 1 + 4 / (1 + std::exp(-1.0)) + 0.2,
+                 "current usage above capacity contributes H/s times excess");
     model.history_next();
-    require_near(model.history(node), 2, "node history accumulates excess occupancy");
-    require_near(model.history(switch_resource(7)), 0, "switch has no VPR history");
-    require_near(model.history(mode_conflict_key(7)), 0, "mode has no VPR history");
-    require_near(model.node_cost(owner, 1), 4, "VPR history and present are multiplicative");
-    model.release(OwnerId {1, 0}); model.release(OwnerId {2, 0});
-    model.history_next(); model.reset_present();
-    require_near(model.history(node), 2, "history survives release and convergence reset");
-    require_near(model.present_factor(), 0, "convergence resets present only");
-    model.advance_present(); model.advance_present();
-    require_near(model.present_factor(), 0.65, "present grows by 1.3");
-    for (int i = 0; i < 100; ++i) model.advance_present();
-    require_near(model.present_factor(), 1000, "present is capped at 1000");
-    model.claim(owner, {node});
-    require_near(model.node_cost(owner, 1), 0, "same-owner tree reuse costs zero");
+    require_near(model.history(node), 1, "history penalty accumulates excess occupancy from zero");
+    require_near(model.history(switch_resource(7)), 0, "switch has no cost history");
+    require_near(model.history(mode_conflict_key(7)), 0, "mode has no cost history");
+    require_near(model.node_cost(owner, 1), 1 + 4 / (1 + std::exp(-1.9)) + 0.38,
+                 "q=2+0.9*1 enters BOTH logistic and linear terms; history is not an additive cost");
+
+    model.release(a); model.release(b);
+    model.history_next();
+    require_near(model.history(node), 1, "legal iterations retain history without decay");
+    require_near(model.node_cost(owner, 1), 1 + 4 / (1 + std::exp(0.1)),
+                 "released node retains q=0.9 but has no linear penalty below capacity");
+    // A second overflowing iteration makes history itself exceed capacity,
+    // even after all actual usage is released.
+    model.claim(a, {node}); model.claim(b, {node}); model.history_next();
+    model.release(a); model.release(b);
+    const double historical_cost = 1 + 4 / (1 + std::exp(-0.8)) + 0.16;
+    require_near(model.node_cost(owner, 1), historical_cost,
+                 "q=0+0.9*2 must include history-induced linear excess");
 
     auto graph = UnifiedGraph {};
     graph.nodes.resize(2); graph.arcs.push_back(UnifiedArc {0, 1});
@@ -174,10 +178,21 @@ auto test_resource_vpr_node_cost() -> void {
     arc.resource_keys_ready = true;
     arc.resource_keys.count = 1;
     arc.resource_keys.values[0] = switch_resource(7);
-    model.release(owner);
-    model.claim(OwnerId {3, 0}, {switch_resource(7)});
-    require_near(arc_incremental_cost(graph, model, owner, arc, {0}, RrrParams{}), 2,
-                 "arc charges only destination node: no arc, switch or mode surcharge");
+    model.claim(a, {switch_resource(7)}); model.claim(b, {switch_resource(7)});
+    require_near(arc_incremental_cost(graph, model, owner, arc, {0}, RrrParams{}), historical_cost,
+                 "arc charges only destination node, no extra base, switch or outer history term");
+    model.claim(owner, {node});
+    require_near(model.node_cost(owner, 1), 0, "same-owner tree reuse costs zero");
+
+    auto params = RrrParams{};
+    params.H = 8; params.k = 2; params.s = 4; params.L = 0.5; params.acc_fac = 2;
+    auto custom = ResourceModel{params};
+    custom.claim(a, {node}); custom.claim(b, {node}); custom.history_next();
+    require_near(custom.history(node), 2, "AIR history increment remains independently configurable");
+    require_near(custom.node_cost(owner, 1), 1 + 8 / (1 + std::exp(-4.0)) + 4,
+                 "non-default H,k,s,L must all enter the documented formula");
+    for (int i = 0; i < 1000; ++i) custom.history_next();
+    require(std::isfinite(custom.node_cost(owner, 1)), "large accumulated history must yield finite cost");
 }
 
 auto test_resource_mode_conflict() -> void {
@@ -375,7 +390,6 @@ auto test_maze_ripup_then_reuse() -> void {
     const auto empty = route_demand(graph, resources, owner, {0}, 3, params);
     require_path(empty, {0, 1, 3}, "equal-hop empty maze must prefer the first out-arc path");
 
-    resources.advance_present();
     resources.claim(blocker, {node_resource(1)});
     const auto diverted = route_demand(graph, resources, owner, {0}, 3, params);
     require_path(diverted, {0, 2, 3}, "occupying the preferred path must divert maze to the other equal-hop path");
@@ -796,7 +810,7 @@ auto main(int argc, char** argv) -> int {
         test_resource_claim_release();
         test_resource_same_owner_branch_share();
         test_resource_cross_owner_overflow();
-        test_resource_vpr_node_cost();
+        test_resource_openroad_node_cost();
         test_resource_mode_conflict();
         test_resource_partial_matching();
         test_resource_hline_vline_node_exclusive();
