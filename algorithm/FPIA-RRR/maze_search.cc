@@ -1,7 +1,6 @@
 #include "maze_search.hh"
 
 #include <algorithm>
-#include <cmath>
 #include <format>
 #include <limits>
 #include <queue>
@@ -106,37 +105,6 @@ auto predicted_owner_count(
     return resources.holds(owner, key) ? count : count + 1;
 }
 
-auto logistic_p(int u, const RrrParams& params) -> double {
-    const int cap = 1;
-    const double logistic =
-        static_cast<double>(params.H) / (std::exp(params.k * static_cast<double>(cap - u)) + 1.0);
-    double over = 0;
-    if (u > cap) {
-        over = static_cast<double>(params.H) / static_cast<double>(params.s) * static_cast<double>(u - cap);
-    }
-    return 1.0 + logistic + over;
-}
-
-auto key_is_free(
-    const UnifiedGraph& graph,
-    const ResourceModel& resources,
-    OwnerId owner,
-    const ResourceKey& key,
-    int from_node,
-    const StartMembership& starts
-) -> bool {
-    if (is_mux_port_key(key)) {
-        return owner_holds_key(resources, owner, key);
-    }
-    if (owner_holds_key(resources, owner, key)) {
-        return true;
-    }
-    if (key.kind == ResourceKind::Node && (key.id == from_node || starts.contains(graph, key.id))) {
-        return true;
-    }
-    return false;
-}
-
 auto opposite_mode_key(const ResourceKey& mode_key) -> ResourceKey {
     if (mode_key.kind == ResourceKind::ModeStraight) {
         return mode_swap_key(mode_key.id);
@@ -158,49 +126,14 @@ auto would_introduce_opposite_mode(
     return resources.has_any_owner(opposite_mode_key(mode_key));
 }
 
-auto key_incremental_cost(
-    const ResourceModel& resources,
-    OwnerId owner,
-    const ResourceKey& key,
-    const RrrParams& params
-) -> double {
-    const int u = predicted_owner_count(resources, owner, key);
-    const double present = static_cast<double>(resources.type_weight(key)) * logistic_p(u, params);
-    return present + params.history_weight * resources.history(key);
-}
-
 auto arc_cost(
-    const UnifiedGraph& graph,
-    const ResourceModel& resources,
-    OwnerId owner,
-    const UnifiedArc& arc,
-    const StartMembership& starts,
-    const RrrParams& params,
-    int row_min,
-    int row_max,
-    int col_min,
-    int col_max,
-    bool has_bbox
+    const UnifiedGraph& graph, const ResourceModel& resources, OwnerId owner,
+    const UnifiedArc& arc, const StartMembership& starts
 ) -> double {
-    double cost = 1.0;
-    for (const auto& key : arc_keys(graph, arc)) {
-        if (key_is_free(graph, resources, owner, key, arc.u, starts)) {
-            continue;
-        }
-        cost += key_incremental_cost(resources, owner, key, params);
-        if (would_introduce_opposite_mode(resources, owner, key)) {
-            const auto conflict = mode_conflict_key(key.id);
-            cost += key_incremental_cost(resources, owner, conflict, params);
-        }
-    }
-    if (params.detour_bias != 0 && has_bbox && node_kind(graph, arc.v) == UnifiedNodeKind::Track) {
-        const auto& dest = graph.nodes[static_cast<std::size_t>(arc.v)];
-        if (dest.track_row < row_min || dest.track_row > row_max || dest.track_col < col_min
-            || dest.track_col > col_max) {
-            cost += params.detour_bias;
-        }
-    }
-    return cost;
+    // VPR congestion cost: destination graph node only, base=1, c=0, B=0.
+    // Reused tree nodes do not consume another unit of this owner's capacity.
+    if (starts.contains(graph, arc.v)) return 0;
+    return resources.node_cost(owner, arc.v);
 }
 
 auto find_out_arc(const UnifiedGraph& graph, int u, int v) -> int {
@@ -372,7 +305,7 @@ auto arc_incremental_cost(
     const RrrParams& params
 ) -> double {
     const auto start_membership = StartMembership {.explicit_starts = &starts};
-    return arc_cost(graph, resources, owner, arc, start_membership, params, 0, 0, 0, 0, false);
+    return arc_cost(graph, resources, owner, arc, start_membership);
 }
 
 auto route_demand(
@@ -426,32 +359,6 @@ auto route_demand_from_tree(
         throw std::runtime_error(
             std::format("maze: sink {} unreachable from given sources", sink));
     }
-
-    int row_min = std::numeric_limits<int>::max();
-    int row_max = std::numeric_limits<int>::min();
-    int col_min = std::numeric_limits<int>::max();
-    int col_max = std::numeric_limits<int>::min();
-    bool has_bbox = false;
-    auto consider_bbox = [&](int node_id) {
-        if (node_kind(graph, node_id) != UnifiedNodeKind::Track) {
-            return;
-        }
-        const auto& node = graph.nodes[static_cast<std::size_t>(node_id)];
-        has_bbox = true;
-        row_min = std::min(row_min, node.track_row);
-        row_max = std::max(row_max, node.track_row);
-        col_min = std::min(col_min, node.track_col);
-        col_max = std::max(col_max, node.track_col);
-    };
-    for (const int node : ordered_sources) {
-        consider_bbox(node);
-    }
-    for (const int node : tree) {
-        if (valid_node(graph, node) && node_kind(graph, node) == UnifiedNodeKind::Track) {
-            consider_bbox(node);
-        }
-    }
-    consider_bbox(sink);
 
     const int initial_unit = is_bnet ? resources.selected_unit(owner) : -1;
     const auto start_membership = StartMembership {.sources = &ordered_sources, .tree = &tree};
@@ -508,32 +415,6 @@ auto route_demand_from_tree(
                 continue;
             }
             if (node_kind(graph, arc.v) == UnifiedNodeKind::Bump && arc.v != sink) continue;
-            if (params.length_only) {
-                // A legal two-pin path uses TOB access only at its endpoints;
-                // a VLine-HLine-VLine transit would short two mux inputs.
-                const auto ku = node_kind(graph, arc.u), kv = node_kind(graph, arc.v);
-                if (ku == UnifiedNodeKind::Bump && kv == UnifiedNodeKind::HLine &&
-                    params.shortest_source_hline >= 0 && arc.v != params.shortest_source_hline) continue;
-                const bool source_access = (!is_bnet || item.unit < 0) && std::ranges::any_of(ordered_sources, [&](int n) {
-                    return node_kind(graph, n) == UnifiedNodeKind::Bump &&
-                        graph.nodes[n].bump.TOB == graph.nodes[arc.u].tob;
-                });
-                const bool sink_access = (!is_bnet || item.unit >= 0) && node_kind(graph, sink) == UnifiedNodeKind::Bump &&
-                    graph.nodes[sink].bump.TOB == graph.nodes[arc.v].tob;
-                if ((ku == UnifiedNodeKind::HLine && kv == UnifiedNodeKind::VLine && !source_access) ||
-                    (ku == UnifiedNodeKind::VLine && kv == UnifiedNodeKind::HLine && !sink_access) ||
-                    (ku == UnifiedNodeKind::Track && kv == UnifiedNodeKind::VLine && !sink_access) ||
-                    (ku == UnifiedNodeKind::VLine && kv == UnifiedNodeKind::Track && !source_access)) continue;
-                if (kv == UnifiedNodeKind::Bump && is_bnet && item.unit < 0) continue;
-                if (arc.physical_switch_id >= 0) {
-                    auto path = reconstruct_path(scratch, state);
-                    if (std::find(path.begin(), path.end(), arc.v) != path.end()) continue;
-                    path.push_back(arc.v);
-                    auto own = ResourceModel{};
-                    own.claim(owner, path_resource_keys(graph, path, is_bnet));
-                    if (own.overflow() != 0) continue;
-                }
-            }
             if (arc_is_hard_blocked(graph, resources, owner, arc, hard_block)) {
                 continue;
             }
@@ -551,20 +432,12 @@ auto route_demand_from_tree(
                 next_unit = locked >= 0 ? locked : unit;
             }
 
-            const double step = params.length_only
-                ? (node_kind(graph, arc.v) == UnifiedNodeKind::Track ? 1.0 : 0.0)
-                : arc_cost(
+            const double step = arc_cost(
                 graph,
                 resources,
                 owner,
                 arc,
-                start_membership,
-                params,
-                row_min,
-                row_max,
-                col_min,
-                col_max,
-                has_bbox);
+                start_membership);
             const double next_cost = item.cost + step;
             const auto next = state_id(arc.v, next_unit);
             if (!scratch.has_distance(next) || next_cost < scratch.dist[next]) {

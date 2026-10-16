@@ -20,7 +20,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: ./output/FPIA_RRR <config_path> [-v|-vv] [-o DIR] [--max-iterations N] [--seed N] [--time-budget-seconds S]";
+    "Usage: ./output/FPIA_RRR <config_path> [-v|-vv] [-o DIR] [--seed N] [--time-budget-seconds S]";
 
 } // namespace
 
@@ -59,7 +59,6 @@ auto run_main(int argc, char** argv) -> int {
     const auto graph = build_hardware_graph(interposer.get(), nets);
 
     auto params = RrrParams {};
-    params.max_iterations = cli.max_iterations;
     params.seed = cli.seed;
     params.time_budget_seconds = cli.time_budget_seconds;
     params.budget_start = begin;

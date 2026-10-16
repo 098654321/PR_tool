@@ -25,6 +25,10 @@ public:
     auto owners_of(const ResourceKey& key) const -> std::Vector<OwnerId>;
     auto history(const ResourceKey& key) const -> double;
     auto history_next() -> void;
+    auto advance_present() -> void;
+    auto reset_present() -> void;
+    auto present_factor() const -> double { return _pres_fac; }
+    auto node_cost(OwnerId owner, int node_id) const -> double;
     auto type_weight(const ResourceKey& key) const -> int;
     auto selected_unit(OwnerId owner) const -> int;
     auto params() const -> const RrrParams&;
@@ -42,6 +46,7 @@ private:
     auto refresh_selected_unit(OwnerId owner) -> void;
 
     RrrParams _params {};
+    double _pres_fac{0};
     std::Map<ResourceKey, std::Map<OwnerId, int>> _refs;
     std::Map<OwnerId, std::Map<ResourceKey, int>> _owner_refs;
     std::Map<ResourceKey, std::Map<int, int>> _mux_port_peer_refs;

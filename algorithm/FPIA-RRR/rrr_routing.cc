@@ -47,55 +47,6 @@ auto owner_paths_valid(const UnifiedGraph& graph, const OwnerRecord& owner) -> b
     return true;
 }
 
-auto initialize_sync_targets(const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
-                             std::Vector<OwnerRecord>& owners, RrrParams params,
-                             hardware::Interposer* interposer) -> void {
-    params.length_only = true;
-    params.hard_capacity = false;
-    const auto empty = ResourceModel{};
-    for (std::size_t ni = 0; ni < nets.size(); ++ni) {
-        if (!nets[ni].is_sync_bus) continue;
-        std::size_t target = 0;
-        for (const auto index : group_owner_indices(owners, ni)) {
-            const auto& owner = owners[index];
-            const auto& demand = nets[ni].demands[owner.demand_indices.front()];
-            const auto sources = demand_source_nodes(graph, nets[ni], demand);
-            const int sink = resolve_graph_node(graph, demand.sink);
-            auto accesses = std::Vector<int>{-1};
-            if (owner.is_bnet && !sources.empty() &&
-                graph.nodes[sources.front()].bump.TOB == graph.nodes[sink].bump.TOB) {
-                // Keep distinct source accesses as separate searches; collapsing
-                // them would hide a legal return through another HLine.
-                accesses.clear();
-                for (int aid : graph.out_arc_ids[sources.front()])
-                    if (graph.nodes[graph.arcs[aid].v].kind == UnifiedNodeKind::HLine)
-                        accesses.push_back(graph.arcs[aid].v);
-            }
-            auto path = std::Vector<int>{};
-            for (const int access : accesses) {
-                params.shortest_source_hline = access;
-                try {
-                    auto attempt = route_demand(graph, empty, owner.id, sources, sink,
-                        params, {}, owner.is_bnet, interposer);
-                    auto candidate = owner; candidate.demand_paths = {attempt};
-                    if (owner_paths_valid(graph, candidate) && (path.empty() ||
-                        sync_lane_length(graph, attempt, interposer, owner.is_bnet) <
-                        sync_lane_length(graph, path, interposer, owner.is_bnet))) path = std::move(attempt);
-                } catch (const std::runtime_error& error) {
-                    if (!std::string_view(error.what()).starts_with("maze:")) throw;
-                }
-            }
-            params.shortest_source_hline = -1;
-            if (path.empty()) throw std::runtime_error("maze: no legal independent SyncNet shortest path");
-            const auto length = sync_lane_length(graph, path, interposer, owner.is_bnet);
-            target = std::max(target, length);
-            debug::info_fmt("FPIA RRR: sync shortest net_id={} demand={} N_i={}", ni, owner.id.demand_id, length);
-        }
-        for (const auto index : group_owner_indices(owners, ni)) owners[index].sync_target = target;
-        debug::info_fmt("FPIA RRR: sync initial target net_id={} name={} target={}", ni, nets[ni].name, target);
-    }
-}
-
 auto ref_row_col(const GraphNodeRef& ref) -> std::pair<int, int> {
     if (ref.kind == GraphNodeRef::Kind::Track) {
         return {
@@ -144,54 +95,6 @@ auto member_terminals(const RoutingNet& net, const RoutingDemand& demand) -> std
     }
     refs.push_back(demand.sink);
     return refs;
-}
-
-auto owner_exposure(const OwnerRecord& owner, const ResourceModel& resources) -> int {
-    int exposure = 0;
-    for (const auto& key : owner.claimed) {
-        exposure += resources.overflow(key);
-        if (key.kind == ResourceKind::ModeStraight || key.kind == ResourceKind::ModeSwap) {
-            exposure += resources.overflow(mode_conflict_key(key.id));
-        }
-    }
-    return exposure;
-}
-
-auto owner_is_dirty(const OwnerRecord& owner, const ResourceModel& resources) -> bool {
-    int unit_keys = 0;
-    for (const auto& key : owner.claimed) {
-        if (resources.overflow(key) > 0) {
-            return true;
-        }
-        if (key.kind == ResourceKind::ModeStraight || key.kind == ResourceKind::ModeSwap) {
-            if (resources.overflow(mode_conflict_key(key.id)) > 0) {
-                return true;
-            }
-        }
-        if (key.kind == ResourceKind::BnetUnit) {
-            ++unit_keys;
-        }
-    }
-    return unit_keys > 1;
-}
-
-auto max_resource_overflow(const std::Vector<OwnerRecord>& owners, const ResourceModel& resources)
-    -> int {
-    int max_ov = 0;
-    for (const auto& owner : owners) {
-        int unit_keys = 0;
-        for (const auto& key : owner.claimed) {
-            max_ov = std::max(max_ov, resources.overflow(key));
-            if (key.kind == ResourceKind::ModeStraight || key.kind == ResourceKind::ModeSwap) {
-                max_ov = std::max(max_ov, resources.overflow(mode_conflict_key(key.id)));
-            }
-            if (key.kind == ResourceKind::BnetUnit) {
-                ++unit_keys;
-            }
-        }
-        max_ov = std::max(max_ov, std::max(0, unit_keys - 1));
-    }
-    return max_ov;
 }
 
 auto collect_paths_by_net(
@@ -326,20 +229,11 @@ auto initial_type_order(
         }
         return net.demands.size() > 1 ? 1 : 3;
     };
-    // Keep the old ordering within each type; optimization still uses initial_order.
+    // Synthetic-only seam: preserve within-type order; production uses source Sort.
     std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
         return priority(a) < priority(b);
     });
     return order;
-}
-
-auto find_owner_index(const std::Vector<OwnerRecord>& owners, OwnerId id) -> std::size_t {
-    for (std::size_t i = 0; i < owners.size(); ++i) {
-        if (owners[i].id == id) {
-            return i;
-        }
-    }
-    return owners.size();
 }
 
 auto add_tree_node(OwnerRecord& owner, const UnifiedGraph& graph, int node) -> void {
@@ -357,57 +251,6 @@ auto rip_owner(OwnerRecord& owner, ResourceModel& resources) -> void {
     owner.tree.clear();
     for (auto& path : owner.demand_paths) {
         path.clear();
-    }
-    owner.retry += 1;
-}
-
-auto route_owner(
-    OwnerRecord& owner,
-    const UnifiedGraph& graph,
-    const std::Vector<RoutingNet>& nets,
-    ResourceModel& resources,
-    RrrParams& params,
-    hardware::Interposer* interposer
-) -> void {
-    const auto& net = nets[owner.net_index];
-    owner.claimed.clear();
-    owner.tree.clear();
-    for (auto& path : owner.demand_paths) {
-        path.clear();
-    }
-
-    for (std::size_t i = 0; i < owner.demand_indices.size(); ++i) {
-        const std::size_t demand_id = owner.demand_indices[i];
-        if (demand_id >= net.demands.size()) {
-            throw std::runtime_error(
-                std::format("RRR: demand {} missing on net {}", demand_id, net.net_id));
-        }
-        const auto& demand = net.demands[demand_id];
-        const auto sources = demand_source_nodes(graph, net, demand);
-        const int sink = resolve_graph_node(graph, demand.sink);
-        auto path = route_demand_from_tree(
-            graph,
-            resources,
-            owner.id,
-            sources,
-            sink,
-            params,
-            owner.tree,
-            owner.is_bnet,
-            interposer);
-        if (path.empty() || path.back() != sink) {
-            throw std::runtime_error(
-                std::format("maze: sink {} unreachable from given sources", sink));
-        }
-        const auto keys = path_resource_keys(graph, path, owner.is_bnet);
-        resources.claim(owner.id, keys);
-        for (const auto& key : keys) {
-            owner.claimed.insert(key);
-        }
-        for (const int node : path) {
-            add_tree_node(owner, graph, node);
-        }
-        owner.demand_paths[i] = std::move(path);
     }
 }
 
@@ -650,35 +493,6 @@ auto unequal_sync_owner_ids(
     return ids;
 }
 
-auto save_best_if_improved(
-    BestSnapshot& best,
-    int overflow,
-    const SyncViolation& sync,
-    std::size_t wirelength,
-    const ResourceModel& resources,
-    const std::Vector<OwnerRecord>& owners
-) -> bool {
-    if (best.valid && !rrr_is_better(
-            overflow,
-            sync.unequal_groups,
-            sync.total_gap,
-            wirelength,
-            best.overflow,
-            best.unequal_sync_groups,
-            best.sync_gap,
-            best.wirelength)) {
-        return false;
-    }
-    best.valid = true;
-    best.overflow = overflow;
-    best.unequal_sync_groups = sync.unequal_groups;
-    best.sync_gap = sync.total_gap;
-    best.wirelength = wirelength;
-    best.resources = resources;
-    best.owners = owners;
-    return true;
-}
-
 auto routing_kind_name(const RoutingNet& net) -> std::String {
     if (net.is_sync_bus) {
         return net.kind == RoutingNetKind::Bnet ? "SyncNet-Bnet" : "SyncNet-Tnet";
@@ -828,31 +642,6 @@ auto dump_overflows(
             }
         }
     }
-}
-
-auto all_demands_connected(
-    const std::Vector<RoutingNet>& nets,
-    const std::Vector<OwnerRecord>& owners
-) -> bool {
-    auto seen = std::Vector<std::size_t> {};
-    seen.resize(nets.size(), 0);
-    for (const auto& owner : owners) {
-        if (owner.net_index >= nets.size()) {
-            return false;
-        }
-        for (const auto& path : owner.demand_paths) {
-            if (path.empty()) {
-                return false;
-            }
-            seen[owner.net_index] += 1;
-        }
-    }
-    for (std::size_t i = 0; i < nets.size(); ++i) {
-        if (seen[i] != nets[i].demands.size()) {
-            return false;
-        }
-    }
-    return true;
 }
 
 } // namespace PR_tool::rrr_detail

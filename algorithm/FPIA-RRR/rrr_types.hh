@@ -11,13 +11,10 @@
 
 namespace PR_tool {
 
-inline constexpr int kRrrDefaultMaxIterations = 1000000000;
-
 struct RrrCliOptions {
     std::String config_path;
     std::String output_dir{"."};
     int verbose_level{0};
-    int max_iterations{kRrrDefaultMaxIterations};
     double time_budget_seconds{0};
     int seed{1};
 };
@@ -25,8 +22,9 @@ struct RrrCliOptions {
 struct RrrResult {
     std::String status;
     std::String stop_reason;
-    int iterations{0};
-    int optimization_rounds{0};
+    std::i64 iterations{0};
+    std::i64 optimization_rounds{0};
+    std::i64 convergences{0};
     int missing_owners{0};
     int best_overflow{0};
     int unequal_sync_groups{0};
@@ -126,25 +124,18 @@ inline auto is_physical_occupancy_key(const ResourceKey& key) -> bool {
 }
 
 struct RrrParams {
-    int H{4};
-    double k{1.0};
-    int s{20};
-    double decay{0.9};
-    double increment{1};
-    double history_weight{1};
-    double detour_bias{0};
-    int max_iterations{kRrrDefaultMaxIterations};
+    double first_iter_pres_fac{0};
+    double initial_pres_fac{0.5};
+    double pres_fac_mult{1.3};
+    double max_pres_fac{1000};
+    double acc_fac{1};
     double time_budget_seconds{0};
     std::chrono::steady_clock::time_point budget_start{};
-    int stagnation_limit{8};
     int sync_tail_extra_tracks{64};
     int seed{1};
     std::Vector<double> r_sequence{0.5, 0.75, 1.0};
-    // Internal search policies, never CLI knobs. Normal RRR keeps both false.
+    // Internal low-level maze policy, never a CLI knob.
     bool hard_capacity{false};
-    bool length_only{false};
-    int shortest_source_hline{-1};
-    int variant{0};
 };
 
 struct Bump_coord {

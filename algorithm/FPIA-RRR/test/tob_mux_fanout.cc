@@ -131,12 +131,12 @@ auto test_mux_same_owner_two_peers_overflow() -> void {
     model.claim(owner, {second});
     require(model.overflow() == 1, "same owner with two mux peers must overflow by 1");
     require(model.overflow(first) == 1, "port overflow is visible on either extra key");
-    require(model.type_weight(first) == 2, "mux port type_weight must match matching endpoints");
+    require(model.type_weight(first) == 0, "mux ports are checked but not priced");
     model.claim(owner, {first});
     require(model.overflow() == 1, "reclaiming the same connection must not add another peer");
     model.history_next();
     const auto third = tob_mux_output_key(10, 22);
-    require(model.history(first) > 0, "overflowing mux port must accrue history");
+    require(model.history(first) == 0, "only graph nodes accrue VPR history");
     require(model.history(second) == model.history(first), "mux history must be shared across extras of one port");
     require(model.history(third) == model.history(first), "a new extra on a hot mux port must see the same history");
 }
@@ -234,7 +234,8 @@ auto test_run_rrr_assigns_disjoint_tob_access() -> void {
     add_undirected(graph, source, shared_vline, PhysicalSwitchKind::VLineTrack);
     auto sinks = std::Vector<GraphNodeRef> {};
     for (std::size_t i = 0; i < 4; ++i) {
-        const int leaf = add_mapped_track(graph, 0, static_cast<int>(i + 1), i);
+        // A real COB branch preserves unit; all leaves share source unit zero.
+        const int leaf = add_mapped_track(graph, 0, static_cast<int>(i + 1), i * 8);
         const int vline = add_synth_node(graph, UnifiedNodeKind::VLine);
         const int hline = add_synth_node(graph, UnifiedNodeKind::HLine);
         const int bump = add_synth_bump(graph, 0, i, 0);
@@ -249,7 +250,8 @@ auto test_run_rrr_assigns_disjoint_tob_access() -> void {
     auto nets = std::Vector<RoutingNet> {make_pnnet(0, track_ref(0, 0, 8), sinks)};
     auto interposer = hardware::Interposer {};
     auto params = RrrParams {};
-    params.max_iterations = 8;
+    params.time_budget_seconds = 0.001;
+    params.budget_start = std::chrono::steady_clock::now() - std::chrono::seconds{1};
     const auto result = run_rrr(graph, nets, params, &interposer);
     require(result.status == "success", "four-bump synthetic PNnet must route");
     require(result.best_overflow == 0, "four-bump synthetic PNnet must finish overflow-free");

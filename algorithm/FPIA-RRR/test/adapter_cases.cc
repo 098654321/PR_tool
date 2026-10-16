@@ -61,25 +61,9 @@ auto test_cli_output_dir_option() -> void {
     require_invalid({"test/config/case1", "-o", "-v"}, "CLI must reject -o values that look like flags");
 }
 
-auto test_cli_max_iterations_option() -> void {
-    const auto parsed = parse_rrr_cli({"test/config/case1", "--max-iterations", "8"});
-    require(parsed.max_iterations == 8, "CLI must parse --max-iterations");
-
-    const auto defaults = parse_rrr_cli({"test/config/case1"});
-    require(defaults.max_iterations == kRrrDefaultMaxIterations, "missing --max-iterations must keep large safety cap");
-
-    const auto zero = parse_rrr_cli({"test/config/case1", "--max-iterations", "0"});
-    require(zero.max_iterations == 0, "CLI must accept --max-iterations 0");
-
-    require_invalid(
-        {"test/config/case1", "--max-iterations"},
-        "missing --max-iterations value must fail");
-    require_invalid(
-        {"test/config/case1", "--max-iterations", "-1"},
-        "negative --max-iterations must fail");
-    require_invalid(
-        {"test/config/case1", "--max-iterations", "x"},
-        "non-integer --max-iterations must fail");
+auto test_cli_removed_iteration_limit() -> void {
+    require_invalid({"test/config/case1", "--max-iterations", "8"},
+                    "AIR CLI must not expose an iteration limit");
 }
 
 auto test_cli_seed_option() -> void {
@@ -105,7 +89,7 @@ auto test_cli_verbose_options() -> void {
         "-vv",
         "-o",
         "/tmp/fpia_rrr_t1",
-        "--max-iterations",
+        "--time-budget-seconds",
         "16",
         "--seed",
         "3"});
@@ -114,7 +98,7 @@ auto test_cli_verbose_options() -> void {
         "CLI must preserve config path with combined options");
     require(combined.verbose_level == 2, "CLI must preserve -vv with other options");
     require(combined.output_dir == "/tmp/fpia_rrr_t1", "CLI must parse -o with other options");
-    require(combined.max_iterations == 16, "CLI must parse --max-iterations with other options");
+    require(combined.time_budget_seconds == 16, "CLI must parse time budget with other options");
     require(combined.seed == 3, "CLI must parse --seed with other options");
 
     require_invalid({"test/config/case1", "--unknown"}, "unknown arguments must fail");
@@ -396,7 +380,7 @@ auto test_total_wirelength_sums_per_net_unique() -> void {
 auto run_rrr_adapter_unit_tests() -> void {
     test_cli_missing_args_fail();
     test_cli_output_dir_option();
-    test_cli_max_iterations_option();
+    test_cli_removed_iteration_limit();
     test_cli_seed_option();
     test_cli_verbose_options();
     test_case_2btb_bnets();

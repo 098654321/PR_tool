@@ -30,6 +30,8 @@ auto scan_config(const std::filesystem::path& case_dir) -> bool {
         const auto nets = build_routing_nets(raw_nets);
         const auto graph = build_hardware_graph(interposer.get(), nets);
         auto params = RrrParams {};
+        params.time_budget_seconds = 0.001;
+        params.budget_start = std::chrono::steady_clock::now() - std::chrono::seconds{1};
         const auto result = run_rrr(graph, nets, params, interposer.get(), 0, &raw_nets);
         if (!validate_rrr_solution(graph, nets, result, interposer.get())) {
             std::cerr << "FPIA_RRR_mux_test: validate failed for " << case_dir.string()

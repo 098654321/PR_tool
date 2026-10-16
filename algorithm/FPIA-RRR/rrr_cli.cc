@@ -38,14 +38,6 @@ auto parse_rrr_cli(std::span<std::string_view> args) -> RrrCliOptions {
             options.output_dir = args[i];
             continue;
         }
-        if (arg == "--max-iterations") {
-            if (++i >= args.size()) {
-                throw std::invalid_argument(
-                    "--max-iterations requires a non-negative integer argument");
-            }
-            options.max_iterations = parse_non_negative_int(args[i], "--max-iterations");
-            continue;
-        }
         if (arg == "--seed") {
             if (++i >= args.size()) {
                 throw std::invalid_argument("--seed requires a non-negative integer argument");

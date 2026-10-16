@@ -18,7 +18,8 @@ auto mux_port_key(const ResourceKey& key) -> ResourceKey {
 
 } // namespace
 
-ResourceModel::ResourceModel(RrrParams params) : _params {std::move(params)} {}
+ResourceModel::ResourceModel(RrrParams params)
+    : _params {std::move(params)}, _pres_fac{_params.first_iter_pres_fac} {}
 
 auto ResourceModel::is_capacity_key(const ResourceKey& key) const -> bool {
     return key.kind == ResourceKind::Node
@@ -329,56 +330,40 @@ auto ResourceModel::owners_of(const ResourceKey& key) const -> std::Vector<Owner
 }
 
 auto ResourceModel::history(const ResourceKey& key) const -> double {
-    const auto stored = is_mux_port_key(key) ? mux_port_key(key) : key;
-    const auto it = _history.find(stored);
-    if (it == _history.end()) {
-        return 0;
-    }
-    return it->second;
+    if (key.kind != ResourceKind::Node) return 0;
+    const auto it = _history.find(key);
+    return it == _history.end() ? 1.0 : it->second;
 }
 
 auto ResourceModel::history_next() -> void {
     auto keys = std::Set<ResourceKey> {};
     for (const auto& [key, _] : _refs) {
-        if (is_mux_port_key(key)) {
-            keys.insert(mux_port_key(key));
-        } else {
-            keys.insert(key);
-        }
-        if (key.kind == ResourceKind::ModeStraight || key.kind == ResourceKind::ModeSwap) {
-            keys.insert(mode_conflict_key(key.id));
-        }
+        if (key.kind == ResourceKind::Node) keys.insert(key);
     }
     for (const auto& [key, _] : _history) {
         keys.insert(key);
     }
     for (const auto& key : keys) {
-        if (key.kind == ResourceKind::ModeStraight || key.kind == ResourceKind::ModeSwap) {
-            continue;
-        }
-        if (is_mux_port_key(key) && key.extra != -1) {
-            continue;
-        }
-        const auto stored = is_mux_port_key(key) ? mux_port_key(key) : key;
-        _history[stored] =
-            _params.decay * history(stored) + _params.increment * static_cast<double>(overflow(stored));
+        _history[key] = history(key) + _params.acc_fac * overflow(key);
     }
 }
 
+auto ResourceModel::reset_present() -> void { _pres_fac = _params.first_iter_pres_fac; }
+
+auto ResourceModel::advance_present() -> void {
+    _pres_fac = std::min(_params.max_pres_fac, _pres_fac == _params.first_iter_pres_fac
+        ? _params.initial_pres_fac : _pres_fac * _params.pres_fac_mult);
+}
+
+auto ResourceModel::node_cost(OwnerId owner, int node_id) const -> double {
+    const auto key = node_resource(node_id);
+    if (holds(owner, key)) return 0;
+    const int predicted = occupancy_count(key) + 1;
+    return history(key) * (1.0 + _pres_fac * std::max(0, predicted - 1));
+}
+
 auto ResourceModel::type_weight(const ResourceKey& key) const -> int {
-    switch (key.kind) {
-    case ResourceKind::Node:
-        return 1;
-    case ResourceKind::PhysicalSwitch:
-    case ResourceKind::MatchingEndpoint:
-    case ResourceKind::TobMuxInput:
-    case ResourceKind::TobMuxOutput:
-        return 2;
-    case ResourceKind::ModeConflict:
-        return 8;
-    default:
-        return 0;
-    }
+    return key.kind == ResourceKind::Node ? 1 : 0;
 }
 
 auto ResourceModel::selected_unit(OwnerId owner) const -> int {

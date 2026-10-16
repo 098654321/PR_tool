@@ -18,21 +18,10 @@ struct OwnerRecord {
     int group_hpwl{0};
     int port_count{0};
     int lane_count{0};
-    int retry{0};
     std::size_t sync_target{0};
     std::Vector<std::Vector<int>> demand_paths;
     std::Set<int> tree;
     std::Set<ResourceKey> claimed;
-};
-
-struct BestSnapshot {
-    bool valid{false};
-    int overflow{std::numeric_limits<int>::max()};
-    int unequal_sync_groups{std::numeric_limits<int>::max()};
-    std::size_t sync_gap{std::numeric_limits<std::size_t>::max()};
-    std::size_t wirelength{std::numeric_limits<std::size_t>::max()};
-    ResourceModel resources;
-    std::Vector<OwnerRecord> owners;
 };
 
 struct SyncViolation {
@@ -47,13 +36,6 @@ auto hpwl_of_refs(const std::Vector<GraphNodeRef>& refs) -> int;
 auto net_terminals(const RoutingNet& net) -> std::Vector<GraphNodeRef>;
 
 auto member_terminals(const RoutingNet& net, const RoutingDemand& demand) -> std::Vector<GraphNodeRef>;
-
-auto owner_exposure(const OwnerRecord& owner, const ResourceModel& resources) -> int;
-
-auto owner_is_dirty(const OwnerRecord& owner, const ResourceModel& resources) -> bool;
-
-auto max_resource_overflow(const std::Vector<OwnerRecord>& owners, const ResourceModel& resources)
-    -> int;
 
 auto collect_paths_by_net(
     const std::Vector<RoutingNet>& nets,
@@ -74,10 +56,6 @@ auto demand_source_nodes(
 
 auto build_owners(const std::Vector<RoutingNet>& nets) -> std::Vector<OwnerRecord>;
 
-auto initialize_sync_targets(const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
-                             std::Vector<OwnerRecord>& owners, RrrParams params,
-                             hardware::Interposer* interposer) -> void;
-
 auto owner_paths_valid(const UnifiedGraph& graph, const OwnerRecord& owner) -> bool;
 
 auto initial_order(const std::Vector<OwnerRecord>& owners) -> std::Vector<std::size_t>;
@@ -87,20 +65,9 @@ auto initial_type_order(
     const std::Vector<RoutingNet>& nets
 ) -> std::Vector<std::size_t>;
 
-auto find_owner_index(const std::Vector<OwnerRecord>& owners, OwnerId id) -> std::size_t;
-
 auto add_tree_node(OwnerRecord& owner, const UnifiedGraph& graph, int node) -> void;
 
 auto rip_owner(OwnerRecord& owner, ResourceModel& resources) -> void;
-
-auto route_owner(
-    OwnerRecord& owner,
-    const UnifiedGraph& graph,
-    const std::Vector<RoutingNet>& nets,
-    ResourceModel& resources,
-    RrrParams& params,
-    hardware::Interposer* interposer
-) -> void;
 
 auto group_owner_indices(const std::Vector<OwnerRecord>& owners, std::size_t net_index)
     -> std::Vector<std::size_t>;
@@ -137,15 +104,6 @@ auto unequal_sync_owner_ids(
     hardware::Interposer* interposer
 ) -> std::Vector<OwnerId>;
 
-auto save_best_if_improved(
-    BestSnapshot& best,
-    int overflow,
-    const SyncViolation& sync,
-    std::size_t wirelength,
-    const ResourceModel& resources,
-    const std::Vector<OwnerRecord>& owners
-) -> bool;
-
 auto routing_kind_name(const RoutingNet& net) -> std::String;
 
 auto format_node_ref(const UnifiedGraph& graph, const GraphNodeRef& ref) -> std::String;
@@ -168,10 +126,5 @@ auto dump_overflows(
     const std::Vector<RoutingNet>& nets,
     const ResourceModel& resources
 ) -> void;
-
-auto all_demands_connected(
-    const std::Vector<RoutingNet>& nets,
-    const std::Vector<OwnerRecord>& owners
-) -> bool;
 
 } // namespace PR_tool::rrr_detail

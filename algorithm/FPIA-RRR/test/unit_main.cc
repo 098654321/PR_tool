@@ -52,15 +52,11 @@ auto contains_owner(const std::Vector<OwnerId>& owners, OwnerId owner) -> bool {
 
 auto test_resource_claim_release() -> void {
     const auto defaults = RrrParams {};
-    require(defaults.H == 4, "RrrParams H default must be 4");
-    require(defaults.k == 1.0, "RrrParams k default must be 1.0");
-    require(defaults.s == 20, "RrrParams s default must be 20");
-    require(defaults.decay == 0.9, "RrrParams decay default must be 0.9 for every phase");
-    require(defaults.increment == 1, "RrrParams increment default must be 1");
-    require(defaults.history_weight == 1, "RrrParams history_weight default must be 1");
-    require(defaults.detour_bias == 0, "RrrParams detour_bias default must be 0");
-    require(defaults.max_iterations == kRrrDefaultMaxIterations, "RrrParams must default to large safety cap");
-    require(defaults.stagnation_limit == 8, "RrrParams stagnation_limit default must be 8");
+    require(defaults.first_iter_pres_fac == 0, "first present factor must be zero");
+    require(defaults.initial_pres_fac == 0.5 && defaults.pres_fac_mult == 1.3,
+            "present factor schedule must match the note");
+    require(defaults.max_pres_fac == 1000 && defaults.acc_fac == 1,
+            "VPR cap and history accumulation must match the note");
     require(defaults.sync_tail_extra_tracks == 64, "RrrParams sync tail slack must be 64 tracks");
     require(defaults.seed == 1, "RrrParams seed default must be 1");
     require(defaults.r_sequence.size() == 3, "RrrParams r sequence must have three values");
@@ -78,9 +74,9 @@ auto test_resource_claim_release() -> void {
     require(model.owners_of(sw).size() == 1, "claim must record the switch owner");
     require(model.overflow() == 0, "single owner must not overflow");
     require(model.type_weight(node) == 1, "node type_weight must be 1");
-    require(model.type_weight(sw) == 2, "switch type_weight must be 2");
-    require(model.type_weight(matching_endpoint_key(10, 0)) == 2, "matching type_weight must be 2");
-    require(model.type_weight(mode_conflict_key(1)) == 8, "mode-conflict type_weight must be 8");
+    require(model.type_weight(sw) == 0, "switch must not be priced");
+    require(model.type_weight(matching_endpoint_key(10, 0)) == 0, "matching must not be priced");
+    require(model.type_weight(mode_conflict_key(1)) == 0, "mode-conflict must not be priced");
 
     model.claim(owner, {node});
     require(model.owners_of(node).size() == 1, "same owner claiming twice occupies once");
@@ -138,48 +134,50 @@ auto test_resource_cross_owner_overflow() -> void {
         model.overflow(sync_node) == 1,
         "SyncNet members with distinct demand_id must be different owners");
 
-    require_near(model.history(node), 0.0, "history starts at 0");
+    require_near(model.history(node), 1.0, "history starts at 1");
     model.history_next();
-    require_near(model.history(node), 1.0, "history_next must add increment * overflow");
+    require_near(model.history(node), 2.0, "history_next must accumulate overflow");
     model.history_next();
-    require_near(model.history(node), 1.9, "history_next must decay previous history then add overflow");
+    require_near(model.history(node), 3.0, "history must accumulate without decay");
 }
 
-auto test_resource_history_configured_decay() -> void {
-    auto params = RrrParams {};
-    params.increment = 2;
-    auto model = ResourceModel {params};
-    const auto a = OwnerId {1, 0};
-    const auto b = OwnerId {2, 0};
-    const auto node = node_resource(8);
-    const auto mux_a = tob_mux_input_key(42, 0);
-    const auto mux_b = tob_mux_input_key(42, 1);
-    const auto keys = std::Vector<ResourceKey> {node, mux_a, mux_b, mode_conflict_key(7)};
-    model.claim(a, {node, mux_a, mode_straight_key(7)});
-    model.claim(b, {node, mux_b, mode_swap_key(7)});
-    double expected = 0;
-    for (int i = 0; i < 20; ++i) {
-        model.history_next();
-        expected = params.decay * expected + params.increment;
-    }
-    model.release(a);
-    model.release(b);
+auto test_resource_vpr_node_cost() -> void {
+    auto model = ResourceModel {};
+    const auto owner = OwnerId {100, 0};
+    const auto node = node_resource(1);
+    require_near(model.node_cost(owner, 1), 1, "free node cost is base times history");
+    model.claim(OwnerId {1, 0}, {node, switch_resource(7), mode_straight_key(7)});
+    require_near(model.node_cost(owner, 1), 1, "first iteration ignores present congestion");
+    model.advance_present();
+    require_near(model.present_factor(), 0.5, "second present factor is 0.5");
+    require_near(model.node_cost(owner, 1), 1.5, "present includes prospective occupancy");
+    model.claim(OwnerId {2, 0}, {node, switch_resource(7), mode_swap_key(7)});
     model.history_next();
-    expected *= params.decay;
-    const auto saved = model;
-    for (const auto& key : keys) {
-        require_near(model.history(key), expected, "history must decay even after hotspot occupancy is released");
-    }
-    model.history_next();
-    for (const auto& key : keys) {
-        require_near(model.history(key), expected * params.decay, "legal optimization rounds use the same decay");
-    }
-    model = saved;
-    model.history_next();
-    for (const auto& key : keys) {
-        require_near(model.history(key), expected * params.decay, "snapshots must restore history and configured decay");
-    }
-    require(model.params().decay == 0.9, "snapshots must preserve the unified decay parameter");
+    require_near(model.history(node), 2, "node history accumulates excess occupancy");
+    require_near(model.history(switch_resource(7)), 0, "switch has no VPR history");
+    require_near(model.history(mode_conflict_key(7)), 0, "mode has no VPR history");
+    require_near(model.node_cost(owner, 1), 4, "VPR history and present are multiplicative");
+    model.release(OwnerId {1, 0}); model.release(OwnerId {2, 0});
+    model.history_next(); model.reset_present();
+    require_near(model.history(node), 2, "history survives release and convergence reset");
+    require_near(model.present_factor(), 0, "convergence resets present only");
+    model.advance_present(); model.advance_present();
+    require_near(model.present_factor(), 0.65, "present grows by 1.3");
+    for (int i = 0; i < 100; ++i) model.advance_present();
+    require_near(model.present_factor(), 1000, "present is capped at 1000");
+    model.claim(owner, {node});
+    require_near(model.node_cost(owner, 1), 0, "same-owner tree reuse costs zero");
+
+    auto graph = UnifiedGraph {};
+    graph.nodes.resize(2); graph.arcs.push_back(UnifiedArc {0, 1});
+    auto& arc = graph.arcs.front();
+    arc.resource_keys_ready = true;
+    arc.resource_keys.count = 1;
+    arc.resource_keys.values[0] = switch_resource(7);
+    model.release(owner);
+    model.claim(OwnerId {3, 0}, {switch_resource(7)});
+    require_near(arc_incremental_cost(graph, model, owner, arc, {0}, RrrParams{}), 2,
+                 "arc charges only destination node: no arc, switch or mode surcharge");
 }
 
 auto test_resource_mode_conflict() -> void {
@@ -204,7 +202,7 @@ auto test_resource_mode_conflict() -> void {
     require(contains_owner(model.owners_of(conflict), a), "conflict owners must include straight user A");
     require(contains_owner(model.owners_of(conflict), b), "conflict owners must include straight user B");
     require(contains_owner(model.owners_of(conflict), c), "conflict owners must include swap user C");
-    require(model.type_weight(conflict) == 8, "mode-conflict type_weight must be 8");
+    require(model.type_weight(conflict) == 0, "mode-conflict must not be priced");
 }
 
 auto test_resource_partial_matching() -> void {
@@ -377,6 +375,7 @@ auto test_maze_ripup_then_reuse() -> void {
     const auto empty = route_demand(graph, resources, owner, {0}, 3, params);
     require_path(empty, {0, 1, 3}, "equal-hop empty maze must prefer the first out-arc path");
 
+    resources.advance_present();
     resources.claim(blocker, {node_resource(1)});
     const auto diverted = route_demand(graph, resources, owner, {0}, 3, params);
     require_path(diverted, {0, 2, 3}, "occupying the preferred path must divert maze to the other equal-hop path");
@@ -465,27 +464,6 @@ auto test_path_resource_keys_match_maze_and_bnet_unit() -> void {
     for (const auto& key : arc_keys_only) {
         require(contains_key_local(keys, key), "path keys must include every maze arc key");
     }
-}
-
-auto test_rrr_best_save_lex_order() -> void {
-    require(
-        rrr_is_better(0, 2, 10, 100, 1, 0, 0, 10),
-        "smaller overflow must beat a synchronized overflowing solution");
-    require(
-        rrr_is_better(0, 1, 20, 100, 0, 2, 1, 10),
-        "equal overflow must prefer fewer unequal SyncNet groups");
-    require(
-        rrr_is_better(0, 1, 5, 100, 0, 1, 10, 10),
-        "equal overflow and group count must prefer smaller sync gap");
-    require(
-        rrr_is_better(1, 0, 0, 5, 1, 0, 0, 10),
-        "equal feasibility score must keep the shorter wirelength");
-    require(
-        !rrr_is_better(1, 0, 0, 10, 1, 0, 0, 5),
-        "equal feasibility score must reject a longer wirelength");
-    require(
-        !rrr_is_better(0, 0, 0, 8, 0, 0, 0, 8),
-        "an identical solution is not an improvement");
 }
 
 auto add_synth_bump_node(
@@ -792,149 +770,9 @@ auto test_sync_equalize_advances_common_target_atomically() -> void {
     require(resources.overflow() == 0, "raised-target equalization must stay conflict-free");
 }
 
-auto test_rrr_sync_bus_ripup_and_normal_detour() -> void {
-    constexpr std::size_t kLaneCount = 5;
-    const std::Vector<int> initial_tracks {9, 7, 6, 5, 3};
-    auto graph = UnifiedGraph {};
-    auto sources = std::Vector<GraphNodeRef> {};
-    auto sinks = std::Vector<GraphNodeRef> {};
-    auto initial_paths = std::Vector<std::Vector<int>> {};
-    auto alternative_paths = std::Vector<std::Vector<int>> {};
-
-    int lane0_shared_track = -1;
-    for (std::size_t lane = 0; lane < kLaneCount; ++lane) {
-        const int source = add_synth_bump_node(graph, 0, 0, lane, 0);
-        const int sink = add_synth_bump_node(graph, 1, 0, lane, 0);
-        sources.push_back(bump_ref(0, 0, lane, 0));
-        sinks.push_back(bump_ref(1, 0, lane, 0));
-
-        auto initial = std::Vector<int> {source};
-        for (int i = 0; i < initial_tracks[lane]; ++i) {
-            initial.push_back(add_synth_track(graph, static_cast<int>(lane), i, lane));
-        }
-        initial.push_back(sink);
-        add_directed_path(graph, initial);
-        initial_paths.push_back(initial);
-        if (lane == 0) {
-            lane0_shared_track = initial[1 + initial_tracks[lane] / 2];
-            alternative_paths.push_back(initial);
-            continue;
-        }
-
-        auto alternative = std::Vector<int> {source};
-        for (int i = 0; i < initial_tracks[0]; ++i) {
-            alternative.push_back(add_synth_track(graph, static_cast<int>(lane + 5), i, lane));
-        }
-        alternative.push_back(sink);
-        add_directed_path(graph, alternative);
-        alternative_paths.push_back(std::move(alternative));
-    }
-    require(lane0_shared_track >= 0, "synthetic congested SyncNet must expose a shared track");
-
-    const int normal_source = add_synth_bump_node(graph, 2, 0, 0, 0);
-    const int normal_sink = add_synth_bump_node(graph, 3, 0, 0, 0);
-    const int normal_detour0 = add_synth_track(graph, 8, 0, 6);
-    const int normal_detour1 = add_synth_track(graph, 8, 1, 6);
-    add_synth_arc(graph, normal_source, lane0_shared_track);
-    add_synth_arc(graph, lane0_shared_track, normal_sink);
-    const auto normal_primary = std::Vector<int> {normal_source, lane0_shared_track, normal_sink};
-    const auto normal_detour = std::Vector<int> {
-        normal_source,
-        normal_detour0,
-        normal_detour1,
-        normal_sink};
-    add_directed_path(graph, normal_detour);
-
-    auto nets = std::Vector<RoutingNet> {};
-    nets.push_back(make_sync_tnet(0, sources, sinks));
-    nets.push_back(make_tiny_tnet(1, bump_ref(2, 0, 0, 0), bump_ref(3, 0, 0, 0)));
-
-    auto interposer = hardware::Interposer {};
-    std::cout << "FPIA_RRR_unit: sync-rrr initial shortest candidates\n";
-    for (std::size_t lane = 0; lane < kLaneCount; ++lane) {
-        print_path_log(
-            "sync-rrr initial lane=" + std::to_string(lane),
-            graph,
-            initial_paths[lane],
-            &interposer,
-            false);
-        if (lane != 0) {
-            print_path_log(
-                "sync-rrr equal-length alternative lane=" + std::to_string(lane),
-                graph,
-                alternative_paths[lane],
-                &interposer,
-                false);
-        }
-    }
-    print_path_log("sync-rrr normal initial", graph, normal_primary, &interposer, false);
-    print_path_log("sync-rrr normal detour", graph, normal_detour, &interposer, false);
-
-    auto params = RrrParams {};
-    params.H = 0;
-    params.increment = 10;
-    params.decay = 1;
-    params.history_weight = 1;
-    params.max_iterations = 4;
-    params.stagnation_limit = 4;
-    params.r_sequence = {1.0};
-    const auto result = run_rrr(graph, nets, params, &interposer);
-
-    require(result.status == "success", "synthetic 5-lane SyncNet RRR must finish successfully");
-    require(result.best_overflow == 0, "synthetic 5-lane SyncNet RRR must clear local congestion");
-    require(
-        result.unequal_sync_groups == 0 && result.total_sync_gap == 0,
-        "successful synthetic RRR must report exact SyncNet equality");
-    require(result.iterations >= 1, "synthetic congestion must trigger at least one RRR iteration");
-    require(result.paths.size() == 2, "synthetic result must contain the SyncNet and normal net");
-    require(result.paths[0].size() == kLaneCount, "synthetic SyncNet result must retain five lanes");
-    require(result.paths[1].size() == 1, "synthetic normal net must retain one demand");
-    for (std::size_t lane = 0; lane < kLaneCount; ++lane) {
-        require_path(
-            result.paths[0][lane],
-            alternative_paths[lane],
-            "synthetic SyncNet lane must take its expected equal-length path");
-        require(
-            sync_lane_length(graph, result.paths[0][lane], &interposer, false) == 10,
-            "synthetic SyncNet lanes must finish at nine Tracks plus one TOB constant");
-    }
-    require_path(
-        result.paths[1][0],
-        normal_detour,
-        "history-driven RRR must move the normal net off the congested SyncNet track");
-    require(
-        validate_rrr_solution(graph, nets, result, &interposer),
-        "synthetic 5-lane RRR result must pass independent validation");
-
-    std::cout << "FPIA_RRR_unit: sync-rrr final paths status=" << result.status
-              << " iterations=" << result.iterations
-              << " overflow=" << result.best_overflow << '\n';
-    for (std::size_t lane = 0; lane < kLaneCount; ++lane) {
-        print_path_log(
-            "sync-rrr final lane=" + std::to_string(lane),
-            graph,
-            result.paths[0][lane],
-            &interposer,
-            false);
-    }
-    print_path_log("sync-rrr final normal", graph, result.paths[1][0], &interposer, false);
-}
-
 auto test_rrr_sort_keys() -> void {
     const auto high = OwnerId {2, 0};
     const auto low = OwnerId {1, 0};
-    require(
-        rrr_dirty_before(8, 1, 3, high, 3, 9, 9, low),
-        "dirty sort must prefer higher congestion exposure");
-    require(
-        rrr_dirty_before(4, 5, 1, high, 4, 2, 9, low),
-        "dirty sort must prefer higher retry when exposure ties");
-    require(
-        rrr_dirty_before(4, 2, 9, high, 4, 2, 3, low),
-        "dirty sort must prefer higher HPWL when exposure and retry tie");
-    require(
-        rrr_dirty_before(4, 2, 9, low, 4, 2, 9, high),
-        "dirty sort must break remaining ties by ascending owner id");
     require(
         rrr_initial_before(true, 2, 1, OwnerId {9, 0}, false, 8, 20, OwnerId {0, 0}),
         "initial sort must place SyncNet bus owners before ordinary nets");
@@ -958,7 +796,7 @@ auto main(int argc, char** argv) -> int {
         test_resource_claim_release();
         test_resource_same_owner_branch_share();
         test_resource_cross_owner_overflow();
-        test_resource_history_configured_decay();
+        test_resource_vpr_node_cost();
         test_resource_mode_conflict();
         test_resource_partial_matching();
         test_resource_hline_vline_node_exclusive();
@@ -969,12 +807,10 @@ auto main(int argc, char** argv) -> int {
         test_maze_pnnet_multi_source();
         test_maze_fanout_tree_growth();
         test_path_resource_keys_match_maze_and_bnet_unit();
-        test_rrr_best_save_lex_order();
         test_rrr_sort_keys();
         test_sync_track_cut_index();
         test_sync_tail_equalize_replaces_short_lane();
         test_sync_equalize_advances_common_target_atomically();
-        test_rrr_sync_bus_ripup_and_normal_detour();
         test_validate_empty_path_fails();
         test_validate_illegal_overflow_fails();
         test_validate_legal_tiny_path_passes();

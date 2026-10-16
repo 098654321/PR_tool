@@ -9,28 +9,6 @@
 
 namespace PR_tool {
 
-auto rrr_is_better(
-    int overflow,
-    int unequal_sync_groups,
-    std::size_t sync_gap,
-    std::size_t wirelength,
-    int best_overflow,
-    int best_unequal_sync_groups,
-    std::size_t best_sync_gap,
-    std::size_t best_wirelength
-) -> bool;
-
-auto rrr_dirty_before(
-    int exposure_a,
-    int retry_a,
-    int hpwl_a,
-    OwnerId id_a,
-    int exposure_b,
-    int retry_b,
-    int hpwl_b,
-    OwnerId id_b
-) -> bool;
-
 auto rrr_initial_before(
     bool bus_a,
     int primary_a,
