@@ -54,7 +54,8 @@ auto run_main(int argc, char** argv) -> int {
                 initial_sat.num_vars, initial_sat.num_clauses,
                 initial_sat.feedback_rounds, initial_sat.sat_total_ms);
         }
-        auto nets = build_routing_nets(basedie->nets_to_vector());
+        const auto ilp_raw_nets = basedie->nets_to_vector();
+        auto nets = build_routing_nets(ilp_raw_nets);
         auto graph = build_unified_graph(interposer.get(), nets);
         augment_graph_for_pnnet(graph, nets);
         if (cli.init_sat)
@@ -95,7 +96,6 @@ auto run_main(int argc, char** argv) -> int {
         }
         if (cli.init_sat && !validate_direct_route(graph, nets, scopes, initial_route))
             throw std::logic_error("SAT initial route failed current physical validation");
-        const auto route_begin = std::chrono::steady_clock::now();
         auto solved = solve_route_ilp(graph, nets, scopes,
             RouteIlpOptions{cli.verbose_level, cli.time_limit_minutes,
                              (log_dir / "highs.log").string(), cli.big_m_mode,
@@ -109,13 +109,17 @@ auto run_main(int argc, char** argv) -> int {
         debug::info_fmt("route ILP partial validation: PASS paths={} missing={} wirelength={}",
                         solved.route.paths.size(), solved.missing.size(),
                         solved.route.total_wirelength);
-        const auto deadline = cli.time_limit_minutes > 0 ?
-            route_begin + std::chrono::minutes(cli.time_limit_minutes) :
-            std::chrono::steady_clock::time_point::max();
+        const auto rrr_begin = std::chrono::steady_clock::now();
+        const auto pre_rrr_time = rrr_begin - begin;
+        const auto deadline = rrr_begin + pre_rrr_time;
+        debug::info_fmt("route RRR budget: pre_rrr_ms={} includes=parse_build_SAT_ILP_validation limit_ratio=1",
+            std::chrono::duration<double, std::milli>(pre_rrr_time).count());
+        const auto& raw_nets = basedie->nets().at(0);
+        const auto rrr_indices = rrr_mode0_indices(ilp_raw_nets, raw_nets);
         auto final = optimize_route_columns_rrr(graph, nets, scopes, solved,
-                                                 cli.verbose_level, deadline);
+            interposer.get(), cli.verbose_level, deadline, &raw_nets, rrr_indices);
         if (!validate_partial_route(graph, nets, scopes, final,
-                                    solved.bus_lengths)) {
+                                    route_bus_lengths(graph, nets, final))) {
             debug::error("RRR produced an invalid partial route");
             return 1;
         }

@@ -1,5 +1,4 @@
 #include "route_ilp/route_search.hh"
-#include "route_ilp/rrr_cost.hh"
 
 #include "common/cob_unit_mask.hh"
 #include "common/route_metrics.hh"
@@ -159,7 +158,6 @@ auto path_weight(const UnifiedGraph& graph, const UnifiedArc& arc,
                  const std::set<RouteResource>& own,
                  const RouteSearchOptions& options,
                  const ModeSwitches& groups) -> double {
-    if (options.rrr_cost != nullptr) return options.rrr_cost->arc_cost(arc, own);
     double weight = 0.001;
     const auto node = RouteResource{0, arc.v, 0};
     if (!own.contains(node) && is_wirelength_resource_node(graph, arc.v)) weight += 1.0;
@@ -242,12 +240,7 @@ auto search_path(const UnifiedGraph& graph, const RoutingScope& scope,
                 return label.path;
             continue;
         }
-        const auto& outgoing = graph.out_arc_ids[static_cast<std::size_t>(label.node)];
-        for (std::size_t index = 0; index < outgoing.size(); ++index) {
-            // Vary equal-cost discovery order without changing the FPIA cost.
-            const auto offset = options.rrr_cost != nullptr ?
-                static_cast<std::size_t>(options.variant) % outgoing.size() : 0;
-            const int aid = outgoing[(index + offset) % outgoing.size()];
+        for (int aid : graph.out_arc_ids[static_cast<std::size_t>(label.node)]) {
             if (static_cast<std::size_t>(aid) >= scope.arc_offset.size() ||
                 scope.arc_offset[static_cast<std::size_t>(aid)] < 0) continue;
             const auto& arc = graph.arcs[static_cast<std::size_t>(aid)];
@@ -341,14 +334,11 @@ auto find_route_column(const UnifiedGraph& graph, const RoutingNet& net,
             const int source = resolve_graph_node(graph, net.sources.at(source_index));
             const auto& snode = graph.nodes.at(static_cast<std::size_t>(source));
             const auto& tnode = graph.nodes.at(static_cast<std::size_t>(sink));
-            for (std::size_t unit_index = 0; unit_index < 16; ++unit_index) {
-                const auto unit = options.rrr_cost != nullptr ?
-                    (unit_index + static_cast<std::size_t>(options.variant)) % 16 : unit_index;
+            for (std::size_t unit = 0; unit < 16; ++unit) {
                 if ((snode.kind == UnifiedNodeKind::Track && snode.unit != unit) ||
                     (tnode.kind == UnifiedNodeKind::Track && tnode.unit != unit)) continue;
                 const auto own = make_column(graph, net, owner, out.paths,
                                              false, groups).resources;
-                if (options.rrr_cost != nullptr) options.rrr_cost->set_own(out.paths);
                 using Bans = std::set<std::pair<int, int>>;
                 auto pending = std::deque<Bans>{{}};
                 auto visited = std::set<Bans>{{}};
@@ -365,17 +355,14 @@ auto find_route_column(const UnifiedGraph& graph, const RoutingNet& net,
                     try {
                         const auto trial = make_column(graph, net, owner,
                                                        candidate, false, groups);
-                        double score = options.rrr_cost != nullptr ?
-                            options.rrr_cost->path_cost(path, own) :
-                            static_cast<double>(trial.wirelength) + 0.001 * path.size();
-                        if (options.rrr_cost == nullptr) {
-                            for (const auto& resource : trial.resources) {
-                                const auto price = options.prices.find(resource);
-                                if (price != options.prices.end()) score += price->second;
-                            }
-                            for (int node : path)
-                                if (options.discouraged_nodes.contains(node)) score += 2.0;
+                        double score = static_cast<double>(trial.wirelength) +
+                            0.001 * path.size();
+                        for (const auto& resource : trial.resources) {
+                            const auto price = options.prices.find(resource);
+                            if (price != options.prices.end()) score += price->second;
                         }
+                        for (int node : path)
+                            if (options.discouraged_nodes.contains(node)) score += 2.0;
                         if (score < best_cost) {
                             best_cost = score;
                             best_path = candidate.back();
@@ -605,21 +592,10 @@ auto find_sync_prefix_column(const UnifiedGraph& graph, const RoutingNet& net,
     auto search = options;
     search.exact_length = suffix_length;
     const auto groups = mode_switches(graph);
-    auto own = std::set<RouteResource>{};
-    if (options.rrr_cost != nullptr) {
-        options.rrr_cost->set_own({{net.net_id, old.source_index, old.demand_id,
-                                  old.physical_source_node, prefix}});
-        for (int node : prefix) own.insert({0, node, 0});
-        for (std::size_t j = 1; j < prefix.size(); ++j) {
-            const auto resources = resources_for_arc(graph,
-                graph.arcs[arc_between(graph, prefix[j-1], prefix[j])], groups);
-            own.insert(resources.begin(), resources.end());
-        }
-    }
     for (std::size_t unit = 0; unit < 16; ++unit) {
         if (prefix_unit >= 0 && prefix_unit != static_cast<int>(unit)) continue;
         const auto suffix = search_path(graph, scope, cut, sink, unit_bit(unit),
-                                         own, search, groups, {}, forbidden);
+                                         {}, search, groups, {}, forbidden);
         if (suffix.empty()) continue;
         auto path = prefix;
         path.insert(path.end(), suffix.begin() + 1, suffix.end());

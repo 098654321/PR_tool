@@ -2,9 +2,9 @@
 
 ## 当前目标和流程
 
-`test_ILP` 当前实现为**第二十四版方法**：从原始配置建立细粒度硬件图，当前全阵列实验对每个 `RoutingNet` 使用完整 COB 阵列范围（不加 TOB patch），先生成完整物理路径候选并用 HiGHS 做 route 变量 LP/ILP，再将允许未布通 owner 的合法部分解交给 RRR 补布和优化。只有所有 owner 布通并通过完整验证才报告成功。`--init-SAT` 可选地用原 ExactSAT 流程生成完整可行初始列；无该参数时直接进入 ILP。当前入口不运行 PNnet 预分配、Global Routing 或按边直接详细布线 ILP。方法说明见 `../../../问题定义与方法/第二十四版方法.md`；旧流程保存在 `dev.ILP_SAT` 分支，第二十三版方法仍可作对照。
+`test_ILP` 当前实现为**第二十四版方法**：从原始配置建立细粒度硬件图，ILP 对每个 `RoutingNet` 使用完整 COB 阵列范围（不加 TOB patch），先生成完整物理路径候选并用 HiGHS 做 route 变量 LP/ILP，再将允许未布通 owner 的合法部分解交给基于 `316e477` 的 AIR/OpenROAD RRR 补布和优化。只有所有 owner 布通并通过完整验证才报告成功。`--init-SAT` 可选地用原 ExactSAT 流程生成完整可行初始列；无该参数时直接进入 ILP。当前入口不运行 PNnet 预分配、Global Routing 或按边直接详细布线 ILP。方法说明见 `../../../问题定义与方法/第二十四版方法.md`；旧流程保存在 `dev.ILP_SAT` 分支，第二十三版方法仍可作对照。
 
-该目录是实验入口，不应无意修改 `source/algo/router/` 的正式路由流程。`source/hardware/` 和 `source/circuit/` 决定真实拓扑与端点。当前分支仍保留一部分旧方法源文件供其他实验目标使用，但 `test_ILP` 仅编译新入口所需模块。
+该目录是实验入口，不应无意修改 `source/algo/router/` 的正式路由流程。`source/hardware/` 和 `source/circuit/` 决定真实拓扑与端点。当前分支仍保留一部分旧方法源文件供其他实验目标使用，但 `test_ILP` 仅编译新入口所需模块。旧事务式 `rrr/rrr.*` 已删除，`test_ILP_unit` 的 RRR 验证也使用当前 AIR 入口，保留直接 ILP 的其余测试。
 
 ## 关键模块和不变量
 
@@ -13,18 +13,18 @@
 | `main.cc`, `test_ilp_cli.*` | 唯一入口、参数、日志、两次验证及结果 |
 | `scope/build_routing_nets.*`, `scope/scope_bbox.*` | 原始 net、端点及 bbox 规则 |
 | `graph/unified_routing_graph.*` | 细粒度硬件图及 PN 虚拟源 |
-| `common/routing_scope.hh` | ILP、RRR 共用的局部节点/arc scope 容器 |
+| `common/routing_scope.hh` | ILP 节点/arc scope 及 RRR 输入、输出物理验证范围 |
 | `direct_ilp/direct_scope.*` | net 级全 COB 阵列、端点 Bump 的 TOB 接入节点和 arc scope |
 | `route_ilp/route_search.*` | 物理 owner、候选路径搜索及节点/TOB 资源集合 |
 | `route_ilp/route_master.*` | 完整候选的 LP 定价与 HiGHS 整数选择，允许未布通 owner |
 | `route_ilp/route_incumbent.*` | 完整整数 LP 提取、同步长度失效检查与 MIP 初始解重映射 |
 | `sat/*`, `delay/*`, `scope/pair_routing_state.*` | 可选 `--init-SAT` 的原 SAT 编码、反馈扩窗与路径提取 |
-| `route_ilp/route_rrr.*` | 接收合法部分解，补布缺失 owner 并事务式重布 |
-| `route_ilp/rrr_cost.*` | RRR 专用 FPIA 加法代价、事务占用与 sweep 末历史更新，不影响 ILP 定价 |
+| `route_ilp/route_rrr.*` | RRR 路径/图适配、部分解输入检查、最终路径与同步长度导出 |
+| `rrr_air/*` | 固定 `316e477` 的 AIR 搜索、OpenROAD cost、剪枝、同步组与动态 bbox；入口适配初始解和两个停止条件 |
 | `direct_ilp/direct_validate.*` | 独立检查部分或完整路径、scope、互斥、TOB、同步长度及线长 |
 | `common/highs_log_sink.hh` | HiGHS 原生日志输出 |
 | `common/route_metrics.*` | Track+Bump 物理并集线长 |
-| `test/route_ilp_unit.cc` | 当前流程的合成回归入口 |
+| `test/route_ilp_unit.cc` | ILP 与 AIR 衔接的合成回归入口；`test/air_rrr_unit.cc` 验证 cost、剪枝与停止计数，`test/rrr_import_unit.cc` 验证 mode-0 顺序、路径身份与导入框 |
 
 - Bnet/Tnet/PNnet 的同一多 sink net 共享一个物理 owner；SyncBus 每个 member 独立占用物理节点，但受同组 Track+Bump 等长约束。
 - PNnet 各 demand 可独立选择原始候选 source；虚拟根只用于表达候选 source，不出现在物理路径中，也不计线长。
@@ -32,12 +32,14 @@
 - 目标和最终线长都是 Track+Bump 节点并集数。
 - 内部 Channel Track 仅在两端 COB 都在 bbox 内时纳入；芯片边界外接 Track 仅需唯一物理邻接 COB 在 bbox 内。实际 source/sink（含 PN 候选源）由 scope 构造单独保留；SAT scope 额外纳入每个端点 TOB 接入 Channel 的全部 128 条 Track 及已选节点间的 arc，SAT 验证采用相同例外。单独的 Track 端点仍只保留自身，不连带纳入同一 Channel 的其它 Track。
 - SAT 延迟预计算发现 scope 无结构路径时，按失败路径对进入反馈扩窗；尚无最短延迟的空长度集合保持为空，扩大范围后再初始化，不能用虚构的长度 1 代替。
-- SyncBus 的每条 lane 是独立物理 owner，共享总线的全阵列 scope；RRR 可重布 lane，但长度须保持当前共同长度。
-- 热点为全部并列最小容量对偶资源（包括最小值为零）与基树预测超容资源的并集。挑选 slack >1e-6、基树使用热点、候选池中任意列使用热点或端点在热点 `bbox+1` 内的 owner；仅每三轮（`round % 3 == 2`）选全部 owner，空集合不回退。候选搜索与 RRR 仍用全阵列 scope。
+- SyncBus 的每条 lane 是独立物理 owner；ILP 固定当前共同长度。RRR 按 `316e477` 整组拆线、预布和切尾等长，可重新确定共同长度；最终验证从 RRR 实际路径提取长度，不修改 ILP 状态。
+- 热点为全部并列最小容量对偶资源（包括最小值为零）与基树预测超容资源的并集。挑选 slack >1e-6、基树使用热点、候选池中任意列使用热点或端点在热点 `bbox+1` 内的 owner；仅每三轮（`round % 3 == 2`）选全部 owner，空集合不回退。ILP 候选搜索仍用全阵列 scope；RRR 使用独立的 terminal bbox+1 与轮末触边扩框。
 - 每轮以 1e-6 容差检查完整整数 LP 解，经物理验证后保存线长最小者；SAT 解为后备。MIP 按当前 owner/候选重新映射并提交选路向量。同步长度变化仅删除保存解中长度失效的 lane，其余选路保留，缺失 lane 在初始向量中设 x=0、s=1；不同保存解不能直接混合。
-- RRR 事务中可暂时拆线或发生冲突；只提交零 overflow、每个已布通 owner 完整合法且未布通数减少，或未布通数不变而线长下降的结果。
-- RRR 搜索与候选评分统一使用 FPIA-RRR 加法代价：每 arc 基础代价 1，资源增量为 `type_weight * P(u) + history`，`P(u)=1+4/(exp(1-u)+1)+0.2*max(0,u-1)`。节点权重 1，switch/matching/mux 权重 2，相反 mode 冲突权重 8；同 owner 已有树资源复用不重复收费，mux 按不同 peer 数计占用。每次搜索从事务当前路径重建占用，保留树/同步前缀也计入占用；失败事务的占用不传到下次搜索。每个 sweep 结束按已提交状态更新 `history=0.9*history+overflow`，日志输出 overflow 和历史总量。已提交结果零 overflow，因此从零初始化的 history 保持为零，不累积失败试探罚分。
-- RRR 沿用最多 2 个 sweep、每 owner 6 个变体、被挤出 owner 至多 4 次重搜及原有接受条件。变体通过 demand 顺序、unit/等价代价邻接顺序和同步切尾比例变化，不使用旧路径加 2 或微小代价扰动；ILP 候选搜索仍使用原有线长与容量对偶代价。
+- RRR 基于 `316e47799aa73cbc123134fe34d530504f235894` 固定快照，命名空间 `PR_tool::air316`；除 `rrr_router.*` 初始状态/停止逻辑、`rrr_types.hh` 截止时间及新增 stop policy 外，核心文件仅改命名空间。`rrr_air/README.md` 记录来源与核查命令。不能链接当前 FPIA-RRR 的 VPR cost 替代该快照。
+- RRR 导入 ILP 完整/部分路径并重建树、bins、占用，将其视作已完成的首轮；完整输入立即作为最佳合法解，部分输入只修复缺失/冲突。独立无拥塞参考布线仍执行，但不替换输入路径。RRR 使用 `basedie->nets().at(0)` 的 mode-0 原始序列，并按 net 对象身份映射 ILP 路径/编号；保持原始序列送入 source Sort/Resources，保证同优先级排序输入一致。保留端口阈值 16、附近 bin→整树搜索、统一快照冲突剪枝、小 net 整拆/大 net 保留根前缀及同步整组重布。
+- RRR 只对图节点计 OpenROAD cost：`q=usage+0.9*h`，`c=1+4/(1+exp(1-q))+0.2*max(q-1,0)`；usage 不加候选 +1，同 owner 树节点免费复用。history 初值 0，每轮拆线前 `h+=max(usage-1,0)`，不衰减、不重置。开关/matching/mux/mode 不另计费，继续参与硬件约束与 overflow。
+- RRR 当前解允许拥塞、缺失和线长上升；只有全部布通、零 overflow、等长且独立验证通过的解才能更新最佳合法解。当前轮非法时只修复；当前轮合法时拆 `W>reference` 的 net，无候选时拆多端口，再无则拆全部。初始 bbox 为 terminal bbox+1；导入 ILP 路径后先把框补到包含全部已有路径（含部分 bus 的已布通 lane），不改变 bins/独立参考长度，再让完整合法导入 net 按原触边规则准备下一轮。后续仅成功重布、完整且自身合法的 net 在轮末按四边余量恰为 0 扩边；失败不扩框、不回退全图。
+- RRR 停止：每个完整合法解与历史最佳线长比较，严格改善清零，否则累计；连续 10 个合法解无改善即停，非法轮不计数也不清零。完整 ILP 输入是初始最佳解，停滞从 0 起算。另以程序解析前至 RRR 入口的实际耗时为 RRR 预算（包括 SAT、ILP、建图与前置验证），RRR 初始化/参考布线计入预算；两条件任一满足即停，无合法解也按时停止并返回原合法部分输入且报告未完成。有最佳解时始终返回最佳合法解。截止时间在 net/轮末/参考 net 等安全点检查，保留原单次搜索预算，不强制打断一次 maze/同步等长。
 
 ## 构建和测试
 
@@ -52,7 +54,7 @@ xmake build sat_feedback_unit
 ./output/test_ILP algorithm/test_ILP/test/multi-pin/1 --time-limit 1 -o /tmp/route_ilp_case
 ```
 
-`--m-mode` 选择 `default`（默认 M=10000）或 `gap-1` 至 `gap-4`；动态档要求至少一组 SyncBus 且每条同步 lane 有初始路径。`gap-d` 取 `max(Lmin+1)+(初始候选池最大 owner 线长-max(Lmin+1))/d`。`--init-SAT` 启用 SAT 完整初始解并保留其同步线共同长度，SAT 仅提供候选路径与后备 MIP 初始解，不继承 SAT 求解设置。`--time-limit MIN` 限制 route ILP 与 RRR 的总运行时间。`-v` 输出额外的 bbox 与 scope 诊断；`-vv` 还输出每轮 LP 的基树路径、候选池更新路径及热点资源。`debug.log` 记录模型规模、M 的实际取值、热点/入选数量、整数 LP incumbent 保存与同步 lane 失效、MIP 初始解来源/覆盖数/目标值、求解时间、结果路径与 RRR 统计；同目录的 `highs.log` 保存 HiGHS 原生日志。当前 `test_ILP` 不生成 CaDiCaL API trace。
+`--m-mode` 选择 `default`（默认 M=10000）或 `gap-1` 至 `gap-4`；动态档要求至少一组 SyncBus 且每条同步 lane 有初始路径。`gap-d` 取 `max(Lmin+1)+(初始候选池最大 owner 线长-max(Lmin+1))/d`。`--init-SAT` 启用 SAT 完整初始解并保留其同步线共同长度，SAT 仅提供候选路径与后备 MIP 初始解，不继承 SAT 求解设置。`--time-limit MIN` 保留原 route ILP 时间限制；RRR 单独按前述实际前置耗时取得等额预算，不复用 ILP 剩余时间。`-v` 输出额外的 bbox 与 scope 诊断；`-vv` 还输出每轮 LP 的基树路径、候选池更新路径及热点资源。`debug.log` 记录模型规模、M 的实际取值、热点/入选数量、整数 LP incumbent 保存与同步 lane 失效、MIP 初始解来源/覆盖数/目标值、求解时间、结果路径与 RRR 统计；同目录的 `highs.log` 保存 HiGHS 原生日志。当前 `test_ILP` 不生成 CaDiCaL API trace。
 
 SAT 反馈不设轮数上限（移除原 64 轮限制），直到求解成功、扩展耗尽或求解器错误/内存限制退出。SAT 反馈优先扩展未达到全阵列的失败路径对；只有失败路径对全部达到全阵列时，才扩展非失败 net。每个实际扩展的 net 每四次为一循环：第 1 次 bbox 扩一格且长度上限 +1，第 2–4 次只增加长度上限；暂时跳过的 net 不消耗扩展次数。同步总线仍统一整组 bbox 和长度集合；原有全体 bbox 已满的耗尽条件保留。`sat_feedback_unit` 覆盖混合失败集合、多 demand、扩展节奏、非失败 net 回退、总线一致性及真实硬件图上扩展矩形的内部 Channel 和四角 COB 连接，以及端点 TOB 接入 Channel 全部 Track 的保留和初始 scope 内 SAT 布通与验证。
 

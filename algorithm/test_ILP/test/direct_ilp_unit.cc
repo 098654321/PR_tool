@@ -1,7 +1,7 @@
 #include "direct_ilp/direct_router.hh"
 #include "direct_ilp/direct_validate.hh"
 #include "common/hw_map.hh"
-#include "rrr/rrr.hh"
+#include "route_ilp/route_rrr.hh"
 #include "scope/scope_bbox.hh"
 #include "test_ilp_cli.hh"
 
@@ -160,9 +160,12 @@ auto simple_path_case() -> void {
     try { (void)build_direct_graph(mismatched_reverse); }
     catch (const std::logic_error&) { rejected = true; }
     require(rejected, "mismatched reverse arc was accepted");
-    const auto rerouted = optimize_routes_rrr(
-        graph, {net}, {full_scope(graph)}, result.route,
-        RrrOptions{.max_iterations = 1, .max_sweeps = 1});
+    auto baseline = RouteIlpResult{};
+    baseline.has_integer_solution = true; baseline.route = result.route;
+    auto interposer = hardware::Interposer{};
+    const auto rerouted = optimize_route_columns_rrr(
+        graph, {net}, {full_scope(graph)}, baseline, &interposer, 0,
+        std::chrono::steady_clock::now()+std::chrono::seconds(1));
     require(validate_direct_route(graph, {net}, {full_scope(graph)}, rerouted),
             "invalid RRR route");
     require(rerouted.total_wirelength <= result.route.total_wirelength,

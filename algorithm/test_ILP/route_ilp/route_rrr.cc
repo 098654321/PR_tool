@@ -1,259 +1,217 @@
 #include "route_ilp/route_rrr.hh"
-#include "route_ilp/rrr_cost.hh"
 
 #include "common/route_metrics.hh"
 #include "direct_ilp/direct_validate.hh"
+#include "rrr_air/rrr_router.hh"
 
 #include <debug/debug.hh>
-
 #include <algorithm>
-#include <chrono>
-#include <deque>
-#include <limits>
+#include <numeric>
 #include <stdexcept>
 
 namespace PR_tool {
 namespace {
+namespace air = air316;
 
-using Selection = std::map<RouteOwner, RouteColumn>;
+struct GraphBridge {
+    air::UnifiedGraph graph;
+    std::Vector<int> to_air, from_air;
+};
 
-auto find_arc(const UnifiedGraph& graph, int u, int v) -> int {
-    for (int id : graph.out_arc_ids[static_cast<std::size_t>(u)])
-        if (graph.arcs[static_cast<std::size_t>(id)].v == v) return id;
-    return -1;
+auto bump_ref(const Bump_coord& value) -> air::Bump_coord {
+    return {value.TOB, value.Bank, value.Group, value.Index};
 }
 
-auto assemble(const UnifiedGraph& graph, const Selection& selected,
-              std::size_t owner_count) -> RoutingResult {
-    auto route = RoutingResult{};
-    route.ok = selected.size() == owner_count;
-    route.message = route.ok ? "COMPLETE" : "PARTIAL";
-    auto switches = std::set<int>{};
-    for (const auto& [_, column] : selected)
-        for (const auto& path : column.paths) {
-            route.paths.push_back(path);
-            for (std::size_t j = 1; j < path.node_path.size(); ++j) {
-                const int aid = find_arc(graph, path.node_path[j - 1], path.node_path[j]);
-                if (aid < 0) throw std::logic_error("RRR assembled missing arc");
-                const auto& arc = graph.arcs[static_cast<std::size_t>(aid)];
-                if (arc.physical_switch_id >= 0) switches.insert(arc.physical_switch_id);
-                if (arc.mode_group_id >= 0)
-                    route.vline_mode_straight_by_group[
-                        static_cast<std::size_t>(arc.mode_group_id)] =
-                        arc.is_vline_track_straight;
-            }
-        }
-    route.used_tob_switch_ids.assign(switches.begin(), switches.end());
-    route.total_wirelength = total_wirelength(graph, route);
-    return route;
-}
-
-auto no_conflicts(const Selection& selected) -> bool {
-    for (auto first = selected.begin(); first != selected.end(); ++first)
-        for (auto second = std::next(first); second != selected.end(); ++second)
-            if (route_columns_conflict(first->second, second->second)) return false;
-    return true;
-}
-
-auto search(const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
-            const std::Vector<RoutingScope>& scopes, RouteOwner owner,
-            const Selection& occupied,
-            const std::map<std::size_t, std::size_t>& bus_lengths,
-            int variant, RrrCostModel& cost,
-            const RouteColumn* former = nullptr) -> RouteColumn {
-    auto options = RouteSearchOptions{};
-    options.variant = variant;
-    cost.set_selection(occupied);
-    options.rrr_cost = &cost;
-    const auto& net = net_for_owner(nets, owner);
-    if (net.is_sync_bus) {
-        const auto it = bus_lengths.find(net.net_id);
-        if (it == bus_lengths.end()) return RouteColumn{owner};
-        options.exact_length = it->second;
+auto graph_bridge(const UnifiedGraph& source) -> GraphBridge {
+    auto out = GraphBridge{};
+    out.graph.rows = source.rows; out.graph.cols = source.cols;
+    out.to_air.resize(source.nodes.size(), -1);
+    for (std::size_t i = 0; i < source.nodes.size(); ++i) {
+        const auto& n = source.nodes[i];
+        if (n.kind == UnifiedNodeKind::VirtualSource) continue;
+        out.to_air[i] = static_cast<int>(out.graph.nodes.size());
+        out.from_air.push_back(static_cast<int>(i));
+        out.graph.nodes.push_back({static_cast<air::UnifiedNodeKind>(n.kind),
+            n.unit, n.track_dir, n.track_row, n.track_col, n.track_index,
+            bump_ref(n.bump), n.tob, n.bank, n.group, n.line_index});
     }
-    if (net.is_sync_bus && former != nullptr && variant >= 1 && variant <= 3) {
-        const int tail_percent = variant == 1 ? 50 : variant == 2 ? 75 : 100;
-        const auto cut_tail = find_sync_prefix_column(graph, net,
-            scope_for_owner(scopes, owner), owner, options, *former, tail_percent);
-        if (!cut_tail.paths.empty()) return cut_tail;
+    auto& graph = out.graph;
+    graph.in_arc_ids.resize(graph.nodes.size());
+    graph.out_arc_ids.resize(graph.nodes.size());
+    graph.ordered_track_out_arc_ids.resize(graph.nodes.size());
+    for (const auto& arc : source.arcs) {
+        if (arc.is_virtual_source_arc) continue;
+        const int u = out.to_air.at(arc.u), v = out.to_air.at(arc.v);
+        if (u < 0 || v < 0) throw std::logic_error("AIR physical arc touches virtual root");
+        const int aid = static_cast<int>(graph.arcs.size());
+        graph.arcs.push_back({u, v, arc.is_vline_track_straight,
+            arc.is_vline_track_swap, arc.mode_group_id, arc.physical_switch_id,
+            static_cast<air::PhysicalSwitchKind>(arc.physical_switch_kind)});
+        graph.out_arc_ids[u].push_back(aid); graph.in_arc_ids[v].push_back(aid);
+        graph.directed_arc_set.insert({u,v});
     }
-    return find_route_column(graph, net, scope_for_owner(scopes, owner), owner,
-                             options);
+    for (const auto& [key, id] : source.track_node_by_key)
+        graph.track_node_by_key.emplace(key, out.to_air.at(id));
+    for (const auto& [key, id] : source.bump_node_by_key)
+        graph.bump_node_by_key.emplace(bump_ref(key), out.to_air.at(id));
+    for (const auto& [key, id] : source.hline_node_by_key)
+        graph.hline_node_by_key.emplace(key, out.to_air.at(id));
+    for (const auto& [key, id] : source.vline_node_by_key)
+        graph.vline_node_by_key.emplace(key, out.to_air.at(id));
+    graph.track_node_count = source.track_node_count;
+    graph.tob_node_count = source.tob_node_count;
+    return out;
 }
 
-auto missing_count(std::size_t owners, const Selection& selection) -> std::size_t {
-    return owners - selection.size();
+auto node_ref(const GraphNodeRef& r) -> air::GraphNodeRef {
+    return {static_cast<air::GraphNodeRef::Kind>(r.kind), r.track_coord,
+        r.track_index, bump_ref(r.bump), r.tob, r.bank, r.group, r.line_index};
 }
 
-auto transaction(const UnifiedGraph& graph,
-                 const std::Vector<RoutingNet>& nets,
-                 const std::Vector<RoutingScope>& scopes,
-                 const std::map<std::size_t, std::size_t>& bus_lengths,
-                 const Selection& incumbent, RouteOwner seed,
-                 int variant, RrrCostModel& cost)
-    -> Selection {
-    auto working = incumbent;
-    auto former = RouteColumn{};
-    const auto old = working.find(seed);
-    if (old != working.end()) {
-        former = old->second;
-        working.erase(old);
+auto routing_nets(const std::Vector<RoutingNet>& source,
+                  const std::Vector<std::size_t>& indices) -> std::Vector<air::RoutingNet> {
+    auto out = std::Vector<air::RoutingNet>{};
+    for (const auto index : indices) {
+        const auto& net = source.at(index);
+        auto n = air::RoutingNet{};
+        n.net_id = net.net_id; n.name = net.name;
+        n.kind = static_cast<air::RoutingNetKind>(net.kind);
+        n.is_sync_bus = net.is_sync_bus;
+        for (const auto& ref : net.sources) n.sources.push_back(node_ref(ref));
+        for (const auto& d : net.demands)
+            n.demands.push_back({d.demand_id, node_ref(d.sink), d.candidate_source_indices, d.fixed_pair});
+        out.push_back(std::move(n));
     }
-    const auto fresh = search(graph, nets, scopes, seed, working, bus_lengths,
-        variant, cost, former.paths.empty() ? nullptr : &former);
-    if (fresh.paths.empty()) return {};
-    auto displaced = std::Vector<RouteOwner>{};
-    for (const auto& [other, column] : working)
-        if (route_columns_conflict(fresh, column)) displaced.push_back(other);
-    for (const auto other : displaced) working.erase(other);
-    working.emplace(seed, fresh);
-    auto pending = std::deque<RouteOwner>(displaced.begin(), displaced.end());
-    auto locked = std::set<RouteOwner>{seed};
-    while (!pending.empty()) {
-        const auto other = pending.front(); pending.pop_front();
-        const auto old_column = incumbent.at(other);
-        auto best = RouteColumn{};
-        auto best_conflicts = std::Vector<RouteOwner>{};
-        std::size_t best_count = std::numeric_limits<std::size_t>::max();
-        for (int attempt = 0; attempt < 4; ++attempt) {
-            auto replacement = search(graph, nets, scopes, other, working,
-                bus_lengths, variant + attempt, cost, &old_column);
-            if (replacement.paths.empty()) continue;
-            auto conflicts = std::Vector<RouteOwner>{};
-            bool invalid = false;
-            for (const auto& [owner, column] : working)
-                if (route_columns_conflict(replacement, column)) {
-                    if (locked.contains(owner)) { invalid = true; break; }
-                    conflicts.push_back(owner);
-                }
-            if (!invalid && conflicts.size() < best_count) {
-                best = std::move(replacement);
-                best_conflicts = std::move(conflicts);
-                best_count = best_conflicts.size();
-                if (best_count == 0) break;
-            }
-        }
-        if (best.paths.empty()) return {};
-        for (const auto conflict : best_conflicts) {
-            working.erase(conflict);
-            pending.push_back(conflict);
-        }
-        working.emplace(other, std::move(best));
-        locked.insert(other);
-    }
-    return working;
+    return out;
 }
 
 } // namespace
+
+auto rrr_mode0_indices(const std::Vector<std::Rc<circuit::Net>>& ilp_raw_nets,
+                      const std::Vector<std::Rc<circuit::Net>>& mode0_raw_nets)
+    -> std::Vector<std::size_t> {
+    if (ilp_raw_nets.size() != mode0_raw_nets.size())
+        throw std::logic_error("AIR mode-0/ILP net count mismatch");
+    auto indices = std::Vector<std::size_t>{};
+    auto seen = std::set<std::size_t>{};
+    for (const auto& net : mode0_raw_nets) {
+        const auto it = std::find(ilp_raw_nets.begin(), ilp_raw_nets.end(), net);
+        const auto index = static_cast<std::size_t>(it-ilp_raw_nets.begin());
+        if (it == ilp_raw_nets.end() || !seen.insert(index).second)
+            throw std::logic_error("AIR mode-0/ILP net identity mismatch");
+        indices.push_back(index);
+    }
+    return indices;
+}
+
+auto route_bus_lengths(const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
+                       const RoutingResult& route) -> std::map<std::size_t, std::size_t> {
+    auto lengths = std::map<std::size_t, std::size_t>{};
+    for (const auto& path : route.paths) {
+        const auto& net = net_for_owner(nets, {path.net_id, path.demand_id});
+        if (!net.is_sync_bus) continue;
+        std::size_t length = 0;
+        for (int id : path.node_path) if (is_wirelength_resource_node(graph, id)) ++length;
+        const auto [it, inserted] = lengths.emplace(net.net_id, length);
+        if (!inserted && it->second != length) throw std::logic_error("AIR returned unequal bus lanes");
+    }
+    return lengths;
+}
 
 auto optimize_route_columns_rrr(const UnifiedGraph& graph,
                                 const std::Vector<RoutingNet>& nets,
                                 const std::Vector<RoutingScope>& scopes,
                                 const RouteIlpResult& baseline,
-                                int /*verbose_level*/,
-                                std::chrono::steady_clock::time_point deadline)
+                                hardware::Interposer* interposer,
+                                int verbose_level,
+                                std::chrono::steady_clock::time_point deadline,
+                                const std::Vector<std::Rc<circuit::Net>>* raw_nets,
+                                const std::Vector<std::size_t>& raw_to_ilp)
     -> RoutingResult {
     const auto begin = std::chrono::steady_clock::now();
-    const auto owners = route_owners(nets);
-    auto selected = Selection{};
-    for (const auto owner : owners) {
-        auto paths = std::Vector<SourceSinkPairPath>{};
+    if (!baseline.has_integer_solution || !validate_partial_route(
+        graph, nets, scopes, baseline.route, baseline.bus_lengths))
+        throw std::logic_error("AIR input is not a legal ILP partial route");
+    auto expected_missing = std::set<RouteOwner>{};
+    for (const auto owner : route_owners(nets)) {
         const auto& net = net_for_owner(nets, owner);
-        for (const auto& path : baseline.route.paths)
-            if (path.net_id == owner.net_id &&
-                (!net.is_sync_bus || path.demand_id == owner.demand_id))
-                paths.push_back(path);
-        if (!paths.empty())
-            selected.emplace(owner, route_column_from_paths(graph, net, owner,
-                                                              paths));
+        if (std::ranges::none_of(baseline.route.paths, [&](const auto& p) {
+            return p.net_id == owner.net_id && (!net.is_sync_bus || p.demand_id == owner.demand_id);
+        })) expected_missing.insert(owner);
     }
-    if (!no_conflicts(selected))
-        throw std::logic_error("RRR baseline has resource conflict");
-    auto actual_missing = std::set<RouteOwner>{};
-    for (const auto owner : owners)
-        if (!selected.contains(owner)) actual_missing.insert(owner);
-    if (actual_missing != baseline.missing)
-        throw std::logic_error("RRR baseline slack and paths disagree");
-    auto incumbent = assemble(graph, selected, owners.size());
-    if (!baseline.has_integer_solution ||
-        !validate_partial_route(graph, nets, scopes, incumbent,
-                                baseline.bus_lengths))
-        throw std::logic_error("RRR baseline is not a legal partial route");
-    const auto original_wirelength = incumbent.total_wirelength;
-    auto accepted = 0;
-    auto attempts = 0;
-    auto cost = RrrCostModel{graph};
-    debug::info("route RRR cost: policy=fpia_additive H=4 k=1 s=20 decay=0.9 increment=1 history_weight=1 present_update=transaction_occupancy history_update=committed_sweep");
-    debug::info_fmt("route RRR start: owners={} missing={} wirelength={}",
-        owners.size(), missing_count(owners.size(), selected),
-        incumbent.total_wirelength);
-    for (int sweep = 0; sweep < 2; ++sweep) {
-        bool improved = false;
-        const auto previous_accepted = accepted;
-        auto order = std::Vector<RouteOwner>{};
-        for (const auto owner : owners)
-            if (!selected.contains(owner)) order.push_back(owner);
-        for (const auto owner : owners)
-            if (selected.contains(owner)) order.push_back(owner);
-        for (const auto owner : order) {
-            if (std::chrono::steady_clock::now() >= deadline) break;
-            for (int variant = 0; variant < 6; ++variant) {
-                if (std::chrono::steady_clock::now() >= deadline) break;
-                ++attempts;
-                auto trial = transaction(graph, nets, scopes,
-                    baseline.bus_lengths, selected, owner, variant, cost);
-                if (trial.empty() || !no_conflicts(trial)) continue;
-                auto candidate = assemble(graph, trial, owners.size());
-                if (!validate_partial_route(graph, nets, scopes, candidate,
-                                            baseline.bus_lengths)) continue;
-                const auto old_missing = missing_count(owners.size(), selected);
-                const auto new_missing = missing_count(owners.size(), trial);
-                if (new_missing > old_missing ||
-                    (new_missing == old_missing &&
-                     candidate.total_wirelength >= incumbent.total_wirelength))
-                    continue;
-                debug::info_fmt("route RRR accept: sweep={} net={} demand={} missing={}->{} wirelength={}->{}",
-                    sweep, owner.net_id, owner.demand_id, old_missing, new_missing,
-                    incumbent.total_wirelength, candidate.total_wirelength);
-                selected = std::move(trial);
-                incumbent = std::move(candidate);
-                improved = true; ++accepted;
-                break;
+    if (expected_missing != baseline.missing) throw std::logic_error("AIR input slack/path mismatch");
+    const auto bridge = graph_bridge(graph);
+    auto indices = raw_to_ilp;
+    if (indices.empty()) {
+        indices.resize(nets.size());
+        std::iota(indices.begin(), indices.end(), 0);
+    }
+    if (indices.size() != nets.size()) throw std::logic_error("AIR net permutation size mismatch");
+    const auto air_nets = routing_nets(nets, indices);
+    auto initial = std::Vector<std::Vector<std::Vector<int>>>(nets.size());
+    for (std::size_t ni = 0; ni < nets.size(); ++ni) {
+        const auto& net = nets[indices[ni]];
+        initial[ni].resize(net.demands.size());
+        for (const auto& path : baseline.route.paths) if (path.net_id == net.net_id) {
+            auto& mapped = initial[ni].at(path.demand_id);
+            for (int id : path.node_path) {
+                const int mapped_id = bridge.to_air.at(id);
+                if (mapped_id < 0) throw std::logic_error("AIR input contains a virtual node");
+                mapped.push_back(mapped_id);
             }
         }
-        cost.set_selection(selected);
-        const auto history = cost.history_next();
-        debug::info_fmt("route RRR history: sweep={} committed_overflow={} nonzero_resources={} total={} accepted={}",
-            sweep, history.overflow, history.nonzero_resources, history.total,
-            accepted - previous_accepted);
-        if (!improved) break;
     }
-    incumbent.rrr_attempted = true;
-    incumbent.rrr_accepted = accepted > 0;
-    const bool sync_missing = std::ranges::any_of(owners,
-        [&](RouteOwner owner) {
-            return !selected.contains(owner) &&
-                   net_for_owner(nets, owner).is_sync_bus;
-        });
-    incumbent.rrr_status = incumbent.ok ?
-        (accepted > 0 ? "COMPLETE_IMPROVED" : "COMPLETE_UNCHANGED") :
-        std::chrono::steady_clock::now() >= deadline ? "TIME_LIMIT" :
-        sync_missing ? "NO_SOLUTION_WITHIN_SYNC_LENGTH_CAP" : "INCOMPLETE";
-    incumbent.rrr_triggers = attempts;
-    incumbent.rrr_accepted_triggers = accepted;
-    incumbent.rrr_baseline_wirelength = original_wirelength;
-    incumbent.rrr_wirelength = incumbent.total_wirelength;
-    incumbent.rrr_total_ms = std::chrono::duration_cast<
-        std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count();
-    debug::info_fmt("route RRR summary: status={} missing={} accepted={} attempts={} wirelength={}->{} total_ms={}",
-        incumbent.rrr_status, missing_count(owners.size(), selected), accepted,
-        attempts, original_wirelength, incumbent.total_wirelength,
-        incumbent.rrr_total_ms);
-    for (const auto owner : owners)
-        if (!selected.contains(owner))
-            debug::info_fmt("route RRR missing: net={} demand={}",
-                            owner.net_id, owner.demand_id);
-    return incumbent;
+    auto params = air::RrrParams{};
+    params.budget_start = begin; params.deadline = deadline;
+    params.time_budget_seconds = std::max(0.0, std::chrono::duration<double>(deadline-begin).count());
+    debug::info_fmt("route RRR start: source=316e477 owners={} missing={} wirelength={} budget_ms={}",
+        route_owners(nets).size(), baseline.missing.size(), baseline.route.total_wirelength,
+        params.time_budget_seconds * 1000);
+    const auto result = air::run_rrr(bridge.graph, air_nets, params, interposer,
+                                    verbose_level, raw_nets, initial);
+    auto out = RoutingResult{};
+    out.ok = result.status == "success"; out.message = result.stop_reason;
+    for (std::size_t ni = 0; ni < nets.size(); ++ni)
+        for (std::size_t di = 0; di < result.paths[ni].size(); ++di) {
+            const auto& path = result.paths[ni][di];
+            if (path.empty()) continue;
+            auto physical = std::Vector<int>{};
+            for (int id : path) physical.push_back(bridge.from_air.at(id));
+            const auto& net = nets[indices[ni]];
+            const auto& demand = net.demands[di];
+            const auto source = std::find_if(demand.candidate_source_indices.begin(),
+                demand.candidate_source_indices.end(), [&](auto index) {
+                    return resolve_graph_node(graph, net.sources[index]) == physical.front();
+                });
+            if (source == demand.candidate_source_indices.end()) throw std::logic_error("AIR source is not a candidate");
+            out.paths.push_back({net.net_id, *source, demand.demand_id,
+                net.kind == RoutingNetKind::PNnet ? physical.front() : -1, physical});
+            for (std::size_t j = 1; j < physical.size(); ++j)
+                for (int aid : graph.out_arc_ids[physical[j-1]]) {
+                    const auto& arc = graph.arcs[aid];
+                    if (arc.v != physical[j]) continue;
+                    if (arc.physical_switch_id >= 0) out.used_tob_switch_ids.push_back(arc.physical_switch_id);
+                    if (arc.mode_group_id >= 0) out.vline_mode_straight_by_group[arc.mode_group_id] = arc.is_vline_track_straight;
+                    break;
+                }
+        }
+    std::sort(out.used_tob_switch_ids.begin(), out.used_tob_switch_ids.end());
+    const auto unique = std::unique(out.used_tob_switch_ids.begin(), out.used_tob_switch_ids.end());
+    out.used_tob_switch_ids.erase(unique, out.used_tob_switch_ids.end());
+    out.total_wirelength = total_wirelength(graph, out);
+    if (out.total_wirelength != result.total_wirelength) throw std::logic_error("AIR wirelength mapping mismatch");
+    out.rrr_attempted = true;
+    out.rrr_accepted = out.ok && (!baseline.missing.empty() || out.total_wirelength < baseline.route.total_wirelength);
+    out.rrr_status = out.ok ? (out.rrr_accepted ? "COMPLETE_IMPROVED" : "COMPLETE_UNCHANGED") : "TIME_LIMIT";
+    out.rrr_baseline_wirelength = baseline.route.total_wirelength;
+    out.rrr_wirelength = out.total_wirelength;
+    out.rrr_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-begin).count();
+    out.rrr_iterations = result.iterations;
+    out.rrr_triggers = result.optimization_rounds;
+    debug::info_fmt("route RRR summary: status={} stop_reason={} missing={} iterations={} convergences={} wirelength={}->{} total_ms={}",
+        out.rrr_status, result.stop_reason, result.missing_owners, result.iterations,
+        result.convergences, baseline.route.total_wirelength, out.total_wirelength, out.rrr_total_ms);
+    return out;
 }
 
 } // namespace PR_tool

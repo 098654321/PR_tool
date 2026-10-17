@@ -10,7 +10,8 @@
 #include <stdexcept>
 
 namespace PR_tool {
-auto run_rrr_cost_tests() -> void;
+auto run_air_rrr_tests() -> void;
+auto run_rrr_import_tests() -> void;
 namespace {
 
 auto require(bool value, const char* message) -> void {
@@ -318,6 +319,14 @@ auto big_m_modes() -> void {
             "gap M ignored a longer SAT initial candidate");
 }
 
+auto run_test_rrr(const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
+                  const std::Vector<RoutingScope>& scopes, const RouteIlpResult& baseline)
+    -> RoutingResult {
+    auto interposer = hardware::Interposer{};
+    return optimize_route_columns_rrr(graph, nets, scopes, baseline, &interposer, 0,
+        std::chrono::steady_clock::now() + std::chrono::seconds(1));
+}
+
 auto missing_sync_lane() -> void {
     auto graph = UnifiedGraph{};
     for (int i = 0; i < 6; ++i) add_node(graph, UnifiedNodeKind::Track, i);
@@ -336,17 +345,43 @@ auto missing_sync_lane() -> void {
     baseline.bus_lengths[0] = 3;
     const auto nets = std::Vector<RoutingNet>{net};
     const auto scopes = std::Vector<RoutingScope>{full_scope(graph)};
-    const auto result = optimize_route_columns_rrr(graph, nets, scopes, baseline);
+    const auto result = run_test_rrr(graph, nets, scopes, baseline);
     require(result.ok && result.paths.size() == 2, "RRR did not complete SyncBus");
     require(validate_direct_route(graph, nets, scopes, result),
             "RRR SyncBus invalid");
 }
 
+auto expired_sync_preserves_demand() -> void {
+    auto graph = UnifiedGraph{};
+    for (int i = 0; i < 6; ++i) add_node(graph, UnifiedNodeKind::Track, i);
+    edge(graph, 0, 1); edge(graph, 1, 2);
+    edge(graph, 3, 4); edge(graph, 4, 5);
+    auto net = RoutingNet{}; net.is_sync_bus = true;
+    net.sources = {ref(UnifiedNodeKind::Track, 0), ref(UnifiedNodeKind::Track, 3)};
+    net.demands = {{0, ref(UnifiedNodeKind::Track, 2), {0}, true},
+                   {1, ref(UnifiedNodeKind::Track, 5), {1}, true}};
+    auto baseline = RouteIlpResult{}; baseline.has_integer_solution = true;
+    baseline.route.paths = {{0, 1, 1, -1, {3, 4, 5}}};
+    baseline.route.total_wirelength = 3; baseline.missing.insert({0,0});
+    baseline.bus_lengths[0] = 3;
+    auto interposer = hardware::Interposer{};
+    const auto result = optimize_route_columns_rrr(graph, {net}, {full_scope(graph)},
+        baseline, &interposer, 0, std::chrono::steady_clock::now()-std::chrono::seconds(1));
+    require(!result.ok && result.message == "time_budget" && result.paths.size() == 1,
+            "expired partial SyncBus did not return original input");
+    const auto& path = result.paths.front();
+    require(path.demand_id == 1 && path.source_index == 1 && path.node_path == std::Vector<int>({3,4,5}),
+            "partial SyncBus fallback compacted or relabeled demand slots");
+    require(validate_partial_route(graph, {net}, {full_scope(graph)}, result, baseline.bus_lengths),
+            "partial SyncBus fallback failed independent validation");
+}
+
 auto sync_lane_displacement() -> void {
     auto graph = UnifiedGraph{};
     for (int i = 0; i < 6; ++i) add_node(graph, UnifiedNodeKind::Track, i);
-    edge(graph, 0, 4); edge(graph, 4, 1);
+    graph.nodes[4].track_col = 1; graph.nodes[5].track_col = 1;
     edge(graph, 0, 5); edge(graph, 5, 1);
+    edge(graph, 0, 4); edge(graph, 4, 1);
     edge(graph, 2, 4); edge(graph, 4, 3);
     auto net = RoutingNet{}; net.is_sync_bus = true;
     net.sources = {ref(UnifiedNodeKind::Track, 0),
@@ -361,7 +396,7 @@ auto sync_lane_displacement() -> void {
     baseline.bus_lengths[0] = 3;
     const auto nets = std::Vector<RoutingNet>{net};
     const auto scopes = std::Vector<RoutingScope>{full_scope(graph)};
-    const auto result = optimize_route_columns_rrr(graph, nets, scopes, baseline);
+    const auto result = run_test_rrr(graph, nets, scopes, baseline);
     require(result.ok && result.paths.size() == 2,
             "RRR did not displace routed SyncBus lane");
     const auto old_lane = std::find_if(result.paths.begin(), result.paths.end(),
@@ -395,6 +430,7 @@ auto sync_cut_tail() -> void {
 auto chained_rrr_displacement() -> void {
     auto graph = UnifiedGraph{};
     for (int i = 0; i < 9; ++i) add_node(graph, UnifiedNodeKind::Track, i);
+    graph.nodes[6].track_col = 2; graph.nodes[7].track_col = 4; graph.nodes[8].track_col = 4;
     edge(graph, 0, 6); edge(graph, 6, 1);
     edge(graph, 2, 6); edge(graph, 6, 3);
     edge(graph, 2, 7); edge(graph, 7, 3);
@@ -415,7 +451,7 @@ auto chained_rrr_displacement() -> void {
                             {2, 0, 0, -1, {4, 7, 5}}};
     baseline.route.total_wirelength = 6;
     baseline.missing.insert({0, 0});
-    const auto result = optimize_route_columns_rrr(graph, nets, scopes, baseline);
+    const auto result = run_test_rrr(graph, nets, scopes, baseline);
     require(result.ok && result.paths.size() == 3,
             "RRR failed chained displacement");
     require(validate_direct_route(graph, nets, scopes, result),
@@ -508,7 +544,7 @@ auto pn_source_change() -> void {
     baseline.route.total_wirelength = 4;
     const auto nets = std::Vector<RoutingNet>{net};
     const auto scopes = std::Vector<RoutingScope>{full_scope(graph)};
-    const auto result = optimize_route_columns_rrr(graph, nets, scopes, baseline);
+    const auto result = run_test_rrr(graph, nets, scopes, baseline);
     require(result.ok && result.paths.front().source_index == 1,
             "RRR locked PN source");
     require(result.total_wirelength == 2, "RRR did not improve PN wirelength");
@@ -521,6 +557,7 @@ auto unit_change() -> void {
     const int u0 = add_node(graph, UnifiedNodeKind::Track, 2, 0);
     const int u0b = add_node(graph, UnifiedNodeKind::Track, 3, 0);
     const int u1 = add_node(graph, UnifiedNodeKind::Track, 4, 1);
+    graph.nodes[u0].track_col = 0; graph.nodes[u0b].track_col = 0; graph.nodes[u1].track_col = 0;
     edge(graph, a, u0); edge(graph, u0, u0b); edge(graph, u0b, b);
     edge(graph, a, u1); edge(graph, u1, b);
     auto net = RoutingNet{}; net.kind = RoutingNetKind::Bnet;
@@ -532,7 +569,7 @@ auto unit_change() -> void {
     baseline.route.total_wirelength = 4;
     const auto nets = std::Vector<RoutingNet>{net};
     const auto scopes = std::Vector<RoutingScope>{full_scope(graph)};
-    const auto result = optimize_route_columns_rrr(graph, nets, scopes, baseline);
+    const auto result = run_test_rrr(graph, nets, scopes, baseline);
     require(result.ok && result.paths.front().node_path[1] == u1,
             "RRR locked Bnet unit");
 }
@@ -541,7 +578,8 @@ auto unit_change() -> void {
 } // namespace PR_tool
 
 auto main() -> int {
-    PR_tool::run_rrr_cost_tests();
+    PR_tool::run_air_rrr_tests();
+    PR_tool::run_rrr_import_tests();
     PR_tool::integer_lp_incumbent();
     PR_tool::simple_master();
     PR_tool::sync_master_length();
@@ -550,6 +588,7 @@ auto main() -> int {
     PR_tool::sync_master_length_increase();
     PR_tool::big_m_modes();
     PR_tool::missing_sync_lane();
+    PR_tool::expired_sync_preserves_demand();
     PR_tool::sync_lane_displacement();
     PR_tool::sync_cut_tail();
     PR_tool::chained_rrr_displacement();
