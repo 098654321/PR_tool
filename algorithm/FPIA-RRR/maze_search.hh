@@ -9,6 +9,12 @@
 
 namespace PR_tool {
 
+inline auto node_in_search_box(const UnifiedGraph& graph, int node, const RrrParams& params) -> bool {
+    if (!params.search_box) return true;
+    const auto [r, c] = routing_node_position(graph, node);
+    return params.search_box->contains(r, c);
+}
+
 auto arc_resource_keys(const UnifiedGraph& graph, const UnifiedArc& arc) -> const ArcResourceKeys&;
 
 auto arc_capacity_blocked(const UnifiedGraph& graph, const ResourceModel& resources,

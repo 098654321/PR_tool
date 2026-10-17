@@ -10,6 +10,7 @@
 #include <map>
 #include <set>
 #include <tuple>
+#include <utility>
 
 namespace PR_tool {
 
@@ -97,6 +98,8 @@ auto build_hardware_graph(
 ) -> UnifiedGraph;
 
 auto resolve_graph_node(const UnifiedGraph& graph, const GraphNodeRef& ref) -> int;
+
+auto routing_node_position(const UnifiedGraph& graph, int node_id) -> std::pair<int, int>;
 
 auto format_unified_node(const UnifiedGraph& graph, int node_id) -> std::String;
 

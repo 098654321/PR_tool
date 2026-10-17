@@ -2,7 +2,6 @@
 
 #include "rrr_routing.hh"
 #include "maze_search.hh"
-#include "hw_map.hh"
 
 #include <debug/debug.hh>
 #include <cmath>
@@ -11,25 +10,10 @@
 
 namespace PR_tool::rrr_detail {
 
-struct AirBox {
-    int r0{0}, r1{0}, c0{0}, c1{0};
-    auto contains(int r, int c) const -> bool { return r >= r0 && r <= r1 && c >= c0 && c <= c1; }
-    auto include(int r, int c) -> void {
-        r0 = std::min(r0, r); r1 = std::max(r1, r);
-        c0 = std::min(c0, c); c1 = std::max(c1, c);
-    }
-};
-
-inline auto air_position(const UnifiedGraph& graph, int id) -> std::pair<int, int> {
-    const auto& node = graph.nodes[id];
-    if (node.kind == UnifiedNodeKind::Track) return {node.track_row, node.track_col};
-    const auto coord = tob_anchor_cob(node.kind == UnifiedNodeKind::Bump ? node.bump.TOB : node.tob);
-    return {static_cast<int>(coord.row), static_cast<int>(coord.col)};
-}
-
 struct AirSpatial {
-    AirBox initial;
-    AirBox device;
+    RoutingBox initial; // Unpadded terminal bbox: fixed bin origin and area.
+    RoutingBox device;
+    RoutingBox router_bb; // Persistent per-net search box, updated only between rounds.
     double bin_size{1};
     std::Map<std::pair<int, int>, std::Vector<int>> bins;
     auto bin(int r, int c) const -> std::pair<int, int> {
@@ -41,23 +25,34 @@ struct AirSpatial {
 inline auto air_spatial(const UnifiedGraph& graph, const RoutingNet& net) -> AirSpatial {
     auto result = AirSpatial{};
     bool first = true;
-    for (std::size_t id = 0; id < graph.nodes.size(); ++id) {
-        const auto [r, c] = air_position(graph, id);
-        if (first) { result.device = {r, r, c, c}; first = false; }
-        else result.device.include(r, c);
+    if (graph.rows > 0 && graph.cols > 0) {
+        // Tracks/I/O on row=height and col=width are the physical outer edges.
+        result.device = {0, graph.rows, 0, graph.cols};
+    } else {
+        // Synthetic graph seam; production always has explicit device dimensions.
+        for (std::size_t id = 0; id < graph.nodes.size(); ++id) {
+            const auto [r, c] = routing_node_position(graph, id);
+            if (first) { result.device = {r, r, c, c}; first = false; }
+            else result.device.include(r, c);
+        }
     }
     first = true;
     for (const auto& terminal : net_terminals(net)) {
         const int id = resolve_graph_node(graph, terminal);
         if (id < 0) continue;
-        const auto [r, c] = air_position(graph, id);
+        const auto [r, c] = routing_node_position(graph, id);
         if (first) { result.initial = {r, r, c, c}; first = false; }
         else result.initial.include(r, c);
     }
     // A collinear/point bbox still needs nonempty spatial bins.
     const double area = std::max(1, result.initial.r1 - result.initial.r0)
         * std::max(1, result.initial.c1 - result.initial.c0);
-    result.bin_size = std::sqrt(4 * area / std::max<std::size_t>(1, net.demands.size()));
+    result.bin_size = 1 + std::sqrt(4 * area / std::max<std::size_t>(1, net.demands.size()));
+    result.router_bb = {
+        std::max(result.device.r0, result.initial.r0-1),
+        std::min(result.device.r1, result.initial.r1+1),
+        std::max(result.device.c0, result.initial.c0-1),
+        std::min(result.device.c1, result.initial.c1+1)};
     return result;
 }
 
@@ -83,9 +78,9 @@ inline auto air_root_prefix(const OwnerRecord& owner, const std::Vector<int>& ro
     return path;
 }
 
-// Weighted Dijkstra (no lookahead). Expansion resumes at blocked frontiers when
-// the current terminal bbox cannot complete the connection; it may grow to the
-// entire device, so the bbox cannot permanently exclude an available route.
+// Weighted Dijkstra within this round's fixed per-net box. No in-search
+// expansion or full-device fallback: only a successful rerouted net may grow
+// its persistent box at the end of a round.
 inline auto air_branch(const UnifiedGraph& graph, const ResourceModel& resources,
                        const OwnerRecord& owner, const std::Vector<int>& starts,
                        int sink, int unit, const AirSpatial& spatial,
@@ -95,25 +90,16 @@ inline auto air_branch(const UnifiedGraph& graph, const ResourceModel& resources
     auto heap = std::priority_queue<Item, std::Vector<Item>, std::greater<Item>>{};
     auto labels = std::Vector<Label>{};
     auto best = std::Vector<double>(graph.nodes.size(), std::numeric_limits<double>::infinity());
-    auto box = spatial.initial;
+    const auto& box = spatial.router_bb;
     for (int n : starts) {
         if (graph.nodes[n].kind == UnifiedNodeKind::Track && static_cast<int>(graph.nodes[n].unit) != unit) continue;
-        const auto [r, c] = air_position(graph, n); box.include(r, c);
+        const auto [r, c] = routing_node_position(graph, n);
+        if (!box.contains(r, c)) continue;
         if (best[n] == 0) continue;
         best[n] = 0; labels.push_back({0, {n}}); heap.emplace(0, labels.size()-1);
     }
-    auto frontier = std::Set<std::size_t>{};
-    bool low_r = false, high_r = false, low_c = false, high_c = false;
     int expansions = 0;
-    while ((!heap.empty() || !frontier.empty()) && expansions < 300000) {
-        if (heap.empty()) {
-            box.r0 = low_r ? std::max(spatial.device.r0, box.r0-1) : box.r0;
-            box.r1 = high_r ? std::min(spatial.device.r1, box.r1+1) : box.r1;
-            box.c0 = low_c ? std::max(spatial.device.c0, box.c0-1) : box.c0;
-            box.c1 = high_c ? std::min(spatial.device.c1, box.c1+1) : box.c1;
-            for (auto index : frontier) heap.emplace(labels[index].cost, index);
-            frontier.clear(); low_r = high_r = low_c = high_c = false;
-        }
+    while (!heap.empty() && expansions < 300000) {
         ++expansions;
         const auto [cost, index] = heap.top(); heap.pop();
         const auto label = labels[index];
@@ -129,12 +115,8 @@ inline auto air_branch(const UnifiedGraph& graph, const ResourceModel& resources
                 (dest.kind == UnifiedNodeKind::VLine && static_cast<int>(dest.line_index % 8) != unit % 8) ||
                 std::find(label.path.begin(), label.path.end(), arc.v) != label.path.end() ||
                 owner.tree.contains(arc.v)) continue;
-            const auto [r, c] = air_position(graph, arc.v);
-            if (!box.contains(r, c)) {
-                low_r = low_r || r < box.r0; high_r = high_r || r > box.r1;
-                low_c = low_c || c < box.c0; high_c = high_c || c > box.c1;
-                frontier.insert(index); continue;
-            }
+            const auto [r, c] = routing_node_position(graph, arc.v);
+            if (!box.contains(r, c)) continue;
             const double next = cost + resources.node_cost(owner.id, arc.v);
             if (next + 1e-9 >= best[arc.v]) continue;
             best[arc.v] = next;

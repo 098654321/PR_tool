@@ -287,11 +287,12 @@ auto maze_tail(
     auto starts = std::Set<int> {};
     if (prefix.empty()) {
         for (const int node : lane.sources) {
-            if (valid_node(graph, node)) {
+            if (valid_node(graph, node) && node_in_search_box(graph, node, params)) {
                 starts.insert(node);
             }
         }
     } else {
+        for (int node : prefix) if (!node_in_search_box(graph, node, params)) return {};
         starts.insert(prefix.back());
     }
     if (starts.empty() || !valid_node(graph, lane.sink)) {
@@ -319,13 +320,6 @@ auto maze_tail(
     std::priority_queue<TailItem, std::Vector<TailItem>, TailCompare> heap;
     int seq = 0;
     bool logged_track_limit = false;
-    debug::debug_fmt(
-        "FPIA RRR: sync tail maze sink={} prefix={} target={} limit={} recs_cap={}",
-        lane.sink,
-        prefix.size(),
-        target_length,
-        length_limit,
-        recs_cap);
 
     for (const int node : starts) {
         const int tracks = is_track_node(graph, node) ? 1 : 0;
@@ -386,6 +380,7 @@ auto maze_tail(
             if (!valid_node(graph, arc.v)) {
                 continue;
             }
+            if (!node_in_search_box(graph, arc.v, params)) continue;
             if (graph.nodes[arc.v].kind == UnifiedNodeKind::Bump && arc.v != lane.sink) continue;
             if (params.hard_capacity && arc_capacity_blocked(graph, resources, lane.id, arc)) continue;
             if (forbidden.contains(arc.v) || on_parent_chain(recs, item.rec, arc.v)) {

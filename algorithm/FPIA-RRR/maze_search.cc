@@ -368,6 +368,7 @@ auto route_demand_from_tree(
     int seq = 0;
 
     const auto push_start = [&](int node) {
+        if (!node_in_search_box(graph, node, params)) return;
         const auto state = state_id(node, initial_unit);
         if (scratch.has_distance(state)) {
             return;
@@ -414,6 +415,7 @@ auto route_demand_from_tree(
             if (!valid_node(graph, arc.v)) {
                 continue;
             }
+            if (!node_in_search_box(graph, arc.v, params)) continue;
             if (node_kind(graph, arc.v) == UnifiedNodeKind::Bump && arc.v != sink) continue;
             if (arc_is_hard_blocked(graph, resources, owner, arc, hard_block)) {
                 continue;

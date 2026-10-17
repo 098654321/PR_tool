@@ -65,21 +65,32 @@ auto run_rrr(
         params.seed, params.time_budget_seconds, params.H, params.k, params.s, params.L, params.acc_fac);
     if (params.time_budget_seconds <= 0)
         debug::info("FPIA RRR: no positive time budget; routing has no automatic iteration/convergence stop");
-    for (auto ni : order) air_reference(ni, graph, nets, states[ni], params, interposer);
+    for (auto ni : order) {
+        const auto& s = states[ni].spatial;
+        debug::info_fmt("FPIA RRR: spatial net_id={} terminal_bb=[r{}:{} c{}:{}] router_bb=[r{}:{} c{}:{}] bin_side={} port_threshold={}",
+            nets[ni].net_id, s.initial.r0, s.initial.r1, s.initial.c0, s.initial.c1,
+            s.router_bb.r0, s.router_bb.r1, s.router_bb.c0, s.router_bb.c1,
+            s.bin_size, kAirIncrementalPortThreshold);
+        air_reference(ni, graph, nets, states[ni], params, interposer);
+    }
     // INIT records reference lengths only. The actual current route starts empty.
     auto best = std::Vector<OwnerRecord>{};
     std::size_t best_length = std::numeric_limits<std::size_t>::max();
     bool has_legal = false, reported_overrun = false;
     while (true) {
+        auto rerouted = std::Vector<bool>(nets.size(), false);
         if (has_legal) ++result.optimization_rounds;
         for (auto ni : order) {
             if (has_legal && expired()) break;
             if (nets[ni].is_sync_bus) {
-                if (!air_net_complete(ni, graph, nets, owners))
-                    air_route_sync(ni, graph, nets, owners, resources, params, interposer);
+                if (!air_net_complete(ni, graph, nets, owners)) {
+                    auto search_params = params;
+                    search_params.search_box = states[ni].spatial.router_bb;
+                    rerouted[ni] = air_route_sync(ni, graph, nets, owners, resources, search_params, interposer);
+                }
             } else {
                 for (auto& owner : owners) if (owner.net_index == ni)
-                    air_route_owner(graph, nets[ni], owner, resources, states[ni].spatial);
+                    rerouted[ni] = air_route_owner(graph, nets[ni], owner, resources, states[ni].spatial) || rerouted[ni];
             }
         }
         ++result.iterations;
@@ -114,6 +125,8 @@ auto run_rrr(
             debug::info("FPIA RRR: budget exceeded without legal solution; continue until first legal solution");
             reported_overrun = true;
         }
+        // Inspect complete results BEFORE pruning. Cross-net overflow is allowed.
+        const int boxes_updated = air_update_router_boxes(graph, nets, owners, states, rerouted, interposer);
         // Price congestion BEFORE pruning it. Only graph-node history accumulates.
         resources.history_next();
         const int pruned = air_prune_illegal(graph, nets, owners, resources, states, interposer);
@@ -122,8 +135,8 @@ auto run_rrr(
             selected = air_wirelength_candidates(graph, nets, owners, states);
             for (auto ni : selected) air_rip_net(ni, owners, resources);
         }
-        debug::info_fmt("FPIA RRR: prepare illegal_ripup={} wirelength_ripup={} phase={}",
-            pruned, selected.size(), legal ? "optimize" : "repair");
+        debug::info_fmt("FPIA RRR: prepare illegal_ripup={} wirelength_ripup={} bbox_updates={} phase={}",
+            pruned, selected.size(), boxes_updated, legal ? "optimize" : "repair");
     }
     owners = std::move(best);
     resources = ResourceModel{params};

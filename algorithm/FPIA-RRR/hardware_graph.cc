@@ -527,6 +527,13 @@ auto cached_track_out_arc_ids(
     return cached;
 }
 
+auto routing_node_position(const UnifiedGraph& graph, int node_id) -> std::pair<int, int> {
+    const auto& node = graph.nodes[node_id];
+    if (node.kind == UnifiedNodeKind::Track) return {node.track_row, node.track_col};
+    const auto coord = tob_anchor_cob(node.kind == UnifiedNodeKind::Bump ? node.bump.TOB : node.tob);
+    return {static_cast<int>(coord.row), static_cast<int>(coord.col)};
+}
+
 auto resolve_graph_node(const UnifiedGraph& graph, const GraphNodeRef& ref) -> int {
     if (ref.kind == GraphNodeRef::Kind::Bump) {
         const auto it = graph.bump_node_by_key.find(ref.bump);

@@ -235,7 +235,8 @@ auto test_run_rrr_assigns_disjoint_tob_access() -> void {
     auto sinks = std::Vector<GraphNodeRef> {};
     for (std::size_t i = 0; i < 4; ++i) {
         // A real COB branch preserves unit; all leaves share source unit zero.
-        const int leaf = add_mapped_track(graph, 0, static_cast<int>(i + 1), i * 8);
+        // Keep this mux-legality fixture inside the one-cell initial search margin.
+        const int leaf = add_mapped_track(graph, 0, 1, i * 8);
         const int vline = add_synth_node(graph, UnifiedNodeKind::VLine);
         const int hline = add_synth_node(graph, UnifiedNodeKind::HLine);
         const int bump = add_synth_bump(graph, 0, i, 0);

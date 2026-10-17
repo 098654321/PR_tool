@@ -11,6 +11,8 @@
 
 namespace PR_tool::rrr_detail {
 
+inline constexpr int kAirIncrementalPortThreshold = 16;
+
 struct AirNetState {
     AirSpatial spatial;
     std::size_t reference{std::numeric_limits<std::size_t>::max()};
@@ -74,14 +76,15 @@ inline auto air_refresh(const UnifiedGraph& graph, OwnerRecord& owner, ResourceM
     if (spatial != nullptr) {
         spatial->bins.clear();
         for (int n : owner.tree) {
-            const auto [r, c] = air_position(graph, n);
+            const auto [r, c] = routing_node_position(graph, n);
             spatial->bins[spatial->bin(r, c)].push_back(n);
         }
     }
 }
 
 inline auto air_route_owner(const UnifiedGraph& graph, const RoutingNet& net, OwnerRecord& owner,
-                            ResourceModel& resources, AirSpatial& spatial) -> void {
+                            ResourceModel& resources, AirSpatial& spatial) -> bool {
+    bool rerouted = false;
     air_refresh(graph, owner, resources, &spatial);
     for (std::size_t slot = 0; slot < owner.demand_paths.size(); ++slot) {
         if (air_connected(graph, net, owner, slot)) continue;
@@ -97,8 +100,8 @@ inline auto air_route_owner(const UnifiedGraph& graph, const RoutingNet& net, Ow
         auto full = std::Vector<int>(owner.tree.begin(), owner.tree.end());
         for (int root : roots)
             if (std::find(full.begin(), full.end(), root) == full.end()) full.push_back(root);
-        if (path.empty() && net.demands.size() >= 16) {
-            const auto [r, c] = air_position(graph, sink);
+        if (path.empty() && owner.port_count >= kAirIncrementalPortThreshold) {
+            const auto [r, c] = routing_node_position(graph, sink);
             const auto it = spatial.bins.find(spatial.bin(r, c));
             if (it != spatial.bins.end() && !it->second.empty())
                 path = air_connection(graph, net, owner, slot, resources, spatial, it->second);
@@ -106,8 +109,10 @@ inline auto air_route_owner(const UnifiedGraph& graph, const RoutingNet& net, Ow
         if (path.empty()) path = air_connection(graph, net, owner, slot, resources, spatial, full);
         if (path.empty()) continue;
         owner.demand_paths[slot] = std::move(path);
+        rerouted = true;
         air_refresh(graph, owner, resources, &spatial);
     }
+    return rerouted;
 }
 
 inline auto air_rip_net(std::size_t ni, std::Vector<OwnerRecord>& owners, ResourceModel& resources) -> void {
@@ -142,10 +147,58 @@ inline auto air_net_complete(std::size_t ni, const UnifiedGraph& graph,
     return true;
 }
 
+inline auto air_update_router_boxes(const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
+                                    const std::Vector<OwnerRecord>& owners,
+                                    std::Vector<AirNetState>& states, const std::Vector<bool>& rerouted,
+                                    hardware::Interposer* interposer) -> int {
+    int updated = 0;
+    for (std::size_t ni = 0; ni < nets.size(); ++ni) {
+        if (!rerouted[ni] || !air_net_complete(ni, graph, nets, owners)) continue;
+        bool valid = true;
+        auto group_resources = ResourceModel{};
+        auto current = std::optional<RoutingBox>{};
+        auto sync_length = std::optional<std::size_t>{};
+        for (const auto& owner : owners) if (owner.net_index == ni) {
+            if (!owner_paths_valid(graph, owner)) { valid = false; break; }
+            for (const auto& path : owner.demand_paths) {
+                if (nets[ni].is_sync_bus) {
+                    group_resources.claim(owner.id, path_resource_keys(graph, path, owner.is_bnet));
+                    const auto length = sync_lane_length(graph, path, interposer, owner.is_bnet);
+                    if (sync_length && *sync_length != length) { valid = false; break; }
+                    sync_length = length;
+                }
+                for (int node : path) {
+                    const auto [r, c] = routing_node_position(graph, node);
+                    if (!current) current = RoutingBox{r, r, c, c};
+                    else current->include(r, c);
+                }
+            }
+        }
+        if (!valid || !current || group_resources.overflow() != 0) continue;
+        auto& spatial = states[ni].spatial;
+        auto& box = spatial.router_bb;
+        const auto before = box;
+        const int d_l = current->c0 - before.c0, d_r = before.c1 - current->c1;
+        const int d_b = current->r0 - before.r0, d_t = before.r1 - current->r1;
+        if (d_l == 0) box.c0 = std::max(spatial.device.c0, before.c0-1);
+        if (d_r == 0) box.c1 = std::min(spatial.device.c1, before.c1+1);
+        if (d_b == 0) box.r0 = std::max(spatial.device.r0, before.r0-1);
+        if (d_t == 0) box.r1 = std::min(spatial.device.r1, before.r1+1);
+        if (box == before) continue;
+        ++updated;
+        debug::info_fmt("FPIA RRR: bbox update net_id={} curr_bb=[r{}:{} c{}:{}] old=[r{}:{} c{}:{}] new=[r{}:{} c{}:{}] delta_LRBT=[{},{},{},{}]",
+            nets[ni].net_id, current->r0, current->r1, current->c0, current->c1,
+            before.r0, before.r1, before.c0, before.c1, box.r0, box.r1, box.c0, box.c1,
+            d_l, d_r, d_b, d_t);
+    }
+    return updated;
+}
+
 inline auto air_reference(std::size_t ni, const UnifiedGraph& graph, const std::Vector<RoutingNet>& nets,
                           AirNetState& state, RrrParams params, hardware::Interposer* interposer) -> void {
     auto owners = build_owners(nets);
     auto empty = ResourceModel{params};
+    params.search_box = state.spatial.router_bb;
     if (nets[ni].is_sync_bus) air_route_sync(ni, graph, nets, owners, empty, params, interposer);
     else for (auto& owner : owners) if (owner.net_index == ni)
         air_route_owner(graph, nets[ni], owner, empty, state.spatial);
@@ -195,7 +248,7 @@ inline auto air_prune_illegal(const UnifiedGraph& graph, const std::Vector<Routi
         ++pruned;
         if (nets[ni].is_sync_bus) { air_rip_net(ni, owners, resources); continue; }
         for (auto& owner : owners) if (owner.net_index == ni) {
-            if (owner.port_count < 16 || !owner_paths_valid(graph, owner)) rip_owner(owner, resources);
+            if (owner.port_count < kAirIncrementalPortThreshold || !owner_paths_valid(graph, owner)) rip_owner(owner, resources);
             else {
                 for (auto& path : owner.demand_paths) path.resize(air_path_cut(graph, snapshot, path));
                 air_refresh(graph, owner, resources, &states[ni].spatial);

@@ -4,6 +4,8 @@
 
 #include <cstddef>
 #include <chrono>
+#include <algorithm>
+#include <optional>
 #include <std/collection.hh>
 #include <std/integer.hh>
 #include <std/string.hh>
@@ -123,6 +125,18 @@ inline auto is_physical_occupancy_key(const ResourceKey& key) -> bool {
         || is_mux_port_key(key);
 }
 
+struct RoutingBox {
+    int r0{0}, r1{0}, c0{0}, c1{0};
+    auto contains(int r, int c) const -> bool {
+        return r >= r0 && r <= r1 && c >= c0 && c <= c1;
+    }
+    auto include(int r, int c) -> void {
+        r0 = std::min(r0, r); r1 = std::max(r1, r);
+        c0 = std::min(c0, c); c1 = std::max(c1, c);
+    }
+    auto operator==(const RoutingBox&) const -> bool = default;
+};
+
 struct RrrParams {
     int H{4};
     double k{1};
@@ -136,6 +150,7 @@ struct RrrParams {
     std::Vector<double> r_sequence{0.5, 0.75, 1.0};
     // Internal low-level maze policy, never a CLI knob.
     bool hard_capacity{false};
+    std::optional<RoutingBox> search_box; // Per-net maze/tail bound, not a CLI option.
 };
 
 struct Bump_coord {

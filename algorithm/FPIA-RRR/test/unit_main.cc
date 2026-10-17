@@ -6,6 +6,7 @@
 #include "route_validate.hh"
 #include "rrr_cli.hh"
 #include "rrr_router.hh"
+#include "rrr_routing.hh"
 #include "sync_equalize.hh"
 #include "test/tob_mux_fanout.hh"
 #include "test/adapter_cases.hh"
@@ -23,6 +24,7 @@
 #include <cmath>
 #include <iostream>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -48,6 +50,52 @@ auto contains_owner(const std::Vector<OwnerId>& owners, OwnerId owner) -> bool {
         }
     }
     return false;
+}
+
+auto test_overflow_log_single_line() -> void {
+    using namespace PR_tool::rrr_detail;
+    auto nets = std::Vector<RoutingNet>(3);
+    nets[0].net_id = 10;
+    nets[0].name = "SyncNet in group 10";
+    nets[0].is_sync_bus = true;
+    nets[1].net_id = 50;
+    nets[1].name = "SyncNet in group 50";
+    nets[1].is_sync_bus = true;
+    nets[2].net_id = 60;
+    nets[2].name = "BumpToBumpNet_test";
+    auto owners = std::Vector<OwnerRecord>(3);
+    owners[0].id = {10, 3};
+    owners[0].claimed = {node_resource(1), mode_straight_key(7)};
+    owners[1].id = {50, 4};
+    owners[1].claimed = {node_resource(1), node_resource(2), mode_swap_key(7)};
+    owners[2].id = {60, 0};
+    owners[2].claimed = {node_resource(2)};
+    auto resources = ResourceModel {};
+    for (const auto& owner : owners) {
+        for (const auto& key : owner.claimed) resources.claim(owner.id, {key});
+    }
+
+    auto captured = std::ostringstream {};
+    auto* previous = std::cout.rdbuf(captured.rdbuf());
+    debug::set_debug_level(debug::DebugLevel::Debug);
+    dump_overflows(owners, nets, resources);
+    const auto output = captured.str();
+    for (const auto& owner : owners) resources.release(owner.id);
+    captured.str("");
+    dump_overflows(owners, nets, resources);
+    const auto empty_output = captured.str();
+    debug::set_debug_level(debug::DebugLevel::Info);
+    std::cout.rdbuf(previous);
+
+    const auto expected = std::string {
+        "FPIA RRR: overflow owners=[SyncNet in group 10#3,SyncNet in group 50#4], "
+        "[SyncNet in group 10#3,SyncNet in group 50#4], "
+        "[SyncNet in group 50#4,BumpToBumpNet_test]"};
+    require(output.find(expected) != std::string::npos,
+            "overflow log must preserve all resource groups and sync lane suffixes");
+    require(output.find('\n') == output.size() - 1,
+            "all overflow groups must occupy exactly one log line");
+    require(empty_output.empty(), "no overflow must emit no owner detail line");
 }
 
 auto test_resource_claim_release() -> void {
@@ -807,6 +855,7 @@ auto main(int argc, char** argv) -> int {
         if (argc == 1 || std::string_view {argv[1]} != "--synthetic-only") {
             run_rrr_adapter_unit_tests();
         }
+        test_overflow_log_single_line();
         test_resource_claim_release();
         test_resource_same_owner_branch_share();
         test_resource_cross_owner_overflow();

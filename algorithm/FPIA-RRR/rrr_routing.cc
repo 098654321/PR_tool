@@ -621,6 +621,7 @@ auto dump_overflows(
     const ResourceModel& resources
 ) -> void {
     auto seen = std::Set<ResourceKey> {};
+    auto groups = std::String {};
     for (const auto& owner : owners) {
         for (const auto& key : owner.claimed) {
             auto report = [&](const ResourceKey& overflow_key) {
@@ -634,13 +635,19 @@ auto dump_overflows(
                     }
                     names += format_overflow_owner(item, nets);
                 }
-                debug::debug_fmt("FPIA RRR: overflow owners=[{}]", names);
+                if (!groups.empty()) {
+                    groups += ", ";
+                }
+                groups += std::format("[{}]", names);
             };
             report(key);
             if (key.kind == ResourceKind::ModeStraight || key.kind == ResourceKind::ModeSwap) {
                 report(mode_conflict_key(key.id));
             }
         }
+    }
+    if (!groups.empty()) {
+        debug::debug_fmt("FPIA RRR: overflow owners={}", groups);
     }
 }
 

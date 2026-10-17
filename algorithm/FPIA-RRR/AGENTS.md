@@ -61,8 +61,9 @@ first_legal_ms/best_legal_ms 相对预算起点记录。
 正式 owners/current 从空解开始。
 
 每个 net 按全部 terminal bbox 建立正方形 bins：
-bin_area=4*Area(bbox)/num_sinks，bin_size=sqrt(bin_area)。
-退化矩形的每个维度至少按 1 计算，避免零面积 bin。
+bin_area=4*Area(bbox)/num_sinks，实际 bin_size=1+sqrt(bin_area)，不取整。
+Area 按坐标差值相乘；退化维度至少按 1。bin 原点取原始 terminal bbox 左下角，
+不使用搜索框的外扩面积，后续扩框也不改变 bin_size。
 每次路径变化后同步刷新当前 tree 和 bins。
 
 ## 每轮增量布线
@@ -70,15 +71,31 @@ bin_area=4*Area(bbox)/num_sinks，bin_size=sqrt(bin_area)。
 1. 按固定排序处理 net，只重连尚未布通的 sink；已经合法连通的 sink 不重搜。
 2. 起点来自当前保留树和允许的原始源；新分支提交时重建完整 root→sink 路径，
    不能把不含物理 source 的枝段误当完整 demand。
-3. fanout（sink 数）≥16 时先只用目标 sink 所在 bin 中的树节点初始化 heap；
+3. 总端口数（sources+sinks）≥16 时先只用目标 sink 所在 bin 中的树节点初始化 heap；
    bin 为空或附近搜索失败，回退到整棵树。
 4. 普通连接使用 OpenROAD cost 加权 Dijkstra，无 criticality、delay 或 A* lookahead。
-   从 terminal 最小 bbox 开始；未完成连接时保留边界 frontier，
-   沿受阻方向扩大 bbox，最多覆盖整张图，不永久排除框外路径。
+   搜索严格限制在本轮固定 router_bb 内，不在单次搜索中扩框、不回退全图。
 5. 仍保留 Track unit、VLine local unit、内部 mux/mode、简单路径/树无环检查；
    每 unit 至多 32 次内部合法性去边回退，单次搜索至多 300000 扩展。
 6. 每个新分支立即刷新 live occupancy，使后续搜索看到当前占用。
    允许跨 net 冲突暂时存在，不再要求每个试探为零 overflow 的事务。
+
+## 轮末 dynamic bbox
+
+原始 terminal bbox 四边各外扩 1 格并裁剪，作为每个逻辑 net 的初始 router_bb。
+物理边界取当前 COB 阵列的闭区间 row=[0,H]、col=[0,W]，保留外侧 Track/I/O；
+不能误裁成 COB 中心索引 [0,H-1]/[0,W-1]。合成图单测从节点范围推导边界。
+框跨轮次持久保留，bin 原点/边长独立，不随 router_bb 增长而重置。
+
+每轮路由完成、准备下一轮且尚未拆线时，只检查本轮实际补布/重布成功、
+当前已完整连通且自身合法的 net；允许其与其他 net 存在 overflow。
+从所有实际路径节点（含 Track/TOB 节点及同步组全部 lane）统计 curr_bb。
+分别计算 d_L=C_cmin-B_cmin、d_R=B_cmax-C_cmax、
+d_B=C_rmin-B_rmin、d_T=B_rmax-C_rmax；仅 d==0 对应的边向外扩 1 格并裁边。
+四条边独立判断，新框仅供下一轮使用；不是 VPR 的 d<=0 条件。
+未重布、失败、残缺、内部非法的 net 不扩框；Sync 还须整组无资源冲突且等长。
+因此框内完全无路的 net 可能一直失败，不添加失败扩框或全图兜底。
+普通 AIR 搜索、同步基础 maze 和尾部等长搜索均遵守同一 net 的 router_bb。
 
 ## 同步线
 
@@ -154,7 +171,9 @@ PhysicalSwitch、matching endpoint、mux peer、straight/swap 不额外计费或
 TOB fanout、unit、mode、容量及同步长度，不依赖 live occupancy。
 paths[net][demand] 与最终全部 route 日志格式保留。
 iter 输出当前实际 overflow/线长/missing/convergences/has_legal；
-prepare 输出 illegal_ripup、wirelength_ripup 与 repair/optimize 阶段。
+overflow owners 每轮合并为一行，资源分组写作 [owner,...], [owner,...]；不输出 sync tail maze 搜索参数。
+prepare 输出 illegal_ripup、wirelength_ripup、bbox_updates 与 repair/optimize；
+spatial/bbox update 日志输出 bin 边长、初始框、实际路径框及四边余量。
 保留 status、total_wirelength、RRR_routing_time、total_ms、最好解时间信息。
 
 ## 回归测试
@@ -164,7 +183,9 @@ FPIA_RRR_unit 支持 --synthetic-only、--budget-only，require 在 Release 有�
 历史从零累加且不衰减、资源共享与硬件冲突、Sync 尾部等长/失败回滚、
 预算超时继续至合法、预算内持续优化及 incumbent 保留、同快照冲突剪枝、
 大树 root 前缀保留/不误判已连通、小 net 和 Sync 整组拆线、
-dynamic bbox、nearby→full fallback 和分支完整 root 路径重建。
+bin +1 偏置、统一端口阈值、初始 padding/物理裁边、四边轮末独立扩张、
+未重布/失败/残缺/组内非法不扩、下一轮利用扩框、Sync maze/tail 固定框、
+nearby→full fallback 和分支完整 root 路径重建。
 真实小矩阵：case_2btb、case_2btt、case_2fanout、case_bus2btb、case_bus2btt。
 所有直接调用 run_rrr 的有限时测试必须设置正预算。
 配置须匹配当前 Interposer 宽度；不得为测试修改目录外硬件配置。
