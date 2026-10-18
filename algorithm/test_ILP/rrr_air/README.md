@@ -1,4 +1,4 @@
-# AIR/OpenROAD RRR fixed implementation
+# AIR RRR with 0d6e86f test_ILP cost
 
 Source: `316e47799aa73cbc123134fe34d530504f235894:algorithm/FPIA-RRR/`.
 This directory belongs to test_ILP. It does not depend on the current standalone
@@ -18,7 +18,7 @@ The only algorithm adaptations to the snapshot are:
   claims/tree/bins, initialize the legal incumbent; use the new stopping policy;
   on timeout without a legal incumbent restore the original legal partial input,
   preserving empty demand slots (the baseline collector compacts missing lanes).
-- `rrr_types.hh`: absolute RRR deadline.
+- `rrr_types.hh`: absolute RRR deadline; remove obsolete OpenROAD cost parameters.
 - `import_bbox.hh`: contain all imported ILP path nodes in the initially padded
   terminal box before the original complete-net d==0 round-end expansion. Bins
   and independent reference routes retain their original definitions.
@@ -27,9 +27,24 @@ The only algorithm adaptations to the snapshot are:
 - Reference work checks that deadline between nets. Search units remain atomic
   as in the source implementation; one maze/sync search can overrun the budget.
 
-All other copied files are namespace-only copies. Preserve their ordering,
-resource rules, search limits, dynamic boxes, sync equalization and node cost.
-There is no VPR present-factor scheduling and no extra arc/resource surcharge.
+- Cost only: `resource_cost.cc` ports
+  `0d6e86f47ebe4e796f3d267336510b8febfef92e:algorithm/test_ILP/route_ilp/rrr_cost.cc`.
+  `resource_model.*` supplies live owner counts and additive decaying history;
+  `hardware_graph.hh` caches the separate cost projection. `air_search.hh` and
+  `maze_search.cc` use this arc cost for ordinary, reference and sync-tail search
+  and branch comparison. Capacity keys and legality checks are unchanged.
+
+Cost: arc base 1 plus `weight*P(predicted_usage)+history` for non-owned resources,
+where `P(u)=1+4/(exp(1-u)+1)+0.2*max(0,u-1)`. Weights are node 1,
+switch/matching/mux 2, opposite-mode conflict 8. Mux usage counts distinct peers;
+ordinary resources use owner count +1. History is `0.9*h+overflow`, outside P.
+Reuse and mode ownership follow the old test_ILP switch-based rules. No extra
+free-node exception is applied to the search start set. History remains updated
+at the existing AIR round-end point before pruning.
+
+All remaining copied files are namespace-only copies. Preserve their ordering,
+resource legality rules, search limits, dynamic boxes, sync equalization and
+stopping policy. There is no VPR present-factor scheduling.
 Unused standalone CLI/main/net adapter files are not copied.
 
 Verification (from PR_tool):

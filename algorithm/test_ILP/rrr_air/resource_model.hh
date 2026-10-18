@@ -6,6 +6,9 @@
 
 namespace PR_tool::air316 {
 
+struct UnifiedGraph;
+struct UnifiedArc;
+
 class ResourceModel {
 public:
     ResourceModel() = default;
@@ -25,7 +28,7 @@ public:
     auto owners_of(const ResourceKey& key) const -> std::Vector<OwnerId>;
     auto history(const ResourceKey& key) const -> double;
     auto history_next() -> void;
-    auto node_cost(OwnerId owner, int node_id) const -> double;
+    auto arc_cost(const UnifiedGraph& graph, OwnerId owner, const UnifiedArc& arc) const -> double;
     auto type_weight(const ResourceKey& key) const -> int;
     auto selected_unit(OwnerId owner) const -> int;
     auto params() const -> const RrrParams&;

@@ -128,12 +128,10 @@ auto would_introduce_opposite_mode(
 
 auto arc_cost(
     const UnifiedGraph& graph, const ResourceModel& resources, OwnerId owner,
-    const UnifiedArc& arc, const StartMembership& starts
+    const UnifiedArc& arc, const StartMembership& /*starts*/
 ) -> double {
-    // OpenROAD congestion cost: destination graph node only, no arc surcharge.
-    // Reused tree nodes do not consume another unit of this owner's capacity.
-    if (starts.contains(graph, arc.v)) return 0;
-    return resources.node_cost(owner, arc.v);
+    // Match 0d6e86f test_ILP: no extra free-node rule for the search start set.
+    return resources.arc_cost(graph, owner, arc);
 }
 
 auto find_out_arc(const UnifiedGraph& graph, int u, int v) -> int {

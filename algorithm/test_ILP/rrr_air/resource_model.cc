@@ -1,7 +1,6 @@
 #include "resource_model.hh"
 
 #include <algorithm>
-#include <cmath>
 #include <utility>
 #include <set>
 
@@ -330,36 +329,34 @@ auto ResourceModel::owners_of(const ResourceKey& key) const -> std::Vector<Owner
 }
 
 auto ResourceModel::history(const ResourceKey& key) const -> double {
-    if (key.kind != ResourceKind::Node) return 0;
-    const auto it = _history.find(key);
+    const auto stored = is_mux_port_key(key) ? mux_port_key(key) : key;
+    const auto it = _history.find(stored);
     return it == _history.end() ? 0.0 : it->second;
 }
 
 auto ResourceModel::history_next() -> void {
-    auto keys = std::Set<ResourceKey> {};
+    auto keys = std::Set<ResourceKey>{};
     for (const auto& [key, _] : _refs) {
-        if (key.kind == ResourceKind::Node) keys.insert(key);
+        if (key.kind == ResourceKind::ModeStraight || key.kind == ResourceKind::ModeSwap)
+            keys.insert(mode_conflict_key(key.id));
+        else if (key.kind != ResourceKind::BnetUnit)
+            keys.insert(is_mux_port_key(key) ? mux_port_key(key) : key);
     }
-    for (const auto& [key, _] : _history) {
-        keys.insert(key);
-    }
-    for (const auto& key : keys) {
-        _history[key] = history(key) + _params.acc_fac * overflow(key);
-    }
-}
-
-auto ResourceModel::node_cost(OwnerId owner, int node_id) const -> double {
-    const auto key = node_resource(node_id);
-    if (holds(owner, key)) return 0;
-    // OpenROAD form in note.md: current usage, red=0, capacity=1.
-    // History is inside BOTH nonlinear and linear terms, not an additive cost.
-    const double q = occupancy_count(key) + _params.L * history(key);
-    return 1.0 + _params.H / (1.0 + std::exp(_params.k * (1.0 - q)))
-        + static_cast<double>(_params.H) / _params.s * std::max(q - 1.0, 0.0);
+    for (const auto& [key, _] : _history) keys.insert(key);
+    for (const auto& key : keys)
+        _history[key] = 0.9 * history(key) + overflow(key);
 }
 
 auto ResourceModel::type_weight(const ResourceKey& key) const -> int {
-    return key.kind == ResourceKind::Node ? 1 : 0;
+    switch (key.kind) {
+    case ResourceKind::Node: return 1;
+    case ResourceKind::PhysicalSwitch:
+    case ResourceKind::MatchingEndpoint:
+    case ResourceKind::TobMuxInput:
+    case ResourceKind::TobMuxOutput: return 2;
+    case ResourceKind::ModeConflict: return 8;
+    default: return 0;
+    }
 }
 
 auto ResourceModel::selected_unit(OwnerId owner) const -> int {

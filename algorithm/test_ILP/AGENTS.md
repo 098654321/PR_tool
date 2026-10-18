@@ -2,7 +2,7 @@
 
 ## 当前目标和流程
 
-`test_ILP` 当前实现为**第二十四版方法**：从原始配置建立细粒度硬件图，ILP 对每个 `RoutingNet` 使用完整 COB 阵列范围（不加 TOB patch），先生成完整物理路径候选并用 HiGHS 做 route 变量 LP/ILP，再将允许未布通 owner 的合法部分解交给基于 `316e477` 的 AIR/OpenROAD RRR 补布和优化。只有所有 owner 布通并通过完整验证才报告成功。`--init-SAT` 可选地用原 ExactSAT 流程生成完整可行初始列；无该参数时直接进入 ILP。当前入口不运行 PNnet 预分配、Global Routing 或按边直接详细布线 ILP。方法说明见 `../../../问题定义与方法/第二十四版方法.md`；旧流程保存在 `dev.ILP_SAT` 分支，第二十三版方法仍可作对照。
+`test_ILP` 当前实现为**第二十四版方法**：从原始配置建立细粒度硬件图，ILP 对每个 `RoutingNet` 使用完整 COB 阵列范围（不加 TOB patch），先生成完整物理路径候选并用 HiGHS 做 route 变量 LP/ILP，再将允许未布通 owner 的合法部分解交给基于 `316e477` 的 AIR RRR（cost 使用 `0d6e86f` 的 test_ILP 版本） 补布和优化。只有所有 owner 布通并通过完整验证才报告成功。`--init-SAT` 可选地用原 ExactSAT 流程生成完整可行初始列；无该参数时直接进入 ILP。当前入口不运行 PNnet 预分配、Global Routing 或按边直接详细布线 ILP。方法说明见 `../../../问题定义与方法/第二十四版方法.md`；旧流程保存在 `dev.ILP_SAT` 分支，第二十三版方法仍可作对照。
 
 该目录是实验入口，不应无意修改 `source/algo/router/` 的正式路由流程。`source/hardware/` 和 `source/circuit/` 决定真实拓扑与端点。当前分支仍保留一部分旧方法源文件供其他实验目标使用，但 `test_ILP` 仅编译新入口所需模块。旧事务式 `rrr/rrr.*` 已删除，`test_ILP_unit` 的 RRR 验证也使用当前 AIR 入口，保留直接 ILP 的其余测试。
 
@@ -20,7 +20,7 @@
 | `route_ilp/route_incumbent.*` | 完整整数 LP 提取、同步长度失效检查与 MIP 初始解重映射 |
 | `sat/*`, `delay/*`, `scope/pair_routing_state.*` | 可选 `--init-SAT` 的原 SAT 编码、反馈扩窗与路径提取 |
 | `route_ilp/route_rrr.*` | RRR 路径/图适配、部分解输入检查、最终路径与同步长度导出 |
-| `rrr_air/*` | 固定 `316e477` 的 AIR 搜索、OpenROAD cost、剪枝、同步组与动态 bbox；入口适配初始解和两个停止条件 |
+| `rrr_air/*` | 固定 `316e477` 的 AIR 搜索、剪枝、同步组与动态 bbox；入口适配初始解和两个停止条件，cost 单独沿用 `0d6e86f:test_ILP` |
 | `direct_ilp/direct_validate.*` | 独立检查部分或完整路径、scope、互斥、TOB、同步长度及线长 |
 | `common/highs_log_sink.hh` | HiGHS 原生日志输出 |
 | `common/route_metrics.*` | Track+Bump 物理并集线长 |
@@ -35,9 +35,9 @@
 - SyncBus 的每条 lane 是独立物理 owner；ILP 固定当前共同长度。RRR 按 `316e477` 整组拆线、预布和切尾等长，可重新确定共同长度；最终验证从 RRR 实际路径提取长度，不修改 ILP 状态。
 - 热点为全部并列最小容量对偶资源（包括最小值为零）与基树预测超容资源的并集。挑选 slack >1e-6、基树使用热点、候选池中任意列使用热点或端点在热点 `bbox+1` 内的 owner；仅每三轮（`round % 3 == 2`）选全部 owner，空集合不回退。ILP 候选搜索仍用全阵列 scope；RRR 使用独立的 terminal bbox+1 与轮末触边扩框。
 - 每轮以 1e-6 容差检查完整整数 LP 解，经物理验证后保存线长最小者；SAT 解为后备。MIP 按当前 owner/候选重新映射并提交选路向量。同步长度变化仅删除保存解中长度失效的 lane，其余选路保留，缺失 lane 在初始向量中设 x=0、s=1；不同保存解不能直接混合。
-- RRR 基于 `316e47799aa73cbc123134fe34d530504f235894` 固定快照，命名空间 `PR_tool::air316`；除 `rrr_router.*` 初始状态/停止逻辑、`rrr_types.hh` 截止时间及新增 stop policy 外，核心文件仅改命名空间。`rrr_air/README.md` 记录来源与核查命令。不能链接当前 FPIA-RRR 的 VPR cost 替代该快照。
+- RRR 基于 `316e47799aa73cbc123134fe34d530504f235894` 固定快照，命名空间 `PR_tool::air316`；除入口初始状态/停止逻辑、截止时间、导入 bbox 适配及下述 cost 替换外，核心文件仅改命名空间。`rrr_air/README.md` 记录来源与核查命令。不能链接当前 FPIA-RRR 的 VPR cost 替代该快照。
 - RRR 导入 ILP 完整/部分路径并重建树、bins、占用，将其视作已完成的首轮；完整输入立即作为最佳合法解，部分输入只修复缺失/冲突。独立无拥塞参考布线仍执行，但不替换输入路径。RRR 使用 `basedie->nets().at(0)` 的 mode-0 原始序列，并按 net 对象身份映射 ILP 路径/编号；保持原始序列送入 source Sort/Resources，保证同优先级排序输入一致。保留端口阈值 16、附近 bin→整树搜索、统一快照冲突剪枝、小 net 整拆/大 net 保留根前缀及同步整组重布。
-- RRR 只对图节点计 OpenROAD cost：`q=usage+0.9*h`，`c=1+4/(1+exp(1-q))+0.2*max(q-1,0)`；usage 不加候选 +1，同 owner 树节点免费复用。history 初值 0，每轮拆线前 `h+=max(usage-1,0)`，不衰减、不重置。开关/matching/mux/mode 不另计费，继续参与硬件约束与 overflow。
+- RRR cost 严格采用 `0d6e86f47ebe4e796f3d267336510b8febfef92e` 的 **test_ILP** `route_ilp/rrr_cost.cc`：每条 arc 基价 1，未复用资源追加 `weight*P(u)+h`，`P(u)=1+4/(exp(1-u)+1)+0.2*max(u-1,0)`；节点权重 1，switch/matching/mux 权重 2，异 mode 冲突权重 8。普通资源预测占用为当前 owner 数+1，mux 为不同 peer 数加新 peer；同 owner 已有节点/开关/matching 免费复用，mux 按同物理开关复用，mode 按同组同 mode 开关复用，不额外豁免搜索起点集合。history 初值 0，使用 `h=0.9*h+overflow`，在函数外相加；mux history 按端口共享，异 mode 按冲突组记录。只替换公式及搜索计费，更新时机仍为 AIR 每轮拆线前，不改变资源合法性或任何迭代策略。
 - RRR 当前解允许拥塞、缺失和线长上升；只有全部布通、零 overflow、等长且独立验证通过的解才能更新最佳合法解。当前轮非法时只修复；当前轮合法时拆 `W>reference` 的 net，无候选时拆多端口，再无则拆全部。初始 bbox 为 terminal bbox+1；导入 ILP 路径后先把框补到包含全部已有路径（含部分 bus 的已布通 lane），不改变 bins/独立参考长度，再让完整合法导入 net 按原触边规则准备下一轮。后续仅成功重布、完整且自身合法的 net 在轮末按四边余量恰为 0 扩边；失败不扩框、不回退全图。
 - RRR 停止：每个完整合法解与历史最佳线长比较，严格改善清零，否则累计；连续 10 个合法解无改善即停，非法轮不计数也不清零。完整 ILP 输入是初始最佳解，停滞从 0 起算。另以程序解析前至 RRR 入口的实际耗时为 RRR 预算（包括 SAT、ILP、建图与前置验证），RRR 初始化/参考布线计入预算；两条件任一满足即停，无合法解也按时停止并返回原合法部分输入且报告未完成。有最佳解时始终返回最佳合法解。截止时间在 net/轮末/参考 net 等安全点检查，保留原单次搜索预算，不强制打断一次 maze/同步等长。
 
@@ -67,3 +67,4 @@ SAT 反馈不设轮数上限（移除原 64 轮限制），直到求解成功、
 - 单文件保持紧凑，避免无关重构；保证正确性的前提下关注求解速度。
 - 代码文件的单次修改超过 200 行时，在实现完成后进行分离审查：如果实现过程是启动子agent实现的，那么可以由原主agent自己审查；如果实现是由主agent自己实现的，那么需要启动一个子agent审查。如果单次修改不超过200行，可以由实现的agent自己审查。如果审查之后有问题需要修正，但是修正之后不需要再进行单独的审查工作。
 - 在写代码的时候，关键的算法中间信息与结果信息（例如建模中的变量/约束数量、求解时间、求解出来的布线路径结果）等需要加入日志（debug.log），即使不含-v也要输出；一些次级信息，用于辅助深入debug的，例如算法参数、bbox范围等，在-v等情况下也要输出；HiGHS 原生日志需要生成在 debug.log 同目录下，即使运行时没有 -v 也要；CaDiCaL API trace 按当前用户要求不生成。
+- 当我问你“是否理解我的意思”或者类似的话的时候，你必须先在聊天窗口回复我，而不是直接开始动手做

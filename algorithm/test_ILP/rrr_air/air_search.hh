@@ -117,7 +117,7 @@ inline auto air_branch(const UnifiedGraph& graph, const ResourceModel& resources
                 owner.tree.contains(arc.v)) continue;
             const auto [r, c] = routing_node_position(graph, arc.v);
             if (!box.contains(r, c)) continue;
-            const double next = cost + resources.node_cost(owner.id, arc.v);
+            const double next = cost + resources.arc_cost(graph, owner.id, arc);
             if (next + 1e-9 >= best[arc.v]) continue;
             best[arc.v] = next;
             auto path = label.path; path.push_back(arc.v);
@@ -155,7 +155,12 @@ inline auto air_connection(const UnifiedGraph& graph, const RoutingNet& net,
             auto candidate = owner; candidate.demand_paths[slot] = path;
             if (owner_paths_valid(graph, candidate)) {
                 double cost = 0;
-                for (std::size_t i = 1; i < branch.size(); ++i) cost += resources.node_cost(owner.id, branch[i]);
+                for (std::size_t i = 1; i < branch.size(); ++i) {
+                    const int aid = *std::find_if(graph.out_arc_ids[branch[i-1]].begin(),
+                        graph.out_arc_ids[branch[i-1]].end(),
+                        [&](int id) { return graph.arcs[id].v == branch[i]; });
+                    cost += resources.arc_cost(graph, owner.id, graph.arcs[aid]);
+                }
                 if (cost < best_cost) { best_cost = cost; best_path = std::move(path); }
                 break;
             }
