@@ -5,9 +5,7 @@ import subprocess
 SOURCE = "316e47799aa73cbc123134fe34d530504f235894"
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
-ADAPTED = {"rrr_router.cc", "rrr_router.hh", "rrr_types.hh", "stop_policy.hh", "import_bbox.hh",
-           "air_search.hh", "hardware_graph.hh", "maze_search.cc",
-           "resource_model.cc", "resource_model.hh", "resource_cost.cc"}
+ADAPTED = {"rrr_router.cc", "rrr_router.hh", "rrr_types.hh", "stop_policy.hh", "import_bbox.hh"}
 count = 0
 for path in sorted(HERE.iterdir()):
     if path.suffix not in {".cc", ".hh"} or path.name in ADAPTED:

@@ -32,57 +32,24 @@ auto stop_conditions() -> void {
     require(empty.reason(start-nanoseconds(1)) == nullptr, "deadline comparison stopped too early");
 }
 
-auto reference_cost() -> void {
-    auto g = UnifiedGraph{};
-    g.nodes.resize(7);
-    g.nodes[0].kind = UnifiedNodeKind::Bump;
-    g.nodes[1].kind = UnifiedNodeKind::HLine;
-    g.nodes[2].kind = UnifiedNodeKind::VLine;
-    g.arcs = {{0,1,false,false,-1,10,PhysicalSwitchKind::BumpH},
-              {1,0,false,false,-1,10,PhysicalSwitchKind::BumpH},
-              {1,2,false,false,-1,11,PhysicalSwitchKind::HLineVLine},
-              {2,3,true,false,5,12,PhysicalSwitchKind::VLineTrack},
-              {2,4,false,true,5,13,PhysicalSwitchKind::VLineTrack},
-              {5,6,false,false,-1,14}};
-    const auto p = [](int u) {
-        return 1.0 + 4.0/(std::exp(1.0-u)+1.0) + 0.2*std::max(0,u-1);
-    };
+auto openroad_cost() -> void {
     auto resources = ResourceModel{};
-    const auto cost = [&](int aid, OwnerId owner = {0,0}) {
-        return resources.arc_cost(g,owner,g.arcs[aid]);
+    const auto key = node_resource(5);
+    const auto expected = [](double q) {
+        return 1 + 4/(1+std::exp(1-q)) + 0.2*std::max(0.0,q-1);
     };
-    require(close(cost(0),1+11*p(1)), "bump-H cost omitted matching/mux/switch or predicted +1");
-    require(close(cost(1),cost(0)), "reverse arc charged its origin H node");
-    require(close(cost(2),1+11*p(1)), "H-V cost projection differs");
-    require(close(cost(3),1+7*p(1)), "V-track cost projection differs");
-    require(close(cost(5),1+3*p(1)), "COB switch was not priced");
-    auto keys = std::Vector<ResourceKey>{node_resource(0)};
-    for (const auto& key : cached_arc_resource_keys(g,g.arcs[0])) keys.push_back(key);
-    resources.claim({0,0},keys);
-    require(close(cost(0),1), "retained arc must still pay base 1");
-    require(close(cost(1),1), "reverse retained arc did not reuse owner's resources");
-    require(close(cost(0,{1,0}),1+7*p(2)+4*p(1)), "occupied mux peers or resource usage +1 differ");
-    resources.claim({1,0},keys);
+    require(close(resources.node_cost({0,0}, 5), expected(0)), "OpenROAD used candidate occupancy +1");
+    resources.claim({1,0}, {key, switch_resource(7)});
+    require(close(resources.node_cost({0,0}, 5), expected(1)), "OpenROAD current usage mismatch");
+    require(close(resources.node_cost({1,0}, 5), 0), "retained tree node was charged");
+    resources.claim({2,0}, {key, switch_resource(7)});
     resources.history_next();
-    require(close(resources.history(node_resource(1)),1) &&
-            close(resources.history(switch_resource(10)),1) &&
-            close(resources.history(matching_endpoint_key(0,0)),1), "resource history missing");
-    require(close(resources.history(tob_mux_input_key(0,1)),0), "same mux peer counted twice");
-    resources.release({0,0}); resources.release({1,0});
-    require(close(cost(0),1+11*p(1)+4), "history must be additive outside present function");
+    require(close(resources.history(key), 1), "OpenROAD history did not accumulate overflow");
+    require(close(resources.history(switch_resource(7)), 0), "non-node resource accumulated history");
+    resources.release({1,0}); resources.release({2,0});
+    require(close(resources.node_cost({0,0},5), expected(0.9)), "history was not inside nonlinear input");
     resources.history_next();
-    require(close(cost(0),1+11*p(1)+3.6), "history must decay by 0.9");
-    auto mode = ResourceModel{};
-    mode.claim({1,0},{mode_swap_key(5),switch_resource(13),tob_mux_input_key(2,4)});
-    require(close(mode.arc_cost(g,{0,0},g.arcs[3]),1+5*p(1)+2*p(2)+8*p(1)),
-            "opposite mode must price first conflict at predicted occupancy 1");
-    mode.claim({2,0},{mode_straight_key(5),switch_resource(12),tob_mux_input_key(2,3)});
-    mode.history_next();
-    require(close(mode.history(mode_conflict_key(5)),1) &&
-            close(mode.history(tob_mux_input_key(2,3)),1), "mode/mux history missing");
-    mode.release({1,0}); mode.release({2,0}); mode.history_next();
-    require(close(mode.history(mode_conflict_key(5)),0.9) &&
-            close(mode.history(tob_mux_input_key(2,4)),0.9), "mode/mux history did not decay");
+    require(close(resources.history(key),1), "history decayed or was reset");
 }
 
 auto physical_graph_parity() -> void {
@@ -190,7 +157,7 @@ auto imported_round_and_timeout() -> void {
 
 namespace PR_tool {
 auto run_air_rrr_tests() -> void {
-    air316::stop_conditions(); air316::reference_cost(); air316::physical_graph_parity();
+    air316::stop_conditions(); air316::openroad_cost(); air316::physical_graph_parity();
     air316::snapshot_pruning_and_bounds(); air316::imported_round_and_timeout();
 }
 } // namespace PR_tool

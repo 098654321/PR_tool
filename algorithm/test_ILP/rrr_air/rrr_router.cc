@@ -64,8 +64,8 @@ auto run_rrr(
     for (const auto& net : nets) states.push_back({air_spatial(graph, net)});
     const auto order = air_order(nets, interposer, raw_nets);
     debug::info_fmt("FPIA RRR: graph nodes={} arcs={} route_owners={}", graph.nodes.size(), graph.arcs.size(), owners.size());
-    debug::info_fmt("FPIA RRR: params seed={} time_budget_seconds={} algorithm=AIR source=316e477 cost_source=0d6e86f:test_ILP cost_policy=fpia_additive H=4 k=1 s=20 arc_base=1 decay=0.9 increment=1 history_weight=1 iteration_limit=none legal_stagnation_limit=10",
-        params.seed, params.time_budget_seconds);
+    debug::info_fmt("FPIA RRR: params seed={} time_budget_seconds={} algorithm=AIR source=316e477 cost_policy=OpenROAD-node-only H={} k={} s={} L={} C=1 red=0 usage_policy=current acc_fac={} iteration_limit=none legal_stagnation_limit=10",
+        params.seed, params.time_budget_seconds, params.H, params.k, params.s, params.L, params.acc_fac);
     for (auto ni : order) {
         if (expired()) break;
         const auto& s = states[ni].spatial;
@@ -141,7 +141,7 @@ auto run_rrr(
         if (const auto* reason = stop.reason()) { result.stop_reason = reason; break; }
         // Inspect complete results BEFORE pruning. Cross-net overflow is allowed.
         const int boxes_updated = air_update_router_boxes(graph, nets, owners, states, rerouted, interposer);
-        // Price congestion BEFORE pruning it, retaining the AIR update point.
+        // Price congestion BEFORE pruning it. Only graph-node history accumulates.
         resources.history_next();
         const int pruned = air_prune_illegal(graph, nets, owners, resources, states, interposer);
         auto selected = std::Vector<std::size_t>{};

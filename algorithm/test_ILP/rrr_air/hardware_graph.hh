@@ -8,7 +8,6 @@
 #include <std/collection.hh>
 #include <std/string.hh>
 #include <map>
-#include <memory>
 #include <set>
 #include <tuple>
 #include <utility>
@@ -68,8 +67,6 @@ struct UnifiedArc {
     mutable bool resource_keys_ready{false};
 };
 
-struct RouteCostProjection;
-
 struct UnifiedGraph {
     int rows{0};
     int cols{0};
@@ -85,7 +82,6 @@ struct UnifiedGraph {
     std::set<std::pair<int, int>> directed_arc_set;
     std::size_t track_node_count{0};
     std::size_t tob_node_count{0};
-    mutable std::shared_ptr<const RouteCostProjection> route_cost_projection;
 };
 
 auto cached_arc_resource_keys(const UnifiedGraph& graph, const UnifiedArc& arc) -> const ArcResourceKeys&;
