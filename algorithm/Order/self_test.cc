@@ -15,7 +15,8 @@ void self_test() {
     auto check = [](bool condition, const char* message) {
         if (!condition) throw std::runtime_error(message);
     };
-    for (policy = 0; policy < 4; ++policy) {
+    for (int selected : policy_ids) {
+        policy = selected;
         std::string name = "fixture", child_uid = "child";
         std::array<std::string, 8> ids{"sync", "tbs", "bts", "bbs", "bt", "tb", "bb", "tsbs"};
         std::vector<std::shared_ptr<Net>> nets;
@@ -34,16 +35,15 @@ void self_test() {
             std::vector<hardware::Track*>{t0,t1}, std::vector<hardware::Bump*>{b1,b2}, modes, name, ids[7]));
         for (std::size_t kind = 0; kind < nets.size(); ++kind) {
             check(kind_of(nets[kind].get()) == kind, "Wrong concrete Net type detection");
-            check(nets[kind]->priority().value() == priorities[policy][kind], "Constructor priority differs from policy");
+            check(nets[kind]->priority().value() == base_priority(kind), "Constructor priority differs from policy");
             nets[kind]->update_priority(0.5f);
-            check(nets[kind]->priority().value() == priorities[policy][kind] + (kind ? 0.5f : 0.0f),
+            check(nets[kind]->priority().value() == base_priority(kind) + (kind ? 0.5f : 0.0f),
                   "Original port bias / SyncNet exception changed");
         }
-        check(child->priority().value() == priorities[policy][6] + 0.5f, "Sync member priority update changed");
+        check(child->priority().value() == base_priority(6) + 0.5f, "Sync member priority update changed");
         std::vector<Net*> sorted;
         for (auto& net : nets) sorted.push_back(net.get());
         std::sort(sorted.begin(), sorted.end(), compare);
-        if (policy == 1) check(sorted.front() != nets[0].get(), "new1 did not postpone SyncNet");
         if (policy == 2) check(compare(nets[3].get(), nets[1].get()) && compare(nets[6].get(), nets[5].get()),
                                "new2 does not implement corrected bump-first ordering");
         if (policy == 3) check(compare(nets[4].get(), nets[0].get()) && compare(nets[6].get(), nets[0].get()),

@@ -11,15 +11,17 @@ namespace order_experiment {
 inline constexpr std::array<std::string_view, 8> classes = {
     "SyncNet", "TrackToBumpsNet", "BumpToTracksNet", "BumpToBumpsNet",
     "BumpToTrackNet", "TrackToBumpNet", "BumpToBumpNet", "TracksToBumpsNet"};
-inline constexpr std::array<std::array<int, 8>, 4> priorities = {{
+inline constexpr std::array<int, 3> policy_ids = {0, 2, 3};
+inline constexpr std::array<std::array<int, 8>, 3> priorities = {{
     {0, 1, 1, 2, 3, 3, 4, 5}, // current
-    {3, 0, 0, 1, 4, 4, 5, 2}, // new1: multi -> fixed -> sync -> two-pin
     {0, 2, 2, 1, 4, 4, 3, 5}, // new2: user-corrected bump-first ordering
     {2, 3, 3, 4, 0, 0, 1, 5}, // new3: two-pin first; others retain original order
 }};
 inline int policy = 0;
 inline float base_priority(std::size_t kind) {
-    return static_cast<float>(priorities.at(policy).at(kind));
+    for (std::size_t i = 0; i < policy_ids.size(); ++i)
+        if (policy == policy_ids[i]) return static_cast<float>(priorities[i].at(kind));
+    throw std::runtime_error("Unsupported routing policy");
 }
 inline std::mt19937_64 generator;
 inline double random_real() {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run four Net-priority policies on four cases using isolated source copies."""
+"""Run three Net-priority policies on four cases using isolated source copies."""
 import argparse
 import csv
 from datetime import datetime
@@ -14,12 +14,12 @@ import uuid
 
 sys.dont_write_bytecode = True
 from build import HERE, ROOT, build
-from report import CASES, POLICIES, PRIORITIES, report
+from report import CASES, DEFAULT_CASES, POLICIES, POLICY_IDS, PRIORITIES, report
 
 
 def plan(cases, smoke):
     if smoke:
-        return [("case1", s) for s in ["current", "current", "new1", "new2", "new3"]]
+        return [("case1", s) for s in ["current", "current", "new2", "new3"]]
     return [(case, scheme) for case in cases for scheme in POLICIES]
 
 
@@ -31,7 +31,7 @@ def save_csv(path, rows):
 
 
 def validate(result, case, scheme, seed, folder):
-    if (result["policy"], result["seed"], result["cob_width"]) != (POLICIES.index(scheme), seed, CASES[case]):
+    if (result["policy"], result["seed"], result["cob_width"]) != (POLICY_IDS[scheme], seed, CASES[case]):
         raise RuntimeError("Policy/seed/width mismatch")
     n = result["total_nets"]
     if result["attempted_nets"] != n or result["routed_nets"] + result["failed_nets"] != n:
@@ -67,6 +67,7 @@ def run(args):
             print(message, flush=True); master.write(message + "\n")
         manifest = dict(mode="smoke" if args.smoke else "sweep", cases=cases, policies=PRIORITIES,
                         seed=args.seed, timeout=args.timeout, planned_runs=len(trials),
+                        placement="original input TOB coordinates; no SA", router="maze", routing_mode=0, incremental=False,
                         platform=platform.platform(), python=sys.version, argv=sys.argv,
                         started_at=datetime.now().astimezone().isoformat(), status="building", input_sha256={})
         rows = []
@@ -85,12 +86,12 @@ def run(args):
                 with (folder / f"self-test-width{width}.log").open("w") as out:
                     subprocess.run([str(binary), "--self-test"], cwd=folder, stdout=out,
                                    stderr=subprocess.STDOUT, check=True, timeout=30)
-            log("PASS: all 8 concrete Net classes x 4 policies (C++ self-test)")
+            log("PASS: all 8 concrete Net classes x 3 policies (C++ self-test)")
             for index, (case, scheme) in enumerate(trials, 1):
                 run_id = f"{index:03d}-{case}-{scheme}"
                 run_dir = folder / run_id; run_dir.mkdir()
                 cmd = [str(binaries[CASES[case]]), str(ROOT / "test/config" / case), str(run_dir),
-                       str(args.seed), str(POLICIES.index(scheme)), run_id]
+                       str(args.seed), str(POLICY_IDS[scheme]), run_id]
                 (run_dir / "command.json").write_text(json.dumps(cmd, indent=2) + "\n")
                 row = dict(run_id=run_id, case=case, scheme=scheme, status="error")
                 log(f"[{index}/{len(trials)}] {case} {scheme}")
@@ -130,7 +131,7 @@ def run(args):
             routing_failures = sum(r["status"] == "ok" and not r["all_routed"] for r in rows)
             manifest.update(status="failed" if errors else "complete", completed_runs=len(rows),
                             process_errors=errors, routing_failed_runs=routing_failures)
-            if not args.smoke and cases == list(CASES):
+            if not args.smoke and set(cases) == set(DEFAULT_CASES):
                 (HERE / "experiments.md").write_text(report(rows, cases, manifest, folder))
             log(f"Finished: {len(rows)-errors}/{len(trials)} measurements; {routing_failures} incomplete routing outcomes; {errors} process errors.")
             return int(errors > 0)
@@ -144,8 +145,8 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--smoke", action="store_true", help="case1: repeat current twice, then run new1/new2/new3")
-    parser.add_argument("--cases", nargs="+", choices=CASES, default=list(CASES))
+    parser.add_argument("--smoke", action="store_true", help="case1: repeat current twice, then run new2/new3")
+    parser.add_argument("--cases", nargs="+", choices=CASES, default=DEFAULT_CASES.copy())
     parser.add_argument("--seed", type=int, default=20261023)
     parser.add_argument("--cxx", default=os.environ.get("CXX", "c++"))
     parser.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1), help="parallel compiler jobs; routing remains serial")

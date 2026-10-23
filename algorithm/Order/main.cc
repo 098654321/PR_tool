@@ -13,7 +13,7 @@ int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--self-test") {
             self_test();
-            std::cout << "PASS: all 8 concrete Net constructors x 4 policies; original bias and SyncNet behavior\n";
+            std::cout << "PASS: all 8 concrete Net constructors x 3 policies; original bias and SyncNet behavior\n";
             return 0;
         }
         if (argc != 6) throw std::runtime_error("Usage: order_experiment CASE_DIR OUTPUT_DIR SEED POLICY RUN_ID");
@@ -21,7 +21,8 @@ int main(int argc, char** argv) {
         const auto output = std::filesystem::absolute(argv[2]);
         const auto seed = std::stoull(argv[3]);
         policy = std::stoi(argv[4]);
-        if (policy < 0 || policy > 3) throw std::runtime_error("Policy must be 0..3");
+        if (std::find(policy_ids.begin(), policy_ids.end(), policy) == policy_ids.end())
+            throw std::runtime_error("Policy must be 0, 2 or 3");
         generator.seed(seed);
         std::filesystem::create_directories(output);
         debug::initial_log(output / "debug.log");

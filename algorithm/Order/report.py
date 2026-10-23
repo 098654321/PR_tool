@@ -2,17 +2,19 @@
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CASES = {"case1": 12, "case5": 12, "case7": 13, "case12": 13}
-POLICIES = ["current", "new1", "new2", "new3"]
+CASES = {"case2": 12, "case13": 13, "case5": 12, "case7": 13, "case1": 12, "case12": 13}
+DEFAULT_CASES = ["case2", "case13", "case5", "case7"]
+POLICIES = ["current", "new2", "new3"]
+POLICY_IDS = {"current": 0, "new2": 2, "new3": 3}
 PRIORITIES = {
-    "SyncNet": [0, 3, 0, 2],
-    "TrackToBumpsNet": [1, 0, 2, 3],
-    "BumpToTracksNet": [1, 0, 2, 3],
-    "BumpToBumpsNet": [2, 1, 1, 4],
-    "BumpToTrackNet": [3, 4, 4, 0],
-    "TrackToBumpNet": [3, 4, 4, 0],
-    "BumpToBumpNet": [4, 5, 3, 1],
-    "TracksToBumpsNet": [5, 2, 5, 5],
+    "SyncNet": [0, 0, 2],
+    "TrackToBumpsNet": [1, 2, 3],
+    "BumpToTracksNet": [1, 2, 3],
+    "BumpToBumpsNet": [2, 1, 4],
+    "BumpToTrackNet": [3, 4, 0],
+    "TrackToBumpNet": [3, 4, 0],
+    "BumpToBumpNet": [4, 3, 1],
+    "TracksToBumpsNet": [5, 5, 5],
 }
 
 
@@ -22,7 +24,7 @@ def report(rows, cases, manifest, folder):
              f"源码/工具链指纹：`{manifest['source_fingerprint']}`。", "",
              "每种顺序、每个测例独立运行一次。固定原始布局，不执行SA；mode=0，非增量Maze布线。",
              "只切换下表的基础优先级，小数值先布线。", "",
-             "| Net class | current | new1 | new2 | new3 |", "| --- | ---: | ---: | ---: | ---: |"]
+             "| Net class | " + " | ".join(POLICIES) + " |", "| --- | " + " | ".join(["---:"] * len(POLICIES)) + " |"]
     for name, values in PRIORITIES.items():
         lines.append("| " + name + " | " + " | ".join(map(str, values)) + " |")
     lines += ["", "new2采用用户更正后的bump优先顺序；BumpToTrackNet与TrackToBumpNet保持并列，均为4。",
@@ -31,7 +33,7 @@ def report(rows, cases, manifest, folder):
               "保留SyncNet仅更新内部成员优先级、外层不加端口偏置的现状。"
               "同步组不拆开参与顶层调度；完全同分的顶层Net按UID排序。",
               "TOB接入候选保留COB-unit使用量排序，并在使用量相同时按Track坐标打破平局。",
-              "case1/5使用9×12 COB阵列，case7/12使用9×13。", ""]
+              "COB阵列：" + "；".join(f"{case}为9×{CASES[case]}" for case in cases) + "。", ""]
     lines += ["## 顶层Net类别覆盖", "", "同步组成员不在此表拆开计数，避免误认为存在可独立调序的二端Net。", "",
               "| case | " + " | ".join(PRIORITIES) + " |",
               "| --- | " + " | ".join(["---:"] * len(PRIORITIES)) + " |"]
@@ -46,8 +48,8 @@ def report(rows, cases, manifest, folder):
                ("最长成员/普通Net线长", "max_length"), ("布线耗时 s", "routing_seconds"),
                ("同步组等长检查失败数量", "sync_unequal_groups")]
     for title, key in metrics:
-        lines += [f"## {title}", "", "| case | current | new1 | new2 | new3 |",
-                  "| --- | ---: | ---: | ---: | ---: |"]
+        lines += [f"## {title}", "", "| case | " + " | ".join(POLICIES) + " |",
+                  "| --- | " + " | ".join(["---:"] * len(POLICIES)) + " |"]
         for case in cases:
             cells = []
             for policy in POLICIES:
