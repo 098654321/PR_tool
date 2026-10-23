@@ -1,3 +1,1 @@
 muyan without bus, to test basic routing functionality
-TOB = 4 * 4
-COB array = 9 * 12

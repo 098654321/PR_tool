@@ -54,6 +54,8 @@ A typical test case directory (e.g., `test/config/case4/`) contains:
 *   **Documentation**:
     *   `description.txt`, optional `*.xlsx`.
 
+The `description.txt` and `golden.txt` files for cases 2–16 were synchronized from the `论文/papers/SAT-router-for-interposer/PR_tool/test/config` directory on 2026-10-23.
+
 ## Data Formats
 
 *   **JSON**: Primary configuration; parsed via internal `serde`.
