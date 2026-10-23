@@ -315,6 +315,7 @@ target("test_ILP")
         "source/serde/**.cc"
     )
     add_files(
+        "source/algo/router/sat_ilp/commit_paths.cc",
         "source/algo/router/sat_ilp/scope/build_routing_nets.cc",
         "source/algo/router/sat_ilp/scope/scope_bbox.cc",
         "source/algo/router/sat_ilp/scope/pair_routing_state.cc",
@@ -363,6 +364,7 @@ target("test_ILP_unit")
         "source/serde/**.cc"
     )
     add_files(
+        "source/algo/router/sat_ilp/commit_paths.cc",
         "source/algo/router/sat_ilp/scope/build_routing_nets.cc",
         "source/algo/router/sat_ilp/scope/scope_bbox.cc",
         "source/algo/router/sat_ilp/scope/pair_routing_state.cc",

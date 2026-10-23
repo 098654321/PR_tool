@@ -19,7 +19,7 @@ namespace PR_tool {
 namespace {
 
 constexpr auto kUsage =
-    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--ilp-optimize -L percent [-R pad] [--time-limit hours]]";
+    "Usage: xmake run test_ILP <config_path> [-v|-vv] [-o DIR] [--sat-log] [--max-rss-mb N] [-s S] [-d D] [--ilp-optimize -L percent [-R pad] [--time-limit seconds]]";
 
 auto get_peak_rss_mb() -> double {
     rusage usage {};
@@ -72,7 +72,7 @@ auto run_main(int argc, char** argv) -> int {
         cli.ilp_stretch_threshold_percent.value_or(0.0);
     options.ilp_optimize.segment_bbox_pad =
         cli.ilp_segment_bbox_pad.value_or(0);
-    options.ilp_optimize.time_limit_hours = cli.ilp_time_limit_hours;
+    options.ilp_optimize.time_limit_seconds = cli.ilp_time_limit_seconds;
     options.ilp_optimize.verbose_level = cli.verbose_level;
     options.ilp_optimize.gurobi_log_dir = (log_dir / "gurobi").string();
     if (cli.enable_sat_log) {
@@ -89,12 +89,12 @@ auto run_main(int argc, char** argv) -> int {
             cli.initial_delay_pad);
     }
     if (cli.enable_ilp_optimize) {
-        if (options.ilp_optimize.time_limit_hours.has_value()) {
+        if (options.ilp_optimize.time_limit_seconds.has_value()) {
             debug::info_fmt(
-                "v15 ILP optimization enabled: threshold={:.2f}% segment_bbox_pad={} time_limit_hours={} gurobi_log_dir={}",
+                "v15 ILP optimization enabled: threshold={:.2f}% segment_bbox_pad={} time_limit_seconds={} gurobi_log_dir={}",
                 options.ilp_optimize.stretch_threshold_percent,
                 options.ilp_optimize.segment_bbox_pad,
-                options.ilp_optimize.time_limit_hours.value(),
+                options.ilp_optimize.time_limit_seconds.value(),
                 options.ilp_optimize.gurobi_log_dir);
         } else {
             debug::info_fmt(

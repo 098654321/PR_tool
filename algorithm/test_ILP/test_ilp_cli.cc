@@ -118,9 +118,9 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
         if (arg == "--time-limit") {
             if (++i >= args.size()) {
                 throw std::invalid_argument(
-                    "--time-limit requires a positive finite number of hours");
+                    "--time-limit requires a positive finite number of seconds");
             }
-            options.ilp_time_limit_hours = parse_positive_double(args[i], "--time-limit");
+            options.ilp_time_limit_seconds = parse_positive_double(args[i], "--time-limit");
             continue;
         }
         if (arg.size() >= 2 && arg[0] == '-' && arg[1] == 'v') {
@@ -147,7 +147,7 @@ auto parse_test_ilp_cli(const std::span<const std::string_view> args) -> TestIlp
     if (!options.enable_ilp_optimize && options.ilp_segment_bbox_pad.has_value()) {
         throw std::invalid_argument("-R requires --ilp-optimize");
     }
-    if (!options.enable_ilp_optimize && options.ilp_time_limit_hours.has_value()) {
+    if (!options.enable_ilp_optimize && options.ilp_time_limit_seconds.has_value()) {
         throw std::invalid_argument("--time-limit requires --ilp-optimize");
     }
     return options;

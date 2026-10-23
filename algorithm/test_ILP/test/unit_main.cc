@@ -2347,14 +2347,14 @@ auto test_cli_v15_ilp_options() -> void {
     const auto time_limit = parse_test_ilp_cli({
         "test/config/case7", "--ilp-optimize", "-L", "10", "--time-limit", "2.5"});
     require(
-        time_limit.ilp_time_limit_hours.has_value()
-            && time_limit.ilp_time_limit_hours.value() == 2.5,
-        "CLI must parse --time-limit hours");
+        time_limit.ilp_time_limit_seconds.has_value()
+            && time_limit.ilp_time_limit_seconds.value() == 2.5,
+        "CLI must parse --time-limit seconds without unit conversion");
 
     const auto unlimited = parse_test_ilp_cli({
         "test/config/case7", "--ilp-optimize", "-L", "10"});
     require(
-        !unlimited.ilp_time_limit_hours.has_value(),
+        !unlimited.ilp_time_limit_seconds.has_value(),
         "missing --time-limit must leave ILP time unlimited");
 
     const auto require_invalid = [](std::initializer_list<std::string_view> args) {

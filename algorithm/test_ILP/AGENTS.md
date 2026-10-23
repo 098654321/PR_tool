@@ -78,7 +78,7 @@ algorithm/test_ILP/
 
 ### v15 可选后优化
 
-- 仅当同时给出 `--ilp-optimize -L <非负百分比>` 时启动；`-R <非负整数>` 与 `--time-limit <正数小时>` 也只能与该组合一起使用，省略时分别默认 `R=0`、Gurobi 不限时；未启用时不会创建 Gurobi 环境或 `./gurobi/`。
+- 仅当同时给出 `--ilp-optimize -L <非负百分比>` 时启动；`-R <非负整数>` 与 `--time-limit <正数秒>` 也只能与该组合一起使用，省略时分别默认 `R=0`、Gurobi 不限时；未启用时不会创建 Gurobi 环境或 `./gurobi/`。
 - 对增长率 `actual/shortest-1 >= L` 的整网重布。普通 2-pin、SyncBus member 各为一个 parent+segment；TrackToBumps / PNnet 多扇出先拆 segment，ILP 用 parent 级 `x/y` 与 segment 级 `f` 建模。SyncBus 以 parent 线长等长约束连接。
 - 未选 net 的物理节点与 TOB 开关被锁定；模型包含 TOB physical-switch 唯一性、Bump-HLine/HLine-VLine partial matching 和最后一级 straight/swap mode 约束。Gurobi 异常、无可用解或提取校验失败会记录 `fallback_to_SAT=true` 并完整回退 SAT 解。`--time-limit` 触发 `TIME_LIMIT`（或中断）且已有可行 incumbent 时按 Suboptimal 接受当前最优解，不回退 SAT。
 - `--ilp-optimize` 的 MIP start 来自 SAT 恢复树 / segment `guide` 弧，填 `f`（segment）与 `x/y`（parent）；`M_g` 仍来自 SAT `vline_mode_straight_by_group`。PNnet 固定**全部** SAT 实际选中的 candidate track，每个 track 保留唯一 `r_n→track` 虚拟首跳；普通 segment 禁止虚拟节点。若 BFS 去除多 source 重汇合后会使任一已选 track 脱离所有 sink，当前单入边 parent-tree 表达不了该结构，会作为不变量错误终止而非静默改源。多扇出 / PNnet 按 BFS 父树剪除死支后拆成 2-pin segment（`-R` 控制 bbox 外推，默认 0）；guide 自洽或覆盖检查失败同样终止，不回退 SAT。`-v` 额外记录已选 track、剪枝前后树规模和 guide coverage。
@@ -105,7 +105,7 @@ xmake build test_ILP_unit
 ./output/test_ILP test/config/case7 -v
 ./output/test_ILP test/config/case7 -v -o output/case7_run
 ./output/test_ILP test/config/case7 -v --ilp-optimize -L 10
-./output/test_ILP test/config/case7 -v --ilp-optimize -L 10 --time-limit 2
+./output/test_ILP test/config/case7 -v --ilp-optimize -L 10 --time-limit 7200
 ```
 
 **Fixture 约定（与主工程合并后）**：
@@ -116,7 +116,7 @@ xmake build test_ILP_unit
 
 **输出目录**（可选）：`-o DIR` / `--output DIR` 将 `debug.log` 写到 `DIR/debug.log`，并将 `--ilp-optimize` 的 Gurobi 日志写到 `DIR/gurobi/v15_ilp.log`（目录不存在时创建）；省略时分别为 `./debug.log` 与 `./gurobi/v15_ilp.log`。`--sat-log` 的 `./cadical-log` 路径不受 `-o` 影响。
 
-**ILP 时限**（可选）：`--time-limit H` 仅限制 Gurobi `optimize()` 墙钟（单位小时，须 `H>0`，可小数）；须与 `--ilp-optimize` 联用。超时且已有可行解时接受 incumbent（日志 status 可为 `TIME_LIMIT`，内部按 Suboptimal）。省略则不限时。
+**ILP 时限**（可选）：`--time-limit S` 仅限制 Gurobi `optimize()` 墙钟（单位秒，须为正有限数，可小数）；须与 `--ilp-optimize` 联用。与主程序统一使用 `time_limit_seconds`；旧小时参数迁移时乘以 3600。超时且已有可行解时接受 incumbent（日志 status 可为 `TIME_LIMIT`，内部按 Suboptimal）。省略则不限时。
 
 **首轮扩展**（可选，与反馈扩边独立）：`-s S` 外扩 pair bbox；`-d D` 初始 delay 集合 `{d_min,…,d_min+D}`。`-v` 时 `main.cc` 打印 `initial search padding: scope_pad=… delay_pad=…`；初始 scope 与 `scope after initial search padding` 分别展示扩展前后范围，round 0 的 `delay net=… delays=[…]` 展示最终 pair delay。
 
