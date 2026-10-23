@@ -103,12 +103,12 @@ auto optimize_v15_routes(
     };
 
     debug::info(kV15Banner);
-    if (options.time_limit_hours.has_value()) {
+    if (options.time_limit_seconds.has_value()) {
         debug::info_fmt(
-            "v15 ILP optimization begin: threshold={:.2f}% segment_bbox_pad={} time_limit_hours={} gurobi_log={}/v15_ilp.log",
+            "v15 ILP optimization begin: threshold={:.2f}% segment_bbox_pad={} time_limit_seconds={} gurobi_log={}/v15_ilp.log",
             options.stretch_threshold_percent,
             options.segment_bbox_pad,
-            options.time_limit_hours.value(),
+            options.time_limit_seconds.value(),
             options.gurobi_log_dir);
     } else {
         debug::info_fmt(

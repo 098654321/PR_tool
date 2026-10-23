@@ -72,7 +72,8 @@ auto parse_router_and_sat_options(
     const std::Vector<std::String>& arguments,
     algo::RouterKind& router_kind,
     algo::SatRouterCliOptions& sat_opts,
-    bool& any_sat_only_flag
+    bool& any_sat_only_flag,
+    std::optional<double>& time_limit_seconds
 ) -> void {
     router_kind = algo::RouterKind::Maze;
     sat_opts = {};
@@ -148,8 +149,7 @@ auto parse_router_and_sat_options(
             continue;
         }
         if (arg == "--time-limit") {
-            any_sat_only_flag = true;
-            sat_opts.ilp_time_limit_hours =
+            time_limit_seconds =
                 parse_positive_double(require_next_arg(arguments, i, "--time-limit"), "--time-limit");
             continue;
         }
@@ -181,9 +181,10 @@ auto parse_router_and_sat_options(
     if (!sat_opts.enable_ilp_optimize && sat_opts.ilp_segment_bbox_pad.has_value()) {
         debug::fatal("-R requires --ilp-optimize");
     }
-    if (!sat_opts.enable_ilp_optimize && sat_opts.ilp_time_limit_hours.has_value()) {
-        debug::fatal("--time-limit requires --ilp-optimize");
+    if (router_kind == algo::RouterKind::Sat && !sat_opts.enable_ilp_optimize && time_limit_seconds.has_value()) {
+        debug::fatal("--router sat --time-limit requires --ilp-optimize");
     }
+    if (router_kind == algo::RouterKind::Sat) sat_opts.ilp_time_limit_seconds = time_limit_seconds;
 }
 
 } // namespace
@@ -229,6 +230,9 @@ auto parse_router_and_sat_options(
         console::print_with_color("\t--router maze|sat           ", Color::Cyan);
         console::println("Router backend (default: maze).");
 
+        console::print_with_color("\t--time-limit seconds        ", Color::Cyan);
+        console::println("Maze routing budget; SAT ILP solver budget. Omit for automatic Maze convergence.");
+
         console::println_with_color("SAT router flags (--router sat):", Color::Green);
         console::print_with_color("\t--scope-pad N               ", Color::Cyan);
         console::println("Initial pair bbox padding (default 0).");
@@ -240,8 +244,8 @@ auto parse_router_and_sat_options(
         console::println("Peak RSS limit in MB for CaDiCal.");
         console::print_with_color("\t--ilp-optimize -L percent     ", Color::Cyan);
         console::println("Optional v15 Gurobi wirelength optimization.");
-        console::print_with_color("\t-R pad, --time-limit hours  ", Color::Cyan);
-        console::println("ILP segment bbox pad / Gurobi time limit.");
+        console::print_with_color("\t-R pad                     ", Color::Cyan);
+        console::println("ILP segment bbox pad.");
     }
 
     auto print_verion() -> void {
@@ -336,14 +340,15 @@ auto parse_router_and_sat_options(
             algo::RouterKind router_kind = algo::RouterKind::Maze;
             algo::SatRouterCliOptions sat_opts {};
             bool any_sat_only_flag = false;
-            parse_router_and_sat_options(arguments, router_kind, sat_opts, any_sat_only_flag);
+            std::optional<double> time_limit_seconds;
+            parse_router_and_sat_options(arguments, router_kind, sat_opts, any_sat_only_flag, time_limit_seconds);
             if (router_kind == algo::RouterKind::Maze && any_sat_only_flag) {
                 debug::fatal("SAT-only flags require --router sat");
             }
 
             return cli_main(arguments[0], std::move(output_path), /*mode=*/0, /*compare=*/std::nullopt,
                             /*try_all_modes=*/false, placement, simplify_controlbits,
-                            router_kind, sat_opts);
+                            router_kind, sat_opts, time_limit_seconds);
         }
 
         return 0;

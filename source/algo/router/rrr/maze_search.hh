@@ -1,0 +1,70 @@
+#pragma once
+
+#include "hardware_graph.hh"
+#include "resource_model.hh"
+#include "rrr_types.hh"
+
+#include <hardware/interposer.hh>
+#include <std/collection.hh>
+
+namespace PR_tool::rrr {
+
+inline auto node_in_search_box(const UnifiedGraph& graph, int node, const RrrParams& params) -> bool {
+    if (!params.search_box) return true;
+    const auto [r, c] = routing_node_position(graph, node);
+    return params.search_box->contains(r, c);
+}
+
+auto arc_resource_keys(const UnifiedGraph& graph, const UnifiedArc& arc) -> const ArcResourceKeys&;
+
+auto arc_capacity_blocked(const UnifiedGraph& graph, const ResourceModel& resources,
+                          OwnerId owner, const UnifiedArc& arc) -> bool;
+
+auto path_resource_keys(
+    const UnifiedGraph& graph,
+    const std::Vector<int>& node_path,
+    bool is_bnet = false
+) -> std::Vector<ResourceKey>;
+
+auto maze_ordered_out_arc_ids(
+    const UnifiedGraph& graph,
+    int node_id,
+    hardware::Interposer* interposer
+) -> const std::Vector<int>&;
+
+auto arc_incremental_cost(
+    const UnifiedGraph& graph,
+    const ResourceModel& resources,
+    OwnerId owner,
+    const UnifiedArc& arc,
+    const std::Set<int>& starts,
+    const RrrParams& params
+) -> double;
+
+auto route_demand(
+    const UnifiedGraph& graph,
+    const ResourceModel& resources,
+    OwnerId owner,
+    const std::Vector<int>& sources,
+    int sink,
+    const RrrParams& params,
+    const std::Vector<int>& tree = {},
+    bool is_bnet = false,
+    hardware::Interposer* interposer = nullptr,
+    const std::Set<ResourceKey>& hard_block = {}
+) -> std::Vector<int>;
+
+auto route_demand_from_tree(
+    const UnifiedGraph& graph,
+    const ResourceModel& resources,
+    OwnerId owner,
+    const std::Vector<int>& sources,
+    int sink,
+    const RrrParams& params,
+    const std::Set<int>& tree,
+    bool is_bnet = false,
+    hardware::Interposer* interposer = nullptr,
+    const std::Set<ResourceKey>& hard_block = {}
+) -> std::Vector<int>;
+
+} // namespace PR_tool

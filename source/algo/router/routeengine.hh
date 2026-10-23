@@ -67,6 +67,7 @@ public:
     auto clear_failed_net_names() -> void {
         this->_failed_net_names.clear();
     }
+    bool stop_on_first_failure{false};
     auto collect_data_when_fail(const std::Vector<circuit::Net*>& nets, bool incremental) -> void {
         this->_route_data.collect_data(nets, incremental);
     }

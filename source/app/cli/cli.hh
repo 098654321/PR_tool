@@ -26,7 +26,8 @@ namespace PR_tool {
         int mode, std::optional<int> compare, bool try_all_modes, bool placement,
         bool simplify_controlbits,
         algo::RouterKind router_kind,
-        const algo::SatRouterCliOptions& sat_opts
+        const algo::SatRouterCliOptions& sat_opts,
+        std::optional<double> time_limit_seconds
     ) -> int;
 
     auto place(PR_tool::hardware::Interposer*, PR_tool::circuit::BaseDie*, std::vector<PR_tool::circuit::TopDieInstance*>&) -> void;
@@ -36,6 +37,7 @@ namespace PR_tool {
         std::StringView,
         int mode, std::optional<int> compare, bool try_all_modes,
         algo::RouterKind router_kind,
-        const algo::SatRouterCliOptions& sat_opts
+        const algo::SatRouterCliOptions& sat_opts,
+        std::optional<double> time_limit_seconds
     ) -> RouteStatus;
 }

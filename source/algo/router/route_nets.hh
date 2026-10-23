@@ -39,7 +39,8 @@ namespace PR_tool::algo {
         bool incremental,
         bool try_all_modes, 
         bool path_exists = false,
-        RouteProgressFn on_progress = {}
+        RouteProgressFn on_progress = {},
+        std::optional<double> time_limit_seconds = {}
     ) -> RouteNetsResult;
 
     auto analyze_results(

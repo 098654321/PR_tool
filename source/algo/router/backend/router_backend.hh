@@ -26,12 +26,13 @@ struct SatRouterCliOptions {
     bool enable_ilp_optimize{false};
     std::optional<double> ilp_stretch_threshold_percent;
     std::optional<int> ilp_segment_bbox_pad;
-    std::optional<double> ilp_time_limit_hours;
+    std::optional<double> ilp_time_limit_seconds;
     std::String gurobi_log_dir{"gurobi"};
 };
 
 struct RouterOptions {
     RouterKind kind{RouterKind::Maze};
+    std::optional<double> time_limit_seconds;
     int mode{0};
     bool try_all_modes{false};
     std::optional<int> compare;

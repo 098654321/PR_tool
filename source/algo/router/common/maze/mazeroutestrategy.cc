@@ -1,3 +1,4 @@
+#include <algo/router/common/routing_budget.hh>
 #include "./mazeroutestrategy.hh"
 #include "./path_length.hh"
 #include "hardware/track/track.hh"
@@ -523,6 +524,7 @@ namespace PR_tool::algo {
             btt_nets.emplace_back(net.get());
         }
         while (true){
+            algo::RoutingBudget::check();
             auto [success, ml] = sync_reroute(
                 ptr_interposer, btb_nets, max_length
             );
@@ -597,6 +599,7 @@ namespace PR_tool::algo {
         }
         
         while (!queue.empty()) {
+            algo::RoutingBudget::check();
             auto track = queue.front();
             queue.pop();
 
@@ -605,6 +608,7 @@ namespace PR_tool::algo {
                 auto path = std::Vector<std::Tuple<Track*, std::Option<COBConnector>>>{};
                 auto cur_track = track;
                 while (true) {
+                    algo::RoutingBudget::check();
                     auto prev_track_info = prev_track_infos.find(cur_track);
                     if(prev_track_info == prev_track_infos.end()){
                         throw FinalError("MazeRouteStrategy::maze_search(): cannot find previous track");

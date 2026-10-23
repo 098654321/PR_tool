@@ -16,6 +16,7 @@
 #include <circuit/topdieinst/topdieinst.hh>
 
 #include <exception>
+#include <optional>
 
 namespace PR_tool::widget {
 
@@ -50,7 +51,8 @@ namespace PR_tool::widget {
                         emit this->routeProgress(
                             static_cast<int>(done),
                             static_cast<int>(total));
-                    });
+                    },
+                    std::nullopt);
 
                 if (!result.failed_net_names.empty()) {
                     QStringList names;

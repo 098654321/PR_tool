@@ -8,6 +8,9 @@
 #include <hardware/interposer.hh>
 #include <algorithm>
 #include <ranges>
+#include "rrr/production.hh"
+#include "common/routing_budget.hh"
+#include "common/maze/mazeroutestrategy.hh"
 
 
 namespace PR_tool::algo {
@@ -21,7 +24,8 @@ namespace PR_tool::algo {
         bool incremental,
         bool try_all_modes, 
         bool path_exists,
-        RouteProgressFn on_progress
+        RouteProgressFn on_progress,
+        std::optional<double> time_limit_seconds
     ) -> RouteNetsResult {
         debug::info(
             "\n\
@@ -30,15 +34,24 @@ namespace PR_tool::algo {
             **********************************************************************************\
             "
         );
+        const auto routing_start = RoutingBudget::Clock::now();
+        RoutingBudget budget(time_limit_seconds, routing_start);
+        const bool use_rrr = !incremental && !try_all_modes && m == 0
+            && dynamic_cast<const MazeRouteStrategy*>(&strateg) != nullptr;
         auto invoker = Invoker{};
         auto engine = RouteEngine{basedie->nets(), strateg, allocator, m, incremental, try_all_modes, path_exists, interposer};
         engine.set_progress_callback(std::move(on_progress));
+        engine.stop_on_first_failure = use_rrr;
         invoker.set_route_commands(incremental, try_all_modes, path_exists);
         
         while (!invoker.check_command()) {
             try {
+                RoutingBudget::check();
                 invoker.invoke(interposer, engine);
             } 
+            catch (const RoutingTimeout&) {
+                break;
+            }
             catch (const RetryExpt& err) {
                 throw FinalError(err.what());
             }
@@ -51,6 +64,16 @@ namespace PR_tool::algo {
             }
         }
 
+        if (use_rrr) {
+            rrr::RrrParams params;
+            params.time_budget_seconds = time_limit_seconds.value_or(0);
+            params.budget_start = routing_start;
+            if (!rrr::finish_routing(interposer, basedie, engine, params)) {
+                engine.clear_failed_net_names();
+                engine.record_failed_net("RRR: no complete legal solution found");
+            }
+        }
+        RoutingBudget cleanup;
         auto route_data = analyze_results(interposer, engine, incremental, try_all_modes);
         return RouteNetsResult{route_data, engine.failed_net_names()};
     }

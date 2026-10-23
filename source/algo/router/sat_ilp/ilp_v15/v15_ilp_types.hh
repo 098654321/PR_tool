@@ -18,7 +18,7 @@ struct V15IlpOptimizeOptions {
     int verbose_level{0};
     std::String gurobi_log_dir{"./gurobi"};
     // Gurobi optimize wall time; unset means unlimited.
-    std::optional<double> time_limit_hours;
+    std::optional<double> time_limit_seconds;
 };
 
 struct V15SegmentScope {

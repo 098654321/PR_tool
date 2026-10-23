@@ -88,8 +88,8 @@ auto SatRouterBackend::run(
     if (options.sat.ilp_segment_bbox_pad.has_value()) {
         sat_options.ilp_optimize.segment_bbox_pad = options.sat.ilp_segment_bbox_pad.value();
     }
-    if (options.sat.ilp_time_limit_hours.has_value()) {
-        sat_options.ilp_optimize.time_limit_hours = options.sat.ilp_time_limit_hours.value();
+    if (options.sat.ilp_time_limit_seconds.has_value()) {
+        sat_options.ilp_optimize.time_limit_seconds = options.sat.ilp_time_limit_seconds.value();
     }
 
     debug::debug("Start SAT routing ...");

@@ -87,16 +87,16 @@ auto solve_v15_ilp_model(
         env.set(GRB_IntParam_Threads, 1);
         // Large segment models already have a feasible SAT-derived MIP start.
         // Favor finding and improving incumbents over an expensive aggressive
-        // presolve/proof phase. TimeLimit is optional via --time-limit (hours).
+        // presolve/proof phase. TimeLimit is optional via --time-limit (seconds).
         env.set(GRB_IntParam_Presolve, -1);
         env.set(GRB_IntParam_PreSparsify, -1);
         env.set(GRB_IntParam_Symmetry, -1);
         env.set(GRB_IntParam_MIPFocus, 1);
         env.set(GRB_IntParam_Cuts, -1);
-        if (options.time_limit_hours.has_value()) {
+        if (options.time_limit_seconds.has_value()) {
             env.set(
                 GRB_DoubleParam_TimeLimit,
-                options.time_limit_hours.value() * 3600.0);
+                options.time_limit_seconds.value());
         }
         env.set(GRB_StringParam_LogFile, log_path.string());
         env.start();

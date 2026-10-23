@@ -26,7 +26,7 @@ PR_tool 面向 chiplet interposer 的布局布线：输入系统配置（topdie 
 1. `parse::read_config` → `Interposer` + `BaseDie` + `RegisterMapConfig`（`config.json` 字段 **`reigster_adder`** → 文件 **`register_adder.json`**）
 2. `algo::build_nets` → `Connection` 转为 `circuit::Net` / `SyncNet`
 3. 可选 `algo::place`（默认 `SAPlaceStrategy`，5 参：init/freeze/solve_num/cooling/max_no_improvement）
-4. `algo::route_nets`（非增量；`--router maze` 或 `--router sat`；单 net 失败可继续，失败时跳过 REG 写出）
+4. `algo::route_nets`（非增量；`--router maze` 或 `--router sat`；Maze 首次失败交给 RRR；最终无合法解时跳过 REG 写出）
 5. `parse::output_from_routing_results` → `{output}/regnamecontrolbit_4part/` 四文件
 
 GUI：`source/app/gui/gui.cc` → `widget::Window`；Place 在 `PlaceThread`、Route 在 `PRThread`（均 `widget/prthread.*`）中异步执行；可导出 controlbits 到输出根目录。阶段机、四视图与约束见 `source/widget/AGENTS.md`。
@@ -96,7 +96,9 @@ source/
 | `netbuilder/netbuilder.cc` → `build_nets` | Connection → Net；sync 组 → `SyncNet`；pose/nege → 固定电源地网 |
 | `placer/place.hh` → `place` | 默认 `SAPlaceStrategy`（HPWL + 模拟退火） |
 | `router/route_nets.cc` → `route_nets` | Invoker 命令链 + `RouteEngine`；`--router maze\|sat` 选后端 |
-| `router/backend/maze_backend.cc` | 默认 Maze BFS；`MazeRerouter` 拉齐 SyncNet 长度 |
+| `router/backend/maze_backend.cc` | 初始 Sort + Resources + Maze，再接 `rrr/`；RRR 恢复完整最优合法解后写出 |
+| `router/rrr/` | FPIA-RRR/AIR 移植；生产路径导入/提交、owner 资源与共享驱动、同步等长、物理方向验证 |
+| `router/common/routing_budget.hh` | 线程局部单调时钟预算，搜索内部取消；不限时按三次合法解收敛（首解计 1） |
 | `router/backend/sat_backend.cc` | `--router sat`；调用 `sat_ilp/` 统一图 SAT（可选 v15 ILP） |
 | `router/sat_ilp/` | v14 SAT 编码、反馈扩边、commit 到 `PathPackage`（`xmake f --cadical=y`） |
 | `router/incremental/*` | 增量代码仍在树中；v1.0.0 CLI 已拒绝 `-i/-c` |
@@ -108,7 +110,7 @@ source/
 | `reader/module.cc` → `read_config` | 返回 Interposer / BaseDie / RegisterMapConfig |
 | `reader/module.cc` → `read_controlbits` | 旧单文件；四文件读回尚未适配 |
 | `writer/module.cc` → `output_from_routing_results` | `connect_all` + Writer 写四文件（`hex address reg_name`） |
-| `writer/writer.*` / `register_defaults.hh` | 寄存器抓取；`-s` 省略等于默认 hex 的行 |
+| `writer/writer.*` / `register_defaults.hh` | 寄存器抓取；`-s` 省略默认行；缺少活动寄存器地址时拒绝写出 |
 
 ---
 
@@ -134,5 +136,7 @@ xmake build regression_test
 xmake build gui_test
 xmake run gui_test                 # offscreen；见 widget/AGENTS.md 与 test/AGENTS.md
 ```
+
+Maze：`--time-limit <seconds>` 为可选正有限秒数，覆盖初始路由和 RRR；到期恢复最短完整合法解，无解返回失败。省略则首次合法计 1、改善重置为 1、合法序列计到 3 停止；非法轮不改变计数。SAT/ILP 同名参数单位也改为秒，范围仍为 ILP 阶段。
 
 常用 CLI：`--router maze|sat`（默认 maze）、`--scope-pad N` / `--delay-pad N`（仅 SAT；勿与写出稀疏 `-s` 混淆）。配置目录约定见根 `README.md`；测试与 `COB_ARRAY_WIDTH` 见 `test/AGENTS.md`；`algorithm/test_ILP/` 见该目录 `AGENTS.md`。

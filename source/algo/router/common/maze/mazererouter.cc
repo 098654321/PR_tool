@@ -1,3 +1,4 @@
+#include <algo/router/common/routing_budget.hh>
 #include "./mazererouter.hh"
 #include "../../routeerror.hh"
 #include "./path_length.hh"
@@ -63,6 +64,7 @@ namespace PR_tool::algo{
         // end node at the head of path
         auto node = current_node;
         while (node->parent() != std::nullopt){
+            algo::RoutingBudget::check();
             path.push_back(node);
             node = node->parent().value();
         }
@@ -300,6 +302,7 @@ namespace PR_tool::algo{
 
         // mazing with A* 
         while (!queue.empty()) {
+            algo::RoutingBudget::check();
             // get current node
             std::pop_heap(queue.begin(), queue.end(), Node::CompareNodes);
             auto node_sptr {queue.back()};

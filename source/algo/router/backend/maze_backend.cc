@@ -41,7 +41,7 @@ public:
         if (!try_all_modes && mode == 0) {
             auto result = route_nets(
                 interposer, basedie, MazeRouteStrategy{false}, HK{},
-                mode, false, try_all_modes);
+                mode, false, try_all_modes, false, {}, options.time_limit_seconds);
             if (!result.failed_net_names.empty()) {
                 debug::error("Routing failed for:");
                 for (const auto& name : result.failed_net_names) {

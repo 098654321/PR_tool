@@ -69,6 +69,14 @@ namespace PR_tool::parse
         if (register_map.empty()) {
             debug::fatal("register_map is empty; configure reigster_adder in config.json");
         }
+        // Validate before opening any file: silently dropping an active register
+        // can turn a legal router result into disconnected hardware controlbits.
+        std::HashSet<std::String> mapped;
+        for(const auto& [file,regs]:register_map)
+            for(const auto& [name,address]:regs)mapped.insert(name);
+        for(const auto& [name,hex]:_values)
+            if(!mapped.contains(name) && !should_omit_simplified_line(hex,name))
+                throw std::runtime_error(std::format("active register '{}' missing from register_map",name));
         auto out_dir = output_root / "regnamecontrolbit_4part";
         std::filesystem::create_directories(out_dir);
 

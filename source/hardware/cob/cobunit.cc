@@ -62,7 +62,7 @@ namespace PR_tool::hardware {
             }
         };
 
-        reset_reg(this->_switch_ld);
+        reset_reg(this->_switch_lu);
         reset_reg(this->_switch_lr);
         reset_reg(this->_switch_ru);
         reset_reg(this->_switch_ld);

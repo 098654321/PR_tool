@@ -13,6 +13,9 @@ extern void test_cob_main();
 extern void test_interposer_main();
 extern void test_tob_main();
 extern void test_router_main();
+extern void test_rrr_main();
+extern void test_rrr_system_main(int argc, char** argv);
+extern void test_rrr_benchmark_main(int argc, char** argv);
 extern void test_placer_main();
 extern void test_debug_main();
 extern void test_config_main();
@@ -38,6 +41,8 @@ try {
     auto functions = std::HashMap<std::StringView, TestFunction>{};
     auto target = std::StringView{argv[1]};
 
+    if (target == "rrr_system") { test_rrr_system_main(argc, argv); return 0; }
+    if (target == "rrr_benchmark") { test_rrr_benchmark_main(argc, argv); return 0; }
     if (target == "writer") {
         PR_tool::console::println_fmt("Run test 'writer'");
         test_writer_main(argc, argv);
@@ -50,6 +55,7 @@ try {
     REGISTER_TEST(tob)
     REGISTER_TEST(interposer)
     REGISTER_TEST(router)
+    REGISTER_TEST(rrr)
     REGISTER_TEST(placer)
     REGISTER_TEST(debug)
     REGISTER_TEST(config)
@@ -88,4 +94,5 @@ try {
 }
 catch (const std::exception& err) {
     PR_tool::console::error_fmt("Error in test: {}", err.what());
+    return 1;
 }

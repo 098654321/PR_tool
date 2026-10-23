@@ -30,7 +30,7 @@ test/
     *   Each case: input JSONs + optional `golden.txt` / `description.txt`.
 *   **`module_test/test_unit/`**: Unit / iterative / writer C++ entrypoints.
     *   Dispatcher: `test_unit/test.cc` → `./module_test <name>`.
-    *   Fast: `cob` `tob` `interposer` `router` `placer` `config` `comparator` `path_length` `debug` `all`.
+    *   Fast: `cob` `tob` `interposer` `router` `placer` `config` `comparator` `path_length` `debug` `rrr` `all`.
     *   Slow (not in `all`): `placer_iteratively` / `router_iteratively` / `sat_ilp` (spawn `./PR_tool_cli` or unified SAT).
     *   Writer: `./module_test writer <case_dir> <net_path_info_new.txt> <output_dir> [mode]` — implementation in `test_unit/test_writer.cc`.
 *   **`module_test/test_writer/`**: Cases `test1`…`test5` + `check-controlbits-file/` scripts.
@@ -94,7 +94,7 @@ Route, or OpenGL rendering from this headless target.
 *   **`placer_iteratively`**: Runs `./PR_tool_cli <config> -p` N times; fails on `Failed routing nubmer > 0` or `Routing failed for this net:`; `Total Length >= 1100` warns only.
 *   **`router_iteratively`**: Same failure checks; runs `./PR_tool_cli <config>` without `-p`; no Total Length warning.
 *   **`sat_ilp`** (`test_unit/test_sat_ilp.cc`): In-process SAT smoke — `build_routing_nets` unit test, `solve_unified_sat_and_commit` on `test/config/case1`, optional `algorithm/test_ILP/test/case_2btb` when `COB_ARRAY_WIDTH==13`. Requires `module_test` built with `PR_TOOL_HAS_SAT_ROUTER=1` (default `xmake f --sat_router=y --cadical=y`). CaDiCal via `third_party/cadical`; Gurobi only if exercising v15 ILP paths.
-*   **`[flow]`** (`flow_test.cc`): Two width-tagged flows run serially through `CobArrayWidthGuard`: `[width12]` uses case5 and `[width13]` uses case7.  Each runs maze placement+routing×10 and maze routing-only×10, then SAT+ILP placement+routing×1 and SAT+ILP routing-only×1 with `--router sat --ilp-optimize -L 25 --time-limit 5` (the time-limit unit is hours).  SAT steps require SAT validation PASS, SAT commit success, ILP completion, and no SAT/ILP validation failure.  Only `[width12]` runs `run_case.sh` for writer test1…test5; missing kiwi remains WARNING + exit 0 (SKIP).  A changed width is restored and the flow targets are rebuilt before the test returns.
+*   **`[flow]`** (`flow_test.cc`): Two width-tagged flows run serially through `CobArrayWidthGuard`: `[width12]` uses case5 and `[width13]` uses case7.  Each runs maze placement+routing×10 and maze routing-only×10, then SAT+ILP placement+routing×1 and SAT+ILP routing-only×1 with `--router sat --ilp-optimize -L 25 --time-limit 18000` (the time-limit unit is seconds).  SAT steps require SAT validation PASS, SAT commit success, ILP completion, and no SAT/ILP validation failure.  Only `[width12]` runs `run_case.sh` for writer test1…test5; missing kiwi remains WARNING + exit 0 (SKIP).  A changed width is restored and the flow targets are rebuilt before the test returns.
 *   **Regression**: `./regression_test` or `./regression_test "[basic]"` / `"[flow]"`.
 *   **`[incremental]`**: tagged `[incremental][.]` — run explicitly: `./regression_test '[incremental]'`.
 
@@ -109,3 +109,14 @@ Before running any `test/config/caseN` (maze or SAT):
 4. After a temporary header change, restore the previous value (see `[flow]` `CobArrayWidthGuard`).
 
 Reference map (check description if unsure): cases 1–6 and 17–22 → 12; cases 7–16 → 13.
+
+### Maze + RRR validation
+
+- `module_test rrr`: Release-effective unit/component checks for cost/history, claims/release, root pruning, bbox/bin search, Sync equalization, first-legal counting, timeout incumbent retention, first-failure cleanup, COB directions, and PathPackage round trips.
+- `module_test rrr_system CONFIG OUTPUT [route|place|verify|verify-sparse] [seconds]`: reader → netbuilder → optional placer → router → writer. Decodes full and sparse four-part controlbits independently of Writer packing, checks physical connectivity, directions, mux/unit/capacity, Sync lengths, shorts and exact routed paths. A deliberately severed switch must be rejected. `verify*` checks existing CLI artifacts without rerouting (input placement must match).
+- `python3 test/regression_test/rrr_cli.py output/PR_tool_cli test/config/case5`: invalid/missing budget arguments, fractional seconds, deadline without legal solution, nonzero exit and suppression of partial output.
+- Keep old writer golden tests as a separate Writer test layer. They do not replace actual router-to-controlbits checks. A missing kiwi remains a reported SKIP.
+- `module_test rrr_benchmark CONFIG OUTPUT [first-pass|optimize]`: checks the original first pass, records physical legality separately, then optionally runs unlimited RRR and requires shorter legal paths (or a proved independent shortest-path lower bound), at least three legal candidates, and exact commit round trips. Acceptance cases: 1, 5, 6 (width 12), 7, 8, 10, 11, 12 (width 13). No short convergence deadline is a pass criterion. Case6 is accepted once the original first pass is physically legal with length 2000 (user-confirmed optimum); do not require RRR convergence or further shortening for it.
+- `rrr_system.py` accepts an optional `--test-timeout` watchdog; without it or `--seconds`, long convergence is allowed. `--synthetic-columns 13` fills missing test addresses only in a copied TEST_ONLY fixture; never program hardware with it.
+- The test dispatcher now returns nonzero on exceptions; previously an exception could be printed while returning success. Do not mistake newly visible existing fixture errors for passing tests.
+- Implementation provenance, exact commands/results and known remaining failures: `.plan/2026-10-23-single-interposer-RRR.md`. SAT/ILP execution was excluded by the user's final test scope.

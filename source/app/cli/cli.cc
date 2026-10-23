@@ -26,7 +26,8 @@ namespace PR_tool {
         int mode, std::optional<int> compare, bool try_all_modes, bool placement,
         bool simplify_controlbits,
         algo::RouterKind router_kind,
-        const algo::SatRouterCliOptions& sat_opts
+        const algo::SatRouterCliOptions& sat_opts,
+        std::optional<double> time_limit_seconds
     ) -> int {
     try {
         std::FilePath output_file = std::FilePath(output_path.has_value() ? *output_path : ".");
@@ -53,7 +54,7 @@ namespace PR_tool {
         
         auto route_status = route(
             interposer.get(), basedie.get(), config_path, mode, compare, try_all_modes,
-            router_kind, effective_sat_opts
+            router_kind, effective_sat_opts, time_limit_seconds
         );
         if (route_status == RouteStatus::Failed) {
             return 1;
@@ -98,10 +99,12 @@ debug::info_fmt("Layout time: {} milliseconds", duration.count());
         std::StringView config_path,
         int mode, std::optional<int> compare, bool try_all_modes,
         algo::RouterKind router_kind,
-        const algo::SatRouterCliOptions& sat_opts
+        const algo::SatRouterCliOptions& sat_opts,
+        std::optional<double> time_limit_seconds
     ) -> RouteStatus {
         algo::RouterOptions options;
         options.kind = router_kind;
+        options.time_limit_seconds = time_limit_seconds;
         options.sat = sat_opts;
         options.mode = mode;
         options.try_all_modes = try_all_modes;

@@ -183,7 +183,7 @@ auto check_sat_ilp_log(const fs::path& debug_log) -> void {
     REQUIRE(content.find("validate summary: PASS") != std::string::npos);
     REQUIRE(content.find("SAT routing ok:") != std::string::npos);
     REQUIRE(content.find(
-        "v15 ILP optimization begin: threshold=25.00% segment_bbox_pad=0 time_limit_hours=5"
+        "v15 ILP optimization begin: threshold=25.00% segment_bbox_pad=0 time_limit_seconds=18000"
     ) != std::string::npos);
     REQUIRE(content.find("v15 ILP optimization end: status=") != std::string::npos);
     REQUIRE(content.find("SAT_VALIDATION_FAILED") == std::string::npos);
@@ -193,7 +193,7 @@ auto check_sat_ilp_log(const fs::path& debug_log) -> void {
 auto run_sat_ilp_once(const std::string& config_path, bool place, const fs::path& debug_log) -> void {
     const auto cmd = "./PR_tool_cli " + config_path
         + (place ? " -p" : "")
-        + " --router sat --ilp-optimize -L 25 --time-limit 5 > /dev/null 2>&1";
+        + " --router sat --ilp-optimize -L 25 --time-limit 18000 > /dev/null 2>&1";
     REQUIRE(shell_ok(run_shell(cmd)));
     check_sat_ilp_log(debug_log);
 }
